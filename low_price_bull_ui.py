@@ -12,6 +12,7 @@ from low_price_bull_strategy import LowPriceBullStrategy
 from notification_service import notification_service
 from low_price_bull_monitor import low_price_bull_monitor
 from low_price_bull_service import low_price_bull_service
+from quant_sim.integration import add_stock_to_quant_sim
 
 
 def display_low_price_bull():
@@ -368,7 +369,21 @@ def display_stock_detail(row: pd.Series):
         price_float = None
     
     if stock_code and stock_name:
-        add_stock_to_monitor_button(stock_code, stock_name, price_float)
+        col_monitor, col_quant = st.columns(2)
+        with col_monitor:
+            add_stock_to_monitor_button(stock_code, stock_name, price_float)
+        with col_quant:
+            if st.button(f"🧪 加入量化模拟", key=f"low_price_quant_{stock_code}", use_container_width=True):
+                success, message, _ = add_stock_to_quant_sim(
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    source="low_price_bull",
+                    latest_price=price_float,
+                )
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
 
 
 def display_strategy_simulation(stocks_df: pd.DataFrame, selector):

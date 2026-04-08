@@ -25,6 +25,7 @@ from config_manager import config_manager
 from main_force_ui import display_main_force_selector
 from sector_strategy_ui import display_sector_strategy
 from longhubang_ui import display_longhubang
+from quant_sim.ui import display_quant_sim
 from smart_monitor_ui import smart_monitor_ui
 from news_flow_ui import display_news_flow_monitor
 
@@ -293,7 +294,7 @@ def main():
         if st.button("🏠 股票分析", width='stretch', key="nav_home", help="返回首页，进行单只股票的深度分析"):
             # 清除所有功能页面标志
             for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                       'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_low_price_bull', 'show_news_flow', 'show_macro_cycle', 'show_macro_analysis', 'show_value_stock']:
+                       'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_low_price_bull', 'show_news_flow', 'show_macro_cycle', 'show_macro_analysis', 'show_value_stock', 'show_quant_sim']:
                 if key in st.session_state:
                     del st.session_state[key]
 
@@ -388,17 +389,26 @@ def main():
                     if key in st.session_state:
                         del st.session_state[key]
 
+            if st.button("🧪 量化模拟", width='stretch', key="nav_quant_sim", help="统一候选池、策略信号、人工执行与模拟持仓"):
+                st.session_state.show_quant_sim = True
+                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
+                           'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_smart_monitor',
+                           'show_low_price_bull', 'show_news_flow', 'show_macro_analysis', 'show_macro_cycle',
+                           'show_profit_growth', 'show_value_stock', 'show_small_cap']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+
             if st.button("🤖 AI盯盘", width='stretch', key="nav_smart_monitor", help="DeepSeek AI自动盯盘决策交易（支持A股T+1）"):
                 st.session_state.show_smart_monitor = True
                 for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis']:
+                           'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis', 'show_quant_sim']:
                     if key in st.session_state:
                         del st.session_state[key]
 
             if st.button("📡 实时监测", width='stretch', key="nav_monitor", help="价格监控与预警提醒"):
                 st.session_state.show_monitor = True
                 for key in ['show_history', 'show_main_force', 'show_longhubang', 'show_portfolio',
-                           'show_config', 'show_sector_strategy', 'show_smart_monitor', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis']:
+                           'show_config', 'show_sector_strategy', 'show_smart_monitor', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis', 'show_quant_sim']:
                     if key in st.session_state:
                         del st.session_state[key]
 
@@ -557,6 +567,11 @@ def main():
     # 检查是否显示AI盯盘
     if 'show_smart_monitor' in st.session_state and st.session_state.show_smart_monitor:
         smart_monitor_ui()
+        return
+
+    # 检查是否显示量化模拟
+    if 'show_quant_sim' in st.session_state and st.session_state.show_quant_sim:
+        display_quant_sim()
         return
 
     # 检查是否显示持仓分析

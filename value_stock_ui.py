@@ -9,6 +9,7 @@ import pandas as pd
 from datetime import datetime
 from value_stock_selector import ValueStockSelector
 from value_stock_strategy import ValueStockStrategy
+from quant_sim.integration import add_stock_to_quant_sim
 
 
 def display_value_stock():
@@ -282,6 +283,34 @@ def display_stock_detail(row: pd.Series, df: pd.DataFrame):
                 info_parts.append(f"**{pattern}**: {val}")
     if info_parts:
         st.markdown(" | ".join(info_parts))
+
+    st.markdown("---")
+    st.markdown("#### 🧪 量化模拟")
+
+    stock_code = str(row.get('股票代码', '')).split('.')[0]
+    stock_name = row.get('股票简称', '')
+    latest_price = None
+    for pattern in ['最新价', '股价']:
+        matching = [c for c in df.columns if pattern in c]
+        if matching:
+            try:
+                latest_price = float(row.get(matching[0], 0))
+            except:
+                latest_price = None
+            break
+
+    if stock_code and stock_name:
+        if st.button(f"🧪 加入量化模拟", key=f"value_quant_sim_{stock_code}", use_container_width=True):
+            success, message, _ = add_stock_to_quant_sim(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                source="value_stock",
+                latest_price=latest_price,
+            )
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
 
 
 def display_strategy_simulation(stocks_df: pd.DataFrame, selector):

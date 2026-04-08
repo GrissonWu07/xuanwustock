@@ -11,6 +11,7 @@ from typing import List, Dict
 from profit_growth_selector import profit_growth_selector
 from notification_service import notification_service
 from profit_growth_monitor import profit_growth_monitor
+from quant_sim.integration import add_stock_to_quant_sim
 
 
 def display_profit_growth():
@@ -194,26 +195,41 @@ def display_stock_detail(row: pd.Series):
 def add_stock_to_monitor_button(stock_code: str, stock_name: str, price: float = None):
     """添加股票到监控的按钮"""
     
-    button_key = f"add_monitor_{stock_code}"
-    
-    if st.button(f"➕ 加入策略监控", key=button_key, use_container_width=True):
-        
-        # 获取价格
-        if price is None:
-            st.warning("⚠️ 无法获取股票价格，请手动输入")
-            return
-        
-        # 添加到监控
-        success, message = profit_growth_monitor.add_stock(
-            stock_code=stock_code,
-            stock_name=stock_name,
-            buy_price=price
-        )
-        
-        if success:
-            st.success(f"✅ {message}")
-        else:
-            st.error(f"❌ {message}")
+    col_monitor, col_quant = st.columns(2)
+
+    with col_monitor:
+        button_key = f"add_monitor_{stock_code}"
+        if st.button(f"➕ 加入策略监控", key=button_key, use_container_width=True):
+
+            # 获取价格
+            if price is None:
+                st.warning("⚠️ 无法获取股票价格，请手动输入")
+                return
+
+            # 添加到监控
+            success, message = profit_growth_monitor.add_stock(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                buy_price=price
+            )
+
+            if success:
+                st.success(f"✅ {message}")
+            else:
+                st.error(f"❌ {message}")
+
+    with col_quant:
+        if st.button(f"🧪 加入量化模拟", key=f"add_quant_sim_{stock_code}", use_container_width=True):
+            success, message, _ = add_stock_to_quant_sim(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                source="profit_growth",
+                latest_price=price,
+            )
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
 
 
 def display_profit_growth_monitor_panel():

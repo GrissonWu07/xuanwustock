@@ -10,6 +10,7 @@ from main_force_analysis import MainForceAnalyzer
 from main_force_pdf_generator import display_report_download_section
 from main_force_history_ui import display_batch_history
 from console_utils import safe_print as print
+from quant_sim.integration import add_stock_to_quant_sim
 import pandas as pd
 
 def display_main_force_selector():
@@ -916,61 +917,74 @@ def display_main_force_batch_results(batch_results):
                 advice = final_decision.get('operation_advice', final_decision.get('advice', '暂无建议'))
                 st.info(advice)
 
-                # 加入监测按钮
-                if st.button(f"➕ 加入监测列表", key=f"monitor_{symbol}"):
-                    # 解析进场区间
-                    entry_range = final_decision.get('entry_range', '')
-                    entry_min, entry_max = None, None
-                    if entry_range and isinstance(entry_range, str) and "-" in entry_range:
+                col_action_monitor, col_action_quant = st.columns(2)
+
+                with col_action_monitor:
+                    if st.button(f"➕ 加入监测列表", key=f"monitor_{symbol}"):
+                        # 解析进场区间
+                        entry_range = final_decision.get('entry_range', '')
+                        entry_min, entry_max = None, None
+                        if entry_range and isinstance(entry_range, str) and "-" in entry_range:
+                            try:
+                                parts = entry_range.split("-")
+                                entry_min = float(parts[0].strip())
+                                entry_max = float(parts[1].strip())
+                            except:
+                                pass
+
+                        # 解析止盈止损
+                        take_profit_str = final_decision.get('take_profit', '')
+                        take_profit = None
+                        if take_profit_str:
+                            try:
+                                numbers = re.findall(r'\d+\.?\d*', str(take_profit_str))
+                                if numbers:
+                                    take_profit = float(numbers[0])
+                            except:
+                                pass
+
+                        stop_loss_str = final_decision.get('stop_loss', '')
+                        stop_loss = None
+                        if stop_loss_str:
+                            try:
+                                numbers = re.findall(r'\d+\.?\d*', str(stop_loss_str))
+                                if numbers:
+                                    stop_loss = float(numbers[0])
+                            except:
+                                pass
+
+                        # 调用监测管理器添加
+                        from monitor_db import monitor_db
+
                         try:
-                            parts = entry_range.split("-")
-                            entry_min = float(parts[0].strip())
-                            entry_max = float(parts[1].strip())
-                        except:
-                            pass
+                            entry_range_dict = {}
+                            if entry_min and entry_max:
+                                entry_range_dict = {"min": entry_min, "max": entry_max}
 
-                    # 解析止盈止损
-                    take_profit_str = final_decision.get('take_profit', '')
-                    take_profit = None
-                    if take_profit_str:
-                        try:
-                            numbers = re.findall(r'\d+\.?\d*', str(take_profit_str))
-                            if numbers:
-                                take_profit = float(numbers[0])
-                        except:
-                            pass
+                            monitor_db.add_monitored_stock(
+                                symbol=symbol,
+                                name=name,
+                                rating=rating,
+                                entry_range=entry_range_dict if entry_range_dict else None,
+                                take_profit=take_profit,
+                                stop_loss=stop_loss
+                            )
+                            st.success(f"✅ {symbol} - {name} 已加入监测列表")
+                        except Exception as e:
+                            st.error(f"❌ 添加失败: {str(e)}")
 
-                    stop_loss_str = final_decision.get('stop_loss', '')
-                    stop_loss = None
-                    if stop_loss_str:
-                        try:
-                            numbers = re.findall(r'\d+\.?\d*', str(stop_loss_str))
-                            if numbers:
-                                stop_loss = float(numbers[0])
-                        except:
-                            pass
-
-                    # 调用监测管理器添加
-                    from monitor_db import monitor_db
-
-                    try:
-                        # 准备进场区间数据
-                        entry_range_dict = {}
-                        if entry_min and entry_max:
-                            entry_range_dict = {"min": entry_min, "max": entry_max}
-
-                        # 添加到监测列表
-                        monitor_db.add_monitored_stock(
-                            symbol=symbol,
-                            name=name,
-                            rating=rating,
-                            entry_range=entry_range_dict if entry_range_dict else None,
-                            take_profit=take_profit,
-                            stop_loss=stop_loss
+                with col_action_quant:
+                    if st.button(f"🧪 加入量化模拟", key=f"quant_sim_{symbol}"):
+                        success, message, _ = add_stock_to_quant_sim(
+                            stock_code=symbol,
+                            stock_name=name,
+                            source="main_force",
+                            notes=f"主力选股评级：{rating}",
                         )
-                        st.success(f"✅ {symbol} - {name} 已加入监测列表")
-                    except Exception as e:
-                        st.error(f"❌ 添加失败: {str(e)}")
+                        if success:
+                            st.success(message)
+                        else:
+                            st.error(message)
 
     # 失败的股票
     failed_results = [r for r in results if not r['success']]
