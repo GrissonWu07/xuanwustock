@@ -95,3 +95,43 @@ def test_portfolio_service_confirm_buy_and_delay_signal(tmp_path):
     assert positions[0]["stock_code"] == "300750"
     assert positions[0]["quantity"] == 100
     assert executed["status"] == "executed"
+
+
+def test_signal_center_upserts_repeated_pending_signal_for_same_stock_and_action(tmp_path):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "quant_sim.db")
+    signal_service = SignalCenterService(db_file=tmp_path / "quant_sim.db")
+
+    candidate_service.add_manual_candidate(
+        stock_code="600519",
+        stock_name="贵州茅台",
+        source="value_stock",
+    )
+    candidate = candidate_service.list_candidates()[0]
+
+    first_signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 78,
+            "reasoning": "第一次建仓建议",
+            "position_size_pct": 20,
+        },
+    )
+    second_signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 84,
+            "reasoning": "第二次刷新后的建仓建议",
+            "position_size_pct": 25,
+        },
+    )
+
+    pending = signal_service.list_pending_signals()
+    history = signal_service.list_signals(stock_code="600519")
+
+    assert first_signal["id"] == second_signal["id"]
+    assert len(pending) == 1
+    assert len(history) == 1
+    assert pending[0]["confidence"] == 84
+    assert pending[0]["reasoning"] == "第二次刷新后的建仓建议"

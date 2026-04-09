@@ -190,3 +190,29 @@ def test_confirm_buy_rejects_non_positive_trade_inputs(tmp_path):
         portfolio_service.confirm_buy(buy_signal["id"], price=0, quantity=100, note="bad")
     with pytest.raises(ValueError, match="quantity"):
         portfolio_service.confirm_buy(buy_signal["id"], price=35.2, quantity=0, note="bad")
+
+
+def test_confirm_buy_rejects_insufficient_available_cash(tmp_path):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "quant_sim.db")
+    signal_service = SignalCenterService(db_file=tmp_path / "quant_sim.db")
+    portfolio_service = PortfolioService(db_file=tmp_path / "quant_sim.db")
+
+    candidate_service.add_manual_candidate("600036", "招商银行", "value_stock")
+    candidate = candidate_service.list_candidates()[0]
+    buy_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 83, "reasoning": "建仓", "position_size_pct": 20},
+    )
+
+    portfolio_service.db.configure_account(initial_cash=1000)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="cash"):
+        portfolio_service.confirm_buy(
+            buy_signal["id"],
+            price=35.2,
+            quantity=100,
+            note="超出资金池",
+            executed_at="2026-04-09 10:00:00",
+        )

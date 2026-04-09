@@ -60,3 +60,15 @@ class PortfolioService:
 
     def list_position_lots(self, stock_code: str) -> list[dict]:
         return self.db.get_position_lots(stock_code)
+
+    def get_account_summary(self) -> dict:
+        return self.db.get_account_summary()
+
+    def configure_account(self, initial_cash: float) -> None:
+        self.db.configure_account(initial_cash)
+
+    def get_trade_history(self, limit: int = 100) -> list[dict]:
+        return self.db.get_trade_history(limit=limit)
+
+    def get_account_snapshots(self, limit: int = 50) -> list[dict]:
+        return self.db.get_account_snapshots(limit=limit)

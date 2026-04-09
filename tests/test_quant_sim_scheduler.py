@@ -77,3 +77,51 @@ def test_scheduler_tracks_positions_and_generates_followup_signals(tmp_path, mon
     assert result["signals_created"] == 1
     assert signals[0]["action"] == "SELL"
     assert signals[0]["status"] == "pending"
+
+
+def test_scheduler_supports_background_start_stop_and_persists_run_metadata(tmp_path):
+    scheduler = QuantSimScheduler(db_file=tmp_path / "quant_sim.db")
+
+    status_before = scheduler.get_status()
+    assert status_before["running"] is False
+    assert status_before["enabled"] is False
+    assert status_before["interval_minutes"] == 15
+
+    scheduler.update_config(enabled=True, interval_minutes=20)
+    status_after_config = scheduler.get_status()
+    assert status_after_config["enabled"] is True
+    assert status_after_config["interval_minutes"] == 20
+
+    started = scheduler.start()
+    status_running = scheduler.get_status()
+    assert started is True
+    assert status_running["running"] is True
+
+    stopped = scheduler.stop()
+    status_stopped = scheduler.get_status()
+    assert stopped is True
+    assert status_stopped["running"] is False
+
+
+def test_scheduler_run_once_records_account_snapshot(tmp_path, monkeypatch):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "quant_sim.db")
+    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
+
+    scheduler = QuantSimScheduler(db_file=tmp_path / "quant_sim.db")
+    monkeypatch.setattr(
+        scheduler.engine.adapter,
+        "analyze_candidate",
+        lambda candidate, market_snapshot=None: {
+            "action": "BUY",
+            "confidence": 82,
+            "reasoning": "趋势修复",
+            "position_size_pct": 20,
+        },
+    )
+
+    summary = scheduler.run_once()
+    snapshots = scheduler.engine.candidate_pool.db.get_account_snapshots(limit=5)
+
+    assert summary["signals_created"] == 1
+    assert len(snapshots) == 1
+    assert snapshots[0]["run_reason"] == "scheduled_scan"

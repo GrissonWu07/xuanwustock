@@ -123,6 +123,62 @@ class QuantSimDB:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_account (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                initial_cash REAL NOT NULL DEFAULT 100000,
+                available_cash REAL NOT NULL DEFAULT 100000,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER,
+                stock_code TEXT NOT NULL,
+                stock_name TEXT,
+                action TEXT NOT NULL,
+                price REAL NOT NULL,
+                quantity INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                realized_pnl REAL DEFAULT 0,
+                note TEXT,
+                executed_at TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_account_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_reason TEXT NOT NULL,
+                initial_cash REAL NOT NULL,
+                available_cash REAL NOT NULL,
+                market_value REAL NOT NULL,
+                total_equity REAL NOT NULL,
+                realized_pnl REAL NOT NULL,
+                unrealized_pnl REAL NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_scheduler_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER DEFAULT 0,
+                interval_minutes INTEGER DEFAULT 15,
+                trading_hours_only INTEGER DEFAULT 1,
+                market TEXT DEFAULT 'CN',
+                last_run_at TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
 
         self._ensure_column(cursor, "strategy_signals", "decision_type", "TEXT")
         self._ensure_column(cursor, "strategy_signals", "tech_score", "REAL DEFAULT 0")
@@ -133,6 +189,8 @@ class QuantSimDB:
 
         self._backfill_candidate_sources(cursor)
         self._backfill_lot_defaults(cursor)
+        self._ensure_sim_account(cursor)
+        self._ensure_scheduler_config(cursor)
 
         conn.commit()
         conn.close()
@@ -232,6 +290,59 @@ class QuantSimDB:
     def add_signal(self, signal: dict[str, Any]) -> int:
         conn = self._connect()
         cursor = conn.cursor()
+        status = signal.get("status", "observed")
+        action = str(signal["action"]).upper()
+
+        if status == "pending":
+            cursor.execute(
+                """
+                UPDATE strategy_signals
+                SET status = 'superseded',
+                    updated_at = ?
+                WHERE stock_code = ? AND status = 'pending' AND action <> ?
+                """,
+                (self._now(), signal["stock_code"], action),
+            )
+            cursor.execute(
+                """
+                SELECT id FROM strategy_signals
+                WHERE stock_code = ? AND action = ? AND status = 'pending'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (signal["stock_code"], action),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                signal_id = int(existing["id"])
+                cursor.execute(
+                    """
+                    UPDATE strategy_signals
+                    SET candidate_id = ?, stock_name = ?, confidence = ?, reasoning = ?,
+                        position_size_pct = ?, stop_loss_pct = ?, take_profit_pct = ?,
+                        decision_type = ?, tech_score = ?, context_score = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        signal.get("candidate_id"),
+                        signal.get("stock_name"),
+                        signal.get("confidence", 0),
+                        signal.get("reasoning"),
+                        signal.get("position_size_pct", 0),
+                        signal.get("stop_loss_pct", 0),
+                        signal.get("take_profit_pct", 0),
+                        signal.get("decision_type"),
+                        signal.get("tech_score", 0),
+                        signal.get("context_score", 0),
+                        self._now(),
+                        signal_id,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+                return signal_id
+
         cursor.execute(
             """
             INSERT INTO strategy_signals
@@ -246,7 +357,7 @@ class QuantSimDB:
                 signal.get("candidate_id"),
                 signal["stock_code"],
                 signal.get("stock_name"),
-                signal["action"],
+                action,
                 signal.get("confidence", 0),
                 signal.get("reasoning"),
                 signal.get("position_size_pct", 0),
@@ -255,7 +366,7 @@ class QuantSimDB:
                 signal.get("decision_type"),
                 signal.get("tech_score", 0),
                 signal.get("context_score", 0),
-                signal.get("status", "observed"),
+                status,
                 self._now(),
             ),
         )
@@ -296,6 +407,120 @@ class QuantSimDB:
         rows = [self._row_to_dict(row) for row in cursor.fetchall()]
         conn.close()
         return rows
+
+    def configure_account(self, initial_cash: float) -> None:
+        if initial_cash <= 0:
+            raise ValueError("initial_cash must be positive")
+
+        summary = self.get_account_summary()
+        if summary["trade_count"] > 0 or summary["position_count"] > 0:
+            raise ValueError("account can only be reconfigured before trading starts")
+
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE sim_account
+            SET initial_cash = ?, available_cash = ?, updated_at = ?
+            WHERE id = 1
+            """,
+            (round(initial_cash, 4), round(initial_cash, 4), self._now()),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_account_summary(self) -> dict[str, Any]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        summary = self._build_account_summary(cursor)
+        conn.close()
+        return summary
+
+    def add_account_snapshot(self, run_reason: str) -> int:
+        conn = self._connect()
+        cursor = conn.cursor()
+        snapshot_id = self._insert_account_snapshot(cursor, run_reason)
+        conn.commit()
+        conn.close()
+        return snapshot_id
+
+    def get_account_snapshots(self, limit: int = 50) -> list[dict[str, Any]]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM sim_account_snapshots ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = [self._row_to_dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def get_trade_history(self, limit: int = 100) -> list[dict[str, Any]]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM sim_trades ORDER BY executed_at DESC, id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = [self._row_to_dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def get_scheduler_config(self) -> dict[str, Any]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sim_scheduler_config WHERE id = 1")
+        row = cursor.fetchone()
+        conn.close()
+        return {
+            "enabled": bool(row["enabled"]),
+            "interval_minutes": int(row["interval_minutes"]),
+            "trading_hours_only": bool(row["trading_hours_only"]),
+            "market": row["market"] or "CN",
+            "last_run_at": row["last_run_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def update_scheduler_config(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        interval_minutes: Optional[int] = None,
+        trading_hours_only: Optional[bool] = None,
+        market: Optional[str] = None,
+        last_run_at: Optional[str] = None,
+    ) -> None:
+        existing = self.get_scheduler_config()
+        payload = {
+            "enabled": int(existing["enabled"] if enabled is None else enabled),
+            "interval_minutes": int(existing["interval_minutes"] if interval_minutes is None else interval_minutes),
+            "trading_hours_only": int(existing["trading_hours_only"] if trading_hours_only is None else trading_hours_only),
+            "market": existing["market"] if market is None else str(market),
+            "last_run_at": existing["last_run_at"] if last_run_at is None else last_run_at,
+        }
+        if payload["interval_minutes"] <= 0:
+            raise ValueError("interval_minutes must be positive")
+
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE sim_scheduler_config
+            SET enabled = ?, interval_minutes = ?, trading_hours_only = ?,
+                market = ?, last_run_at = ?, updated_at = ?
+            WHERE id = 1
+            """,
+            (
+                payload["enabled"],
+                payload["interval_minutes"],
+                payload["trading_hours_only"],
+                payload["market"],
+                payload["last_run_at"],
+                self._now(),
+            ),
+        )
+        conn.commit()
+        conn.close()
 
     def delay_signal(self, signal_id: int, note: str | None = None) -> None:
         conn = self._connect()
@@ -354,7 +579,7 @@ class QuantSimDB:
             action = executed_action.lower()
 
             if action == "buy":
-                next_candidate_status = self._apply_buy(
+                trade_result = self._apply_buy(
                     cursor=cursor,
                     stock_code=signal["stock_code"],
                     stock_name=signal["stock_name"],
@@ -363,7 +588,7 @@ class QuantSimDB:
                     executed_at=executed_dt,
                 )
             elif action == "sell":
-                next_candidate_status = self._apply_sell(
+                trade_result = self._apply_sell(
                     cursor=cursor,
                     stock_code=signal["stock_code"],
                     price=price,
@@ -385,7 +610,21 @@ class QuantSimDB:
                 """,
                 (action, note, executed_at_text, executed_at_text, signal_id),
             )
-            self._set_candidate_status(cursor, signal["stock_code"], next_candidate_status)
+            self._set_candidate_status(cursor, signal["stock_code"], trade_result["candidate_status"])
+            self._record_trade(
+                cursor=cursor,
+                signal_id=signal_id,
+                stock_code=signal["stock_code"],
+                stock_name=signal["stock_name"],
+                action=action,
+                price=price,
+                quantity=quantity,
+                amount=trade_result["amount"],
+                realized_pnl=trade_result["realized_pnl"],
+                note=note,
+                executed_at=executed_at_text,
+            )
+            self._insert_account_snapshot(cursor, f"manual_{action}")
 
             conn.commit()
         except Exception:
@@ -446,6 +685,52 @@ class QuantSimDB:
         conn.close()
         return rows
 
+    def update_position_market_price(self, stock_code: str, latest_price: float) -> None:
+        if latest_price <= 0:
+            return
+
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sim_positions WHERE stock_code = ? AND status = 'holding'", (stock_code,))
+        position = cursor.fetchone()
+        if position is None:
+            conn.close()
+            return
+
+        quantity = int(position["quantity"] or 0)
+        avg_price = float(position["avg_price"] or 0)
+        market_value = round(quantity * latest_price, 4)
+        unrealized_pnl = round((latest_price - avg_price) * quantity, 4)
+        unrealized_pnl_pct = round(((latest_price - avg_price) / avg_price * 100) if avg_price > 0 else 0, 4)
+        cursor.execute(
+            """
+            UPDATE sim_positions
+            SET latest_price = ?, market_value = ?, unrealized_pnl = ?,
+                unrealized_pnl_pct = ?, updated_at = ?
+            WHERE stock_code = ?
+            """,
+            (latest_price, market_value, unrealized_pnl, unrealized_pnl_pct, self._now(), stock_code),
+        )
+        conn.commit()
+        conn.close()
+
+    def update_candidate_latest_price(self, stock_code: str, latest_price: float) -> None:
+        if latest_price <= 0:
+            return
+
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE candidate_pool
+            SET latest_price = ?, updated_at = ?
+            WHERE stock_code = ?
+            """,
+            (latest_price, self._now(), stock_code),
+        )
+        conn.commit()
+        conn.close()
+
     def _apply_buy(
         self,
         cursor: sqlite3.Cursor,
@@ -454,8 +739,13 @@ class QuantSimDB:
         price: float,
         quantity: int,
         executed_at: datetime,
-    ) -> str:
+    ) -> dict[str, Any]:
         executed_at_text = self._format_datetime(executed_at)
+        amount = round(price * quantity, 4)
+        available_cash = self._get_available_cash(cursor)
+        if amount > available_cash:
+            raise ValueError("insufficient available cash")
+
         cursor.execute("SELECT * FROM sim_positions WHERE stock_code = ?", (stock_code,))
         position = cursor.fetchone()
 
@@ -523,7 +813,12 @@ class QuantSimDB:
                 unlock_date,
             ),
         )
-        return "holding"
+        self._set_available_cash(cursor, available_cash - amount)
+        return {
+            "candidate_status": "holding",
+            "amount": amount,
+            "realized_pnl": 0.0,
+        }
 
     def _apply_sell(
         self,
@@ -532,7 +827,7 @@ class QuantSimDB:
         price: float,
         quantity: int,
         executed_at: datetime,
-    ) -> str:
+    ) -> dict[str, Any]:
         cursor.execute("SELECT * FROM sim_positions WHERE stock_code = ?", (stock_code,))
         position = cursor.fetchone()
         if position is None:
@@ -550,6 +845,7 @@ class QuantSimDB:
 
         remaining_to_sell = quantity
         executed_at_text = self._format_datetime(executed_at)
+        realized_pnl = 0.0
         for row, lot in lots:
             if remaining_to_sell <= 0:
                 break
@@ -558,6 +854,7 @@ class QuantSimDB:
 
             consumed = lot.consume(remaining_to_sell)
             remaining_to_sell -= consumed
+            realized_pnl += round((price - lot.entry_price) * consumed, 4)
             next_status = "closed" if lot.remaining_quantity == 0 else self._current_lot_status(lot, current_date)
             cursor.execute(
                 """
@@ -586,6 +883,8 @@ class QuantSimDB:
             (stock_code,),
         )
         remaining_cost = float(cursor.fetchone()["remaining_cost"] or 0)
+        proceeds = round(price * quantity, 4)
+        self._set_available_cash(cursor, self._get_available_cash(cursor) + proceeds)
 
         if remaining_quantity > 0:
             avg_price = round(remaining_cost / remaining_quantity, 4)
@@ -608,7 +907,11 @@ class QuantSimDB:
                     stock_code,
                 ),
             )
-            return "holding"
+            return {
+                "candidate_status": "holding",
+                "amount": proceeds,
+                "realized_pnl": round(realized_pnl, 4),
+            }
 
         cursor.execute(
             """
@@ -620,7 +923,157 @@ class QuantSimDB:
             """,
             (price, executed_at_text, stock_code),
         )
-        return "active"
+        return {
+            "candidate_status": "active",
+            "amount": proceeds,
+            "realized_pnl": round(realized_pnl, 4),
+        }
+
+    def _build_account_summary(self, cursor: sqlite3.Cursor) -> dict[str, Any]:
+        cursor.execute("SELECT * FROM sim_account WHERE id = 1")
+        account = cursor.fetchone()
+        initial_cash = float(account["initial_cash"])
+        available_cash = float(account["available_cash"])
+
+        cursor.execute(
+            """
+            SELECT
+                COALESCE(SUM(quantity * avg_price), 0) AS invested_cost,
+                COALESCE(SUM(market_value), 0) AS market_value,
+                COALESCE(SUM(unrealized_pnl), 0) AS unrealized_pnl,
+                COUNT(*) AS position_count
+            FROM sim_positions
+            WHERE status = 'holding'
+            """
+        )
+        positions = cursor.fetchone()
+
+        cursor.execute(
+            """
+            SELECT
+                COALESCE(SUM(realized_pnl), 0) AS realized_pnl,
+                COUNT(*) AS trade_count
+            FROM sim_trades
+            """
+        )
+        trades = cursor.fetchone()
+
+        market_value = float(positions["market_value"] or 0)
+        total_equity = round(available_cash + market_value, 4)
+
+        return {
+            "initial_cash": round(initial_cash, 4),
+            "available_cash": round(available_cash, 4),
+            "invested_cost": round(float(positions["invested_cost"] or 0), 4),
+            "market_value": round(market_value, 4),
+            "total_equity": total_equity,
+            "realized_pnl": round(float(trades["realized_pnl"] or 0), 4),
+            "unrealized_pnl": round(float(positions["unrealized_pnl"] or 0), 4),
+            "total_pnl": round(total_equity - initial_cash, 4),
+            "total_return_pct": round(((total_equity - initial_cash) / initial_cash * 100) if initial_cash > 0 else 0, 4),
+            "position_count": int(positions["position_count"] or 0),
+            "trade_count": int(trades["trade_count"] or 0),
+        }
+
+    def _insert_account_snapshot(self, cursor: sqlite3.Cursor, run_reason: str) -> int:
+        summary = self._build_account_summary(cursor)
+        cursor.execute(
+            """
+            INSERT INTO sim_account_snapshots
+            (
+                run_reason, initial_cash, available_cash, market_value,
+                total_equity, realized_pnl, unrealized_pnl, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_reason,
+                summary["initial_cash"],
+                summary["available_cash"],
+                summary["market_value"],
+                summary["total_equity"],
+                summary["realized_pnl"],
+                summary["unrealized_pnl"],
+                self._now(),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def _record_trade(
+        self,
+        cursor: sqlite3.Cursor,
+        signal_id: int,
+        stock_code: str,
+        stock_name: str | None,
+        action: str,
+        price: float,
+        quantity: int,
+        amount: float,
+        realized_pnl: float,
+        note: str | None,
+        executed_at: str,
+    ) -> None:
+        cursor.execute(
+            """
+            INSERT INTO sim_trades
+            (
+                signal_id, stock_code, stock_name, action, price, quantity,
+                amount, realized_pnl, note, executed_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signal_id,
+                stock_code,
+                stock_name,
+                action,
+                price,
+                quantity,
+                amount,
+                realized_pnl,
+                note,
+                executed_at,
+                self._now(),
+            ),
+        )
+
+    def _ensure_sim_account(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute("SELECT 1 FROM sim_account WHERE id = 1")
+        if cursor.fetchone() is None:
+            cursor.execute(
+                """
+                INSERT INTO sim_account (id, initial_cash, available_cash, updated_at)
+                VALUES (1, 100000, 100000, ?)
+                """,
+                (self._now(),),
+            )
+
+    def _ensure_scheduler_config(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute("SELECT 1 FROM sim_scheduler_config WHERE id = 1")
+        if cursor.fetchone() is None:
+            cursor.execute(
+                """
+                INSERT INTO sim_scheduler_config
+                (id, enabled, interval_minutes, trading_hours_only, market, last_run_at, updated_at)
+                VALUES (1, 0, 15, 1, 'CN', NULL, ?)
+                """,
+                (self._now(),),
+            )
+
+    def _get_available_cash(self, cursor: sqlite3.Cursor) -> float:
+        cursor.execute("SELECT available_cash FROM sim_account WHERE id = 1")
+        row = cursor.fetchone()
+        return float(row["available_cash"] or 0)
+
+    def _set_available_cash(self, cursor: sqlite3.Cursor, value: float) -> None:
+        cursor.execute(
+            """
+            UPDATE sim_account
+            SET available_cash = ?, updated_at = ?
+            WHERE id = 1
+            """,
+            (round(value, 4), self._now()),
+        )
 
     def _candidate_row_to_dict(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)

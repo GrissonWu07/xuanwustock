@@ -28,6 +28,9 @@ class QuantSimEngine:
 
     def analyze_candidate(self, candidate: dict) -> dict:
         decision = self.adapter.analyze_candidate(candidate)
+        decision_price = self._extract_decision_price(decision)
+        if decision_price > 0:
+            self.candidate_pool.db.update_candidate_latest_price(candidate["stock_code"], decision_price)
         return self.signal_center.create_signal(candidate, decision)
 
     def analyze_active_candidates(self) -> list[dict]:
@@ -46,5 +49,22 @@ class QuantSimEngine:
                 "sources": ["manual"],
             }
             decision = self.adapter.analyze_position(candidate, position)
+            decision_price = self._extract_decision_price(decision)
+            if decision_price > 0:
+                self.portfolio.db.update_position_market_price(position["stock_code"], decision_price)
             signals.append(self.signal_center.create_signal(candidate, decision))
         return signals
+
+    @staticmethod
+    def _extract_decision_price(decision: dict | object) -> float:
+        if hasattr(decision, "price"):
+            try:
+                return float(getattr(decision, "price") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        if isinstance(decision, dict):
+            try:
+                return float(decision.get("price") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
