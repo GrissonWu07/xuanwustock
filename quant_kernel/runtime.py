@@ -184,6 +184,7 @@ class KernelStrategyRuntime:
         market_snapshot: dict[str, Any] | None,
         current_time: datetime,
         analysis_timeframe: str = "1d",
+        strategy_mode: str = "auto",
     ) -> Decision:
         stock_code = str(candidate["stock_code"])
         sources = candidate.get("sources") or [candidate.get("source", "manual")]
@@ -198,6 +199,7 @@ class KernelStrategyRuntime:
             market_snapshot=market_snapshot,
             current_time=current_time,
             analysis_timeframe=analysis_timeframe,
+            strategy_mode=strategy_mode,
         )
 
         if not market_snapshot:
@@ -205,6 +207,7 @@ class KernelStrategyRuntime:
                 stock_code=stock_code,
                 price=float(candidate.get("latest_price") or 0),
                 tech_score=0.0,
+                tech_votes=[],
                 contextual_score=contextual_score,
                 reason="暂未取得完整行情与技术指标，保持观察。",
                 current_time=current_time,
@@ -220,7 +223,7 @@ class KernelStrategyRuntime:
         volume_ratio = float(market_snapshot.get("volume_ratio") or 1)
         trend = str(market_snapshot.get("trend") or "sideways")
 
-        tech_score = self._calculate_candidate_tech_score(
+        tech_score, tech_votes = self._calculate_candidate_tech_votes(
             current_price=current_price,
             ma5=ma5,
             ma20=ma20,
@@ -246,6 +249,7 @@ class KernelStrategyRuntime:
             stock_code=stock_code,
             price=current_price,
             tech_score=tech_score,
+            tech_votes=tech_votes,
             contextual_score=contextual_score,
             reason=reason,
             current_time=current_time,
@@ -260,6 +264,7 @@ class KernelStrategyRuntime:
         market_snapshot: dict[str, Any] | None,
         current_time: datetime,
         analysis_timeframe: str = "1d",
+        strategy_mode: str = "auto",
     ) -> Decision:
         stock_code = str(position["stock_code"])
         sources = candidate.get("sources") or [candidate.get("source", "manual")]
@@ -275,6 +280,7 @@ class KernelStrategyRuntime:
             market_snapshot=market_snapshot,
             current_time=current_time,
             analysis_timeframe=analysis_timeframe,
+            strategy_mode=strategy_mode,
         )
 
         if not market_snapshot:
@@ -282,6 +288,7 @@ class KernelStrategyRuntime:
                 stock_code=stock_code,
                 price=float(position.get("latest_price") or position.get("avg_price") or 0),
                 tech_score=0.0,
+                tech_votes=[],
                 contextual_score=contextual_score,
                 reason="持仓跟踪未取得完整行情，继续观察。",
                 current_time=current_time,
@@ -297,7 +304,7 @@ class KernelStrategyRuntime:
         avg_price = float(position.get("avg_price") or 0)
         pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
 
-        tech_score = self._calculate_position_tech_score(
+        tech_score, tech_votes = self._calculate_position_tech_votes(
             current_price=current_price,
             ma20=ma20,
             macd=macd,
@@ -312,6 +319,7 @@ class KernelStrategyRuntime:
             stock_code=stock_code,
             price=current_price,
             tech_score=tech_score,
+            tech_votes=tech_votes,
             contextual_score=contextual_score,
             reason=reason,
             current_time=current_time,
@@ -324,6 +332,7 @@ class KernelStrategyRuntime:
         stock_code: str,
         price: float,
         tech_score: float,
+        tech_votes: list[dict[str, Any]],
         contextual_score: ContextualScore,
         reason: str,
         current_time: datetime,
@@ -337,6 +346,7 @@ class KernelStrategyRuntime:
             price=price,
             timestamp=current_time,
             reason=reason,
+            agent_votes={"tech_votes": tech_votes},
             tech_score=round(tech_score, 4),
             context_score=round(contextual_score.score, 4),
         )
@@ -346,7 +356,12 @@ class KernelStrategyRuntime:
             stock_code=stock_code,
             current_time=current_time,
         )
-        resolved.strategy_profile = strategy_profile
+        resolved.strategy_profile = self._attach_explainability(
+            strategy_profile=strategy_profile,
+            tech_votes=tech_votes,
+            contextual_score=contextual_score,
+            resolved=resolved,
+        )
         if resolved.action == "BUY":
             max_ratio = float(thresholds.get("max_position_ratio") or 0.0)
             resolved.position_ratio = round(
@@ -383,6 +398,141 @@ class KernelStrategyRuntime:
             reason=reason,
         )
 
+    def _attach_explainability(
+        self,
+        *,
+        strategy_profile: dict[str, Any],
+        tech_votes: list[dict[str, Any]],
+        contextual_score: ContextualScore,
+        resolved: Decision,
+    ) -> dict[str, Any]:
+        profile = dict(strategy_profile)
+        profile["explainability"] = {
+            "tech_votes": tech_votes,
+            "context_votes": self._build_context_votes(contextual_score),
+            "dual_track": {
+                "tech_signal": str((resolved.dual_track_details or {}).get("tech_signal") or resolved.action),
+                "context_signal": str((resolved.dual_track_details or {}).get("context_signal") or contextual_score.signal),
+                "resonance_type": str((resolved.dual_track_details or {}).get("resonance_type") or resolved.decision_type),
+                "rule_hit": str((resolved.dual_track_details or {}).get("rule_hit") or resolved.decision_type),
+                "position_ratio": round(float(resolved.position_ratio or 0.0), 4),
+                "decision_type": resolved.decision_type,
+                "final_action": resolved.action,
+                "final_reason": resolved.reason,
+            },
+        }
+        return profile
+
+    def _build_context_votes(self, contextual_score: ContextualScore) -> list[dict[str, Any]]:
+        votes: list[dict[str, Any]] = []
+        for component, payload in (contextual_score.components or {}).items():
+            votes.append(
+                {
+                    "component": component,
+                    "score": round(float(payload.get("score") or 0.0), 4),
+                    "reason": str(payload.get("reason") or ""),
+                }
+            )
+        return votes
+
+    @staticmethod
+    def _vote(factor: str, signal: str, score: float, reason: str) -> dict[str, Any]:
+        return {
+            "factor": factor,
+            "signal": signal,
+            "score": round(float(score), 4),
+            "reason": reason,
+        }
+
+    def _calculate_candidate_tech_votes(
+        self,
+        *,
+        current_price: float,
+        ma5: float,
+        ma20: float,
+        ma60: float,
+        macd: float,
+        rsi12: float,
+        volume_ratio: float,
+        trend: str,
+    ) -> tuple[float, list[dict[str, Any]]]:
+        cfg = self.config.technical
+        votes: list[dict[str, Any]] = []
+
+        if trend == "up":
+            votes.append(self._vote("趋势", "BUY", cfg.trend_up_bonus, f"趋势状态 {trend}"))
+        elif trend == "down":
+            votes.append(self._vote("趋势", "SELL", -cfg.trend_down_penalty, f"趋势状态 {trend}"))
+        else:
+            votes.append(self._vote("趋势", "HOLD", 0.0, f"趋势状态 {trend}"))
+
+        if current_price > ma5 > ma20 > ma60 > 0:
+            votes.append(self._vote("均线结构", "BUY", cfg.alignment_bonus, f"多头排列 {current_price:.2f}>{ma5:.2f}>{ma20:.2f}>{ma60:.2f}"))
+        elif current_price < ma5 < ma20 < ma60 and ma60 > 0:
+            votes.append(self._vote("均线结构", "SELL", -cfg.misalignment_penalty, f"空头排列 {current_price:.2f}<{ma5:.2f}<{ma20:.2f}<{ma60:.2f}"))
+        else:
+            votes.append(self._vote("均线结构", "HOLD", 0.0, f"均线结构中性 {current_price:.2f}/{ma5:.2f}/{ma20:.2f}/{ma60:.2f}"))
+
+        if macd > 0:
+            votes.append(self._vote("MACD", "BUY", cfg.macd_positive_bonus, f"MACD {macd:.3f} 为正"))
+        elif macd < 0:
+            votes.append(self._vote("MACD", "SELL", -cfg.macd_negative_penalty, f"MACD {macd:.3f} 为负"))
+        else:
+            votes.append(self._vote("MACD", "HOLD", 0.0, "MACD 中性"))
+
+        if cfg.balanced_rsi_min <= rsi12 <= cfg.balanced_rsi_max:
+            votes.append(self._vote("RSI", "BUY", cfg.balanced_rsi_bonus, f"RSI12 {rsi12:.2f} 处于健康区间"))
+        elif rsi12 >= cfg.overbought_rsi_threshold:
+            votes.append(self._vote("RSI", "SELL", -cfg.overbought_rsi_penalty, f"RSI12 {rsi12:.2f} 偏高，短线过热"))
+        elif rsi12 <= cfg.oversold_rsi_threshold:
+            votes.append(self._vote("RSI", "BUY", cfg.oversold_rsi_bonus, f"RSI12 {rsi12:.2f} 偏低，存在修复空间"))
+        else:
+            votes.append(self._vote("RSI", "HOLD", 0.0, f"RSI12 {rsi12:.2f} 中性"))
+
+        if volume_ratio >= cfg.high_volume_ratio_threshold:
+            votes.append(self._vote("量比", "BUY", cfg.high_volume_ratio_bonus, f"量比 {volume_ratio:.2f} 放量确认"))
+        elif volume_ratio <= cfg.low_volume_ratio_threshold:
+            votes.append(self._vote("量比", "SELL", -cfg.low_volume_ratio_penalty, f"量比 {volume_ratio:.2f} 偏弱"))
+        else:
+            votes.append(self._vote("量比", "HOLD", 0.0, f"量比 {volume_ratio:.2f} 中性"))
+
+        score = sum(float(vote["score"]) for vote in votes)
+        return round(max(-1.0, min(1.0, score)), 4), votes
+
+    def _calculate_position_tech_votes(
+        self,
+        *,
+        current_price: float,
+        ma20: float,
+        macd: float,
+        rsi12: float,
+        pnl_pct: float,
+    ) -> tuple[float, list[dict[str, Any]]]:
+        cfg = self.config.position_scoring
+        votes: list[dict[str, Any]] = []
+        if current_price < ma20 and ma20 > 0:
+            votes.append(self._vote("价格相对MA20", "SELL", -cfg.below_ma20_penalty, f"现价 {current_price:.2f} 低于 MA20 {ma20:.2f}"))
+        else:
+            votes.append(self._vote("价格相对MA20", "HOLD", 0.0, f"现价 {current_price:.2f} / MA20 {ma20:.2f}"))
+        if macd < 0:
+            votes.append(self._vote("MACD", "SELL", -cfg.negative_macd_penalty, f"MACD {macd:.3f} 为负"))
+        else:
+            votes.append(self._vote("MACD", "HOLD", 0.0, f"MACD {macd:.3f} 未触发负向卖出"))
+        if pnl_pct <= cfg.deep_loss_threshold:
+            votes.append(self._vote("盈亏保护", "SELL", -cfg.deep_loss_penalty, f"浮盈亏 {pnl_pct:.2f}% 触发深度亏损保护"))
+        elif pnl_pct >= cfg.strong_profit_threshold:
+            votes.append(self._vote("盈亏保护", "SELL", -cfg.strong_profit_penalty, f"浮盈亏 {pnl_pct:.2f}% 触发高位止盈保护"))
+        elif pnl_pct >= cfg.guarded_profit_threshold and macd > 0:
+            votes.append(self._vote("盈亏保护", "BUY", cfg.guarded_profit_bonus, f"浮盈亏 {pnl_pct:.2f}% 且趋势未破坏"))
+        else:
+            votes.append(self._vote("盈亏保护", "HOLD", 0.0, f"浮盈亏 {pnl_pct:.2f}% 中性"))
+        if rsi12 >= cfg.overbought_rsi_threshold:
+            votes.append(self._vote("RSI", "SELL", -cfg.overbought_rsi_penalty, f"RSI12 {rsi12:.2f} 偏高"))
+        else:
+            votes.append(self._vote("RSI", "HOLD", 0.0, f"RSI12 {rsi12:.2f} 未触发超买"))
+        score = sum(float(vote["score"]) for vote in votes)
+        return round(max(-1.0, min(1.0, score)), 4), votes
+
     def _calculate_candidate_tech_score(
         self,
         *,
@@ -395,37 +545,17 @@ class KernelStrategyRuntime:
         volume_ratio: float,
         trend: str,
     ) -> float:
-        cfg = self.config.technical
-        score = 0.0
-
-        if trend == "up":
-            score += cfg.trend_up_bonus
-        elif trend == "down":
-            score -= cfg.trend_down_penalty
-
-        if current_price > ma5 > ma20 > ma60 > 0:
-            score += cfg.alignment_bonus
-        elif current_price < ma5 < ma20 < ma60 and ma60 > 0:
-            score -= cfg.misalignment_penalty
-
-        if macd > 0:
-            score += cfg.macd_positive_bonus
-        elif macd < 0:
-            score -= cfg.macd_negative_penalty
-
-        if cfg.balanced_rsi_min <= rsi12 <= cfg.balanced_rsi_max:
-            score += cfg.balanced_rsi_bonus
-        elif rsi12 >= cfg.overbought_rsi_threshold:
-            score -= cfg.overbought_rsi_penalty
-        elif rsi12 <= cfg.oversold_rsi_threshold:
-            score += cfg.oversold_rsi_bonus
-
-        if volume_ratio >= cfg.high_volume_ratio_threshold:
-            score += cfg.high_volume_ratio_bonus
-        elif volume_ratio <= cfg.low_volume_ratio_threshold:
-            score -= cfg.low_volume_ratio_penalty
-
-        return max(-1.0, min(1.0, score))
+        score, _ = self._calculate_candidate_tech_votes(
+            current_price=current_price,
+            ma5=ma5,
+            ma20=ma20,
+            ma60=ma60,
+            macd=macd,
+            rsi12=rsi12,
+            volume_ratio=volume_ratio,
+            trend=trend,
+        )
+        return score
 
     def _calculate_position_tech_score(
         self,
@@ -436,21 +566,14 @@ class KernelStrategyRuntime:
         rsi12: float,
         pnl_pct: float,
     ) -> float:
-        cfg = self.config.position_scoring
-        score = 0.0
-        if current_price < ma20 and ma20 > 0:
-            score -= cfg.below_ma20_penalty
-        if macd < 0:
-            score -= cfg.negative_macd_penalty
-        if pnl_pct <= cfg.deep_loss_threshold:
-            score -= cfg.deep_loss_penalty
-        elif pnl_pct >= cfg.strong_profit_threshold:
-            score -= cfg.strong_profit_penalty
-        elif pnl_pct >= cfg.guarded_profit_threshold and macd > 0:
-            score += cfg.guarded_profit_bonus
-        if rsi12 >= cfg.overbought_rsi_threshold:
-            score -= cfg.overbought_rsi_penalty
-        return max(-1.0, min(1.0, score))
+        score, _ = self._calculate_position_tech_votes(
+            current_price=current_price,
+            ma20=ma20,
+            macd=macd,
+            rsi12=rsi12,
+            pnl_pct=pnl_pct,
+        )
+        return score
 
     def _build_candidate_reasoning(
         self,
@@ -480,16 +603,26 @@ class KernelStrategyRuntime:
         market_snapshot: dict[str, Any] | None,
         current_time: datetime,
         analysis_timeframe: str,
+        strategy_mode: str,
     ) -> dict[str, Any]:
         market_regime = self._derive_market_regime(market_snapshot, current_time)
         fundamental_quality = self._derive_fundamental_quality(candidate)
-        risk_style = self._derive_risk_style(market_regime["label"], fundamental_quality["label"])
+        inferred_risk_style = self._derive_auto_risk_style(market_regime["label"], fundamental_quality["label"])
+        selected_strategy_mode = self._resolve_strategy_mode(strategy_mode)
+        risk_style = self._derive_effective_risk_style(
+            market_regime["label"],
+            fundamental_quality["label"],
+            strategy_mode=selected_strategy_mode["key"],
+            inferred_risk_style=inferred_risk_style,
+        )
         timeframe_profile = self._resolve_timeframe_profile(analysis_timeframe)
         thresholds = self._build_effective_thresholds(risk_style, timeframe_profile)
         return {
+            "strategy_mode": selected_strategy_mode,
             "market_regime": market_regime,
             "fundamental_quality": fundamental_quality,
             "risk_style": risk_style,
+            "auto_inferred_risk_style": inferred_risk_style,
             "analysis_timeframe": timeframe_profile,
             "effective_thresholds": thresholds,
         }
@@ -595,7 +728,7 @@ class KernelStrategyRuntime:
             "reason": f"成长={profit_growth if profit_growth is not None else 'NA'}，ROE={roe_pct if roe_pct is not None else 'NA'}，PE={pe_ratio if pe_ratio is not None else 'NA'}，PB={pb_ratio if pb_ratio is not None else 'NA'}",
         }
 
-    def _derive_risk_style(self, market_regime: str, fundamental_quality: str) -> dict[str, Any]:
+    def _derive_auto_risk_style(self, market_regime: str, fundamental_quality: str) -> dict[str, Any]:
         if market_regime == "牛市" and fundamental_quality == "强基本面":
             label = "激进"
         elif market_regime == "牛市" and fundamental_quality == "中性":
@@ -611,6 +744,47 @@ class KernelStrategyRuntime:
             "allow_pyramiding": preset.allow_pyramiding,
             "reason": f"市场状态={market_regime}，基本面质量={fundamental_quality}",
         }
+
+    def _derive_effective_risk_style(
+        self,
+        market_regime: str,
+        fundamental_quality: str,
+        *,
+        strategy_mode: str,
+        inferred_risk_style: dict[str, Any],
+    ) -> dict[str, Any]:
+        mode_to_label = {
+            "auto": inferred_risk_style["label"],
+            "aggressive": "激进",
+            "neutral": "稳重",
+            "defensive": "保守",
+        }
+        label = mode_to_label.get(strategy_mode, inferred_risk_style["label"])
+        preset = self.config.risk_style_presets[label]
+        if strategy_mode == "auto":
+            reason = f"自动推导：市场状态={market_regime}，基本面质量={fundamental_quality}"
+        else:
+            reason = (
+                f"手动指定策略模式={strategy_mode}，覆盖自动推导风格 {inferred_risk_style['label']}，"
+                f"最终使用 {label}"
+            )
+        return {
+            "label": preset.label,
+            "max_position_ratio": round(preset.max_position_ratio, 4),
+            "allow_pyramiding": preset.allow_pyramiding,
+            "reason": reason,
+        }
+
+    @staticmethod
+    def _resolve_strategy_mode(strategy_mode: str | None) -> dict[str, Any]:
+        normalized = str(strategy_mode or "auto").strip().lower()
+        mapping = {
+            "auto": {"key": "auto", "label": "自动"},
+            "aggressive": {"key": "aggressive", "label": "激进"},
+            "neutral": {"key": "neutral", "label": "中性"},
+            "defensive": {"key": "defensive", "label": "稳健"},
+        }
+        return mapping.get(normalized, mapping["auto"])
 
     def _resolve_timeframe_profile(self, analysis_timeframe: str) -> dict[str, Any]:
         key = analysis_timeframe or "1d"

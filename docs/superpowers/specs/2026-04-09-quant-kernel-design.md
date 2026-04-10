@@ -15,6 +15,8 @@ Unify quantitative strategy execution inside the main project by extracting a re
 - The same strategy core is reusable for future live trading.
 - `stockpolicy` YAML config, standalone data fetchers, and standalone model clients are no longer runtime dependencies for the main workflow.
 - Every per-stock analysis view shows the strategy basics that produced the decision.
+- Every per-stock analysis view exposes explainable decision details, including technical vote breakdown, context-component scoring, and dual-track resolution rationale.
+- The same explainability payload is available to realtime simulation, historical replay, and future live execution views.
 - `pytdx` host selection is driven by a repo-local configuration file containing the currently verified endpoints.
 
 ## Scope
@@ -246,6 +248,74 @@ Each evaluation produces an effective strategy profile:
 
 This profile becomes part of the decision payload and must be persistable and renderable.
 
+## Explainability Contract
+
+The strategy kernel must not stop at a single summary string. Every decision payload must include a structured explainability block that is reusable across:
+
+- realtime simulation
+- historical replay
+- future live trading
+
+### Required Explainability Layers
+
+#### 1. Technical Vote Breakdown
+
+For every decision, the kernel must expose the technical-factor contributions used to build the technical side of the signal. First release should include at least:
+
+- trend / moving-average structure
+- MACD contribution
+- RSI contribution
+- volume-ratio contribution
+- any timeframe-specific confirmation logic
+
+Each item should include:
+
+- factor name
+- factor score or contribution
+- factor signal (`BUY` / `SELL` / `HOLD` or equivalent directional label)
+- short explanation
+
+#### 2. Context Vote Breakdown
+
+For every decision, the kernel must expose the contextual/environment contributions used to build `context_score`. First release should include at least:
+
+- source prior
+- trend regime component
+- price structure component
+- momentum component
+- liquidity component
+- session / time-window component
+
+Each item should include:
+
+- component name
+- component score
+- short explanation
+
+#### 3. Dual-Track Resolution Details
+
+For every decision, the kernel must expose the final arbitration details used by the dual-track resolver, including:
+
+- technical-side signal
+- context-side signal
+- resonance / divergence / veto type
+- selected strategy mode
+- automatically inferred style
+- effective style actually used
+- threshold bucket or rule family hit
+- final position ratio decision
+- final decision explanation
+
+### Persistence Requirement
+
+The explainability block must be persisted together with strategy signals so the same detailed reasoning is available later in:
+
+- replay result review
+- realtime signal review
+- future live-trading audit logs
+
+The UI may render a concise summary by default, but the underlying structured payload must be complete enough to support a full “投票详情” view on demand.
+
 ## Strategy-Core Extraction Rules
 
 The following `stockpolicy` capabilities are in scope for extraction:
@@ -432,6 +502,39 @@ The default UI selection is `30m`.
 The UI must no longer force replay to `00:00 -> 15:00`.
 The UI must not block the Streamlit request thread for long replay work.
 
+### Replay Result Report
+
+The replay result area must present a report that is useful without opening the database manually.
+
+For a selected replay run, the UI must show:
+
+- run selector, not only the latest run
+- status, run mode, market, timeframe mode, start/end datetime
+- initial cash
+- final available cash
+- final market value
+- final total equity
+- total return
+- max drawdown
+- win rate
+- trade count
+- ending positions with stock, quantity, cost, latest price, market value, unrealized pnl, sellable quantity, locked quantity
+- trade analysis aggregates such as total buy amount, total sell amount, total realized pnl, winning trades, losing trades, and average realized pnl
+- equity curve and detailed snapshot table
+- detailed replay trade table
+- recent replay events
+
+Replay results must also include the strategy basics used for the run:
+
+- market regime
+- fundamental quality
+- risk style
+- timeframe mode
+- effective threshold summary
+- per-signal strategy profile when available
+
+Replay completion must still show partial results if later checkpoints fail or the run is cancelled.
+
 ### Per-Stock Strategy Basics
 
 Every signal or stock-analysis presentation in `quant_sim` must show the strategy basics that produced the current decision. At minimum, display:
@@ -447,6 +550,7 @@ This must be visible both in:
 
 - strategy-signal views
 - pending/auto-execution views
+- replay result views
 
 The goal is that a user can understand why a stock is being treated aggressively, conservatively, or neutrally without opening source code.
 

@@ -45,11 +45,13 @@ class DualTrackResolver:
                     "tech_signal": tech_signal,
                     "context_signal": context_score.signal,
                     "resonance_type": "veto",
+                    "rule_hit": "context_veto",
                 },
             )
 
         if tech_signal == "BUY":
-            position_ratio = self._calculate_position_ratio(tech_score, ctx_score)
+            position_rule = self._calculate_position_rule(tech_score, ctx_score)
+            position_ratio = float(position_rule["position_ratio"])
             if position_ratio < 0.3:
                 return Decision(
                     code=stock_code,
@@ -67,6 +69,7 @@ class DualTrackResolver:
                         "tech_signal": tech_signal,
                         "context_signal": context_score.signal,
                         "resonance_type": "divergence_block",
+                        "rule_hit": str(position_rule["rule_hit"]),
                     },
                 )
             return Decision(
@@ -88,6 +91,7 @@ class DualTrackResolver:
                     "tech_signal": tech_signal,
                     "context_signal": context_score.signal,
                     "resonance_type": self._resonance_type(position_ratio),
+                    "rule_hit": str(position_rule["rule_hit"]),
                 },
             )
 
@@ -109,6 +113,7 @@ class DualTrackResolver:
                         "tech_signal": tech_signal,
                         "context_signal": context_score.signal,
                         "resonance_type": "sell_divergence_block",
+                        "rule_hit": "sell_divergence_block",
                     },
                 )
             return Decision(
@@ -127,6 +132,7 @@ class DualTrackResolver:
                     "tech_signal": tech_signal,
                     "context_signal": context_score.signal,
                     "resonance_type": "sell_resonance" if ctx_score < -0.3 else "sell_divergence",
+                    "rule_hit": "sell_resonance" if ctx_score < -0.3 else "sell_divergence",
                 },
             )
 
@@ -146,27 +152,28 @@ class DualTrackResolver:
                 "tech_signal": tech_signal,
                 "context_signal": context_score.signal,
                 "resonance_type": "neutral",
+                "rule_hit": "neutral_hold",
             },
         )
 
-    def _calculate_position_ratio(self, tech_score: float, ctx_score: float) -> float:
+    def _calculate_position_rule(self, tech_score: float, ctx_score: float) -> dict[str, object]:
         cfg = self.config
         if tech_score >= cfg.resonance_full.tech_score_min and ctx_score >= float(cfg.resonance_full.context_score_min):
-            return cfg.resonance_full.position_ratio
+            return {"position_ratio": cfg.resonance_full.position_ratio, "rule_hit": "resonance_full"}
         if tech_score >= cfg.resonance_heavy.tech_score_min and ctx_score >= float(cfg.resonance_heavy.context_score_min):
-            return cfg.resonance_heavy.position_ratio
+            return {"position_ratio": cfg.resonance_heavy.position_ratio, "rule_hit": "resonance_heavy"}
         if tech_score >= cfg.resonance_moderate.tech_score_min and ctx_score >= float(cfg.resonance_moderate.context_score_min):
-            return cfg.resonance_moderate.position_ratio
+            return {"position_ratio": cfg.resonance_moderate.position_ratio, "rule_hit": "resonance_moderate"}
         if tech_score >= cfg.resonance_standard.tech_score_min and ctx_score >= float(cfg.resonance_standard.context_score_min):
-            return cfg.resonance_standard.position_ratio
+            return {"position_ratio": cfg.resonance_standard.position_ratio, "rule_hit": "resonance_standard"}
         if (
             tech_score >= cfg.divergence_light.tech_score_min
             and float(cfg.divergence_light.context_score_min) <= ctx_score < float(cfg.divergence_light.context_score_max)
         ):
-            return cfg.divergence_light.position_ratio
+            return {"position_ratio": cfg.divergence_light.position_ratio, "rule_hit": "divergence_light"}
         if ctx_score < float(cfg.divergence_none.context_score_max):
-            return cfg.divergence_none.position_ratio
-        return 0.0
+            return {"position_ratio": cfg.divergence_none.position_ratio, "rule_hit": "divergence_none"}
+        return {"position_ratio": 0.0, "rule_hit": "no_rule"}
 
     @staticmethod
     def _decision_emoji(position_ratio: float) -> str:

@@ -17,6 +17,8 @@ DEFAULT_DB_FILE = "quant_sim.db"
 TRADING_DAY_CALENDAR = ReplayTimepointGenerator()
 DEFAULT_ANALYSIS_TIMEFRAME = "30m"
 SUPPORTED_ANALYSIS_TIMEFRAMES = {"30m", "1d", "1d+30m"}
+DEFAULT_STRATEGY_MODE = "auto"
+SUPPORTED_STRATEGY_MODES = {"auto", "aggressive", "neutral", "defensive"}
 
 
 class QuantSimDB:
@@ -179,6 +181,7 @@ class QuantSimDB:
                 interval_minutes INTEGER DEFAULT 15,
                 trading_hours_only INTEGER DEFAULT 1,
                 analysis_timeframe TEXT DEFAULT '30m',
+                strategy_mode TEXT DEFAULT 'auto',
                 start_date TEXT,
                 market TEXT DEFAULT 'CN',
                 last_run_at TEXT,
@@ -210,6 +213,7 @@ class QuantSimDB:
                 latest_checkpoint_at TEXT,
                 status_message TEXT,
                 cancel_requested INTEGER DEFAULT 0,
+                worker_pid INTEGER,
                 metadata_json TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -240,6 +244,7 @@ class QuantSimDB:
             CREATE TABLE IF NOT EXISTS sim_run_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER NOT NULL,
+                signal_id INTEGER,
                 stock_code TEXT NOT NULL,
                 stock_name TEXT,
                 action TEXT NOT NULL,
@@ -293,6 +298,28 @@ class QuantSimDB:
         )
         cursor.execute(
             """
+            CREATE TABLE IF NOT EXISTS sim_run_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                stock_code TEXT NOT NULL,
+                stock_name TEXT,
+                action TEXT NOT NULL,
+                confidence INTEGER DEFAULT 0,
+                reasoning TEXT,
+                position_size_pct REAL DEFAULT 0,
+                decision_type TEXT,
+                tech_score REAL DEFAULT 0,
+                context_score REAL DEFAULT 0,
+                strategy_profile_json TEXT,
+                checkpoint_at TEXT,
+                signal_status TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES sim_runs(id)
+            )
+            """
+        )
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS sim_run_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER NOT NULL,
@@ -318,11 +345,14 @@ class QuantSimDB:
             "analysis_timeframe",
             "TEXT DEFAULT '30m'",
         )
+        self._ensure_column(cursor, "sim_scheduler_config", "strategy_mode", "TEXT DEFAULT 'auto'")
         self._ensure_column(cursor, "sim_scheduler_config", "start_date", "TEXT")
         self._ensure_column(cursor, "sim_runs", "progress_current", "INTEGER DEFAULT 0")
         self._ensure_column(cursor, "sim_runs", "progress_total", "INTEGER DEFAULT 0")
         self._ensure_column(cursor, "sim_runs", "status_message", "TEXT")
         self._ensure_column(cursor, "sim_runs", "cancel_requested", "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, "sim_runs", "worker_pid", "INTEGER")
+        self._ensure_column(cursor, "sim_run_trades", "signal_id", "INTEGER")
 
         self._backfill_candidate_sources(cursor)
         self._backfill_lot_defaults(cursor)
@@ -423,6 +453,20 @@ class QuantSimDB:
         payload = self._candidate_row_to_dict(cursor, row)
         conn.close()
         return payload
+
+    def delete_candidate(self, stock_code: str) -> None:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM candidate_pool WHERE stock_code = ?", (stock_code,))
+        row = cursor.fetchone()
+        if row is None:
+            conn.close()
+            return
+        candidate_id = int(row["id"])
+        cursor.execute("DELETE FROM candidate_sources WHERE candidate_id = ?", (candidate_id,))
+        cursor.execute("DELETE FROM candidate_pool WHERE id = ?", (candidate_id,))
+        conn.commit()
+        conn.close()
 
     def add_signal(self, signal: dict[str, Any]) -> int:
         conn = self._connect()
@@ -829,7 +873,7 @@ class QuantSimDB:
         cursor.execute("SELECT * FROM sim_runs WHERE id = ?", (run_id,))
         row = cursor.fetchone()
         conn.close()
-        return self._row_to_dict(row) if row is not None else None
+        return self._signal_row_to_dict(row) if row is not None else None
 
     def get_active_sim_run(self) -> Optional[dict[str, Any]]:
         conn = self._connect()
@@ -844,7 +888,7 @@ class QuantSimDB:
         )
         row = cursor.fetchone()
         conn.close()
-        return self._row_to_dict(row) if row is not None else None
+        return self._signal_row_to_dict(row) if row is not None else None
 
     def get_sim_run_events(self, run_id: int, limit: int = 20) -> list[dict[str, Any]]:
         conn = self._connect()
@@ -862,6 +906,25 @@ class QuantSimDB:
         conn.close()
         return rows
 
+    def delete_sim_run(self, run_id: int) -> None:
+        run = self.get_sim_run(run_id)
+        if run is None:
+            return
+        if str(run.get("status") or "").lower() in {"queued", "running"}:
+            raise ValueError("运行中的回放任务不能直接删除，请先取消并等待进入终态。")
+
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM sim_run_checkpoints WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM sim_run_trades WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM sim_run_snapshots WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM sim_run_positions WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM sim_run_signals WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM sim_run_events WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM sim_runs WHERE id = ?", (run_id,))
+        conn.commit()
+        conn.close()
+
     def request_sim_run_cancel(self, run_id: int) -> None:
         conn = self._connect()
         cursor = conn.cursor()
@@ -874,6 +937,21 @@ class QuantSimDB:
             WHERE id = ?
             """,
             ("已请求取消，正在尽快停止当前回放", self._now(), run_id),
+        )
+        conn.commit()
+        conn.close()
+
+    def set_sim_run_worker_pid(self, run_id: int, worker_pid: int | None) -> None:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE sim_runs
+            SET worker_pid = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (worker_pid, self._now(), run_id),
         )
         conn.commit()
         conn.close()
@@ -893,37 +971,14 @@ class QuantSimDB:
         trades: list[dict[str, Any]],
         snapshots: list[dict[str, Any]],
         positions: list[dict[str, Any]],
+        signals: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         conn = self._connect()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM sim_run_trades WHERE run_id = ?", (run_id,))
         cursor.execute("DELETE FROM sim_run_snapshots WHERE run_id = ?", (run_id,))
         cursor.execute("DELETE FROM sim_run_positions WHERE run_id = ?", (run_id,))
-
-        for trade in trades:
-            cursor.execute(
-                """
-                INSERT INTO sim_run_trades
-                (
-                    run_id, stock_code, stock_name, action, price, quantity, amount,
-                    realized_pnl, note, executed_at, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    trade.get("stock_code"),
-                    trade.get("stock_name"),
-                    str(trade.get("action") or "").upper(),
-                    float(trade.get("price") or 0),
-                    int(trade.get("quantity") or 0),
-                    float(trade.get("amount") or 0),
-                    float(trade.get("realized_pnl") or 0),
-                    trade.get("note"),
-                    trade.get("executed_at") or self._now(),
-                    trade.get("created_at") or self._now(),
-                ),
-            )
+        cursor.execute("DELETE FROM sim_run_signals WHERE run_id = ?", (run_id,))
 
         for snapshot in snapshots:
             cursor.execute(
@@ -974,6 +1029,70 @@ class QuantSimDB:
                 ),
             )
 
+        persisted_signal_ids_by_source_id: dict[int, int] = {}
+        for signal in signals or []:
+            cursor.execute(
+                """
+                INSERT INTO sim_run_signals
+                (
+                    run_id, stock_code, stock_name, action, confidence, reasoning,
+                    position_size_pct, decision_type, tech_score, context_score,
+                    strategy_profile_json, checkpoint_at, signal_status, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    signal.get("stock_code"),
+                    signal.get("stock_name"),
+                    str(signal.get("action") or "HOLD").upper(),
+                    int(signal.get("confidence") or 0),
+                    signal.get("reasoning"),
+                    float(signal.get("position_size_pct") or 0),
+                    signal.get("decision_type"),
+                    float(signal.get("tech_score") or 0),
+                    float(signal.get("context_score") or 0),
+                    self._dumps_metadata(signal.get("strategy_profile")),
+                    signal.get("checkpoint_at") or signal.get("executed_at") or signal.get("updated_at") or signal.get("created_at"),
+                    signal.get("status") or signal.get("signal_status") or "observed",
+                    signal.get("created_at") or self._now(),
+                ),
+            )
+            source_signal_id = signal.get("id")
+            if source_signal_id is not None:
+                persisted_signal_ids_by_source_id[int(source_signal_id)] = int(cursor.lastrowid)
+
+        for trade in trades:
+            source_signal_id = trade.get("signal_id")
+            if source_signal_id is None:
+                persisted_signal_id = None
+            else:
+                persisted_signal_id = persisted_signal_ids_by_source_id.get(int(source_signal_id), int(source_signal_id))
+            cursor.execute(
+                """
+                INSERT INTO sim_run_trades
+                (
+                    run_id, signal_id, stock_code, stock_name, action, price, quantity, amount,
+                    realized_pnl, note, executed_at, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    persisted_signal_id,
+                    trade.get("stock_code"),
+                    trade.get("stock_name"),
+                    str(trade.get("action") or "").upper(),
+                    float(trade.get("price") or 0),
+                    int(trade.get("quantity") or 0),
+                    float(trade.get("amount") or 0),
+                    float(trade.get("realized_pnl") or 0),
+                    trade.get("note"),
+                    trade.get("executed_at") or self._now(),
+                    trade.get("created_at") or self._now(),
+                ),
+            )
+
         conn.commit()
         conn.close()
 
@@ -1004,7 +1123,7 @@ class QuantSimDB:
             UPDATE sim_runs
             SET status = ?, final_equity = ?, total_return_pct = ?, max_drawdown_pct = ?,
                 win_rate = ?, trade_count = ?, progress_current = ?, status_message = ?,
-                metadata_json = ?, updated_at = ?
+                worker_pid = NULL, metadata_json = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -1092,6 +1211,21 @@ class QuantSimDB:
         conn.close()
         return rows
 
+    def get_sim_run_signals(self, run_id: int) -> list[dict[str, Any]]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM sim_run_signals
+            WHERE run_id = ?
+            ORDER BY COALESCE(checkpoint_at, created_at) DESC, id DESC
+            """,
+            (run_id,),
+        )
+        rows = [self._signal_row_to_dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
     def get_scheduler_config(self) -> dict[str, Any]:
         conn = self._connect()
         cursor = conn.cursor()
@@ -1104,6 +1238,7 @@ class QuantSimDB:
             "interval_minutes": int(row["interval_minutes"]),
             "trading_hours_only": bool(row["trading_hours_only"]),
             "analysis_timeframe": self._normalize_analysis_timeframe(row["analysis_timeframe"]),
+            "strategy_mode": self._normalize_strategy_mode(row["strategy_mode"]),
             "start_date": self._normalize_start_date(row["start_date"]),
             "market": row["market"] or "CN",
             "last_run_at": row["last_run_at"],
@@ -1118,6 +1253,7 @@ class QuantSimDB:
         interval_minutes: Optional[int] = None,
         trading_hours_only: Optional[bool] = None,
         analysis_timeframe: Optional[str] = None,
+        strategy_mode: Optional[str] = None,
         start_date: Optional[str | date | datetime] = None,
         market: Optional[str] = None,
         last_run_at: Optional[str] = None,
@@ -1130,6 +1266,9 @@ class QuantSimDB:
             "trading_hours_only": int(existing["trading_hours_only"] if trading_hours_only is None else trading_hours_only),
             "analysis_timeframe": self._normalize_analysis_timeframe(
                 existing["analysis_timeframe"] if analysis_timeframe is None else analysis_timeframe
+            ),
+            "strategy_mode": self._normalize_strategy_mode(
+                existing["strategy_mode"] if strategy_mode is None else strategy_mode
             ),
             "start_date": self._normalize_start_date(existing["start_date"] if start_date is None else start_date),
             "market": existing["market"] if market is None else str(market),
@@ -1144,7 +1283,7 @@ class QuantSimDB:
             """
             UPDATE sim_scheduler_config
             SET enabled = ?, auto_execute = ?, interval_minutes = ?, trading_hours_only = ?,
-                analysis_timeframe = ?, start_date = ?, market = ?, last_run_at = ?, updated_at = ?
+                analysis_timeframe = ?, strategy_mode = ?, start_date = ?, market = ?, last_run_at = ?, updated_at = ?
             WHERE id = 1
             """,
             (
@@ -1153,6 +1292,7 @@ class QuantSimDB:
                 payload["interval_minutes"],
                 payload["trading_hours_only"],
                 payload["analysis_timeframe"],
+                payload["strategy_mode"],
                 payload["start_date"],
                 payload["market"],
                 payload["last_run_at"],
@@ -1878,11 +2018,11 @@ class QuantSimDB:
                 INSERT INTO sim_scheduler_config
                 (
                     id, enabled, auto_execute, interval_minutes, trading_hours_only,
-                    analysis_timeframe, start_date, market, last_run_at, updated_at
+                    analysis_timeframe, strategy_mode, start_date, market, last_run_at, updated_at
                 )
-                VALUES (1, 0, 0, 15, 1, ?, ?, 'CN', NULL, ?)
+                VALUES (1, 0, 0, 15, 1, ?, ?, ?, 'CN', NULL, ?)
                 """,
-                (DEFAULT_ANALYSIS_TIMEFRAME, date.today().isoformat(), self._now()),
+                (DEFAULT_ANALYSIS_TIMEFRAME, DEFAULT_STRATEGY_MODE, date.today().isoformat(), self._now()),
             )
         else:
             cursor.execute(
@@ -1892,6 +2032,14 @@ class QuantSimDB:
                 WHERE id = 1
                 """,
                 (DEFAULT_ANALYSIS_TIMEFRAME,),
+            )
+            cursor.execute(
+                """
+                UPDATE sim_scheduler_config
+                SET strategy_mode = COALESCE(NULLIF(strategy_mode, ''), ?)
+                WHERE id = 1
+                """,
+                (DEFAULT_STRATEGY_MODE,),
             )
             cursor.execute(
                 """
@@ -1911,6 +2059,13 @@ class QuantSimDB:
             normalized = "30m"
         if normalized not in SUPPORTED_ANALYSIS_TIMEFRAMES:
             raise ValueError(f"Unsupported analysis_timeframe: {value}")
+        return normalized
+
+    @staticmethod
+    def _normalize_strategy_mode(value: str | None) -> str:
+        normalized = str(value or DEFAULT_STRATEGY_MODE).strip().lower()
+        if normalized not in SUPPORTED_STRATEGY_MODES:
+            raise ValueError(f"Unsupported strategy_mode: {value}")
         return normalized
 
     @staticmethod
@@ -1946,6 +2101,8 @@ class QuantSimDB:
 
     def _signal_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)
+        if "metadata_json" in payload:
+            payload["metadata"] = self._loads_metadata(payload.get("metadata_json"))
         payload["strategy_profile"] = self._loads_metadata(payload.pop("strategy_profile_json", None))
         return payload
 

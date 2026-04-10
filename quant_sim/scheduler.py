@@ -40,10 +40,17 @@ class QuantSimScheduler:
     def run_once(self, run_reason: str = "scheduled_scan") -> dict[str, int | float]:
         config = self.db.get_scheduler_config()
         analysis_timeframe = str(config["analysis_timeframe"])
+        strategy_mode = str(config["strategy_mode"])
         candidates = self.engine.candidate_pool.list_candidates(status="active")
         positions = self.portfolio.list_positions()
-        candidate_signals = self.engine.analyze_active_candidates(analysis_timeframe=analysis_timeframe)
-        position_signals = self.engine.analyze_positions(analysis_timeframe=analysis_timeframe)
+        candidate_signals = self.engine.analyze_active_candidates(
+            analysis_timeframe=analysis_timeframe,
+            strategy_mode=strategy_mode,
+        )
+        position_signals = self.engine.analyze_positions(
+            analysis_timeframe=analysis_timeframe,
+            strategy_mode=strategy_mode,
+        )
         auto_executed = self._auto_execute_pending_signals()
         snapshot_id = self.db.add_account_snapshot(run_reason)
         self.db.update_scheduler_config(last_run_at=self._now())
@@ -65,6 +72,7 @@ class QuantSimScheduler:
         interval_minutes: int | None = None,
         trading_hours_only: bool | None = None,
         analysis_timeframe: str | None = None,
+        strategy_mode: str | None = None,
         start_date: str | None = None,
         market: str | None = None,
     ) -> None:
@@ -74,6 +82,7 @@ class QuantSimScheduler:
             interval_minutes=interval_minutes,
             trading_hours_only=trading_hours_only,
             analysis_timeframe=analysis_timeframe,
+            strategy_mode=strategy_mode,
             start_date=start_date,
             market=market,
         )
@@ -95,6 +104,7 @@ class QuantSimScheduler:
             "interval_minutes": config["interval_minutes"],
             "trading_hours_only": config["trading_hours_only"],
             "analysis_timeframe": config["analysis_timeframe"],
+            "strategy_mode": config["strategy_mode"],
             "start_date": config["start_date"],
             "market": config["market"],
             "last_run_at": config["last_run_at"],

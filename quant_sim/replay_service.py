@@ -166,12 +166,14 @@ class QuantSimReplayService:
         end_datetime: datetime | str | None,
         timeframe: str,
         market: str,
+        strategy_mode: str = "auto",
     ) -> dict:
         context = self._prepare_replay_context(
             start_datetime=start_datetime,
             end_datetime=end_datetime,
             timeframe=timeframe,
             market=market,
+            strategy_mode=strategy_mode,
         )
         run_id = self._create_replay_run(
             mode="historical_range",
@@ -197,6 +199,7 @@ class QuantSimReplayService:
         end_datetime: datetime | str | None,
         timeframe: str,
         market: str,
+        strategy_mode: str = "auto",
         overwrite_live: bool = False,
         auto_start_scheduler: bool = True,
     ) -> dict:
@@ -206,6 +209,7 @@ class QuantSimReplayService:
             end_datetime=end_datetime,
             timeframe=timeframe,
             market=market,
+            strategy_mode=strategy_mode,
         )
         run_id = self._create_replay_run(
             mode="continuous_to_live",
@@ -233,12 +237,14 @@ class QuantSimReplayService:
         end_datetime: datetime | str | None,
         timeframe: str,
         market: str,
+        strategy_mode: str = "auto",
     ) -> int:
         context = self._prepare_replay_context(
             start_datetime=start_datetime,
             end_datetime=end_datetime,
             timeframe=timeframe,
             market=market,
+            strategy_mode=strategy_mode,
         )
         self._ensure_no_active_replay()
         run_id = self._create_replay_run(
@@ -253,13 +259,13 @@ class QuantSimReplayService:
         runner = get_quant_sim_replay_runner(db_file=self.db_file)
         started = runner.start_run(
             run_id,
-            lambda: self._execute_prepared_replay(
-                run_id=run_id,
-                mode="historical_range",
-                handoff_to_live=False,
-                context=context,
-                auto_start_scheduler=False,
-            ),
+            execute_prepared_replay_worker,
+            self.db_file,
+            run_id,
+            "historical_range",
+            False,
+            context,
+            False,
         )
         if not started:
             self.db.finalize_sim_run(
@@ -283,6 +289,7 @@ class QuantSimReplayService:
         end_datetime: datetime | str | None,
         timeframe: str,
         market: str,
+        strategy_mode: str = "auto",
         overwrite_live: bool = False,
         auto_start_scheduler: bool = True,
     ) -> int:
@@ -292,6 +299,7 @@ class QuantSimReplayService:
             end_datetime=end_datetime,
             timeframe=timeframe,
             market=market,
+            strategy_mode=strategy_mode,
         )
         self._ensure_no_active_replay()
         run_id = self._create_replay_run(
@@ -306,13 +314,13 @@ class QuantSimReplayService:
         runner = get_quant_sim_replay_runner(db_file=self.db_file)
         started = runner.start_run(
             run_id,
-            lambda: self._execute_prepared_replay(
-                run_id=run_id,
-                mode="continuous_to_live",
-                handoff_to_live=True,
-                context=context,
-                auto_start_scheduler=auto_start_scheduler,
-            ),
+            execute_prepared_replay_worker,
+            self.db_file,
+            run_id,
+            "continuous_to_live",
+            True,
+            context,
+            auto_start_scheduler,
         )
         if not started:
             self.db.finalize_sim_run(
@@ -336,6 +344,7 @@ class QuantSimReplayService:
         end_datetime: datetime | str | None,
         timeframe: str,
         market: str,
+        strategy_mode: str,
     ) -> dict:
         start_dt = self._to_datetime(start_datetime)
         end_dt = self._resolve_end_datetime(end_datetime)
@@ -356,6 +365,7 @@ class QuantSimReplayService:
             "end_dt": end_dt,
             "timeframe": timeframe,
             "market": market,
+            "strategy_mode": strategy_mode,
             "candidates": candidates,
             "stock_codes": stock_codes,
             "checkpoints": checkpoints,
@@ -386,7 +396,10 @@ class QuantSimReplayService:
             progress_current=0,
             progress_total=len(context["checkpoints"]),
             status_message=status_message,
-            metadata={"candidate_count": len(context["candidates"])},
+            metadata={
+                "candidate_count": len(context["candidates"]),
+                "strategy_mode": context["strategy_mode"],
+            },
         )
 
     def _ensure_no_active_replay(self) -> None:
@@ -412,6 +425,7 @@ class QuantSimReplayService:
         end_dt = context["end_dt"]
         timeframe = context["timeframe"]
         market = context["market"]
+        strategy_mode = context["strategy_mode"]
         candidates = context["candidates"]
         stock_codes = context["stock_codes"]
         checkpoints = context["checkpoints"]
@@ -456,6 +470,7 @@ class QuantSimReplayService:
             )
 
             cancelled = False
+            replay_signals: list[dict] = []
 
             for checkpoint_index, checkpoint in enumerate(checkpoints, start=1):
                 last_checkpoint_index = checkpoint_index
@@ -478,6 +493,7 @@ class QuantSimReplayService:
                     run_id=run_id,
                     checkpoint=checkpoint,
                     timeframe=timeframe,
+                    strategy_mode=strategy_mode,
                     engine=temp_engine,
                     portfolio=temp_portfolio,
                     signal_service=temp_signal_service,
@@ -490,6 +506,7 @@ class QuantSimReplayService:
                         level="warning",
                     )
                     break
+                replay_signals.extend(checkpoint_summary.get("signals") or [])
                 self.db.add_sim_run_checkpoint(
                     run_id,
                     checkpoint_at=checkpoint_text,
@@ -523,7 +540,7 @@ class QuantSimReplayService:
             )
             positions = temp_portfolio.list_positions()
             lots = self._collect_open_lots(temp_db, positions, as_of=end_dt)
-            self.db.replace_sim_run_results(run_id, trades=trades, snapshots=snapshots, positions=positions)
+            self.db.replace_sim_run_results(run_id, trades=trades, snapshots=snapshots, positions=positions, signals=replay_signals)
 
             metrics = self._calculate_run_metrics(account_summary["initial_cash"], trades, snapshots)
 
@@ -604,6 +621,7 @@ class QuantSimReplayService:
             partial_trades: list[dict] = []
             partial_snapshots: list[dict] = []
             partial_positions: list[dict] = []
+            partial_signals: list[dict] = list(locals().get("replay_signals", []))
             if "temp_db" in locals() and "temp_portfolio" in locals():
                 partial_trades = temp_db.get_trade_history(limit=10000)
                 partial_snapshots = self._sort_snapshots_chronologically(
@@ -619,6 +637,7 @@ class QuantSimReplayService:
                     trades=partial_trades,
                     snapshots=partial_snapshots,
                     positions=partial_positions,
+                    signals=partial_signals,
                 )
 
             metrics = self._calculate_run_metrics(account_summary["initial_cash"], partial_trades, partial_snapshots)
@@ -655,6 +674,7 @@ class QuantSimReplayService:
         run_id: int | None = None,
         checkpoint: datetime,
         timeframe: str,
+        strategy_mode: str = "auto",
         engine: QuantSimEngine,
         portfolio: PortfolioService,
         signal_service: SignalCenterService,
@@ -664,8 +684,12 @@ class QuantSimReplayService:
         signals_created = 0
         candidates_scanned = 0
         positions_checked = 0
+        checkpoint_signals: list[dict] = []
+        checkpoint_text = self._format_datetime(checkpoint)
+        total_candidates = len(candidates)
+        total_positions = len(positions)
 
-        for candidate in candidates:
+        for candidate_index, candidate in enumerate(candidates, start=1):
             if run_id is not None and self.db.is_sim_run_cancel_requested(run_id):
                 return {
                     "cancelled": True,
@@ -676,8 +700,14 @@ class QuantSimReplayService:
                     "available_cash": portfolio.get_account_summary()["available_cash"],
                     "market_value": portfolio.get_account_summary()["market_value"],
                     "total_equity": portfolio.get_account_summary()["total_equity"],
+                    "signals": checkpoint_signals,
                 }
 
+            self._update_run_step_status(
+                run_id=run_id,
+                checkpoint_text=checkpoint_text,
+                message=f"检查点 {checkpoint_text}：分析候选股 {candidate_index}/{total_candidates} {candidate['stock_code']}",
+            )
             candidates_scanned += 1
             snapshot = self.snapshot_provider.get_snapshot(
                 candidate["stock_code"],
@@ -690,15 +720,18 @@ class QuantSimReplayService:
             decision = engine._evaluate_candidate_decision(
                 candidate,
                 market_snapshot=snapshot,
-                analysis_timeframe=timeframe,
-            )
+                    analysis_timeframe=timeframe,
+                    strategy_mode=strategy_mode,
+                )
             decision_price = engine._extract_decision_price(decision)
             if decision_price > 0:
                 engine.candidate_pool.db.update_candidate_latest_price(candidate["stock_code"], decision_price)
-            signal_service.create_signal(candidate, decision)
+            signal = signal_service.create_signal(candidate, decision)
+            signal["checkpoint_at"] = self._format_datetime(checkpoint)
+            checkpoint_signals.append(signal)
             signals_created += 1
 
-        for position in positions:
+        for position_index, position in enumerate(positions, start=1):
             candidate = engine.candidate_pool.db.get_candidate(position["stock_code"]) or {
                 "stock_code": position["stock_code"],
                 "stock_name": position.get("stock_name"),
@@ -715,8 +748,14 @@ class QuantSimReplayService:
                     "available_cash": portfolio.get_account_summary()["available_cash"],
                     "market_value": portfolio.get_account_summary()["market_value"],
                     "total_equity": portfolio.get_account_summary()["total_equity"],
+                    "signals": checkpoint_signals,
                 }
 
+            self._update_run_step_status(
+                run_id=run_id,
+                checkpoint_text=checkpoint_text,
+                message=f"检查点 {checkpoint_text}：分析持仓 {position_index}/{total_positions} {position['stock_code']}",
+            )
             positions_checked += 1
             snapshot = self.snapshot_provider.get_snapshot(
                 position["stock_code"],
@@ -731,18 +770,31 @@ class QuantSimReplayService:
                 position,
                 market_snapshot=snapshot,
                 analysis_timeframe=timeframe,
+                strategy_mode=strategy_mode,
             )
             decision_price = engine._extract_decision_price(decision)
             if decision_price > 0:
                 portfolio.db.update_position_market_price(position["stock_code"], decision_price)
                 portfolio.db.update_candidate_latest_price(position["stock_code"], decision_price)
-            signal_service.create_signal(candidate, decision)
+            signal = signal_service.create_signal(candidate, decision)
+            signal["checkpoint_at"] = self._format_datetime(checkpoint)
+            checkpoint_signals.append(signal)
             signals_created += 1
 
         auto_executed = 0
-        for signal in signal_service.list_pending_signals():
+        pending_signals = signal_service.list_pending_signals()
+        total_pending = len(pending_signals)
+        for signal_index, signal in enumerate(pending_signals, start=1):
             if run_id is not None and self.db.is_sim_run_cancel_requested(run_id):
                 break
+            self._update_run_step_status(
+                run_id=run_id,
+                checkpoint_text=checkpoint_text,
+                message=(
+                    f"检查点 {checkpoint_text}：自动执行信号 {signal_index}/{total_pending} "
+                    f"{str(signal.get('action') or '').upper()} {signal.get('stock_code')}"
+                ),
+            )
             try:
                 if portfolio.auto_execute_signal(signal, note="历史回放自动执行", executed_at=checkpoint):
                     auto_executed += 1
@@ -757,6 +809,11 @@ class QuantSimReplayService:
                     )
                 continue
 
+        self._update_run_step_status(
+            run_id=run_id,
+            checkpoint_text=checkpoint_text,
+            message=f"检查点 {checkpoint_text}：写入账户快照",
+        )
         portfolio.db.add_account_snapshot(run_reason=f"historical_range@{self._format_datetime(checkpoint)}")
         account_summary = portfolio.get_account_summary()
         return {
@@ -768,7 +825,24 @@ class QuantSimReplayService:
             "available_cash": account_summary["available_cash"],
             "market_value": account_summary["market_value"],
             "total_equity": account_summary["total_equity"],
+            "signals": checkpoint_signals,
         }
+
+    def _update_run_step_status(
+        self,
+        *,
+        run_id: int | None,
+        checkpoint_text: str,
+        message: str,
+    ) -> None:
+        if run_id is None:
+            return
+        self.db.update_sim_run_progress(
+            run_id,
+            status="running",
+            latest_checkpoint_at=checkpoint_text,
+            status_message=message,
+        )
 
     @staticmethod
     def _collect_open_lots(temp_db: QuantSimDB, positions: list[dict], *, as_of: datetime) -> list[dict]:
@@ -847,3 +921,21 @@ class QuantSimReplayService:
     @staticmethod
     def _format_datetime(value: datetime) -> str:
         return value.replace(microsecond=0).isoformat(sep=" ")
+
+
+def execute_prepared_replay_worker(
+    db_file: str,
+    run_id: int,
+    mode: str,
+    handoff_to_live: bool,
+    context: dict,
+    auto_start_scheduler: bool,
+) -> None:
+    service = QuantSimReplayService(db_file=db_file)
+    service._execute_prepared_replay(
+        run_id=run_id,
+        mode=mode,
+        handoff_to_live=handoff_to_live,
+        context=context,
+        auto_start_scheduler=auto_start_scheduler,
+    )

@@ -60,3 +60,6 @@ class CandidatePoolService:
 
     def list_candidates(self, status: Optional[str] = None) -> list[dict[str, Any]]:
         return self.db.get_candidates(status=status)
+
+    def delete_candidate(self, stock_code: str) -> None:
+        self.db.delete_candidate(stock_code)

@@ -35,6 +35,20 @@ This design does not cover:
 - changing live broker behavior
 - adding new markets or granularities beyond what the current replay engine already supports
 
+## Replay Worker Model
+
+Historical replay must run in an **independent worker process**, not a Streamlit in-process daemon thread.
+
+Required behavior:
+
+- starting a replay task spawns a standalone Python worker process
+- the worker pid is persisted on `sim_runs.worker_pid`
+- UI refreshes and session changes must not orphan the replay task state
+- stale-task reconciliation must use persisted worker-pid liveness rather than only in-memory runner state
+- if the worker exits without writing a terminal replay status, the run must be finalized as `failed` with an explicit worker-exit error message
+
+This worker-process model is part of the replay reliability requirements, because long-running replay tasks must remain durable and explainable even when the Streamlit view reloads.
+
 ## Current Problem
 
 Today, historical replay is embedded inside [`C:\Projects\githubs\aiagents-stock\quant_sim\ui.py`](C:/Projects/githubs/aiagents-stock/quant_sim/ui.py) under the main `量化模拟` page. That creates three UX issues:
@@ -61,6 +75,8 @@ That means:
 - keep shared UI helpers in the same module or a replay helper module, but make the menu entry and top-level layout distinct
 
 This is the lowest-risk approach because it improves product clarity without duplicating business logic.
+
+The replay page should also reuse the same modern visual language as realtime `🧪 量化模拟`: a restrained left-configuration / right-results layout, consistent metric cards, and a clean detail-first hierarchy rather than stacked full-width form blocks.
 
 ## Information Architecture
 
@@ -106,6 +122,7 @@ This page should keep only replay concerns:
 - replay configuration form
 - current replay status
 - replay run selector
+- replay task deletion for finished runs
 - replay result report
 - replay history details
 
@@ -115,12 +132,13 @@ The replay page should not include realtime-only tabs such as candidate pool man
 
 The replay page should open directly into a full replay workflow without a replay expander.
 
-Recommended vertical layout:
+Recommended layout:
 
 1. page title and short replay-specific caption
-2. current replay status card
-3. replay configuration form
-4. replay result selector and report
+2. two-column page skeleton
+   - left: replay configuration, running overview, 当前回放任务, and 所有回放任务
+   - right: replay run selector, selected task status/meta information, and the selected run's result detail sections
+3. result detail sections stay in the right main column; the left column acts as the control and task-navigation rail
 
 ### 1. Header
 
@@ -160,6 +178,11 @@ Inputs:
 - replay mode
   - `历史区间回放`
   - `从过去接续到实时自动模拟`
+- strategy mode
+  - `自动`
+  - `激进`
+  - `中性`
+  - `稳健`
 - start date
 - start time
 - optional end date
@@ -178,6 +201,29 @@ Action button:
 - `▶️ 开始区间模拟` or the continuous variant label
 
 The default timeframe remains `30m`.
+
+### Strategy Mode Semantics
+
+`策略模式` is a user-selectable override for how the strategy kernel chooses the effective trading style.
+
+- `自动`
+  - keeps the current behavior
+  - market regime + fundamental quality derive the effective style automatically
+- `激进`
+  - forces aggressive style
+- `中性`
+  - forces the neutral / steady style
+- `稳健`
+  - forces the defensive style
+
+Even when a manual strategy mode is selected, the replay must still compute and display:
+
+- market regime
+- fundamental quality
+- automatically inferred style
+- effective style actually used for execution
+
+This keeps the replay explainable while still allowing user control.
 
 ### 4. Replay Result Report
 
@@ -215,6 +261,7 @@ Show:
 - win rate
 - trade count
 - checkpoint count
+- selected strategy mode
 
 ### B. Strategy Summary
 
@@ -234,6 +281,8 @@ This is a required detailed section.
 
 Each replay signal row should show:
 
+- replay signal id
+- linked replay trade id when the signal actually produced a replay trade
 - checkpoint time
 - stock code
 - stock name
@@ -250,6 +299,7 @@ Each replay signal row should show:
 - executed price if executed
 - execution outcome
 - if not executed, the reason
+- a compact `详情` entry for opening richer explanation text on demand rather than rendering all long-form reasoning inline by default
 
 This requires joining replay signals with replay trades and/or execution metadata.
 
@@ -259,10 +309,16 @@ If the same signal is transformed into a truncated sell because sellable quantit
 - actual executed quantity
 - execution note or adjustment reason
 
+The default table should stay compact for rendering performance. Long explanatory text should appear only when the user explicitly opens the selected signal detail.
+
+The linkage between signal and trade must be explicit in persistence rather than inferred by stock code and timestamp alone. Replay trade records should store the originating replay signal id, and replay result reports should surface both ids to keep signal-to-execution auditing deterministic.
+
 ### D. Trade Ledger
 
 Each replay trade row should show:
 
+- replay trade id
+- originating replay signal id
 - execution time
 - stock code
 - stock name
@@ -326,6 +382,7 @@ Required persisted data:
 - replay ending positions in `sim_run_positions`
 - replay strategy signals in `sim_run_signals`
 - replay events in `sim_run_events`
+- selected replay `strategy_mode` in replay run metadata or a dedicated column
 
 To support signal-level execution history cleanly, the persistence layer should also carry enough linkage to determine whether a replay signal was executed and how. This can be implemented by:
 
@@ -372,6 +429,9 @@ Mandatory tests:
   - per-stock holding outcome
 - test that replay signal rows expose applied strategy profile fields
 - test that replay history can be built from a selected run, not only the latest run
+- test that replay configuration exposes `自动 / 激进 / 中性 / 稳健`
+- test that selected replay strategy mode is persisted and reflected in strategy profile output
+- test that completed replay runs can be deleted while active runs cannot
 
 ## Review Protocol
 

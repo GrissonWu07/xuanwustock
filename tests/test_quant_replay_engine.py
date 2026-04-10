@@ -42,11 +42,12 @@ class FakeAdapter:
         self.candidate_calls = []
         self.position_calls = []
 
-    def analyze_candidate(self, candidate, market_snapshot=None, analysis_timeframe="1d"):
+    def analyze_candidate(self, candidate, market_snapshot=None, analysis_timeframe="1d", strategy_mode="auto"):
         self.candidate_calls.append(
             {
                 "stock_code": candidate["stock_code"],
                 "analysis_timeframe": analysis_timeframe,
+                "strategy_mode": strategy_mode,
             }
         )
         price = float((market_snapshot or {}).get("current_price") or 0)
@@ -62,7 +63,10 @@ class FakeAdapter:
                 context_score=0.28,
                 position_ratio=0.6,
                 decision_type="dual_track_resonance",
-                strategy_profile={"analysis_timeframe": {"key": analysis_timeframe}},
+                strategy_profile={
+                    "analysis_timeframe": {"key": analysis_timeframe},
+                    "strategy_mode": {"key": strategy_mode, "label": strategy_mode},
+                },
             )
         return Decision(
             code=candidate["stock_code"],
@@ -75,14 +79,18 @@ class FakeAdapter:
             context_score=0.28,
             position_ratio=0.0,
             decision_type="single_track",
-            strategy_profile={"analysis_timeframe": {"key": analysis_timeframe}},
+            strategy_profile={
+                "analysis_timeframe": {"key": analysis_timeframe},
+                "strategy_mode": {"key": strategy_mode, "label": strategy_mode},
+            },
         )
 
-    def analyze_position(self, candidate, position, market_snapshot=None, analysis_timeframe="1d"):
+    def analyze_position(self, candidate, position, market_snapshot=None, analysis_timeframe="1d", strategy_mode="auto"):
         self.position_calls.append(
             {
                 "stock_code": position["stock_code"],
                 "analysis_timeframe": analysis_timeframe,
+                "strategy_mode": strategy_mode,
             }
         )
         price = float((market_snapshot or {}).get("current_price") or 0)
@@ -97,7 +105,10 @@ class FakeAdapter:
             context_score=0.12,
             position_ratio=0.0,
             decision_type="dual_track_divergence",
-            strategy_profile={"analysis_timeframe": {"key": analysis_timeframe}},
+            strategy_profile={
+                "analysis_timeframe": {"key": analysis_timeframe},
+                "strategy_mode": {"key": strategy_mode, "label": strategy_mode},
+            },
         )
 
 
@@ -196,6 +207,7 @@ def test_historical_replay_persists_run_artifacts_without_touching_live_account(
     checkpoints = db.get_sim_run_checkpoints(run["id"])
     trades = db.get_sim_run_trades(run["id"])
     snapshots = db.get_sim_run_snapshots(run["id"])
+    signals = db.get_sim_run_signals(run["id"])
     live_account = db.get_account_summary()
 
     assert summary["status"] == "completed"
@@ -210,6 +222,9 @@ def test_historical_replay_persists_run_artifacts_without_touching_live_account(
     assert float(run["final_equity"]) == 112000.0
     assert len(checkpoints) == 2
     assert [trade["action"] for trade in trades] == ["SELL", "BUY"]
+    assert len(signals) >= 2
+    assert all(int(trade["signal_id"]) > 0 for trade in trades)
+    assert {int(trade["signal_id"]) for trade in trades}.issubset({int(signal["id"]) for signal in signals})
     assert len(snapshots) == 2
     assert live_account["trade_count"] == 0
     assert live_account["position_count"] == 0
@@ -304,6 +319,77 @@ def test_historical_replay_supports_resonance_timeframe(tmp_path):
     assert adapter.candidate_calls[0]["analysis_timeframe"] == "1d+30m"
 
 
+def test_historical_replay_persists_run_strategy_signals(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=10.0,
+        notes="回放策略信号测试",
+    )
+
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=FakeSnapshotProvider(),
+        adapter=FakeAdapter(),
+    )
+
+    summary = replay_service.run_historical_range(
+        start_datetime=datetime(2026, 1, 5, 0, 0),
+        end_datetime=datetime(2026, 1, 6, 23, 59),
+        timeframe="30m",
+        market="CN",
+    )
+
+    db = QuantSimDB(db_file)
+    run = db.get_sim_runs(limit=1)[0]
+    replay_signals = db.get_sim_run_signals(run["id"])
+
+    assert summary["status"] == "completed"
+    assert replay_signals
+    assert all(signal["run_id"] == run["id"] for signal in replay_signals)
+    assert any(signal["action"] == "BUY" for signal in replay_signals)
+    assert replay_signals[0]["strategy_profile"]["analysis_timeframe"]["key"] == "30m"
+
+
+def test_historical_replay_persists_selected_strategy_mode(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=10.0,
+        notes="回放策略模式测试",
+    )
+
+    adapter = FakeAdapter()
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=FakeSnapshotProvider(),
+        adapter=adapter,
+    )
+
+    summary = replay_service.run_historical_range(
+        start_datetime=datetime(2026, 1, 5, 0, 0),
+        end_datetime=datetime(2026, 1, 6, 23, 59),
+        timeframe="30m",
+        market="CN",
+        strategy_mode="neutral",
+    )
+
+    db = QuantSimDB(db_file)
+    run = db.get_sim_runs(limit=1)[0]
+    replay_signals = db.get_sim_run_signals(run["id"])
+
+    assert summary["status"] == "completed"
+    assert run["metadata"]["strategy_mode"] == "neutral"
+    assert adapter.candidate_calls[0]["strategy_mode"] == "neutral"
+    assert replay_signals[0]["strategy_profile"]["strategy_mode"]["key"] == "neutral"
+
+
 def test_enqueue_historical_replay_creates_background_run_record(tmp_path, monkeypatch):
     db_file = tmp_path / "quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
@@ -324,8 +410,8 @@ def test_enqueue_historical_replay_creates_background_run_record(tmp_path, monke
     runner_calls = []
 
     class FakeReplayRunner:
-        def start_run(self, run_id, target):
-            runner_calls.append({"run_id": run_id, "target": target})
+        def start_run(self, run_id, target, *args):
+            runner_calls.append({"run_id": run_id, "target": target, "args": args})
             return True
 
     monkeypatch.setattr("quant_sim.replay_service.get_quant_sim_replay_runner", lambda db_file=None: FakeReplayRunner())
@@ -432,3 +518,47 @@ def test_run_checkpoint_logs_signal_execution_error_and_continues(tmp_path, monk
     assert summary["cancelled"] is False
     assert summary["auto_executed"] == 0
     assert any("sell quantity exceeds sellable quantity" in event["message"] for event in events)
+
+
+def test_run_checkpoint_updates_run_status_message_for_substeps(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=10.0,
+        notes="回放状态测试",
+    )
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=FakeSnapshotProvider(),
+        adapter=FakeAdapter(),
+    )
+    engine = QuantSimEngine(db_file=db_file, adapter=replay_service.adapter)
+    portfolio = PortfolioService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    run_id = replay_service.db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-01-05 09:30:00",
+        end_datetime="2026-01-05 15:00:00",
+        initial_cash=100000.0,
+        status="running",
+        progress_total=1,
+        status_message="执行中",
+    )
+
+    summary = replay_service._run_checkpoint(  # noqa: SLF001 - targeted progress visibility coverage
+        run_id=run_id,
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        timeframe="30m",
+        engine=engine,
+        portfolio=portfolio,
+        signal_service=signal_service,
+    )
+    run = replay_service.db.get_sim_run(run_id)
+
+    assert summary["cancelled"] is False
+    assert "写入账户快照" in str(run["status_message"])

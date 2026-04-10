@@ -26,20 +26,24 @@ class QuantSimEngine:
         self.portfolio = PortfolioService(db_file=db_file)
         self.adapter = adapter or StockPolicyAdapter()
 
-    def analyze_candidate(self, candidate: dict, analysis_timeframe: str = "1d") -> dict:
-        decision = self._evaluate_candidate_decision(candidate, analysis_timeframe=analysis_timeframe)
+    def analyze_candidate(self, candidate: dict, analysis_timeframe: str = "1d", strategy_mode: str = "auto") -> dict:
+        decision = self._evaluate_candidate_decision(
+            candidate,
+            analysis_timeframe=analysis_timeframe,
+            strategy_mode=strategy_mode,
+        )
         decision_price = self._extract_decision_price(decision)
         if decision_price > 0:
             self.candidate_pool.db.update_candidate_latest_price(candidate["stock_code"], decision_price)
         return self.signal_center.create_signal(candidate, decision)
 
-    def analyze_active_candidates(self, analysis_timeframe: str = "1d") -> list[dict]:
+    def analyze_active_candidates(self, analysis_timeframe: str = "1d", strategy_mode: str = "auto") -> list[dict]:
         signals = []
         for candidate in self.candidate_pool.list_candidates(status="active"):
-            signals.append(self.analyze_candidate(candidate, analysis_timeframe=analysis_timeframe))
+            signals.append(self.analyze_candidate(candidate, analysis_timeframe=analysis_timeframe, strategy_mode=strategy_mode))
         return signals
 
-    def analyze_positions(self, analysis_timeframe: str = "1d") -> list[dict]:
+    def analyze_positions(self, analysis_timeframe: str = "1d", strategy_mode: str = "auto") -> list[dict]:
         signals = []
         for position in self.portfolio.list_positions():
             candidate = self.candidate_pool.db.get_candidate(position["stock_code"]) or {
@@ -48,7 +52,12 @@ class QuantSimEngine:
                 "source": "manual",
                 "sources": ["manual"],
             }
-            decision = self._evaluate_position_decision(candidate, position, analysis_timeframe=analysis_timeframe)
+            decision = self._evaluate_position_decision(
+                candidate,
+                position,
+                analysis_timeframe=analysis_timeframe,
+                strategy_mode=strategy_mode,
+            )
             decision_price = self._extract_decision_price(decision)
             if decision_price > 0:
                 self.portfolio.db.update_position_market_price(position["stock_code"], decision_price)
@@ -62,17 +71,30 @@ class QuantSimEngine:
         *,
         market_snapshot: dict | None = None,
         analysis_timeframe: str = "1d",
+        strategy_mode: str = "auto",
     ):
         try:
             return self.adapter.analyze_candidate(
                 candidate,
                 market_snapshot=market_snapshot,
                 analysis_timeframe=analysis_timeframe,
+                strategy_mode=strategy_mode,
             )
         except TypeError as exc:
-            if "analysis_timeframe" not in str(exc):
+            first_message = str(exc)
+            if "analysis_timeframe" not in first_message and "strategy_mode" not in first_message:
                 raise
-            return self.adapter.analyze_candidate(candidate, market_snapshot=market_snapshot)
+            try:
+                return self.adapter.analyze_candidate(
+                    candidate,
+                    market_snapshot=market_snapshot,
+                    analysis_timeframe=analysis_timeframe,
+                )
+            except TypeError as retry_exc:
+                retry_message = str(retry_exc)
+                if "analysis_timeframe" not in retry_message:
+                    raise
+                return self.adapter.analyze_candidate(candidate, market_snapshot=market_snapshot)
 
     def _evaluate_position_decision(
         self,
@@ -81,6 +103,7 @@ class QuantSimEngine:
         *,
         market_snapshot: dict | None = None,
         analysis_timeframe: str = "1d",
+        strategy_mode: str = "auto",
     ):
         try:
             return self.adapter.analyze_position(
@@ -88,11 +111,24 @@ class QuantSimEngine:
                 position,
                 market_snapshot=market_snapshot,
                 analysis_timeframe=analysis_timeframe,
+                strategy_mode=strategy_mode,
             )
         except TypeError as exc:
-            if "analysis_timeframe" not in str(exc):
+            first_message = str(exc)
+            if "analysis_timeframe" not in first_message and "strategy_mode" not in first_message:
                 raise
-            return self.adapter.analyze_position(candidate, position, market_snapshot=market_snapshot)
+            try:
+                return self.adapter.analyze_position(
+                    candidate,
+                    position,
+                    market_snapshot=market_snapshot,
+                    analysis_timeframe=analysis_timeframe,
+                )
+            except TypeError as retry_exc:
+                retry_message = str(retry_exc)
+                if "analysis_timeframe" not in retry_message:
+                    raise
+                return self.adapter.analyze_position(candidate, position, market_snapshot=market_snapshot)
 
     @staticmethod
     def _extract_decision_price(decision: dict | object) -> float:

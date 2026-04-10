@@ -70,6 +70,9 @@ class PortfolioService:
     def configure_account(self, initial_cash: float) -> None:
         self.db.configure_account(initial_cash)
 
+    def reset_account(self, *, initial_cash: float | None = None) -> None:
+        self.db.reset_runtime_state(initial_cash=initial_cash)
+
     def get_trade_history(self, limit: int = 100) -> list[dict]:
         return self.db.get_trade_history(limit=limit)
 

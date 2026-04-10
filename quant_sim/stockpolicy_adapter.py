@@ -45,14 +45,36 @@ class StockPolicyAdapter:
         candidate: dict[str, Any],
         market_snapshot: Optional[dict[str, Any]] = None,
         analysis_timeframe: str = "1d",
+        strategy_mode: str = "auto",
     ) -> Decision:
         snapshot = market_snapshot or self.market_data_provider.get_comprehensive_data(candidate["stock_code"])
-        return self.runtime.evaluate_candidate(
-            candidate=candidate,
-            market_snapshot=snapshot,
-            current_time=self.now(),
-            analysis_timeframe=analysis_timeframe,
-        )
+        try:
+            return self.runtime.evaluate_candidate(
+                candidate=candidate,
+                market_snapshot=snapshot,
+                current_time=self.now(),
+                analysis_timeframe=analysis_timeframe,
+                strategy_mode=strategy_mode,
+            )
+        except TypeError as exc:
+            first_message = str(exc)
+            if "strategy_mode" not in first_message and "analysis_timeframe" not in first_message:
+                raise
+            try:
+                return self.runtime.evaluate_candidate(
+                    candidate=candidate,
+                    market_snapshot=snapshot,
+                    current_time=self.now(),
+                    analysis_timeframe=analysis_timeframe,
+                )
+            except TypeError as retry_exc:
+                if "analysis_timeframe" not in str(retry_exc):
+                    raise
+                return self.runtime.evaluate_candidate(
+                    candidate=candidate,
+                    market_snapshot=snapshot,
+                    current_time=self.now(),
+                )
 
     def analyze_position(
         self,
@@ -60,12 +82,36 @@ class StockPolicyAdapter:
         position: dict[str, Any],
         market_snapshot: Optional[dict[str, Any]] = None,
         analysis_timeframe: str = "1d",
+        strategy_mode: str = "auto",
     ) -> Decision:
         snapshot = market_snapshot or self.market_data_provider.get_comprehensive_data(position["stock_code"])
-        return self.runtime.evaluate_position(
-            candidate=candidate,
-            position=position,
-            market_snapshot=snapshot,
-            current_time=self.now(),
-            analysis_timeframe=analysis_timeframe,
-        )
+        try:
+            return self.runtime.evaluate_position(
+                candidate=candidate,
+                position=position,
+                market_snapshot=snapshot,
+                current_time=self.now(),
+                analysis_timeframe=analysis_timeframe,
+                strategy_mode=strategy_mode,
+            )
+        except TypeError as exc:
+            first_message = str(exc)
+            if "strategy_mode" not in first_message and "analysis_timeframe" not in first_message:
+                raise
+            try:
+                return self.runtime.evaluate_position(
+                    candidate=candidate,
+                    position=position,
+                    market_snapshot=snapshot,
+                    current_time=self.now(),
+                    analysis_timeframe=analysis_timeframe,
+                )
+            except TypeError as retry_exc:
+                if "analysis_timeframe" not in str(retry_exc):
+                    raise
+                return self.runtime.evaluate_position(
+                    candidate=candidate,
+                    position=position,
+                    market_snapshot=snapshot,
+                    current_time=self.now(),
+                )

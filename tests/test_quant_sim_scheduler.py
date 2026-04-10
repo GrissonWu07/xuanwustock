@@ -1,4 +1,5 @@
 from datetime import date
+from unittest.mock import Mock
 
 from quant_sim.candidate_pool_service import CandidatePoolService
 from quant_sim.portfolio_service import PortfolioService
@@ -174,3 +175,23 @@ def test_scheduled_cycle_skips_before_start_date(tmp_path, monkeypatch):
     scheduler._run_scheduled_cycle()
 
     assert called["count"] == 0
+
+
+def test_scheduler_run_once_passes_strategy_mode_to_engine(tmp_path):
+    scheduler = QuantSimScheduler(db_file=tmp_path / "quant_sim.db")
+    scheduler.db.update_scheduler_config(strategy_mode="neutral")
+
+    scheduler.engine.analyze_active_candidates = Mock(return_value=[])
+    scheduler.engine.analyze_positions = Mock(return_value=[])
+    scheduler.portfolio.list_positions = Mock(return_value=[])
+
+    scheduler.run_once("manual_scan")
+
+    scheduler.engine.analyze_active_candidates.assert_called_once_with(
+        analysis_timeframe="30m",
+        strategy_mode="neutral",
+    )
+    scheduler.engine.analyze_positions.assert_called_once_with(
+        analysis_timeframe="30m",
+        strategy_mode="neutral",
+    )

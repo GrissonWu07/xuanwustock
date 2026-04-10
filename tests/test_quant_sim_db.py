@@ -52,6 +52,34 @@ def test_add_candidate_preserves_multiple_sources(tmp_path):
     assert rows[0]["sources"] == ["main_force", "value_stock"]
 
 
+def test_delete_candidate_removes_candidate(tmp_path):
+    db = QuantSimDB(tmp_path / "quant_sim.db")
+    db.add_candidate(
+        {
+            "stock_code": "600000",
+            "stock_name": "浦发银行",
+            "source": "main_force",
+            "latest_price": 10.52,
+        }
+    )
+
+    db.delete_candidate("600000")
+
+    assert db.get_candidate("600000") is None
+    assert db.get_candidates() == []
+
+
+def test_scheduler_config_persists_strategy_mode(tmp_path):
+    db = QuantSimDB(tmp_path / "quant_sim.db")
+
+    config = db.get_scheduler_config()
+    assert config["strategy_mode"] == "auto"
+
+    db.update_scheduler_config(strategy_mode="defensive")
+    config = db.get_scheduler_config()
+    assert config["strategy_mode"] == "defensive"
+
+
 def test_confirm_buy_creates_simulated_position(tmp_path):
     db = QuantSimDB(tmp_path / "quant_sim.db")
 
@@ -182,3 +210,160 @@ def test_finalize_cancelled_run_preserves_completed_progress(tmp_path):
     assert run["status"] == "cancelled"
     assert run["progress_current"] == 2
     assert run["progress_total"] == 176
+
+
+def test_replace_sim_run_results_persists_strategy_signals(tmp_path):
+    db = QuantSimDB(tmp_path / "quant_sim.db")
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-09 15:00:00",
+        initial_cash=100000.0,
+        status="completed",
+    )
+
+    db.replace_sim_run_results(
+        run_id,
+        trades=[
+            {
+                "signal_id": 101,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "price": 10.0,
+                "quantity": 100,
+                "amount": 1000.0,
+                "realized_pnl": 0.0,
+                "executed_at": "2026-04-01 10:00:00",
+            }
+        ],
+        snapshots=[],
+        positions=[],
+        signals=[
+            {
+                "id": 101,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "confidence": 82,
+                "reasoning": "回放策略买入",
+                "position_size_pct": 60.0,
+                "decision_type": "dual_track_resonance",
+                "tech_score": 0.72,
+                "context_score": 0.28,
+                "strategy_profile": {
+                    "market_regime": {"label": "牛市"},
+                    "fundamental_quality": {"label": "强基本面"},
+                    "risk_style": {"label": "激进"},
+                    "analysis_timeframe": {"key": "30m"},
+                },
+                "checkpoint_at": "2026-04-01 10:00:00",
+                "created_at": "2026-04-01 10:00:01",
+            }
+        ],
+    )
+
+    signals = db.get_sim_run_signals(run_id)
+    trades = db.get_sim_run_trades(run_id)
+
+    assert len(signals) == 1
+    assert signals[0]["stock_code"] == "300390"
+    assert signals[0]["action"] == "BUY"
+    assert signals[0]["strategy_profile"]["risk_style"]["label"] == "激进"
+    assert signals[0]["checkpoint_at"] == "2026-04-01 10:00:00"
+    assert len(trades) == 1
+    assert trades[0]["signal_id"] == signals[0]["id"]
+
+
+def test_delete_sim_run_removes_all_replay_artifacts(tmp_path):
+    db = QuantSimDB(tmp_path / "quant_sim.db")
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-09 15:00:00",
+        initial_cash=100000.0,
+        status="completed",
+    )
+    db.add_sim_run_checkpoint(
+        run_id,
+        checkpoint_at="2026-04-01 10:00:00",
+        candidates_scanned=1,
+        positions_checked=0,
+        signals_created=1,
+        auto_executed=1,
+        available_cash=90000.0,
+        market_value=10000.0,
+        total_equity=100000.0,
+    )
+    db.replace_sim_run_results(
+        run_id,
+        trades=[
+            {
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "price": 10.0,
+                "quantity": 100,
+                "amount": 1000.0,
+                "realized_pnl": 0.0,
+                "executed_at": "2026-04-01 10:00:00",
+            }
+        ],
+        snapshots=[
+            {
+                "run_reason": "historical_range@2026-04-01 10:00:00",
+                "initial_cash": 100000.0,
+                "available_cash": 99000.0,
+                "market_value": 1000.0,
+                "total_equity": 100000.0,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "created_at": "2026-04-01 10:00:00",
+            }
+        ],
+        positions=[
+            {
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "quantity": 100,
+                "avg_price": 10.0,
+                "latest_price": 10.0,
+                "market_value": 1000.0,
+                "unrealized_pnl": 0.0,
+                "sellable_quantity": 0,
+                "locked_quantity": 100,
+                "status": "holding",
+            }
+        ],
+        signals=[
+            {
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "confidence": 82,
+                "reasoning": "回放策略买入",
+                "position_size_pct": 60.0,
+                "decision_type": "dual_track_resonance",
+                "tech_score": 0.72,
+                "context_score": 0.28,
+                "strategy_profile": {"strategy_mode": {"key": "auto"}},
+                "checkpoint_at": "2026-04-01 10:00:00",
+                "created_at": "2026-04-01 10:00:01",
+            }
+        ],
+    )
+    db.append_sim_run_event(run_id, "完成", level="success")
+
+    db.delete_sim_run(run_id)
+
+    assert db.get_sim_run(run_id) is None
+    assert db.get_sim_run_checkpoints(run_id) == []
+    assert db.get_sim_run_trades(run_id) == []
+    assert db.get_sim_run_snapshots(run_id) == []
+    assert db.get_sim_run_positions(run_id) == []
+    assert db.get_sim_run_signals(run_id) == []
+    assert db.get_sim_run_events(run_id) == []

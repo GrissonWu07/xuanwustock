@@ -497,3 +497,105 @@ Expected:
 git add docs/superpowers/specs/2026-04-09-quant-kernel-design.md quant_kernel quant_sim tests
 git commit -m "fix: align quant kernel implementation with approved spec"
 ```
+
+### Task 9: Turn replay results into a complete report with persisted strategy context
+
+**Files:**
+- Modify: `C:\Projects\githubs\aiagents-stock\quant_sim\db.py`
+- Modify: `C:\Projects\githubs\aiagents-stock\quant_sim\replay_service.py`
+- Modify: `C:\Projects\githubs\aiagents-stock\quant_sim\ui.py`
+- Modify: `C:\Projects\githubs\aiagents-stock\tests\test_quant_replay_engine.py`
+- Modify: `C:\Projects\githubs\aiagents-stock\tests\test_quant_sim_db.py`
+- Modify: `C:\Projects\githubs\aiagents-stock\tests\test_quant_sim_ui_feedback.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_historical_replay_persists_run_strategy_signals(tmp_path):
+    ...
+    signals = db.get_sim_run_signals(run["id"])
+    assert signals[0]["strategy_profile"]["analysis_timeframe"]["key"] == "30m"
+
+
+def test_build_replay_report_summary_exposes_cash_positions_and_trade_analysis():
+    ...
+    assert summary["initial_cash"] == 100000.0
+    assert summary["final_available_cash"] == 54250.0
+    assert summary["ending_position_count"] == 2
+    assert summary["trade_analysis"]["total_buy_amount"] == 30000.0
+
+
+def test_quant_sim_replay_ui_source_mentions_strategy_and_position_report_sections():
+    ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
+    assert "回放总览" in ui_source
+    assert "结束持仓" in ui_source
+    assert "交易分析" in ui_source
+    assert "当前交易策略" in ui_source
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/test_quant_replay_engine.py tests/test_quant_sim_db.py tests/test_quant_sim_ui_feedback.py
+```
+
+Expected: FAIL because replay runs do not persist per-run strategy signals and the replay tab does not yet build a report-style summary.
+
+- [ ] **Step 3: Implement minimal persistence and replay-report helpers**
+
+```python
+def replace_sim_run_results(..., signals: list[dict[str, Any]] | None = None) -> None:
+    ...
+
+
+def build_replay_report_payload(...):
+    return {
+        "initial_cash": ...,
+        "final_available_cash": ...,
+        "final_market_value": ...,
+        "final_total_equity": ...,
+        "trade_analysis": {...},
+        "positions": positions,
+        "signals": signals,
+    }
+```
+
+- [ ] **Step 4: Run tests to verify replay reporting works**
+
+Run:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/test_quant_replay_engine.py tests/test_quant_sim_db.py tests/test_quant_sim_ui_feedback.py
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Review pass 1**
+
+Check:
+- replay result tab shows a selectable run, not only the latest run
+- overview includes initial cash, final cash, market value, total equity, return, drawdown, win rate, trade count
+- ending positions are visible with quantities and pnl
+- strategy basics are visible in replay results
+- per-run strategy signals are stored independently from live `strategy_signals`
+
+- [ ] **Step 6: Review pass 2**
+
+Run:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/test_quant_replay_engine.py tests/test_quant_sim_db.py tests/test_quant_sim_ui_feedback.py tests/test_quant_sim_replay_ui.py
+python -m compileall quant_sim app.py
+python -c "import app; print('app-import-ok')"
+```
+
+Expected: all pass.
+
+- [ ] **Step 7: Commit**
+
+```powershell
+git add quant_sim/db.py quant_sim/replay_service.py quant_sim/ui.py tests/test_quant_replay_engine.py tests/test_quant_sim_db.py tests/test_quant_sim_ui_feedback.py docs/superpowers/specs/2026-04-09-quant-kernel-design.md docs/superpowers/plans/2026-04-09-quant-kernel-integration.md
+git commit -m "feat: add replay report and persisted strategy context"
+```
