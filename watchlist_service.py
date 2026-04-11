@@ -64,3 +64,6 @@ class WatchlistService:
         normalized_codes = {str(stock_code).strip().upper() for stock_code in candidate_stock_codes}
         for watch in self.list_watches():
             self.mark_in_quant_pool(watch["stock_code"], watch["stock_code"] in normalized_codes)
+
+    def delete_stock(self, stock_code: str) -> None:
+        self.db.delete_watch(stock_code)

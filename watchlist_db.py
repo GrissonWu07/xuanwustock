@@ -155,6 +155,13 @@ class WatchlistDB:
             )
             conn.commit()
 
+    def delete_watch(self, stock_code: str) -> None:
+        normalized_code = str(stock_code).strip().upper()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM watchlist WHERE stock_code = ?", (normalized_code,))
+            conn.commit()
+
     @staticmethod
     def _decode_json(raw: str | None, default: Any) -> Any:
         if not raw:
