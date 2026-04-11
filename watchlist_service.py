@@ -59,3 +59,8 @@ class WatchlistService:
 
     def mark_in_quant_pool(self, stock_code: str, in_quant_pool: bool) -> None:
         self.db.update_quant_membership(stock_code, in_quant_pool)
+
+    def sync_quant_membership(self, candidate_stock_codes: list[str]) -> None:
+        normalized_codes = {str(stock_code).strip().upper() for stock_code in candidate_stock_codes}
+        for watch in self.list_watches():
+            self.mark_in_quant_pool(watch["stock_code"], watch["stock_code"] in normalized_codes)
