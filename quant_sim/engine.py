@@ -10,6 +10,7 @@ from quant_sim.db import DEFAULT_DB_FILE
 from quant_sim.portfolio_service import PortfolioService
 from quant_sim.signal_center_service import SignalCenterService
 from quant_sim.stockpolicy_adapter import StockPolicyAdapter
+from watchlist_service import WatchlistService
 
 
 class QuantSimEngine:
@@ -19,12 +20,15 @@ class QuantSimEngine:
         self,
         db_file: str | Path = DEFAULT_DB_FILE,
         adapter: Optional[StockPolicyAdapter] = None,
+        watchlist_db_file: str | Path = "watchlist.db",
+        watchlist_service: WatchlistService | None = None,
     ):
         self.db_file = db_file
         self.candidate_pool = CandidatePoolService(db_file=db_file)
         self.signal_center = SignalCenterService(db_file=db_file)
         self.portfolio = PortfolioService(db_file=db_file)
         self.adapter = adapter or StockPolicyAdapter()
+        self.watchlist = watchlist_service or WatchlistService(db_file=watchlist_db_file)
 
     def analyze_candidate(self, candidate: dict, analysis_timeframe: str = "1d", strategy_mode: str = "auto") -> dict:
         decision = self._evaluate_candidate_decision(
@@ -35,7 +39,9 @@ class QuantSimEngine:
         decision_price = self._extract_decision_price(decision)
         if decision_price > 0:
             self.candidate_pool.db.update_candidate_latest_price(candidate["stock_code"], decision_price)
-        return self.signal_center.create_signal(candidate, decision)
+        signal = self.signal_center.create_signal(candidate, decision)
+        self._sync_watchlist_snapshot(candidate["stock_code"], signal, decision_price)
+        return signal
 
     def analyze_active_candidates(self, analysis_timeframe: str = "1d", strategy_mode: str = "auto") -> list[dict]:
         signals = []
@@ -62,7 +68,9 @@ class QuantSimEngine:
             if decision_price > 0:
                 self.portfolio.db.update_position_market_price(position["stock_code"], decision_price)
                 self.candidate_pool.db.update_candidate_latest_price(position["stock_code"], decision_price)
-            signals.append(self.signal_center.create_signal(candidate, decision))
+            signal = self.signal_center.create_signal(candidate, decision)
+            self._sync_watchlist_snapshot(position["stock_code"], signal, decision_price)
+            signals.append(signal)
         return signals
 
     def _evaluate_candidate_decision(
@@ -143,3 +151,12 @@ class QuantSimEngine:
             except (TypeError, ValueError):
                 return 0.0
         return 0.0
+
+    def _sync_watchlist_snapshot(self, stock_code: str, signal: dict, decision_price: float) -> None:
+        if not stock_code:
+            return
+        self.watchlist.update_watch_snapshot(
+            stock_code,
+            latest_signal=str(signal.get("action") or "").upper() or None,
+            latest_price=decision_price if decision_price > 0 else None,
+        )

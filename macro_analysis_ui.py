@@ -11,6 +11,10 @@ import streamlit as st
 
 import config
 from macro_analysis_engine import MacroAnalysisEngine
+from research_watchlist_integration import (
+    add_research_stock_to_watchlist,
+    add_research_stocks_to_watchlist,
+)
 
 
 def display_macro_analysis() -> None:
@@ -276,6 +280,15 @@ def display_stock_view(
 
     st.subheader("优先关注")
     if recommended:
+        batch_summary = st.session_state.get("macro_analysis_recommended_watchlist_sync")
+        if st.button("⭐ 批量加入关注池", key="macro_analysis_batch_watchlist_button", use_container_width=True):
+            batch_summary = add_research_stocks_to_watchlist(recommended, source="macro_analysis")
+            st.session_state.macro_analysis_recommended_watchlist_sync = batch_summary
+        if batch_summary:
+            if batch_summary["success_count"] > 0:
+                st.success(f"⭐ 已加入 {batch_summary['success_count']} 只宏观推荐到关注池")
+            if batch_summary["failures"]:
+                st.warning("；".join(batch_summary["failures"]))
         st.dataframe(
             pd.DataFrame(
                 [
@@ -297,6 +310,22 @@ def display_stock_view(
             width="stretch",
             hide_index=True,
         )
+        selected_code = st.selectbox(
+            "单只加入关注池",
+            options=[item.get("code", "") for item in recommended],
+            format_func=lambda code: next(
+                (f"{item.get('code', '')} - {item.get('name', '')}" for item in recommended if item.get("code", "") == code),
+                code,
+            ),
+            key="macro_analysis_watchlist_single_code",
+        )
+        if st.button("⭐ 加入关注池", key="macro_analysis_single_watchlist_button", use_container_width=True):
+            selected_stock = next((item for item in recommended if item.get("code", "") == selected_code), None)
+            success, message, _ = add_research_stock_to_watchlist(selected_stock or {}, source="macro_analysis")
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
     else:
         st.info("暂无推荐标的")
 
@@ -307,6 +336,30 @@ def display_stock_view(
             width="stretch",
             hide_index=True,
         )
+        watch_options = []
+        for idx, item in enumerate(watchlist):
+            code = item.get("code") or item.get("股票代码") or item.get("代码") or f"WATCH-{idx + 1}"
+            watch_options.append((code, item))
+        selected_watch_code = st.selectbox(
+            "从观察名单加入关注池",
+            options=[code for code, _ in watch_options],
+            format_func=lambda code: next(
+                (
+                    f"{code} - {(item.get('name') or item.get('股票名称') or item.get('股票简称') or item.get('名称') or '')}"
+                    for item_code, item in watch_options
+                    if item_code == code
+                ),
+                code,
+            ),
+            key="macro_analysis_watchlist_pick_code",
+        )
+        if st.button("⭐ 加入关注池", key="macro_analysis_watchlist_pick_button", use_container_width=True):
+            selected_stock = next((item for code, item in watch_options if code == selected_watch_code), None)
+            success, message, _ = add_research_stock_to_watchlist(selected_stock or {}, source="macro_analysis")
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
     else:
         st.info("暂无观察名单")
 

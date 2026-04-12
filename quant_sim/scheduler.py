@@ -25,10 +25,16 @@ _SCHEDULER_INSTANCES: dict[str, "QuantSimScheduler"] = {}
 class QuantSimScheduler:
     """Run one-off or interval-based refresh cycles for quant simulation."""
 
-    def __init__(self, db_file: str | Path = DEFAULT_DB_FILE, poll_seconds: float = 30.0):
+    def __init__(
+        self,
+        db_file: str | Path = DEFAULT_DB_FILE,
+        poll_seconds: float = 30.0,
+        watchlist_db_file: str | Path = "watchlist.db",
+    ):
         self.db_file = str(db_file)
+        self.watchlist_db_file = str(watchlist_db_file)
         self.db = QuantSimDB(db_file)
-        self.engine = QuantSimEngine(db_file=db_file)
+        self.engine = QuantSimEngine(db_file=db_file, watchlist_db_file=watchlist_db_file)
         self.portfolio = PortfolioService(db_file=db_file)
         self.scheduler = schedule.Scheduler()
         self.poll_seconds = poll_seconds
@@ -205,10 +211,13 @@ class QuantSimScheduler:
         return datetime.now().date() >= configured_date
 
 
-def get_quant_sim_scheduler(db_file: str | Path = DEFAULT_DB_FILE) -> QuantSimScheduler:
-    key = str(db_file)
+def get_quant_sim_scheduler(
+    db_file: str | Path = DEFAULT_DB_FILE,
+    watchlist_db_file: str | Path = "watchlist.db",
+) -> QuantSimScheduler:
+    key = f"{db_file}::{watchlist_db_file}"
     scheduler = _SCHEDULER_INSTANCES.get(key)
     if scheduler is None:
-        scheduler = QuantSimScheduler(db_file=db_file)
+        scheduler = QuantSimScheduler(db_file=db_file, watchlist_db_file=watchlist_db_file)
         _SCHEDULER_INSTANCES[key] = scheduler
     return scheduler

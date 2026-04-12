@@ -5,6 +5,8 @@ from quant_sim.candidate_pool_service import CandidatePoolService
 from quant_sim.db import QuantSimDB
 from quant_sim.replay_service import QuantSimReplayService
 from quant_sim.scheduler import get_quant_sim_scheduler
+from watchlist_integration import add_watchlist_rows_to_quant_pool
+from watchlist_service import WatchlistService
 
 
 class HoldSnapshotProvider:
@@ -100,6 +102,34 @@ def test_continuous_replay_handoff_replaces_live_state_and_enables_scheduler(tmp
     assert scheduler_config["auto_execute"] is True
     assert scheduler_config["analysis_timeframe"] == "1d"
     assert runs[0]["mode"] == "continuous_to_live"
+
+
+def test_continuous_replay_accepts_candidates_promoted_from_watchlist(tmp_path):
+    watch_db = tmp_path / "watchlist.db"
+    quant_db = tmp_path / "quant_sim.db"
+
+    watchlist = WatchlistService(db_file=watch_db)
+    quant_pool = CandidatePoolService(db_file=quant_db)
+    watchlist.add_stock("300390", "天华新能", "main_force", 10.0, None, {})
+    add_watchlist_rows_to_quant_pool(["300390"], watchlist, quant_pool)
+
+    replay_service = QuantSimReplayService(
+        db_file=quant_db,
+        snapshot_provider=HoldSnapshotProvider(),
+        adapter=BuyAndHoldAdapter(),
+    )
+
+    summary = replay_service.run_past_to_live(
+        start_datetime=datetime(2026, 1, 5, 0, 0),
+        end_datetime=datetime(2026, 1, 5, 23, 59),
+        timeframe="1d",
+        market="CN",
+        overwrite_live=True,
+        auto_start_scheduler=False,
+    )
+
+    assert summary["trade_count"] == 1
+    assert watchlist.get_watch("300390")["in_quant_pool"] is True
 
 
 class OrderedSnapshotProvider:

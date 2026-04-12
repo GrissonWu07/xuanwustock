@@ -9,6 +9,10 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta
 import time
+from research_watchlist_integration import (
+    add_research_stock_to_watchlist,
+    add_research_stocks_to_watchlist,
+)
 
 
 def display_news_flow_monitor():
@@ -645,6 +649,15 @@ def display_analysis_results(result: dict):
         if recommended_stocks:
             st.markdown("#### 💰 AI选股推荐")
             st.warning("⚠️ 以下为AI分析结果，仅供参考，不构成投资建议。股市有风险，投资需谨慎！")
+            batch_summary = st.session_state.get("news_flow_watchlist_sync")
+            if st.button("⭐ 批量加入关注池", key="news_flow_batch_watchlist_button", use_container_width=True):
+                batch_summary = add_research_stocks_to_watchlist(recommended_stocks[:8], source="news_flow")
+                st.session_state.news_flow_watchlist_sync = batch_summary
+            if batch_summary:
+                if batch_summary["success_count"] > 0:
+                    st.success(f"⭐ 已加入 {batch_summary['success_count']} 只研究推荐到关注池")
+                if batch_summary["failures"]:
+                    st.warning("；".join(batch_summary["failures"]))
             
             # 用表格展示推荐股票
             stock_data = []
@@ -672,6 +685,16 @@ def display_analysis_results(result: dict):
                     st.write(f"- 策略: {stock.get('strategy', '')}")
                     if stock.get('attention_points'):
                         st.write(f"- 注意: {', '.join(stock.get('attention_points', []))}")
+                    if st.button(
+                        "⭐ 加入关注池",
+                        key=f"news_flow_watchlist_{stock.get('code', '')}",
+                        use_container_width=True,
+                    ):
+                        success, message, _ = add_research_stock_to_watchlist(stock, source="news_flow")
+                        if success:
+                            st.success(message)
+                        else:
+                            st.error(message)
                     st.divider()
             
             # 整体策略

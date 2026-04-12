@@ -77,15 +77,16 @@ def test_handle_manual_scan_queues_success_flash_message():
 def test_handle_scheduler_start_queues_feedback_and_updates_config():
     state = {}
     scheduler = DummyScheduler()
+    portfolio_service = DummyPortfolioService()
 
     started = ui.handle_scheduler_start(
         scheduler,
-        enabled=True,
+        portfolio_service=portfolio_service,
+        initial_cash=200000.0,
         auto_execute=True,
         interval_minutes=15,
         trading_hours_only=True,
         analysis_timeframe="30m",
-        start_date="2026-04-10",
         market="CN",
         state=state,
     )
@@ -93,6 +94,7 @@ def test_handle_scheduler_start_queues_feedback_and_updates_config():
 
     assert started is True
     assert scheduler.started is True
+    assert portfolio_service.updated_cash == 200000.0
     assert scheduler.config_updates == [
         {
             "enabled": True,
@@ -100,11 +102,11 @@ def test_handle_scheduler_start_queues_feedback_and_updates_config():
             "interval_minutes": 15,
             "trading_hours_only": True,
             "analysis_timeframe": "30m",
-            "start_date": "2026-04-10",
+            "start_date": date.today().isoformat(),
             "market": "CN",
         }
     ]
-    assert flashes == [{"level": "success", "message": "✅ 定时分析已启动"}]
+    assert flashes == [{"level": "success", "message": "✅ 定时模拟已启动"}]
 
 
 def test_handle_account_update_queues_success_flash_message():
@@ -135,7 +137,7 @@ def test_quant_sim_ui_exposes_single_scheduler_control_area():
     assert 'key="quant_sim_start_scheduler_top"' not in ui_source
     assert 'key="quant_sim_scan_now"' not in ui_source
     assert 'key="quant_sim_manual_scan_config"' not in ui_source
-    assert "⏹️ 停止定时分析" in ui_source
+    assert 'st.button("停止"' in ui_source
 
 
 def test_quant_sim_ui_no_longer_hides_realtime_controls_in_expander():
@@ -151,17 +153,20 @@ def test_quant_sim_ui_exposes_realtime_strategy_mode_and_auto_execution_copy():
 
     assert "策略模式" in realtime_block
     assert "自动执行模拟交易" in realtime_block
-    assert "不需要等待用户确认" in realtime_block
-    assert "待执行信号" in realtime_block
+    assert "自动执行" in realtime_block
 
 
 def test_quant_sim_candidate_section_exposes_add_delete_and_inline_analyze_actions():
     ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
     realtime_block = ui_source.split("def display_quant_sim()", 1)[1].split("def display_quant_replay()", 1)[0]
+    candidate_block = ui_source.split("def render_quant_sim_candidate_pool", 1)[1].split("def render_quant_sim_execution_center", 1)[0]
 
-    assert "➕ 添加股票" in realtime_block
-    assert "删除" in realtime_block
+    assert "量化候选池" in realtime_block
     assert "立即分析该标的" not in realtime_block
+    assert 'render_compact_action_button("分析"' not in candidate_block
+    assert 'render_compact_action_button("删除"' not in candidate_block
+    assert '"🔎"' in candidate_block
+    assert '"🗑"' in candidate_block
 
 
 def test_quant_sim_candidate_section_mentions_inline_analysis_detail_panel():
@@ -182,12 +187,66 @@ def test_quant_sim_candidate_analysis_detail_reuses_full_strategy_explanation_pa
     assert "render_quant_sim_signal_detail(selected_signal)" in ui_source
 
 
+def test_candidate_pool_analyze_action_does_not_force_extra_rerun_after_setting_dialog_state():
+    ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
+    candidate_block = ui_source.split("def render_quant_sim_candidate_pool", 1)[1].split("def render_quant_sim_execution_center", 1)[0]
+    analyze_block = candidate_block.split('if _render_quant_icon_button("🔎"', 1)[1].split('with action_cols[1]:', 1)[0]
+
+    assert 'st.session_state["quant_sim_candidate_analysis_signal"] = signal' in analyze_block
+    assert "st.rerun()" not in analyze_block
+
+
+def test_candidate_analysis_dialog_uses_large_width():
+    ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
+
+    assert '@st.dialog("候选股分析详情", width="large")' in ui_source
+
+
 def test_quant_sim_config_panel_exposes_update_and_reset_account_actions():
     ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
     realtime_block = ui_source.split("def display_quant_sim()", 1)[1].split("def display_quant_replay()", 1)[0]
 
-    assert "💰 更新资金池" in realtime_block
-    assert "🔄 重置模拟账户" in realtime_block
+    assert 'render_compact_action_button("更新"' not in realtime_block
+    assert 'render_compact_action_button("重置"' in realtime_block
+
+
+def test_quant_sim_config_panel_uses_compact_two_row_action_groups():
+    ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
+
+    assert 'render_compact_action_button("保存"' in ui_source
+    assert 'st.button("启动模拟"' in ui_source
+    assert 'st.button("停止"' in ui_source
+    assert 'render_compact_action_button("更新"' not in ui_source
+    assert 'render_compact_action_button("重置"' in ui_source
+    assert 'st.button("▶️ 保存并启动定时分析"' not in ui_source
+
+
+def test_quant_sim_candidate_pool_uses_compact_row_layout_without_internal_scroll_container():
+    ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
+    candidate_block = ui_source.split("def render_quant_sim_candidate_pool", 1)[1].split("def render_quant_sim_execution_center", 1)[0]
+
+    assert 'st.columns([1.0, 1.3, 1.6, 0.9, 0.9], gap="small")' in candidate_block
+    assert "quant-sim-candidate-cell" in ui_source
+    assert "quant-sim-row-divider" in ui_source
+    assert 'overflow-y: auto' not in candidate_block
+
+
+def test_quant_sim_candidate_pool_uses_icon_actions_for_row_operations():
+    ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
+    candidate_block = ui_source.split("def render_quant_sim_candidate_pool", 1)[1].split("def render_quant_sim_execution_center", 1)[0]
+
+    assert "_render_quant_icon_button" in ui_source
+    assert 'help_text="分析候选股"' in candidate_block
+    assert 'help_text="从候选池删除"' in candidate_block
+
+
+def test_quant_sim_candidate_pool_removes_source_filter_and_places_pagination_below_table():
+    ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
+    candidate_block = ui_source.split("def render_quant_sim_candidate_pool", 1)[1].split("def render_quant_sim_execution_center", 1)[0]
+
+    assert "来源筛选" not in candidate_block
+    assert candidate_block.index('for candidate in visible_candidates:') < candidate_block.index('每页显示')
+    assert candidate_block.index('for candidate in visible_candidates:') < candidate_block.index('页码')
 
 
 def test_quant_sim_realtime_ui_uses_b3_switching_layout_instead_of_legacy_six_tabs():
@@ -197,8 +256,8 @@ def test_quant_sim_realtime_ui_uses_b3_switching_layout_instead_of_legacy_six_ta
     assert '["📥 候选池", "🧠 策略信号", "⏳ 待执行", "💼 模拟持仓", "📒 成交记录", "📈 权益快照"]' not in realtime_block
     assert "执行中心" in realtime_block
     assert "账户结果" in realtime_block
-    assert "查看内容" in realtime_block
-    assert 'options=["执行中心", "账户结果"]' in realtime_block
+    assert "查看内容" not in realtime_block
+    assert 'options=["执行中心", "账户结果"]' not in realtime_block
 
 
 def test_quant_sim_realtime_ui_avoids_workspace_placeholder_labels():
@@ -214,14 +273,45 @@ def test_quant_sim_scheduler_buttons_use_explicit_keys():
 
     assert 'key="quant_sim_stop_scheduler_config"' in ui_source
     assert 'key="quant_sim_manual_scan_config"' not in ui_source
-    assert 'key="quant_sim_scheduler_start_date"' in ui_source
+    assert 'key="quant_sim_scheduler_start_date"' not in ui_source
+
+
+def test_quant_sim_config_panel_uses_scheduler_configuration_without_enable_checkbox_or_start_date():
+    ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
+    config_block = ui_source.split("def render_quant_sim_config_panel", 1)[1].split("def render_quant_sim_candidate_pool", 1)[0]
+
+    assert 'st.markdown("### 定时任务配置")' in config_block
+    assert "启用定时模拟" not in config_block
+    assert "开始日期" not in config_block
+    assert "策略与调度" not in config_block
+
+
+def test_quant_sim_realtime_layout_moves_status_to_left_and_prioritizes_account_results():
+    ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
+    display_block = ui_source.split("def display_quant_sim()", 1)[1].split("def render_quant_sim_layout_styles()", 1)[0]
+    config_section = display_block.split("with config_col:", 1)[1].split("with results_col:", 1)[0]
+    results_section = display_block.split("with results_col:", 1)[1]
+
+    assert "render_quant_sim_status_snapshot(scheduler_status)" in config_section
+    assert "render_quant_sim_account_results(" in results_section
+    assert results_section.index("render_quant_sim_account_results(") < results_section.index("render_quant_sim_candidate_pool(")
+    assert "render_quant_sim_status_snapshot(scheduler_status)" not in results_section
+
+
+def test_quant_sim_config_actions_merge_save_and_update_into_single_parameter_flow():
+    ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
+    config_block = ui_source.split("def render_quant_sim_config_panel", 1)[1].split("def render_quant_sim_candidate_pool", 1)[0]
+
+    assert 'render_compact_action_button("保存"' in config_block
+    assert 'render_compact_action_button("更新"' not in config_block
+    assert 'render_compact_action_button("重置"' in config_block
 
 
 def test_quant_sim_replay_ui_exposes_background_status_and_cancel_controls():
     ui_source = Path("C:/Projects/githubs/aiagents-stock/quant_sim/ui.py").read_text(encoding="utf-8")
 
     assert "当前回放状态" in ui_source
-    assert "取消回放任务" in ui_source
+    assert 'st.button("取消"' in ui_source
 
 
 def test_quant_sim_replay_results_expose_latest_status():
@@ -342,7 +432,7 @@ def test_build_scheduler_status_message_distinguishes_running_and_idle_states():
             "auto_execute": False,
             "interval_minutes": 15,
             "analysis_timeframe": "30m",
-            "start_date": "2026-04-10",
+            "start_date": date.today().isoformat(),
             "last_run_at": None,
             "next_run": None,
         }
@@ -353,31 +443,33 @@ def test_build_scheduler_status_message_distinguishes_running_and_idle_states():
     assert "15 分钟" in running_message
     assert "自动执行已开启" in running_message
     assert configured_level == "warning"
-    assert "已配置" in configured_message
+    assert "配置已保存" in configured_message
     assert "未启动" in configured_message
     assert "自动执行已关闭" in configured_message
     assert disabled_level == "info"
-    assert "未启用" in disabled_message
-    assert "2026-04-10" in running_message
+    assert "尚未启动" in disabled_message
+    assert "开始日期" not in running_message
 
 
 def test_handle_scheduler_save_queues_feedback_and_updates_start_date():
     state = {}
     scheduler = DummyScheduler()
+    portfolio_service = DummyPortfolioService()
 
     ui.handle_scheduler_save(
         scheduler,
-        enabled=True,
+        portfolio_service=portfolio_service,
+        initial_cash=180000.0,
         auto_execute=False,
         interval_minutes=20,
         trading_hours_only=False,
         analysis_timeframe="1d+30m",
-        start_date="2026-04-12",
         market="CN",
         state=state,
     )
     flashes = consume_flash_messages(state, ui.QUANT_SIM_FLASH_NAMESPACE)
 
+    assert portfolio_service.updated_cash == 180000.0
     assert scheduler.config_updates == [
         {
             "enabled": True,
@@ -385,11 +477,11 @@ def test_handle_scheduler_save_queues_feedback_and_updates_start_date():
             "interval_minutes": 20,
             "trading_hours_only": False,
             "analysis_timeframe": "1d+30m",
-            "start_date": "2026-04-12",
+            "start_date": date.today().isoformat(),
             "market": "CN",
         }
     ]
-    assert flashes == [{"level": "success", "message": "✅ 定时分析配置已保存"}]
+    assert flashes == [{"level": "success", "message": "✅ 参数已保存"}]
 
 
 def test_resolve_pending_signal_default_price_prefers_candidate_latest_price():

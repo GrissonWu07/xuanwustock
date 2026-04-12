@@ -2,6 +2,8 @@ from quant_sim.candidate_pool_service import CandidatePoolService
 from quant_sim.portfolio_service import PortfolioService
 from quant_sim.scheduler import QuantSimScheduler
 from quant_sim.signal_center_service import SignalCenterService
+from watchlist_integration import add_watchlist_rows_to_quant_pool
+from watchlist_service import WatchlistService
 
 
 def test_scheduler_auto_executes_buy_signal_when_enabled(tmp_path, monkeypatch):
@@ -38,6 +40,45 @@ def test_scheduler_auto_executes_buy_signal_when_enabled(tmp_path, monkeypatch):
     assert pending == []
     assert history[0]["status"] == "executed"
     assert trades[0]["action"] == "buy"
+
+
+def test_scheduler_auto_executes_buy_signal_from_watchlist_candidate_and_syncs_watchlist(tmp_path, monkeypatch):
+    watch_db = tmp_path / "watchlist.db"
+    quant_db = tmp_path / "quant_sim.db"
+
+    watchlist = WatchlistService(db_file=watch_db)
+    quant_pool = CandidatePoolService(db_file=quant_db)
+    watchlist.add_stock("300390", "天华新能", "main_force", 62.0, None, {})
+    add_watchlist_rows_to_quant_pool(["300390"], watchlist, quant_pool)
+
+    scheduler = QuantSimScheduler(db_file=quant_db, watchlist_db_file=watch_db)
+    scheduler.update_config(enabled=True, auto_execute=True)
+
+    monkeypatch.setattr(
+        scheduler.engine.adapter,
+        "analyze_candidate",
+        lambda candidate, market_snapshot=None, analysis_timeframe="1d", strategy_mode="auto": {
+            "action": "BUY",
+            "confidence": 84,
+            "reasoning": "关注池量化建仓",
+            "position_size_pct": 20,
+            "price": 62.0,
+        },
+    )
+
+    summary = scheduler.run_once(run_reason="manual_scan")
+    portfolio_service = PortfolioService(db_file=quant_db)
+
+    watch = watchlist.get_watch("300390")
+    positions = portfolio_service.list_positions()
+
+    assert summary["auto_executed"] == 1
+    assert watch is not None
+    assert watch["in_quant_pool"] is True
+    assert watch["latest_signal"] == "BUY"
+    assert watch["latest_price"] == 62.0
+    assert len(positions) == 1
+    assert positions[0]["stock_code"] == "300390"
 
 
 def test_scheduler_auto_executes_sell_signal_when_enabled(tmp_path, monkeypatch):

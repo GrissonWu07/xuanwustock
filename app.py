@@ -23,12 +23,15 @@ from monitor_manager import display_monitor_manager, get_monitor_summary
 from monitor_service import monitor_service
 from notification_service import notification_service
 from config_manager import config_manager
+from discovery_hub_ui import display_discovery_hub
 from main_force_ui import display_main_force_selector
+from research_hub_ui import display_research_hub
 from sector_strategy_ui import display_sector_strategy
 from longhubang_ui import display_longhubang
 from quant_sim.ui import display_quant_replay, display_quant_sim
 from smart_monitor_ui import smart_monitor_ui
 from news_flow_ui import display_news_flow_monitor
+from watchlist_ui import display_watchlist_workbench
 
 # 页面配置
 st.set_page_config(
@@ -38,109 +41,445 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 在侧边栏显示当前模型信息（统一使用.env配置）
-def show_current_model_info():
-    """显示当前使用的AI模型信息"""
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🤖 AI模型")
-    st.sidebar.info(f"当前模型: **{config.DEFAULT_MODEL_NAME}**")
-    st.sidebar.caption("可在「环境配置」中修改模型名称")
+SIDEBAR_VIEW_FLAGS = [
+    "show_history",
+    "show_monitor",
+    "show_config",
+    "show_discovery_hub",
+    "show_research_hub",
+    "show_main_force",
+    "show_low_price_bull",
+    "show_small_cap",
+    "show_profit_growth",
+    "show_value_stock",
+    "show_sector_strategy",
+    "show_longhubang",
+    "show_news_flow",
+    "show_macro_analysis",
+    "show_macro_cycle",
+    "show_portfolio",
+    "show_quant_sim",
+    "show_quant_replay",
+    "show_smart_monitor",
+]
+
+SIDEBAR_HOME_ITEM = {
+    "title": "工作台",
+    "label": "进入工作台",
+    "icon": "🏠",
+    "key": "nav_home",
+    "flag": None,
+    "help": "返回工作台，先看关注池，再继续分析、发现股票和量化验证",
+}
+
+SIDEBAR_NAV_GROUPS = [
+    {
+        "title": "选股",
+        "description": "把主力、低价、小市值、净利增长和低估值选股统一收在一个入口里",
+        "items": [
+            {"label": "发现股票", "icon": "🔎", "key": "nav_discovery_hub", "flag": "show_discovery_hub", "help": "统一查看主力、低价、小市值、净利增长和低估值选股"},
+        ],
+    },
+    {
+        "title": "策略",
+        "description": "把板块、龙虎榜、新闻、宏观和周期分析统一收在一个入口里",
+        "items": [
+            {"label": "研究情报", "icon": "🧠", "key": "nav_research_hub", "flag": "show_research_hub", "help": "统一查看板块、龙虎榜、新闻、宏观和周期分析"},
+        ],
+    },
+    {
+        "title": "投资管理",
+        "description": "持仓跟踪与实时监测",
+        "items": [
+            {"label": "持仓分析", "icon": "📊", "key": "nav_portfolio", "flag": "show_portfolio", "help": "投资组合分析与定时跟踪"},
+            {"label": "量化模拟", "icon": "🧪", "key": "nav_quant_sim", "flag": "show_quant_sim", "help": "统一候选池、策略信号、人工执行与模拟持仓"},
+            {"label": "历史回放", "icon": "🕰️", "key": "nav_quant_replay", "flag": "show_quant_replay", "help": "策略历史区间回放与连续模拟结果分析"},
+            {"label": "AI盯盘", "icon": "🤖", "key": "nav_smart_monitor", "flag": "show_smart_monitor", "help": "DeepSeek AI自动盯盘决策交易（支持A股T+1）"},
+            {"label": "实时监测", "icon": "📡", "key": "nav_monitor", "flag": "show_monitor", "help": "价格监控与预警提醒"},
+        ],
+    },
+    {
+        "title": "系统",
+        "description": "常用记录与系统配置",
+        "items": [
+            {"label": "历史记录", "icon": "📖", "key": "nav_history", "flag": "show_history", "help": "查看历史分析记录"},
+            {"label": "环境配置", "icon": "⚙️", "key": "nav_config", "flag": "show_config", "help": "系统设置与API配置"},
+        ],
+    },
+]
+
+
+def activate_sidebar_view(target_flag: str | None) -> None:
+    """切换侧边栏目标页面，并清理其他页面标志。"""
+    for key in SIDEBAR_VIEW_FLAGS:
+        if key in st.session_state:
+            del st.session_state[key]
+    if target_flag:
+        st.session_state[target_flag] = True
+
+
+def get_active_sidebar_view() -> str:
+    """返回当前被激活的侧边栏视图 key。"""
+    for group in SIDEBAR_NAV_GROUPS:
+        for item in group["items"]:
+            if item["flag"] and st.session_state.get(item["flag"]):
+                return item["key"]
+    return SIDEBAR_HOME_ITEM["key"]
+
+
+def render_sidebar_nav_styles() -> None:
+    """为现代化侧边栏导航注入局部样式。"""
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] .sidebar-nav-shell {
+            padding-top: 0.1rem;
+            padding-bottom: 0.75rem;
+        }
+
+        [data-testid="stSidebar"] .sidebar-nav-card {
+            background: rgba(255, 255, 255, 0.74);
+            border: 1px solid rgba(210, 219, 242, 0.90);
+            border-radius: 18px;
+            padding: 0.9rem 0.85rem 0.8rem 0.85rem;
+            margin-bottom: 0.9rem;
+            box-shadow: 0 12px 30px rgba(40, 34, 88, 0.08);
+            backdrop-filter: blur(10px);
+        }
+
+        [data-testid="stSidebar"] .sidebar-nav-card-title {
+            font-size: 1rem;
+            font-weight: 800;
+            color: #23304d !important;
+            margin-bottom: 0.18rem;
+        }
+
+        [data-testid="stSidebar"] .sidebar-nav-card-note {
+            font-size: 0.78rem;
+            line-height: 1.45;
+            color: #6b7394 !important;
+            margin-bottom: 0.7rem;
+        }
+
+        [data-testid="stSidebar"] .sidebar-nav-item {
+            margin-bottom: 0.42rem;
+        }
+
+        [data-testid="stSidebar"] .sidebar-nav-item:last-child {
+            margin-bottom: 0;
+        }
+
+        [data-testid="stSidebar"] .sidebar-nav-item.active .sidebar-nav-accent {
+            background: linear-gradient(180deg, #c7d2fe 0%, #ffffff 100%);
+            box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45);
+        }
+
+        [data-testid="stSidebar"] .sidebar-nav-accent {
+            width: 4px;
+            min-height: 2.25rem;
+            border-radius: 999px;
+            background: transparent;
+            margin-top: 0.05rem;
+        }
+
+        [data-testid="stSidebar"] .stButton > button[kind="secondary"] {
+            background: rgba(255, 255, 255, 0.90);
+            color: #28324c;
+            border: 1px solid rgba(219, 227, 255, 0.85);
+            border-radius: 14px;
+            min-height: 2.28rem;
+            padding: 0.4rem 0.75rem;
+            font-size: 0.95rem;
+            font-weight: 600;
+            box-shadow: none;
+            display: flex;
+            justify-content: flex-start;
+            align-items: center;
+        }
+
+        [data-testid="stSidebar"] .stButton > button[kind="secondary"]:hover {
+            background: #ffffff;
+            border-color: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 10px 24px rgba(40, 34, 88, 0.10);
+            transform: translateY(-1px);
+        }
+
+        [data-testid="stSidebar"] .stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, rgba(237, 241, 255, 0.98) 0%, rgba(227, 233, 255, 0.98) 100%);
+            color: #20305a;
+            border: 1px solid rgba(190, 203, 255, 0.98);
+            border-radius: 14px;
+            min-height: 2.28rem;
+            padding: 0.4rem 0.75rem;
+            font-size: 0.95rem;
+            font-weight: 700;
+            box-shadow: 0 10px 22px rgba(23, 31, 72, 0.14);
+            display: flex;
+            justify-content: flex-start;
+            align-items: center;
+        }
+
+        [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 28px rgba(23, 31, 72, 0.16);
+        }
+
+        [data-testid="stSidebar"] .sidebar-meta-block {
+            background: rgba(255, 255, 255, 0.76);
+            border: 1px solid rgba(210, 219, 242, 0.88);
+            border-radius: 16px;
+            padding: 0.8rem 0.9rem;
+            margin-top: 0.95rem;
+        }
+
+        [data-testid="stSidebar"] .sidebar-meta-title {
+            font-size: 0.86rem;
+            font-weight: 700;
+            color: #23304d !important;
+            margin-bottom: 0.45rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_sidebar_nav_item(item: dict, active_key: str) -> None:
+    """渲染一个紧凑的侧边栏导航项。"""
+    item_active = item["key"] == active_key
+    accent_class = "sidebar-nav-item active" if item_active else "sidebar-nav-item"
+    accent_col, button_col = st.columns([0.08, 0.92], gap="small")
+    with accent_col:
+        st.markdown(
+            f'<div class="{accent_class}"><div class="sidebar-nav-accent"></div></div>',
+            unsafe_allow_html=True,
+        )
+    with button_col:
+        if st.button(
+            f'{item["icon"]} {item["label"]}',
+            key=item["key"],
+            help=item["help"],
+            type="primary" if item_active else "secondary",
+            use_container_width=True,
+        ):
+            activate_sidebar_view(item["flag"])
+
+
+def render_sidebar_nav_group(title: str, description: str, items: list[dict], active_key: str) -> None:
+    """渲染一个分组导航卡片。"""
+    with st.container(border=True):
+        st.markdown(f'<div class="sidebar-nav-card-title">{title}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="sidebar-nav-card-note">{description}</div>', unsafe_allow_html=True)
+        for item in items:
+            render_sidebar_nav_item(item, active_key)
+
+
+def render_sidebar_navigation() -> None:
+    """渲染现代化分组侧边栏导航。"""
+    render_sidebar_nav_styles()
+    active_key = get_active_sidebar_view()
+    st.markdown('<div class="sidebar-nav-shell">', unsafe_allow_html=True)
+    render_sidebar_nav_group(
+        SIDEBAR_HOME_ITEM["title"],
+        "进入工作台，先看关注池，再继续分析、发现股票和量化验证",
+        [SIDEBAR_HOME_ITEM],
+        active_key,
+    )
+    for group in SIDEBAR_NAV_GROUPS:
+        render_sidebar_nav_group(group["title"], group["description"], group["items"], active_key)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_workbench_page_header(title: str, description: str, *, primary_action_label: str | None = None, secondary_action_label: str | None = None) -> None:
+    """渲染统一工作台风格的页面页头。"""
+    has_actions = bool(primary_action_label or secondary_action_label)
+    if has_actions:
+        left_col, right_col = st.columns([1.7, 0.8], gap="large")
+    else:
+        left_col, right_col = st.container(), None
+    with left_col:
+        st.markdown('<div class="workbench-page-title">', unsafe_allow_html=True)
+        st.markdown(f"<h1>{title}</h1>", unsafe_allow_html=True)
+        st.markdown(f'<p class="workbench-page-subtitle">{description}</p>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+    if right_col is not None:
+        with right_col:
+            action_cols = st.columns(2, gap="small")
+            with action_cols[0]:
+                if secondary_action_label:
+                    st.button(secondary_action_label, key="workbench_header_secondary_action", use_container_width=True)
+            with action_cols[1]:
+                if primary_action_label:
+                    st.button(primary_action_label, key="workbench_header_primary_action", type="primary", use_container_width=True)
+
+
+def render_workbench_section_header(title: str, description: str) -> None:
+    """渲染统一工作台区块标题。"""
+    st.markdown(
+        f"""
+        <div class="workbench-section-header">
+            <div class="workbench-section-title">{title}</div>
+            <div class="workbench-section-note">{description}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # 自定义CSS样式 - 专业版
 st.markdown("""
 <style>
     /* 全局样式 */
     .main {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: #f5f8fd;
         background-attachment: fixed;
     }
     
     .stApp {
-        background: transparent;
+        background: #f5f8fd;
     }
     
     /* 主容器 */
     .block-container {
-        padding-top: 2rem;
+        padding-top: 1.35rem;
         padding-bottom: 2rem;
-        background: rgba(255, 255, 255, 0.95);
-        border-radius: 20px;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
-        margin-top: 1rem;
+        background: #fbfcff;
+        border-radius: 28px;
+        border: 1px solid #e5ecf8;
+        box-shadow: 0 18px 40px rgba(93, 112, 160, 0.08);
+        margin-top: 0.75rem;
     }
-    
-    /* 顶部导航栏 */
-    .top-nav {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem 2rem;
-        border-radius: 15px;
-        margin-bottom: 2rem;
-        box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
+
+    .workbench-shell {
+        display: flex;
+        flex-direction: column;
+        gap: 1.2rem;
     }
-    
-    .nav-title {
-        font-size: 2rem;
+
+    .workbench-page-title {
+        padding: 0.15rem 0;
+    }
+
+    .workbench-page-title h1 {
+        font-size: 2.2rem;
         font-weight: 800;
-        color: white;
-        text-align: center;
+        color: #1f2840;
         margin: 0;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-        letter-spacing: 1px;
+        letter-spacing: -0.03em;
     }
-    
-    .nav-subtitle {
-        text-align: center;
-        color: rgba(255, 255, 255, 0.9);
-        font-size: 0.95rem;
-        margin-top: 0.5rem;
-        font-weight: 300;
+
+    .workbench-page-subtitle {
+        text-align: left;
+        color: #6f7c99;
+        font-size: 0.98rem;
+        margin: 0.55rem 0 0 0;
+        font-weight: 400;
+        line-height: 1.65;
+        max-width: 54rem;
+    }
+
+    .workbench-section-title {
+        font-size: 1.65rem;
+        font-weight: 800;
+        color: #23304d;
+        margin: 0;
+        letter-spacing: -0.03em;
+    }
+
+    .workbench-section-note {
+        color: #71809a;
+        font-size: 0.92rem;
+        line-height: 1.6;
+        margin: 0.55rem 0 0 0;
+    }
+
+    .workbench-section-card {
+        background: #ffffff;
+        border: 1px solid #e5ecf8;
+        border-radius: 24px;
+        padding: 1.45rem 1.5rem;
+        box-shadow: 0 12px 26px rgba(100, 112, 156, 0.06);
     }
     
     /* 标签页样式 */
     .stTabs [data-baseweb="tab-list"] {
         gap: 2rem;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1rem 2rem;
+        background: #edf3fb;
+        padding: 0.75rem 1rem;
         border-radius: 15px;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.2);
+        border: 1px solid #dce5f2;
+        box-shadow: 0 8px 18px rgba(121, 140, 182, 0.08);
     }
     
     .stTabs [data-baseweb="tab"] {
-        height: 60px;
-        background: rgba(255, 255, 255, 0.1);
+        height: 52px;
+        background: rgba(255, 255, 255, 0.76);
         border-radius: 10px;
-        color: white;
+        color: #42506b;
         font-weight: 600;
-        font-size: 1.1rem;
-        padding: 0 2rem;
-        border: none;
-        transition: all 0.3s ease;
+        font-size: 1rem;
+        padding: 0 1.35rem;
+        border: 1px solid transparent;
+        transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
     }
     
     .stTabs [data-baseweb="tab"]:hover {
-        background: rgba(255, 255, 255, 0.2);
-        transform: translateY(-2px);
+        background: #f8fbff;
     }
     
     .stTabs [aria-selected="true"] {
         background: white !important;
-        color: #667eea !important;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        color: #3656dc !important;
+        border: 1px solid #cfd9ee;
+        box-shadow: 0 8px 16px rgba(96, 112, 154, 0.12);
     }
     
     /* 侧边栏美化 */
     .css-1d391kg, [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
-        padding-top: 2rem;
+        background: linear-gradient(180deg, #eef3ff 0%, #ebe9ff 54%, #f5f2ff 100%);
+        padding-top: 0.35rem;
+    }
+
+    [data-testid="stSidebarUserContent"] {
+        padding-top: 0.15rem !important;
+    }
+
+    [data-testid="stSidebarContent"] {
+        padding-top: 0 !important;
+    }
+
+    [data-testid="stSidebarHeader"] {
+        min-height: 0 !important;
+        height: auto !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+        margin-bottom: 0 !important;
+    }
+
+    [data-testid="stSidebarHeader"] > div {
+        margin: 0 !important;
+        min-height: 0 !important;
+    }
+
+    [data-testid="stSidebarCollapseButton"] {
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
     }
     
     .css-1d391kg h1, .css-1d391kg h2, .css-1d391kg h3,
     [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
-        color: white !important;
+        color: #23304d !important;
     }
     
     .css-1d391kg .stMarkdown, [data-testid="stSidebar"] .stMarkdown {
-        color: rgba(255, 255, 255, 0.95) !important;
+        color: #3b4867 !important;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+        background: rgba(255, 255, 255, 0.76);
+        border: 1px solid rgba(188, 198, 235, 0.72);
+        border-radius: 18px;
+        box-shadow: 0 10px 28px rgba(87, 97, 152, 0.10);
+        backdrop-filter: blur(8px);
     }
     
     /* 分析师卡片 */
@@ -195,20 +534,39 @@ st.markdown("""
     
     /* 按钮美化 */
     .stButton>button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        border-radius: 10px;
-        padding: 0.75rem 2rem;
+        border-radius: 14px;
+        padding: 0.46rem 0.84rem;
         font-weight: 600;
-        font-size: 1rem;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        font-size: 0.92rem;
+        transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        box-shadow: 0 4px 10px rgba(121, 140, 182, 0.08);
+        min-height: 2.32rem;
+    }
+
+    .stButton>button[kind="secondary"] {
+        background: #ffffff;
+        color: #25324b;
+        border: 1px solid #d8e2f0;
+    }
+
+    .stButton>button[kind="secondary"]:hover {
+        background: #f5f8fd;
+        color: #1f2c45;
+        border-color: #c7d5ea;
+        box-shadow: 0 8px 18px rgba(121, 140, 182, 0.10);
+    }
+
+    .stButton>button[kind="primary"] {
+        background: #4f6ef7;
+        color: white;
+        border: 1px solid #4f6ef7;
+        box-shadow: 0 8px 18px rgba(79, 110, 247, 0.16);
     }
     
-    .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 25px rgba(102, 126, 234, 0.4);
+    .stButton>button[kind="primary"]:hover {
+        background: #4562e3;
+        border-color: #4562e3;
+        box-shadow: 0 10px 20px rgba(79, 110, 247, 0.18);
     }
     
     /* 输入框美化 */
@@ -263,8 +621,8 @@ st.markdown("""
     
     /* 响应式设计 */
     @media (max-width: 768px) {
-        .nav-title {
-            font-size: 1.5rem;
+        .workbench-page-title h1 {
+            font-size: 1.7rem;
         }
         .stTabs [data-baseweb="tab"] {
             font-size: 0.9rem;
@@ -275,255 +633,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def main():
-    # 顶部标题栏
-    st.markdown("""
-    <div class="top-nav">
-        <h1 class="nav-title">📈 复合多AI智能体股票团队分析系统</h1>
-        <p class="nav-subtitle">基于DeepSeek的专业量化投资分析平台 | Multi-Agent Stock Analysis System</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # 学习资源展示
-    st.info("📺 **新手必看干货**：为了在股市长久生存，建议您观看 👉 [股票知识讲解合集](https://www.bilibili.com/video/BV1Y2FGzzEeS/) 和 [投资认知提升合集](https://www.bilibili.com/video/BV1ugBMBAEbW) 👈，相信会对您有很大帮助！")
+    st.session_state.setdefault("selected_model", config.DEFAULT_MODEL_NAME)
+    api_key_status = check_api_key()
 
     # 侧边栏
     with st.sidebar:
-        # 快捷导航 - 移到顶部
-        st.markdown("### 🔍 功能导航")
-
-        # 🏠 单股分析（首页）
-        if st.button("🏠 股票分析", width='stretch', key="nav_home", help="返回首页，进行单只股票的深度分析"):
-            # 清除所有功能页面标志
-            for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                       'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_low_price_bull', 'show_news_flow', 'show_macro_cycle', 'show_macro_analysis', 'show_value_stock', 'show_quant_sim']:
-                if key in st.session_state:
-                    del st.session_state[key]
-
-        st.markdown("---")
-
-        # 🎯 选股板块
-        with st.expander("🎯 选股板块", expanded=True):
-            st.markdown("**根据不同策略筛选优质股票**")
-
-            if st.button("💰 主力选股", width='stretch', key="nav_main_force", help="基于主力资金流向的选股策略"):
-                st.session_state.show_main_force = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_sector_strategy',
-                           'show_longhubang', 'show_portfolio', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-            
-            if st.button("🐂 低价擒牛", width='stretch', key="nav_low_price_bull", help="低价高成长股票筛选策略"):
-                st.session_state.show_low_price_bull = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_sector_strategy',
-                           'show_longhubang', 'show_portfolio', 'show_main_force', 'show_small_cap', 'show_profit_growth', 'show_news_flow', 'show_macro_analysis']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-            
-            if st.button("📊 小市值策略", width='stretch', key="nav_small_cap", help="小盘高成长股票筛选策略"):
-                st.session_state.show_small_cap = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_sector_strategy',
-                           'show_longhubang', 'show_portfolio', 'show_main_force', 'show_low_price_bull', 'show_profit_growth', 'show_news_flow', 'show_macro_analysis']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-            
-            if st.button("📈 净利增长", width='stretch', key="nav_profit_growth", help="净利润增长稳健股票筛选策略"):
-                st.session_state.show_profit_growth = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_sector_strategy',
-                           'show_longhubang', 'show_portfolio', 'show_main_force', 'show_low_price_bull', 'show_small_cap', 'show_news_flow', 'show_value_stock', 'show_macro_analysis']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-            if st.button("💎 低估值策略", width='stretch', key="nav_value_stock", help="低PE+低PB+高股息+低负债 价值投资筛选"):
-                st.session_state.show_value_stock = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_sector_strategy',
-                           'show_longhubang', 'show_portfolio', 'show_main_force', 'show_low_price_bull', 'show_small_cap', 'show_profit_growth', 'show_news_flow', 'show_macro_cycle', 'show_macro_analysis']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-        # 📊 策略分析
-        with st.expander("📊 策略分析", expanded=True):
-            st.markdown("**AI驱动的板块和龙虎榜策略**")
-
-            if st.button("🎯 智策板块", width='stretch', key="nav_sector_strategy", help="AI板块策略分析"):
-                st.session_state.show_sector_strategy = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_longhubang', 'show_portfolio', 'show_smart_monitor', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-            if st.button("🐉 智瞰龙虎", width='stretch', key="nav_longhubang", help="龙虎榜深度分析"):
-                st.session_state.show_longhubang = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_sector_strategy', 'show_portfolio', 'show_smart_monitor', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-            
-            if st.button("📰 新闻流量", width='stretch', key="nav_news_flow", help="新闻流量监测与短线指导"):
-                st.session_state.show_news_flow = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_sector_strategy', 'show_portfolio', 'show_smart_monitor', 'show_low_price_bull', 'show_longhubang', 'show_macro_cycle', 'show_macro_analysis']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-            if st.button("🌏 宏观分析", width='stretch', key="nav_macro_analysis", help="国家统计局宏观数据 × A股行业映射 × 优质标的"):
-                st.session_state.show_macro_analysis = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_sector_strategy', 'show_portfolio', 'show_smart_monitor', 'show_low_price_bull', 'show_longhubang', 'show_news_flow', 'show_macro_cycle']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-            if st.button("🧭 宏观周期", width='stretch', key="nav_macro_cycle", help="康波周期 × 美林投资时钟 × 政策分析"):
-                st.session_state.show_macro_cycle = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_sector_strategy', 'show_portfolio', 'show_smart_monitor', 'show_low_price_bull', 'show_longhubang', 'show_news_flow', 'show_macro_analysis']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-        # 💼 投资管理
-        with st.expander("💼 投资管理", expanded=True):
-            st.markdown("**持仓跟踪与实时监测**")
-
-            if st.button("📊 持仓分析", width='stretch', key="nav_portfolio", help="投资组合分析与定时跟踪"):
-                st.session_state.show_portfolio = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_sector_strategy', 'show_longhubang', 'show_smart_monitor', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-            if st.button("🧪 量化模拟", width='stretch', key="nav_quant_sim", help="统一候选池、策略信号、人工执行与模拟持仓"):
-                st.session_state.show_quant_sim = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_smart_monitor',
-                           'show_low_price_bull', 'show_news_flow', 'show_macro_analysis', 'show_macro_cycle',
-                           'show_profit_growth', 'show_value_stock', 'show_small_cap']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-            if st.button("🕰️ 历史回放", width='stretch', key="nav_quant_replay", help="策略历史区间回放与连续模拟结果分析"):
-                st.session_state.show_quant_replay = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_smart_monitor',
-                           'show_low_price_bull', 'show_news_flow', 'show_macro_analysis', 'show_macro_cycle',
-                           'show_profit_growth', 'show_value_stock', 'show_small_cap', 'show_quant_sim']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-            if st.button("🤖 AI盯盘", width='stretch', key="nav_smart_monitor", help="DeepSeek AI自动盯盘决策交易（支持A股T+1）"):
-                st.session_state.show_smart_monitor = True
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis', 'show_quant_sim']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-            if st.button("📡 实时监测", width='stretch', key="nav_monitor", help="价格监控与预警提醒"):
-                st.session_state.show_monitor = True
-                for key in ['show_history', 'show_main_force', 'show_longhubang', 'show_portfolio',
-                           'show_config', 'show_sector_strategy', 'show_smart_monitor', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis', 'show_quant_sim']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-        st.markdown("---")
-
-        # 📖 历史记录
-        if st.button("📖 历史记录", width='stretch', key="nav_history", help="查看历史分析记录"):
-            st.session_state.show_history = True
-            for key in ['show_monitor', 'show_longhubang', 'show_portfolio', 'show_config',
-                       'show_main_force', 'show_sector_strategy', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis']:
-                if key in st.session_state:
-                    del st.session_state[key]
-
-        # ⚙️ 环境配置
-        if st.button("⚙️ 环境配置", width='stretch', key="nav_config", help="系统设置与API配置"):
-            st.session_state.show_config = True
-            for key in ['show_history', 'show_monitor', 'show_main_force', 'show_sector_strategy',
-                       'show_longhubang', 'show_portfolio', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis']:
-                if key in st.session_state:
-                    del st.session_state[key]
-
-        st.markdown("---")
-
-        # 系统配置
-        st.markdown("### ⚙️ 系统配置")
-
-        # API密钥检查
-        api_key_status = check_api_key()
-        if api_key_status:
-            st.success("✅ API已连接")
-        else:
-            st.error("❌ API未配置")
-            st.caption("请在.env中配置API密钥")
-
-        st.markdown("---")
-
-        # 显示当前模型信息
-        show_current_model_info()
-        st.session_state.selected_model = config.DEFAULT_MODEL_NAME
-
-        st.markdown("---")
-
-        # 系统状态面板
-        st.markdown("### 📊 系统状态")
-
-        monitor_status = "🟢 运行中" if monitor_service.running else "🔴 已停止"
-        st.markdown(f"**监测服务**: {monitor_status}")
-
-        try:
-            from monitor_db import monitor_db
-            stocks = monitor_db.get_monitored_stocks()
-            notifications = monitor_db.get_pending_notifications()
-            record_count = db.get_record_count()
-
-            st.markdown(f"**分析记录**: {record_count}条")
-            st.markdown(f"**监测股票**: {len(stocks)}只")
-            st.markdown(f"**待处理**: {len(notifications)}条")
-        except:
-            pass
-
-        st.markdown("---")
-
-        # 分析参数设置
-        st.markdown("### 📊 分析参数")
-        period = st.selectbox(
-            "数据周期",
-            ["1y", "6mo", "3mo", "1mo"],
-            index=0,
-            help="选择历史数据的时间范围"
-        )
-
-        st.markdown("---")
-
-        # 帮助信息
-        with st.expander("💡 使用帮助"):
-            st.markdown("""
-            **股票代码格式**
-            - 🇨🇳 A股：6位数字（如600519）
-            - 🇭🇰 港股：1-5位数字（如700、00700）或HK前缀（如HK00700）
-            - 🇺🇸 美股：字母代码（如AAPL）
-            
-            **功能说明**
-            - **股票分析**：AI团队深度分析个股
-            - **选股板块**：主力资金选股策略
-            - **策略分析**：智策板块、智瞰龙虎
-            - **投资管理**：持仓分析、实时监测
-            - **历史记录**：查看分析历史
-            
-            **AI分析流程**
-            1. 数据获取 → 2. 技术分析
-            3. 基本面分析 → 4. 资金分析
-            5. 情绪数据(ARBR) → 6. 新闻(qstock)
-            7. AI分析 → 8. 团队讨论 → 9. 决策
-            """)
-            
-        # 学习资源
-        with st.expander("📺 学习视频合集"):
-            st.markdown("""
-            **📢 B站干货合集**
-            
-            如果你希望能在股市中长久生存下去，建议你能把下面的合集看完，会对你有很大帮助的！
-            
-            - 📚 [股票知识讲解合集](https://www.bilibili.com/video/BV1Y2FGzzEeS/)
-            - 🧠 [投资认知提升合集](https://www.bilibili.com/video/BV1ugBMBAEbW)
-            """)
+        render_sidebar_navigation()
 
     # 检查是否显示历史记录
     if 'show_history' in st.session_state and st.session_state.show_history:
@@ -533,6 +648,15 @@ def main():
     # 检查是否显示监测面板
     if 'show_monitor' in st.session_state and st.session_state.show_monitor:
         display_monitor_manager()
+        return
+
+    # 检查是否显示主力选股
+    if 'show_discovery_hub' in st.session_state and st.session_state.show_discovery_hub:
+        display_discovery_hub()
+        return
+
+    if 'show_research_hub' in st.session_state and st.session_state.show_research_hub:
+        display_research_hub()
         return
 
     # 检查是否显示主力选股
@@ -617,113 +741,161 @@ def main():
         display_config_manager()
         return
 
-    # 主界面
-    # 添加单个/批量分析切换
-    col_mode1, col_mode2 = st.columns([1, 3])
-    with col_mode1:
-        analysis_mode = st.radio(
-            "分析模式",
-            ["单个分析", "批量分析"],
-            horizontal=True,
-            help="单个分析：分析单只股票；批量分析：同时分析多只股票"
-        )
+    render_workbench_page_header(
+        "股票工作台",
+        "先看关注池，再继续做股票分析、发现股票、研究情报和量化验证，让后续动作围绕同一个主池展开。",
+    )
 
-    with col_mode2:
-        if analysis_mode == "批量分析":
-            batch_mode = st.radio(
-                "批量模式",
-                ["顺序分析", "多线程并行"],
+    display_watchlist_workbench(activate_sidebar_view)
+
+    st.markdown("---")
+
+    render_workbench_section_header(
+        "股票分析",
+        "先确定分析师视角，再配置分析模式与周期，最后输入股票代码并启动分析。",
+    )
+    if "workbench_prefill_stock_input" in st.session_state:
+        st.session_state["home_stock_input"] = st.session_state.pop("workbench_prefill_stock_input")
+    with st.container(border=True):
+        st.markdown("#### 👥 分析师团队")
+        st.caption("先确定我们要启用哪些分析视角，再进入后面的分析模式和股票输入。")
+
+        col1, col2, col3 = st.columns(3, gap="large")
+
+        with col1:
+            enable_technical = st.checkbox(
+                "📊 技术分析师",
+                value=True,
+                help="负责技术指标分析、图表形态识别、趋势判断",
+            )
+            enable_fundamental = st.checkbox(
+                "💼 基本面分析师",
+                value=True,
+                help="负责公司财务分析、行业研究、估值分析",
+            )
+
+        with col2:
+            enable_fund_flow = st.checkbox(
+                "💰 资金面分析师",
+                value=True,
+                help="负责资金流向分析、主力行为研究",
+            )
+            enable_risk = st.checkbox(
+                "⚠️ 风险管理师",
+                value=True,
+                help="负责风险识别、风险评估、风险控制策略制定",
+            )
+
+        with col3:
+            enable_sentiment = st.checkbox(
+                "📈 市场情绪分析师",
+                value=True,
+                help="负责市场情绪研究、ARBR指标分析（仅A股）",
+            )
+            enable_news = st.checkbox(
+                "📰 新闻分析师",
+                value=True,
+                help="负责新闻事件分析、舆情研究（仅A股，qstock数据源）",
+            )
+
+        selected_analysts = []
+        if enable_technical:
+            selected_analysts.append("技术分析师")
+        if enable_fundamental:
+            selected_analysts.append("基本面分析师")
+        if enable_fund_flow:
+            selected_analysts.append("资金面分析师")
+        if enable_risk:
+            selected_analysts.append("风险管理师")
+        if enable_sentiment:
+            selected_analysts.append("市场情绪分析师")
+        if enable_news:
+            selected_analysts.append("新闻分析师")
+
+        if selected_analysts:
+            st.success(f"✅ 已选择 {len(selected_analysts)} 位分析师：{', '.join(selected_analysts)}")
+        else:
+            st.warning("⚠️ 请至少选择一位分析师")
+
+        st.divider()
+
+        mode_col, detail_col, period_col = st.columns([1.1, 1.7, 1.1], gap="large")
+        with mode_col:
+            analysis_mode = st.radio(
+                "分析模式",
+                ["单个分析", "批量分析"],
                 horizontal=True,
-                help="顺序分析：按次序分析，稳定但较慢；多线程并行：同时分析多只，快速但消耗资源"
-            )
-            st.session_state.batch_mode = batch_mode
-
-    st.markdown("---")
-
-    if analysis_mode == "单个分析":
-        # 单个股票分析界面
-        col1, col2, col3 = st.columns([2, 1, 1])
-
-        with col1:
-            stock_input = st.text_input(
-                "🔍 请输入股票代码或名称",
-                placeholder="例如: AAPL, 000001, 00700",
-                help="支持A股(如000001)、港股(如00700)和美股(如AAPL)"
+                help="单个分析：分析单只股票；批量分析：同时分析多只股票",
             )
 
-        with col2:
-            analyze_button = st.button("🚀 开始分析", type="primary", width='stretch')
+        with detail_col:
+            if analysis_mode == "批量分析":
+                batch_mode = st.radio(
+                    "批量模式",
+                    ["顺序分析", "多线程并行"],
+                    horizontal=True,
+                    help="顺序分析：按次序分析，稳定但较慢；多线程并行：同时分析多只，快速但消耗资源",
+                )
+                st.session_state.batch_mode = batch_mode
+            else:
+                st.caption("单股模式会直接输出完整分析、团队讨论和最终决策。")
 
-        with col3:
-            if st.button("🔄 清除缓存", width='stretch'):
-                st.cache_data.clear()
-                st.success("缓存已清除")
+        with period_col:
+            period = st.selectbox(
+                "数据周期",
+                ["1y", "6mo", "3mo", "1mo"],
+                index=0,
+                help="选择历史数据的时间范围",
+            )
 
-    else:
-        # 批量股票分析界面
-        stock_input = st.text_area(
-            "🔍 请输入多个股票代码（每行一个或用逗号分隔）",
-            placeholder="例如:\n000001\n600036\n00700\n\n或者: 000001, 600036, 00700, AAPL",
-            height=120,
-            help="支持多种格式：每行一个代码或用逗号分隔。支持A股、港股、美股"
-        )
+        st.divider()
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            analyze_button = st.button("🚀 开始批量分析", type="primary", width='stretch')
-        with col2:
-            if st.button("🔄 清除缓存", width='stretch'):
-                st.cache_data.clear()
-                st.success("缓存已清除")
-        with col3:
-            if st.button("🗑️ 清除结果", width='stretch'):
-                if 'batch_analysis_results' in st.session_state:
-                    del st.session_state.batch_analysis_results
-                st.success("已清除批量分析结果")
+        if not api_key_status:
+            st.warning("❌ 当前未配置模型 API Key，请先在 .env 中设置后再开始分析。")
 
-    # 分析师团队选择
-    st.markdown("---")
-    st.subheader("👥 选择分析师团队")
+        if analysis_mode == "单个分析":
+            input_col, analyze_col, clear_col = st.columns([5.2, 0.9, 0.8], gap="small")
 
-    col1, col2, col3 = st.columns(3)
+            with input_col:
+                stock_input = st.text_input(
+                    "🔍 请输入股票代码或名称",
+                    placeholder="例如: AAPL, 000001, 00700",
+                    help="支持A股(如000001)、港股(如00700)和美股(如AAPL)",
+                    key="home_stock_input",
+                )
 
-    with col1:
-        enable_technical = st.checkbox("📊 技术分析师", value=True,
-                                       help="负责技术指标分析、图表形态识别、趋势判断")
-        enable_fundamental = st.checkbox("💼 基本面分析师", value=True,
-                                        help="负责公司财务分析、行业研究、估值分析")
+            with analyze_col:
+                st.markdown('<div style="height: 1.95rem;"></div>', unsafe_allow_html=True)
+                analyze_button = st.button("分析", type="primary", use_container_width=True)
 
-    with col2:
-        enable_fund_flow = st.checkbox("💰 资金面分析师", value=True,
-                                      help="负责资金流向分析、主力行为研究")
-        enable_risk = st.checkbox("⚠️ 风险管理师", value=True,
-                                 help="负责风险识别、风险评估、风险控制策略制定")
+            with clear_col:
+                st.markdown('<div style="height: 1.95rem;"></div>', unsafe_allow_html=True)
+                if st.button("清除", use_container_width=True):
+                    st.cache_data.clear()
+                    st.success("缓存已清除")
 
-    with col3:
-        enable_sentiment = st.checkbox("📈 市场情绪分析师", value=True,
-                                      help="负责市场情绪研究、ARBR指标分析（仅A股）")
-        enable_news = st.checkbox("📰 新闻分析师", value=True,
-                                 help="负责新闻事件分析、舆情研究（仅A股，qstock数据源）")
+        else:
+            stock_input = st.text_area(
+                "🔍 请输入多个股票代码（每行一个或用逗号分隔）",
+                placeholder="例如:\n000001\n600036\n00700\n\n或者: 000001, 600036, 00700, AAPL",
+                height=120,
+                help="支持多种格式：每行一个代码或用逗号分隔。支持A股、港股、美股",
+            )
 
-    # 显示已选择的分析师
-    selected_analysts = []
-    if enable_technical:
-        selected_analysts.append("技术分析师")
-    if enable_fundamental:
-        selected_analysts.append("基本面分析师")
-    if enable_fund_flow:
-        selected_analysts.append("资金面分析师")
-    if enable_risk:
-        selected_analysts.append("风险管理师")
-    if enable_sentiment:
-        selected_analysts.append("市场情绪分析师")
-    if enable_news:
-        selected_analysts.append("新闻分析师")
-
-    if selected_analysts:
-        st.info(f"✅ 已选择 {len(selected_analysts)} 位分析师: {', '.join(selected_analysts)}")
-    else:
-        st.warning("⚠️ 请至少选择一位分析师")
+            action_spacer, action_col = st.columns([2.9, 1.1], gap="medium")
+            with action_col:
+                action_cols = st.columns([0.95, 0.85, 0.85], gap="small")
+                with action_cols[0]:
+                    analyze_button = st.button("批量", type="primary", use_container_width=True)
+                with action_cols[1]:
+                    if st.button("清除", use_container_width=True):
+                        st.cache_data.clear()
+                        st.success("缓存已清除")
+                with action_cols[2]:
+                    if st.button("清空", use_container_width=True):
+                        if "batch_analysis_results" in st.session_state:
+                            del st.session_state.batch_analysis_results
+                        st.success("已清除批量分析结果")
 
     # 保存选择到session_state
     st.session_state.enable_technical = enable_technical
@@ -732,8 +904,6 @@ def main():
     st.session_state.enable_risk = enable_risk
     st.session_state.enable_sentiment = enable_sentiment
     st.session_state.enable_news = enable_news
-
-    st.markdown("---")
 
     if analyze_button and stock_input:
         if not api_key_status:
@@ -834,10 +1004,6 @@ def main():
             # 显示最终决策
             display_final_decision(final_decision, stock_info, agents_results, discussion_result)
 
-    # 示例和说明
-    elif not stock_input:
-        show_example_interface()
-
 def check_api_key():
     """检查API密钥是否配置"""
     try:
@@ -846,15 +1012,32 @@ def check_api_key():
     except:
         return False
 
-@st.cache_data(ttl=300)  # 缓存5分钟
+@st.cache_data(ttl=300, show_spinner=False)  # 缓存5分钟
 def get_stock_data(symbol, period):
     """获取股票数据（带缓存）"""
     fetcher = StockDataFetcher()
-    stock_info = fetcher.get_stock_info(symbol)
     stock_data = fetcher.get_stock_data(symbol, period)
+    stock_info = fetcher.get_fast_stock_info(symbol)
 
     if isinstance(stock_data, dict) and "error" in stock_data:
+        if isinstance(stock_info, dict):
+            stock_info["data_error"] = stock_data["error"]
         return stock_info, None, None
+
+    if isinstance(stock_info, dict) and stock_data is not None and len(stock_data) > 0:
+        latest = stock_data.iloc[-1]
+        if stock_info.get("current_price") in (None, "N/A", ""):
+            stock_info["current_price"] = latest.get("Close", "N/A")
+        if len(stock_data) > 1:
+            previous = stock_data.iloc[-2]
+            prev_close = previous.get("Close")
+            latest_close = latest.get("Close")
+            if prev_close not in (None, 0, "N/A") and latest_close not in (None, "N/A"):
+                try:
+                    if stock_info.get("change_percent") in (None, "N/A", ""):
+                        stock_info["change_percent"] = round(((latest_close - prev_close) / prev_close) * 100, 2)
+                except Exception:
+                    pass
 
     stock_data_with_indicators = fetcher.calculate_technical_indicators(stock_data)
     indicators = fetcher.get_latest_indicators(stock_data_with_indicators)
@@ -902,6 +1085,69 @@ def parse_stock_list(stock_input):
             unique_list.append(code)
 
     return unique_list
+
+
+def _coerce_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_indicator_explanations(indicators, current_price=None):
+    explanations = {}
+
+    current_price_value = _coerce_float(current_price)
+    rsi = _coerce_float(indicators.get("rsi")) if indicators else None
+    if rsi is None:
+        explanations["RSI"] = {"state": "暂无数据", "summary": "当前没有可用的 RSI 数据。"}
+    elif rsi > 70:
+        explanations["RSI"] = {"state": "偏热", "summary": "RSI 高于 70，短线偏热，继续追高要更谨慎。"}
+    elif rsi < 30:
+        explanations["RSI"] = {"state": "偏冷", "summary": "RSI 低于 30，短线偏弱，但也意味着市场在观察超跌修复机会。"}
+    else:
+        explanations["RSI"] = {"state": "中性", "summary": "RSI 位于 30-70 之间，暂未进入极端区间。"}
+
+    ma20 = _coerce_float(indicators.get("ma20")) if indicators else None
+    if ma20 is None or current_price_value is None:
+        explanations["MA20"] = {"state": "暂无判断", "summary": "缺少当前价或 MA20，暂时无法判断中期趋势强弱。"}
+    elif current_price_value >= ma20:
+        explanations["MA20"] = {"state": "强于中期趋势", "summary": "当前价高于 MA20，中期趋势仍偏强，回调后更容易获得支撑。"}
+    else:
+        explanations["MA20"] = {"state": "弱于中期趋势", "summary": "当前价低于 MA20，中期趋势偏弱，反弹更需要成交量和趋势确认。"}
+
+    volume_ratio = _coerce_float(indicators.get("volume_ratio")) if indicators else None
+    if volume_ratio is None:
+        explanations["量比"] = {"state": "暂无数据", "summary": "当前没有可用的量比数据。"}
+    elif volume_ratio > 1.5:
+        explanations["量比"] = {"state": "明显放量", "summary": "量比大于 1.5，说明当前成交活跃度明显高于常态，价格波动更值得关注。"}
+    elif volume_ratio < 0.8:
+        explanations["量比"] = {"state": "成交偏淡", "summary": "量比低于 0.8，说明资金参与意愿偏弱，价格信号的持续性要打折扣。"}
+    else:
+        explanations["量比"] = {"state": "正常成交", "summary": "量比接近 1，成交活跃度没有明显异常。"}
+
+    macd = _coerce_float(indicators.get("macd")) if indicators else None
+    if macd is None:
+        explanations["MACD"] = {"state": "暂无数据", "summary": "当前没有可用的 MACD 数据。"}
+    elif macd > 0:
+        explanations["MACD"] = {"state": "多头动能", "summary": "MACD 大于 0，说明价格动能偏强，多头仍占优势。"}
+    elif macd < 0:
+        explanations["MACD"] = {"state": "空头动能", "summary": "MACD 小于 0，说明价格动能偏弱，空头压力仍在。"}
+    else:
+        explanations["MACD"] = {"state": "动能平衡", "summary": "MACD 接近 0，说明多空动能暂时比较均衡。"}
+
+    return explanations
+
+
+def build_indicator_summary(explanations):
+    ordered_keys = ["RSI", "MA20", "量比", "MACD"]
+    parts = []
+    for key in ordered_keys:
+        payload = explanations.get(key)
+        if not payload:
+            continue
+        parts.append(f"{key}：{payload['state']}。{payload['summary']}")
+    return " ".join(parts)
 
 def analyze_single_stock_for_batch(symbol, period, enabled_analysts_config=None, selected_model=None):
     """单个股票分析（用于批量分析）
@@ -1200,7 +1446,11 @@ def run_stock_analysis(symbol, period):
             return
 
         if stock_data is None:
-            st.error("❌ 无法获取股票历史数据")
+            data_error = stock_info.get("data_error") if isinstance(stock_info, dict) else None
+            if data_error:
+                st.error(f"❌ 无法获取股票历史数据：{data_error}")
+            else:
+                st.error("❌ 无法获取股票历史数据")
             return
 
         # 显示股票基本信息
@@ -1451,7 +1701,7 @@ def display_stock_info(stock_info, indicators):
             st.metric("市值", f"{market_cap}")
 
     # 技术指标
-    if indicators and not isinstance(indicators, dict) or "error" not in indicators:
+    if indicators and (not isinstance(indicators, dict) or "error" not in indicators):
         st.subheader("📈 关键技术指标")
 
         col1, col2, col3, col4 = st.columns(4)
@@ -1488,6 +1738,22 @@ def display_stock_info(stock_info, indicators):
                 st.metric("MACD", f"{macd:.4f}")
             else:
                 st.metric("MACD", f"{macd}")
+
+        indicator_explanations = build_indicator_explanations(
+            indicators,
+            current_price=stock_info.get("current_price") if isinstance(stock_info, dict) else None,
+        )
+
+        st.markdown("#### 📖 技术指标解读")
+        explain_cols = st.columns(2, gap="large")
+        ordered_keys = ["RSI", "MA20", "量比", "MACD"]
+        for index, key in enumerate(ordered_keys):
+            payload = indicator_explanations.get(key, {"state": "暂无判断", "summary": "暂无说明。"})
+            with explain_cols[index % 2]:
+                st.markdown(f"**{key} · {payload['state']}**")
+                st.caption(payload["summary"])
+
+        st.info(build_indicator_summary(indicator_explanations))
 
 def display_stock_chart(stock_data, stock_info):
     """显示股票图表"""
@@ -1694,61 +1960,6 @@ def display_final_decision(final_decision, stock_info, agents_results=None, disc
         display_pdf_export_section(stock_info, agents_results, discussion_result, final_decision)
     else:
         st.warning("⚠️ PDF导出功能需要完整的分析数据")
-
-def show_example_interface():
-    """显示示例界面"""
-    st.subheader("💡 使用说明")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("""
-        ### 🚀 如何使用
-        1. **输入股票代码**：支持A股(如000001)、港股(如00700)和美股(如AAPL)
-        2. **点击开始分析**：系统将启动AI分析师团队
-        3. **查看分析报告**：多位专业分析师将从不同角度分析
-        4. **获得投资建议**：获得最终的投资评级和操作建议
-        
-        ### 📊 分析维度
-        - **技术面**：趋势、指标、支撑阻力
-        - **基本面**：财务、估值、行业分析
-        - **资金面**：资金流向、主力行为
-        - **风险管理**：风险识别与控制
-        - **市场情绪**：情绪指标、热点分析
-        """)
-
-    with col2:
-        st.markdown("""
-        ### 📈 示例股票代码
-        
-        **A股热门**
-        - 000001 (平安银行)
-        - 600036 (招商银行)
-        - 600519 (贵州茅台)
-        
-        **港股热门**
-        - 00700 或 700 (腾讯控股)
-        - 09988 或 9988 (阿里巴巴-SW)
-        - 01810 或 1810 (小米集团-W)
-        
-        **美股热门**
-        - AAPL (苹果)
-        - MSFT (微软)
-        - NVDA (英伟达)
-        """)
-
-    st.info("💡 提示：首次运行需要配置DeepSeek API Key，请在.env中设置DEEPSEEK_API_KEY")
-
-    st.markdown("---")
-    st.markdown("""
-    ### 🌏 市场支持说明
-    - **A股**：完整支持（技术分析、财务数据、资金流向、市场情绪、新闻数据qstock）
-    - **港股**：部分支持（技术分析、21项财务指标）⭐️ 
-    - **美股**：完整支持（技术分析、财务数据）
-    
-    ### 📊 港股支持的财务指标
-    盈利能力（6项）、营运能力（3项）、偿债能力（2项）、市场表现（4项）、分红指标（3项）、股本结构（3项）
-    """)
 
 def display_history_records():
     """显示历史分析记录"""

@@ -9,8 +9,8 @@ class FakeFetcher:
         self.snapshot = snapshot
         self.calls = []
 
-    def get_comprehensive_data(self, stock_code):
-        self.calls.append(stock_code)
+    def get_comprehensive_data(self, stock_code, preferred_name=None):
+        self.calls.append({"stock_code": stock_code, "preferred_name": preferred_name})
         return dict(self.snapshot)
 
 
@@ -95,6 +95,7 @@ def test_stockpolicy_adapter_delegates_candidate_analysis_to_kernel_runtime():
     assert runtime.candidate_calls[0]["candidate"]["stock_code"] == "300390"
     assert runtime.candidate_calls[0]["market_snapshot"]["current_price"] == 61.99
     assert runtime.candidate_calls[0]["analysis_timeframe"] == "1d"
+    assert adapter.market_data_provider.data_fetcher.calls[0]["preferred_name"] == "天华新能"
 
 
 def test_stockpolicy_adapter_passes_requested_timeframe_to_kernel_runtime():
@@ -154,3 +155,4 @@ def test_stockpolicy_adapter_delegates_position_analysis_to_kernel_runtime():
     assert len(runtime.position_calls) == 1
     assert runtime.position_calls[0]["position"]["stock_code"] == "301291"
     assert runtime.position_calls[0]["market_snapshot"]["current_price"] == 52.96
+    assert adapter.market_data_provider.data_fetcher.calls[0]["preferred_name"] == "明阳电气"

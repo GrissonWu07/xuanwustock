@@ -68,7 +68,7 @@ class SmartMonitorTDXDataFetcher:
         host_summary = ", ".join(f"{name}:{ip}:{host_port}" for name, ip, host_port in self.hosts[:3])
         self.logger.info(f"TDX数据源初始化成功，使用pytdx直连: {host_summary}")
 
-    def get_realtime_quote(self, stock_code: str) -> Optional[Dict]:
+    def get_realtime_quote(self, stock_code: str, preferred_name: Optional[str] = None) -> Optional[Dict]:
         """
         获取实时行情
 
@@ -92,7 +92,7 @@ class SmartMonitorTDXDataFetcher:
             change_amount = round(current_price - pre_close, 4)
             change_pct = round((change_amount / pre_close * 100), 4) if pre_close > 0 else 0.0
 
-            stock_name = self._get_stock_name(clean_code)
+            stock_name = preferred_name or self._get_stock_name(clean_code)
 
             self.logger.info(f"✅ TDX成功获取 {clean_code} ({stock_name}) 实时行情")
 
@@ -379,11 +379,11 @@ class SmartMonitorTDXDataFetcher:
             self.logger.debug("技术指标计算异常详情", exc_info=True)
             return None
 
-    def get_comprehensive_data(self, stock_code: str) -> Dict:
+    def get_comprehensive_data(self, stock_code: str, preferred_name: Optional[str] = None) -> Dict:
         """获取综合数据（实时行情 + 技术指标）"""
         result = {}
 
-        quote = self.get_realtime_quote(stock_code)
+        quote = self.get_realtime_quote(stock_code, preferred_name=preferred_name)
         if quote:
             result.update(quote)
 

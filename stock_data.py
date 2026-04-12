@@ -19,20 +19,37 @@ class StockDataFetcher:
         self.financial_data = None
         self.data_source_manager = data_source_manager
         
-    def get_stock_info(self, symbol):
+    def get_stock_info(self, symbol, include_price_snapshot=True):
         """获取股票基本信息"""
         try:
             # 处理中国A股
             if self._is_chinese_stock(symbol):
-                return self._get_chinese_stock_info(symbol)
+                return self._get_chinese_stock_info(symbol, include_price_snapshot=include_price_snapshot)
             # 处理港股
             elif self._is_hk_stock(symbol):
-                return self._get_hk_stock_info(symbol)
+                return self._get_hk_stock_info(symbol, include_price_snapshot=include_price_snapshot)
             # 处理美股
             else:
-                return self._get_us_stock_info(symbol)
+                return self._get_us_stock_info(symbol, include_price_snapshot=include_price_snapshot)
         except Exception as e:
             return {"error": f"获取股票信息失败: {str(e)}"}
+
+    def get_fast_stock_info(self, symbol):
+        """获取轻量股票信息，优先保证分析链路启动速度。"""
+        if self._is_chinese_stock(symbol):
+            return {
+                "symbol": symbol,
+                "name": symbol,
+                "current_price": "N/A",
+                "change_percent": "N/A",
+                "pe_ratio": "N/A",
+                "pb_ratio": "N/A",
+                "market_cap": "N/A",
+                "market": "中国A股",
+                "exchange": "上海/深圳证券交易所",
+                "industry": "未知",
+            }
+        return self.get_stock_info(symbol, include_price_snapshot=False)
     
     def get_stock_data(self, symbol, period="1y", interval="1d"):
         """获取股票历史数据"""
@@ -69,7 +86,7 @@ class StockDataFetcher:
         # 补齐到5位
         return symbol.zfill(5)
     
-    def _get_chinese_stock_info(self, symbol):
+    def _get_chinese_stock_info(self, symbol, include_price_snapshot=True):
         """获取中国股票基本信息（支持akshare和tushare数据源自动切换）"""
         try:
             # 初始化基本信息
@@ -179,28 +196,29 @@ class StockDataFetcher:
             # except Exception as e:
             #     print(f"[Akshare] 获取实时数据失败: {e}")
             #     # 如果实时数据获取失败，尝试使用数据源管理器获取历史数据（支持tushare备用）
-            try:
-                print(f"[数据源管理器] 尝试获取最近交易数据...")
-                hist_data = self.data_source_manager.get_stock_hist_data(
-                    symbol=symbol,
-                    start_date=(datetime.now() - timedelta(days=30)).strftime('%Y%m%d'),
-                    end_date=datetime.now().strftime('%Y%m%d'),
-                    adjust='qfq'
-                )
-                
-                if hist_data is not None and not hist_data.empty:
-                    # 标准化列名
-                    if 'close' in hist_data.columns:
-                        latest = hist_data.iloc[-1]
-                        info['current_price'] = latest['close']
-                        # 计算涨跌幅
-                        if len(hist_data) > 1:
-                            prev_close = hist_data.iloc[-2]['close']
-                            change_pct = ((latest['close'] - prev_close) / prev_close) * 100
-                            info['change_percent'] = round(change_pct, 2)
-                        print(f"[数据源管理器] ✅ 成功获取价格数据")
-            except Exception as e2:
-                print(f"获取历史数据也失败: {e2}")
+            if include_price_snapshot:
+                try:
+                    print(f"[数据源管理器] 尝试获取最近交易数据...")
+                    hist_data = self.data_source_manager.get_stock_hist_data(
+                        symbol=symbol,
+                        start_date=(datetime.now() - timedelta(days=30)).strftime('%Y%m%d'),
+                        end_date=datetime.now().strftime('%Y%m%d'),
+                        adjust='qfq'
+                    )
+
+                    if hist_data is not None and not hist_data.empty:
+                        # 标准化列名
+                        if 'close' in hist_data.columns:
+                            latest = hist_data.iloc[-1]
+                            info['current_price'] = latest['close']
+                            # 计算涨跌幅
+                            if len(hist_data) > 1:
+                                prev_close = hist_data.iloc[-2]['close']
+                                change_pct = ((latest['close'] - prev_close) / prev_close) * 100
+                                info['change_percent'] = round(change_pct, 2)
+                            print(f"[数据源管理器] ✅ 成功获取价格数据")
+                except Exception as e2:
+                    print(f"获取历史数据也失败: {e2}")
             
             # 方法3: 使用百度估值数据获取市盈率和市净率
             if info['pe_ratio'] == 'N/A':
@@ -244,7 +262,7 @@ class StockDataFetcher:
                 "exchange": "上海/深圳证券交易所"
             }
     
-    def _get_hk_stock_info(self, symbol):
+    def _get_hk_stock_info(self, symbol, include_price_snapshot=True):
         """获取港股基本信息"""
         try:
             # 规范化港股代码
@@ -297,7 +315,7 @@ class StockDataFetcher:
                 print(f"获取港股实时数据失败: {e}")
             
             # 方法2: 尝试使用历史数据获取价格信息
-            if info['current_price'] == 'N/A':
+            if include_price_snapshot and info['current_price'] == 'N/A':
                 try:
                     hist_df = ak.stock_hk_hist(symbol=hk_code, period="daily", 
                                               start_date=(datetime.now() - timedelta(days=5)).strftime('%Y%m%d'),
@@ -330,25 +348,30 @@ class StockDataFetcher:
                 "exchange": "香港交易所"
             }
     
-    def _get_us_stock_info(self, symbol):
+    def _get_us_stock_info(self, symbol, include_price_snapshot=True):
         """获取美股基本信息"""
         import time
         
         try:
             # 添加延迟避免频率限制
-            time.sleep(1)
+            if include_price_snapshot:
+                time.sleep(1)
             
             ticker = yf.Ticker(symbol)
             
             # 先尝试获取历史数据（通常更稳定）
             try:
-                hist = ticker.history(period="2d")
-                if not hist.empty:
-                    current_price = hist['Close'].iloc[-1]
-                    if len(hist) > 1:
-                        prev_close = hist['Close'].iloc[-2]
-                        change_percent = ((current_price - prev_close) / prev_close) * 100
+                if include_price_snapshot:
+                    hist = ticker.history(period="2d")
+                    if not hist.empty:
+                        current_price = hist['Close'].iloc[-1]
+                        if len(hist) > 1:
+                            prev_close = hist['Close'].iloc[-2]
+                            change_percent = ((current_price - prev_close) / prev_close) * 100
+                        else:
+                            change_percent = 'N/A'
                     else:
+                        current_price = 'N/A'
                         change_percent = 'N/A'
                 else:
                     current_price = 'N/A'
@@ -424,6 +447,11 @@ class StockDataFetcher:
     def _get_chinese_stock_data(self, symbol, period="1y"):
         """获取中国股票历史数据（支持akshare和tushare数据源自动切换）"""
         try:
+            tdx_df = self._get_chinese_stock_data_from_tdx(symbol, period)
+            if tdx_df is not None and not tdx_df.empty:
+                print(f"✅ 已优先使用TDX获取 {symbol} 的历史数据，共 {len(tdx_df)} 条记录")
+                return tdx_df
+
             # 计算日期范围
             end_date = datetime.now().strftime('%Y%m%d')
             if period == "1y":
@@ -463,11 +491,51 @@ class StockDataFetcher:
                 
                 print(f"✅ 成功获取 {symbol} 的历史数据，共 {len(df)} 条记录")
                 return df
+            fallback_df = self._get_chinese_stock_data_from_tdx(symbol, period)
+            if fallback_df is not None and not fallback_df.empty:
+                print(f"✅ 已回退到TDX获取 {symbol} 的历史数据，共 {len(fallback_df)} 条记录")
+                return fallback_df
             else:
                 return {"error": "所有数据源均无法获取历史数据"}
                 
         except Exception as e:
             return {"error": f"获取中国股票数据失败: {str(e)}"}
+
+    def _get_chinese_stock_data_from_tdx(self, symbol, period="1y"):
+        """当 akshare/tushare 不可用时，回退到 TDX K 线数据。"""
+        try:
+            from smart_monitor_tdx_data import SmartMonitorTDXDataFetcher
+
+            tdx_fetcher = SmartMonitorTDXDataFetcher()
+            period_limit_map = {
+                "1y": 320,
+                "6mo": 180,
+                "3mo": 100,
+                "1mo": 45,
+            }
+            limit = period_limit_map.get(period, 320)
+            df = tdx_fetcher.get_kline_data(symbol, kline_type="day", limit=limit)
+            if df is None or df.empty:
+                return None
+
+            df = df.rename(
+                columns={
+                    "日期": "Date",
+                    "开盘": "Open",
+                    "收盘": "Close",
+                    "最高": "High",
+                    "最低": "Low",
+                    "成交量": "Volume",
+                    "成交额": "Amount",
+                }
+            )
+            df["Date"] = pd.to_datetime(df["Date"])
+            df["股票代码"] = symbol
+            df = df.sort_values("Date").set_index("Date")
+            return df
+        except Exception as exc:
+            print(f"TDX历史数据回退失败: {exc}")
+            return None
     
     def _get_hk_stock_data(self, symbol, period="1y"):
         """获取港股历史数据"""

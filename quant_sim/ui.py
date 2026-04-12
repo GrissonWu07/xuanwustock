@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -11,7 +11,6 @@ import streamlit as st
 from quant_sim.candidate_pool_service import CandidatePoolService
 from quant_sim.db import DEFAULT_DB_FILE, QuantSimDB
 from quant_sim.engine import QuantSimEngine
-from quant_sim.integration import add_stock_to_quant_sim
 from quant_sim.portfolio_service import PortfolioService
 from quant_sim.replay_runner import get_quant_sim_replay_runner
 from quant_sim.replay_service import QuantSimReplayService
@@ -56,19 +55,21 @@ def display_quant_sim() -> None:
     account_summary = portfolio_service.get_account_summary()
     scheduler_status = scheduler.get_status()
 
-    st.title("🧪 量化模拟")
-    st.caption(
-        "选股结果统一进入候选池，系统自动计算 BUY/SELL/HOLD；可手工确认，也可启用自动执行模拟交易。"
-        " 开启后不需要等待用户确认，系统会直接按策略写入模拟买卖结果。"
+    render_workspace_section_header(
+        "🧪 量化模拟",
+        "围绕量化候选池启动模拟、查看账户变化，并处理当前信号。",
     )
     render_flash_messages(QUANT_SIM_FLASH_NAMESPACE)
 
-    metric1, metric2, metric3, metric4, metric5 = st.columns(5)
-    metric1.metric("初始资金池", f"{account_summary['initial_cash']:.2f}")
-    metric2.metric("可用现金", f"{account_summary['available_cash']:.2f}")
-    metric3.metric("持仓市值", f"{account_summary['market_value']:.2f}")
-    metric4.metric("总权益", f"{account_summary['total_equity']:.2f}")
-    metric5.metric("总盈亏", f"{account_summary['total_pnl']:.2f}")
+    render_workspace_metric_band(
+        [
+            ("初始资金池", f"{account_summary['initial_cash']:.2f}"),
+            ("可用现金", f"{account_summary['available_cash']:.2f}"),
+            ("持仓市值", f"{account_summary['market_value']:.2f}"),
+            ("总权益", f"{account_summary['total_equity']:.2f}"),
+            ("总盈亏", f"{account_summary['total_pnl']:.2f}"),
+        ]
+    )
 
     status_level, status_message = build_scheduler_status_message(scheduler_status)
     getattr(st, status_level)(status_message)
@@ -81,33 +82,23 @@ def display_quant_sim() -> None:
             account_summary=account_summary,
             scheduler_status=scheduler_status,
         )
-    with results_col:
         render_quant_sim_status_snapshot(scheduler_status)
+    with results_col:
+        render_quant_sim_account_results(
+            portfolio_service=portfolio_service,
+            account_summary=account_summary,
+        )
         render_quant_sim_candidate_pool(
             candidate_service=candidate_service,
             portfolio_service=portfolio_service,
             engine=engine,
             scheduler=scheduler,
         )
-        st.markdown("### 查看内容")
-        detail_view = st.radio(
-            "查看内容",
-            options=["执行中心", "账户结果"],
-            horizontal=True,
-            key="quant_sim_detail_view",
-            label_visibility="collapsed",
+        render_quant_sim_execution_center(
+            signal_service=signal_service,
+            portfolio_service=portfolio_service,
+            candidate_service=candidate_service,
         )
-        if detail_view == "执行中心":
-            render_quant_sim_execution_center(
-                signal_service=signal_service,
-                portfolio_service=portfolio_service,
-                candidate_service=candidate_service,
-            )
-        elif detail_view == "账户结果":
-            render_quant_sim_account_results(
-                portfolio_service=portfolio_service,
-                account_summary=account_summary,
-            )
     if st.session_state.get("quant_sim_candidate_analysis_signal"):
         render_quant_sim_candidate_analysis_dialog()
 
@@ -116,6 +107,25 @@ def render_quant_sim_layout_styles() -> None:
     st.markdown(
         """
         <style>
+        .workspace-section-header {
+            margin-bottom: 1.15rem;
+        }
+        .workspace-section-title {
+            font-size: 1.68rem;
+            font-weight: 800;
+            color: #23304d;
+            margin: 0;
+            letter-spacing: -0.03em;
+        }
+        .workspace-section-note {
+            color: #71809a;
+            font-size: 0.92rem;
+            line-height: 1.6;
+            margin: 0.45rem 0 0 0;
+        }
+        .workspace-metric-band {
+            margin-bottom: 1rem;
+        }
         div[data-testid="stMetric"] {
             background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
             border: 1px solid #e5e7eb;
@@ -134,39 +144,212 @@ def render_quant_sim_layout_styles() -> None:
             margin-top: -0.15rem;
             margin-bottom: 0.75rem;
         }
+        .quant-sim-status-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.55rem;
+            margin-bottom: 0.65rem;
+        }
+        .quant-sim-status-card {
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            border: 1px solid #e5e7eb;
+            border-radius: 16px;
+            padding: 0.68rem 0.8rem;
+        }
+        .quant-sim-status-label {
+            color: #7c8aa5;
+            font-size: 0.78rem;
+            font-weight: 600;
+            line-height: 1.2;
+            margin-bottom: 0.3rem;
+        }
+        .quant-sim-status-value {
+            color: #0f172a;
+            font-size: 1.02rem;
+            font-weight: 700;
+            line-height: 1.15;
+            letter-spacing: -0.02em;
+        }
+        .quant-sim-status-footnote {
+            color: #64748b;
+            font-size: 0.84rem;
+            margin-top: 0.15rem;
+        }
+        .quant-sim-trade-analysis-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 0.6rem;
+            margin-bottom: 0.5rem;
+        }
+        .quant-sim-trade-analysis-card {
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            border: 1px solid #e5e7eb;
+            border-radius: 16px;
+            padding: 0.7rem 0.85rem;
+        }
+        .quant-sim-trade-analysis-label {
+            color: #7c8aa5;
+            font-size: 0.78rem;
+            font-weight: 600;
+            line-height: 1.2;
+            margin-bottom: 0.28rem;
+        }
+        .quant-sim-trade-analysis-value {
+            color: #0f172a;
+            font-size: 0.96rem;
+            font-weight: 700;
+            line-height: 1.18;
+            letter-spacing: -0.01em;
+        }
+        .quant-sim-candidate-cell {
+            color: #0f172a;
+            font-size: 0.93rem;
+            line-height: 1.25;
+            padding: 0.1rem 0 0.12rem 0;
+            min-height: 1.4rem;
+            display: flex;
+            align-items: center;
+        }
+        .quant-sim-candidate-cell.muted {
+            color: #475569;
+        }
+        .quant-sim-row-divider {
+            border-bottom: 1px solid #eef2f7;
+            margin: 0.2rem 0 0.2rem 0;
+        }
+        .quant-icon-button + div[data-testid="stButton"] > button[kind="tertiary"] {
+            min-height: 1.45rem;
+            height: 1.45rem;
+            width: 1.45rem;
+            min-width: 1.45rem;
+            max-width: 1.45rem;
+            padding: 0 !important;
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            border-radius: 999px !important;
+            color: #475569 !important;
+            margin: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }
+        .quant-icon-button + div[data-testid="stButton"] > button[kind="tertiary"]:hover {
+            background: #eef4ff !important;
+            color: #2563eb !important;
+        }
+        .quant-icon-button + div[data-testid="stButton"] > button[kind="tertiary"] p {
+            font-size: 0.88rem !important;
+            line-height: 1 !important;
+            margin: 0 !important;
+        }
+        .quant-icon-button + div[data-testid="stButton"]:has(> button[kind="tertiary"]) {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            min-height: 1.45rem;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        .quant-footer-control-label {
+            color: #7c8aa5;
+            font-size: 0.76rem;
+            font-weight: 600;
+            margin: 0 0 0.18rem 0;
+        }
+        div.element-container:has(#quant-page-size-marker) + div.element-container [data-baseweb="select"] {
+            min-height: 2.1rem !important;
+        }
+        div.element-container:has(#quant-page-size-marker) + div.element-container [data-baseweb="select"] * {
+            font-size: 0.84rem !important;
+        }
+        div.element-container:has(#quant-page-marker) + div.element-container input {
+            min-height: 2.1rem !important;
+            font-size: 0.84rem !important;
+        }
+        div.element-container:has(#quant-page-marker) + div.element-container button {
+            min-height: 2.1rem !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def render_quant_sim_status_snapshot(scheduler_status: dict) -> None:
-    st.markdown("### 运行概况")
+def render_workspace_section_header(title: str, description: str) -> None:
     st.markdown(
-        '<div class="quant-sim-panel-caption">候选池是主操作面；下面通过“执行中心 / 账户结果 / 候选股详情”切换查看不同结果。</div>',
+        f"""
+        <div class="workspace-section-header">
+            <div class="workspace-section-title">{title}</div>
+            <p class="workspace-section-note">{description}</p>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
-    status_cols = st.columns(5)
-    status_cols[0].metric("定时状态", "运行中" if scheduler_status["running"] else "已停止")
-    status_cols[1].metric("分析粒度", _format_analysis_timeframe(str(scheduler_status["analysis_timeframe"])))
-    status_cols[2].metric("策略模式", _format_strategy_mode(str(scheduler_status["strategy_mode"])))
-    status_cols[3].metric("自动执行", "已开启" if scheduler_status["auto_execute"] else "关闭")
-    status_cols[4].metric("开始日期", str(scheduler_status["start_date"]))
-    st.caption(
-        f"上次运行：{scheduler_status['last_run_at'] or '暂无'} | 下次运行：{scheduler_status['next_run'] or '未启动'}"
+
+
+def render_workspace_metric_band(items: list[tuple[str, str]], *, gap: str = "small") -> None:
+    metric_cols = st.columns(len(items), gap=gap)
+    for col, (label, value) in zip(metric_cols, items, strict=False):
+        col.metric(label, value)
+
+
+def render_quant_sim_status_snapshot(scheduler_status: dict) -> None:
+    render_workspace_section_header(
+        "运行状态",
+        "这里展示当前定时任务的运行状态和关键参数。",
+    )
+    cards_html = "".join(
+        [
+            _build_quant_status_card_html("定时状态", "运行中" if scheduler_status["running"] else "已停止"),
+            _build_quant_status_card_html("分析粒度", _format_analysis_timeframe(str(scheduler_status["analysis_timeframe"]))),
+            _build_quant_status_card_html("策略模式", _format_strategy_mode(str(scheduler_status["strategy_mode"]))),
+            _build_quant_status_card_html("自动执行", "已开启" if scheduler_status["auto_execute"] else "关闭"),
+        ]
+    )
+    st.markdown(f'<div class="quant-sim-status-grid">{cards_html}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="quant-sim-status-footnote">上次运行：{scheduler_status["last_run_at"] or "暂无"} | 下次运行：{scheduler_status["next_run"] or "未启动"}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _build_quant_status_card_html(label: str, value: str) -> str:
+    return (
+        '<div class="quant-sim-status-card">'
+        f'<div class="quant-sim-status-label">{label}</div>'
+        f'<div class="quant-sim-status-value">{value}</div>'
+        "</div>"
+    )
+
+
+def render_replay_trade_analysis_cards(trade_analysis: dict) -> None:
+    cards_html = "".join(
+        [
+            _build_quant_trade_analysis_card_html("总买入金额", f"{float(trade_analysis['total_buy_amount']):.2f}"),
+            _build_quant_trade_analysis_card_html("总卖出金额", f"{float(trade_analysis['total_sell_amount']):.2f}"),
+            _build_quant_trade_analysis_card_html("已实现盈亏", f"{float(trade_analysis['total_realized_pnl']):.2f}"),
+            _build_quant_trade_analysis_card_html(
+                "盈利/亏损笔数",
+                f"{int(trade_analysis['winning_trade_count'])}/{int(trade_analysis['losing_trade_count'])}",
+            ),
+            _build_quant_trade_analysis_card_html("平均单笔盈亏", f"{float(trade_analysis['avg_realized_pnl']):.2f}"),
+        ]
+    )
+    st.markdown(f'<div class="quant-sim-trade-analysis-grid">{cards_html}</div>', unsafe_allow_html=True)
+
+
+def _build_quant_trade_analysis_card_html(label: str, value: str) -> str:
+    return (
+        '<div class="quant-sim-trade-analysis-card">'
+        f'<div class="quant-sim-trade-analysis-label">{label}</div>'
+        f'<div class="quant-sim-trade-analysis-value">{value}</div>'
+        "</div>"
     )
 
 
 def render_quant_sim_config_panel(*, scheduler, portfolio_service: PortfolioService, account_summary: dict, scheduler_status: dict) -> None:
-    st.markdown("### 策略与调度")
-    st.caption("资金池、粒度、策略模式和自动执行统一在这里配置，改完后可以直接保存、启动或立即运行。")
-
-    enabled = st.checkbox("启用定时模拟", value=bool(scheduler_status["enabled"]))
-    start_date = st.date_input(
-        "开始日期",
-        value=datetime.fromisoformat(f"{scheduler_status['start_date']} 00:00:00").date(),
-        key="quant_sim_scheduler_start_date",
-    )
+    st.markdown("### 定时任务配置")
     interval_minutes = st.number_input(
         "间隔(分钟)",
         min_value=5,
@@ -193,7 +376,6 @@ def render_quant_sim_config_panel(*, scheduler, portfolio_service: PortfolioServ
         index=["CN", "HK", "US"].index(str(scheduler_status["market"])),
     )
     auto_execute = st.checkbox("自动执行模拟交易", value=bool(scheduler_status["auto_execute"]))
-    st.caption("开启自动执行模拟交易后，不需要等待用户确认，系统会直接按策略写入模拟买卖结果；否则 BUY / SELL 会进入“待执行信号”。")
 
     initial_cash = st.number_input(
         "初始资金池(元)",
@@ -201,125 +383,62 @@ def render_quant_sim_config_panel(*, scheduler, portfolio_service: PortfolioServ
         value=float(account_summary["initial_cash"]),
         step=10000.0,
     )
-    st.caption("更新资金池仅适用于未开始交易前；重置模拟账户会清空模拟持仓、成交与信号，并按当前金额重建资金池。")
-
-    action_cols = st.columns(2)
+    action_cols = st.columns([0.34, 0.34, 0.32], gap="small")
     with action_cols[0]:
-        if st.button("💾 保存配置", use_container_width=True, key="quant_sim_save_scheduler_config"):
+        if render_compact_action_button("保存", key="quant_sim_save_scheduler_config", tone="neutral"):
             handle_scheduler_save(
                 scheduler,
-                enabled=enabled,
+                portfolio_service=portfolio_service,
+                initial_cash=float(initial_cash),
                 auto_execute=auto_execute,
                 interval_minutes=int(interval_minutes),
                 trading_hours_only=trading_hours_only,
                 analysis_timeframe=analysis_timeframe,
                 strategy_mode=strategy_mode,
-                start_date=start_date.isoformat(),
                 market=market,
             )
             st.rerun()
     with action_cols[1]:
-        if st.button("▶️ 保存并启动定时分析", use_container_width=True, key="quant_sim_start_scheduler_config"):
+        if render_compact_action_button("重置", key="quant_sim_reset_account", tone="danger"):
+            handle_account_reset(portfolio_service, initial_cash)
+            st.rerun()
+
+    if scheduler_status["running"]:
+        if st.button("停止", key="quant_sim_stop_scheduler_config", use_container_width=True):
+            handle_scheduler_stop(scheduler)
+            st.rerun()
+    else:
+        if st.button("启动模拟", key="quant_sim_start_scheduler_config", type="primary", use_container_width=True):
             handle_scheduler_start(
                 scheduler,
-                enabled=enabled,
+                portfolio_service=portfolio_service,
+                initial_cash=float(initial_cash),
                 auto_execute=auto_execute,
                 interval_minutes=int(interval_minutes),
                 trading_hours_only=trading_hours_only,
                 analysis_timeframe=analysis_timeframe,
                 strategy_mode=strategy_mode,
-                start_date=start_date.isoformat(),
                 market=market,
             )
-            st.rerun()
-
-    action_cols2 = st.columns(3)
-    with action_cols2[0]:
-        if st.button("⏹️ 停止定时分析", use_container_width=True, key="quant_sim_stop_scheduler_config"):
-            handle_scheduler_stop(scheduler)
-            st.rerun()
-    with action_cols2[1]:
-        if st.button("💰 更新资金池", use_container_width=True, key="quant_sim_update_account"):
-            handle_account_update(portfolio_service, initial_cash)
-            st.rerun()
-    with action_cols2[2]:
-        if st.button("🔄 重置模拟账户", use_container_width=True, key="quant_sim_reset_account"):
-            handle_account_reset(portfolio_service, initial_cash)
             st.rerun()
 
 
 def render_quant_sim_candidate_pool(*, candidate_service: CandidatePoolService, portfolio_service: PortfolioService, engine: QuantSimEngine, scheduler) -> None:
     st.markdown("### 候选池")
-    head_col1, head_col2 = st.columns([1.0, 3.0])
-    with head_col1:
-        if st.button("➕ 添加股票", key="quant_sim_toggle_add_candidate", use_container_width=True):
-            st.session_state["quant_sim_show_add_candidate_form"] = not st.session_state.get(
-                "quant_sim_show_add_candidate_form",
-                False,
-            )
-            st.rerun()
-    with head_col2:
-        st.caption("候选池是实时量化模拟的主操作面；每只股票都支持快速分析或移出池子。")
-
-    if st.session_state.get("quant_sim_show_add_candidate_form", False):
-        with st.form("quant_sim_add_candidate_inline"):
-            add_col1, add_col2, add_col3, add_col4 = st.columns([1.1, 1.4, 1.1, 1.0])
-            with add_col1:
-                stock_code = st.text_input("股票代码", placeholder="如 600000")
-            with add_col2:
-                stock_name = st.text_input("股票名称", placeholder="如 浦发银行")
-            with add_col3:
-                source = st.selectbox(
-                    "来源策略",
-                    options=["manual", "main_force", "low_price_bull", "profit_growth", "value_stock", "small_cap"],
-                    format_func=_format_source,
-                    key="quant_sim_inline_add_source",
-                )
-            with add_col4:
-                latest_price = st.number_input("参考价格", min_value=0.0, value=0.0, step=0.01, key="quant_sim_inline_add_price")
-            notes = st.text_input("备注", placeholder="可选", key="quant_sim_inline_add_notes")
-            add_submit_col1, add_submit_col2 = st.columns([1.0, 1.0])
-            with add_submit_col1:
-                submitted = st.form_submit_button("加入候选池", use_container_width=True)
-            with add_submit_col2:
-                cancelled = st.form_submit_button("取消", use_container_width=True)
-            if submitted:
-                success, message, _ = add_stock_to_quant_sim(
-                    stock_code=stock_code,
-                    stock_name=stock_name,
-                    source=source,
-                    latest_price=latest_price or None,
-                    notes=notes or None,
-                )
-                if success:
-                    st.session_state["quant_sim_show_add_candidate_form"] = False
-                    queue_quant_sim_flash("success", message)
-                    st.rerun()
-                queue_quant_sim_flash("error", message)
-            if cancelled:
-                st.session_state["quant_sim_show_add_candidate_form"] = False
-                st.rerun()
 
     candidates = candidate_service.list_candidates(status="active")
     if not candidates:
-        st.info("候选池为空，可以从选股页加入标的，或点击上方“添加股票”。")
+        st.info("量化候选池为空。请先到工作台的关注池里选择股票，再加入量化候选池。")
         return
 
-    filter_cols = st.columns([1.5, 1.3, 0.8, 0.8])
-    with filter_cols[0]:
-        search_term = st.text_input("搜索股票", placeholder="输入代码或名称", key="quant_sim_candidate_search")
-    with filter_cols[1]:
-        source_options = sorted({_format_source(source) for candidate in candidates for source in (candidate.get("sources") or [candidate.get("source", "manual")])})
-        selected_sources = st.multiselect("来源筛选", options=source_options, key="quant_sim_candidate_source_filter")
-    with filter_cols[2]:
-        page_size = st.selectbox("每页显示", options=[10, 20, 50], index=1, key="quant_sim_candidate_page_size")
-    with filter_cols[3]:
-        page = st.number_input("页码", min_value=1, value=1, step=1, key="quant_sim_candidate_page")
+    search_term = st.text_input("搜索股票", placeholder="输入代码或名称", key="quant_sim_candidate_search")
+    page_size = int(st.session_state.get("quant_sim_candidate_page_size", 20))
+    page = int(st.session_state.get("quant_sim_candidate_page", 1))
 
-    filtered_candidates = filter_quant_candidates(candidates, search_term=search_term, selected_sources=selected_sources)
+    filtered_candidates = filter_quant_candidates(candidates, search_term=search_term, selected_sources=None)
     total_candidates = len(filtered_candidates)
     if total_candidates == 0:
-        st.info("当前筛选条件下没有候选股，试试清空搜索词或来源筛选。")
+        st.info("当前筛选条件下没有候选股，试试清空搜索词。")
         return
     page_count = max(1, (total_candidates + int(page_size) - 1) // int(page_size))
     current_page = min(int(page), page_count)
@@ -328,48 +447,79 @@ def render_quant_sim_candidate_pool(*, candidate_service: CandidatePoolService, 
     start_index = (current_page - 1) * int(page_size)
     end_index = start_index + int(page_size)
     visible_candidates = filtered_candidates[start_index:end_index]
-    st.caption(f"当前显示 {start_index + 1}-{min(end_index, total_candidates)} / {total_candidates} 只候选股。")
 
-    header_cols = st.columns([1.0, 1.3, 1.6, 0.9, 0.75, 0.55])
+    header_cols = st.columns([1.0, 1.3, 1.6, 0.9, 0.9], gap="small")
     header_cols[0].markdown("**股票代码**")
     header_cols[1].markdown("**股票名称**")
     header_cols[2].markdown("**来源策略**")
     header_cols[3].markdown("**参考价格**")
-    header_cols[4].markdown("**分析**")
-    header_cols[5].markdown("**删除**")
-    st.markdown("---")
+    header_cols[4].markdown("**操作**")
+    st.markdown('<div class="quant-sim-row-divider"></div>', unsafe_allow_html=True)
 
     for candidate in visible_candidates:
-        row_cols = st.columns([1.0, 1.3, 1.6, 0.9, 0.75, 0.55])
+        row_cols = st.columns([1.0, 1.3, 1.6, 0.9, 0.9], gap="small", vertical_alignment="center")
         sources = candidate.get("sources") or [candidate.get("source", "manual")]
-        row_cols[0].write(candidate["stock_code"])
-        row_cols[1].write(candidate.get("stock_name") or "未命名")
-        row_cols[2].write(" / ".join(_format_source(source) for source in sources))
-        row_cols[3].write(f"{candidate.get('latest_price', 0) or 0:.2f}")
+        row_cols[0].markdown(f'<div class="quant-sim-candidate-cell">{candidate["stock_code"]}</div>', unsafe_allow_html=True)
+        row_cols[1].markdown(
+            f'<div class="quant-sim-candidate-cell">{candidate.get("stock_name") or "未命名"}</div>',
+            unsafe_allow_html=True,
+        )
+        row_cols[2].markdown(
+            f'<div class="quant-sim-candidate-cell muted">{" / ".join(_format_source(source) for source in sources)}</div>',
+            unsafe_allow_html=True,
+        )
+        row_cols[3].markdown(
+            f'<div class="quant-sim-candidate-cell">{candidate.get("latest_price", 0) or 0:.2f}</div>',
+            unsafe_allow_html=True,
+        )
         with row_cols[4]:
-            if render_compact_action_button("立即分析", key=f"candidate_analyze_{candidate['id']}", tone="neutral"):
-                analyze_config = scheduler.db.get_scheduler_config()
-                signal = engine.analyze_candidate(
-                    candidate,
-                    analysis_timeframe=str(analyze_config["analysis_timeframe"]),
-                    strategy_mode=str(analyze_config["strategy_mode"]),
-                )
-                st.session_state["quant_sim_candidate_analysis_signal"] = signal
-                handle_candidate_analysis_feedback(
-                    portfolio_service=portfolio_service,
-                    signal=signal,
-                    auto_execute=bool(analyze_config["auto_execute"]),
-                )
-                st.rerun()
-        with row_cols[5]:
-            if render_compact_action_button("删除", key=f"candidate_delete_{candidate['id']}", tone="danger"):
-                candidate_service.delete_candidate(candidate["stock_code"])
-                current_detail = st.session_state.get("quant_sim_candidate_analysis_signal")
-                if current_detail and current_detail.get("stock_code") == candidate["stock_code"]:
-                    st.session_state.pop("quant_sim_candidate_analysis_signal", None)
-                queue_quant_sim_flash("warning", f"已从候选池删除 {candidate['stock_code']}。")
-                st.rerun()
-        st.markdown("---")
+            action_cols = st.columns([0.08, 0.08], gap="small", vertical_alignment="center")
+            with action_cols[0]:
+                if _render_quant_icon_button("🔎", key=f"candidate_analyze_{candidate['id']}", help_text="分析候选股"):
+                    analyze_config = scheduler.db.get_scheduler_config()
+                    signal = engine.analyze_candidate(
+                        candidate,
+                        analysis_timeframe=str(analyze_config["analysis_timeframe"]),
+                        strategy_mode=str(analyze_config["strategy_mode"]),
+                    )
+                    st.session_state["quant_sim_candidate_analysis_signal"] = signal
+                    handle_candidate_analysis_feedback(
+                        portfolio_service=portfolio_service,
+                        signal=signal,
+                        auto_execute=bool(analyze_config["auto_execute"]),
+                    )
+            with action_cols[1]:
+                if _render_quant_icon_button("🗑", key=f"candidate_delete_{candidate['id']}", help_text="从候选池删除"):
+                    candidate_service.delete_candidate(candidate["stock_code"])
+                    current_detail = st.session_state.get("quant_sim_candidate_analysis_signal")
+                    if current_detail and current_detail.get("stock_code") == candidate["stock_code"]:
+                        st.session_state.pop("quant_sim_candidate_analysis_signal", None)
+                    queue_quant_sim_flash("warning", f"已从候选池删除 {candidate['stock_code']}。")
+                    st.rerun()
+        st.markdown('<div class="quant-sim-row-divider"></div>', unsafe_allow_html=True)
+
+    footer_cols = st.columns([1.5, 0.8, 0.8], gap="small")
+    footer_cols[0].caption(f"当前显示 {start_index + 1}-{min(end_index, total_candidates)} / {total_candidates} 只候选股。")
+    with footer_cols[1]:
+        st.markdown('<div class="quant-footer-control-label">每页显示</div><div id="quant-page-size-marker"></div>', unsafe_allow_html=True)
+        st.selectbox(
+            "每页显示",
+            options=[10, 20, 50],
+            index=[10, 20, 50].index(int(page_size)),
+            key="quant_sim_candidate_page_size",
+            label_visibility="collapsed",
+        )
+    with footer_cols[2]:
+        st.markdown('<div class="quant-footer-control-label">页码</div><div id="quant-page-marker"></div>', unsafe_allow_html=True)
+        st.number_input(
+            "页码",
+            min_value=1,
+            max_value=page_count,
+            value=current_page,
+            step=1,
+            key="quant_sim_candidate_page",
+            label_visibility="collapsed",
+        )
 
 
 def render_quant_sim_execution_center(*, signal_service: SignalCenterService, portfolio_service: PortfolioService, candidate_service: CandidatePoolService) -> None:
@@ -484,7 +634,7 @@ def render_quant_sim_candidate_detail() -> None:
     render_quant_sim_signal_detail(selected_signal)
 
 
-@st.dialog("候选股分析详情")
+@st.dialog("候选股分析详情", width="large")
 def render_quant_sim_candidate_analysis_dialog() -> None:
     selected_signal = st.session_state.get("quant_sim_candidate_analysis_signal")
     if not selected_signal:
@@ -495,6 +645,11 @@ def render_quant_sim_candidate_analysis_dialog() -> None:
     if st.button("关闭", key="quant_sim_close_candidate_analysis_dialog", use_container_width=True):
         st.session_state.pop("quant_sim_candidate_analysis_signal", None)
         st.rerun()
+
+
+def _render_quant_icon_button(icon: str, *, key: str, help_text: str) -> bool:
+    st.markdown('<div class="quant-icon-button"></div>', unsafe_allow_html=True)
+    return st.button(icon, key=key, help=help_text, type="tertiary")
 
 
 def render_quant_sim_signal_detail(signal: dict) -> None:
@@ -540,7 +695,7 @@ def render_quant_sim_pending_controls(*, signal: dict, portfolio_service: Portfo
     action_cols = st.columns(4)
     if str(signal.get("action")).upper() == "BUY":
         with action_cols[0]:
-            if render_colored_action_button("✅ 标记已买入", key=f"confirm_buy_{signal['id']}", tone="buy"):
+            if render_colored_action_button("买入", key=f"confirm_buy_{signal['id']}", tone="buy"):
                 handle_confirm_buy(
                     portfolio_service,
                     signal_id=signal["id"],
@@ -551,7 +706,7 @@ def render_quant_sim_pending_controls(*, signal: dict, portfolio_service: Portfo
                 st.rerun()
     else:
         with action_cols[0]:
-            if render_colored_action_button("✅ 标记已卖出", key=f"confirm_sell_{signal['id']}", tone="sell"):
+            if render_colored_action_button("卖出", key=f"confirm_sell_{signal['id']}", tone="sell"):
                 handle_confirm_sell(
                     portfolio_service,
                     signal_id=signal["id"],
@@ -562,12 +717,12 @@ def render_quant_sim_pending_controls(*, signal: dict, portfolio_service: Portfo
                 st.rerun()
 
     with action_cols[1]:
-        if st.button("⏰ 延后处理", key=f"delay_signal_{signal['id']}"):
+        if st.button("延后", key=f"delay_signal_{signal['id']}"):
             portfolio_service.delay_signal(signal["id"], note=note or "延后处理")
             queue_quant_sim_flash("info", "已延后，信号会继续保留在待执行列表。")
             st.rerun()
     with action_cols[2]:
-        if st.button("🚫 忽略信号", key=f"ignore_signal_{signal['id']}"):
+        if st.button("忽略", key=f"ignore_signal_{signal['id']}"):
             portfolio_service.ignore_signal(signal["id"], note=note or "人工忽略")
             queue_quant_sim_flash("warning", "已忽略该信号。")
             st.rerun()
@@ -614,8 +769,10 @@ def display_quant_replay() -> None:
     replay_service = QuantSimReplayService()
     scheduler_status = get_quant_sim_scheduler().get_status()
 
-    st.title("🕰️ 历史回放")
-    st.caption("直接配置历史区间回放，查看回放进度、完整策略信号执行记录、持仓结果和收益分析。")
+    render_workspace_section_header(
+        "🕰️ 历史回放",
+        "直接配置历史区间回放，查看回放进度、完整策略信号执行记录、持仓结果和收益分析。",
+    )
     render_flash_messages(QUANT_SIM_FLASH_NAMESPACE)
     render_quant_sim_layout_styles()
 
@@ -625,10 +782,10 @@ def display_quant_replay() -> None:
             replay_service=replay_service,
             default_market=str(scheduler_status["market"]),
         )
-        st.markdown("### 运行概况")
-        st.markdown(
-            '<div class="quant-sim-panel-caption">左侧集中配置回放、查看运行情况和任务列表；右侧选择一个历史任务并查看完整结果与明细。</div>',
-            unsafe_allow_html=True,
+        render_replay_candidate_pool_summary(candidate_service)
+        render_workspace_section_header(
+            "运行概况",
+            "左侧集中配置回放、查看运行情况和任务列表；右侧选择一个历史任务并查看完整结果与明细。",
         )
         render_replay_status_panel(candidate_service.db.db_file)
         render_replay_run_overview_list(candidate_service.db.db_file)
@@ -740,7 +897,7 @@ def render_replay_configuration(*, replay_service, default_market: str) -> None:
                 key="quant_sim_replay_auto_start_scheduler",
             )
 
-    replay_button_label = "▶️ 开始区间模拟" if replay_mode == "historical_range" else "▶️ 从过去接续到实时自动模拟"
+    replay_button_label = "回放" if replay_mode == "historical_range" else "接续"
     if st.button(replay_button_label, type="primary", use_container_width=True, key="quant_sim_run_replay"):
         start_datetime = build_replay_datetime(replay_start_date, replay_start_time)
         end_datetime = None
@@ -766,6 +923,25 @@ def render_replay_configuration(*, replay_service, default_market: str) -> None:
                 overwrite_live=overwrite_live,
                 auto_start_scheduler=auto_start_scheduler,
             )
+
+
+def render_replay_candidate_pool_summary(candidate_service: CandidatePoolService) -> None:
+    st.markdown("### 量化候选池")
+    st.caption("先在工作台的“我的关注”里挑选股票，再推进到共享量化候选池。历史回放会基于这份候选池运行。")
+    candidates = candidate_service.list_candidates(status="active")
+    if not candidates:
+        st.info("当前量化候选池为空。")
+        return
+
+    summary_rows = [
+        {
+            "股票代码": candidate.get("stock_code"),
+            "股票名称": candidate.get("stock_name") or "未命名",
+            "最新价格": f'{(candidate.get("latest_price") or 0):.2f}',
+        }
+        for candidate in candidates
+    ]
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
 
 def render_replay_results(db_file: str, *, selected_run_id: int | None = None) -> None:
@@ -816,15 +992,7 @@ def render_replay_results(db_file: str, *, selected_run_id: int | None = None) -
     overview_col5.caption(f"策略模式：{_format_strategy_mode(str(replay_report['selected_strategy_mode']))}")
 
     st.markdown("#### 交易分析")
-    trade_metric1, trade_metric2, trade_metric3, trade_metric4, trade_metric5 = st.columns(5)
-    trade_metric1.metric("总买入金额", f"{float(replay_report['trade_analysis']['total_buy_amount']):.2f}")
-    trade_metric2.metric("总卖出金额", f"{float(replay_report['trade_analysis']['total_sell_amount']):.2f}")
-    trade_metric3.metric("已实现盈亏", f"{float(replay_report['trade_analysis']['total_realized_pnl']):.2f}")
-    trade_metric4.metric(
-        "盈利/亏损笔数",
-        f"{int(replay_report['trade_analysis']['winning_trade_count'])}/{int(replay_report['trade_analysis']['losing_trade_count'])}",
-    )
-    trade_metric5.metric("平均单笔盈亏", f"{float(replay_report['trade_analysis']['avg_realized_pnl']):.2f}")
+    render_replay_trade_analysis_cards(replay_report["trade_analysis"])
 
     if replay_snapshots:
         st.markdown("#### 资金曲线")
@@ -1005,7 +1173,7 @@ def render_replay_run_detail_panel(db_file: str, *, selected_run_id: int | None 
     if selected_run.get("status_message"):
         st.info(str(selected_run.get("status_message")))
     if str(selected_run.get("status") or "").lower() in {"completed", "failed", "cancelled"}:
-        if st.button("🗑️ 删除回放任务", use_container_width=True, key=f"delete_replay_run_{selected_run['id']}"):
+        if st.button("删除", use_container_width=True, key=f"delete_replay_run_{selected_run['id']}"):
             try:
                 db.delete_sim_run(int(selected_run["id"]))
             except ValueError as exc:
@@ -1052,7 +1220,7 @@ def render_replay_run_sidebar(db_file: str) -> None:
     if selected_run.get("status_message"):
         st.info(str(selected_run.get("status_message")))
     if str(selected_run.get("status") or "").lower() in {"completed", "failed", "cancelled"}:
-        if st.button("🗑️ 删除回放任务", use_container_width=True, key=f"delete_replay_run_{selected_run['id']}"):
+        if st.button("删除", use_container_width=True, key=f"delete_replay_run_{selected_run['id']}"):
             try:
                 db.delete_sim_run(int(selected_run["id"]))
             except ValueError as exc:
@@ -1775,11 +1943,23 @@ def render_colored_action_button(label: str, *, key: str, tone: str, use_contain
 def build_compact_action_button_style_css(key: str, tone: str) -> str:
     marker_id = f"{key}_compact_marker"
     palette = {
-        "neutral": {
+        "primary": {
             "bg": "#eef2ff",
             "fg": "#4338ca",
             "border": "#c7d2fe",
             "hover": "#e0e7ff",
+        },
+        "neutral": {
+            "bg": "#f8fafc",
+            "fg": "#334155",
+            "border": "#cbd5e1",
+            "hover": "#f1f5f9",
+        },
+        "success": {
+            "bg": "#ecfdf5",
+            "fg": "#047857",
+            "border": "#a7f3d0",
+            "hover": "#d1fae5",
         },
         "danger": {
             "bg": "#fef2f2",
@@ -1796,14 +1976,19 @@ div.element-container:has(#{marker_id}) + div.element-container button {{
     color: {palette['fg']} !important;
     border: 1px solid {palette['border']} !important;
     border-radius: 999px !important;
-    padding: 0.28rem 0.75rem !important;
-    font-size: 0.88rem !important;
+    padding: 0.16rem 0.62rem !important;
+    font-size: 0.82rem !important;
     font-weight: 600 !important;
-    min-height: 2rem !important;
+    min-height: 1.72rem !important;
+    line-height: 1.05 !important;
 }}
 div.element-container:has(#{marker_id}) + div.element-container button:hover {{
     background: {palette['hover']} !important;
     color: {palette['fg']} !important;
+}}
+div.element-container:has(#{marker_id}) + div.element-container {{
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
 }}
 </style>
 """
@@ -1934,7 +2119,7 @@ def render_replay_status_panel(db_file: str = DEFAULT_DB_FILE) -> None:
     st.progress(progress_ratio, text=f"当前进度：{progress_current}/{progress_total}")
     st.caption(status_message)
 
-    if st.button("🚫 取消回放任务", key=f"quant_sim_cancel_replay_{run_id}", use_container_width=True):
+    if st.button("取消", key=f"quant_sim_cancel_replay_{run_id}", use_container_width=True):
         runner = get_quant_sim_replay_runner(db_file=db_file)
         if runner.cancel_run(run_id):
             queue_quant_sim_flash("warning", f"已请求取消回放任务 #{run_id}")
@@ -1957,25 +2142,24 @@ def build_scheduler_status_message(status: dict) -> tuple[str, str]:
     auto_execute_label = "自动执行已开启" if status.get("auto_execute") else "自动执行已关闭"
     timeframe_label = _format_analysis_timeframe(str(status.get("analysis_timeframe") or "30m"))
     strategy_mode_label = _format_strategy_mode(str(status.get("strategy_mode") or "auto"))
-    start_date_label = str(status.get("start_date") or "未设置")
     if status.get("running"):
         return (
             "success",
-            f"🟢 定时分析运行中，当前按每 {status.get('interval_minutes', 0)} 分钟执行一次。"
-            f" 当前策略粒度：{timeframe_label}。策略模式：{strategy_mode_label}。开始日期：{start_date_label}。"
+            f"🟢 定时模拟运行中，当前按每 {status.get('interval_minutes', 0)} 分钟执行一次。"
+            f" 当前策略粒度：{timeframe_label}。策略模式：{strategy_mode_label}。"
             f"{auto_execute_label}。下次运行：{status.get('next_run') or '计算中'}。",
         )
     if status.get("enabled"):
         return (
             "warning",
-            f"🟡 已配置定时分析，但当前还未启动。计划间隔 {status.get('interval_minutes', 0)} 分钟，"
-            f"当前策略粒度：{timeframe_label}，策略模式：{strategy_mode_label}，开始日期：{start_date_label}，"
-            f"{auto_execute_label}，请点击“启动定时分析”。",
+            f"🟡 定时任务配置已保存，但当前还未启动。计划间隔 {status.get('interval_minutes', 0)} 分钟，"
+            f"当前策略粒度：{timeframe_label}，策略模式：{strategy_mode_label}，"
+            f"{auto_execute_label}，请点击“启动模拟”。",
         )
     return (
         "info",
-        f"⚪ 当前未启用定时分析，系统只会在候选池单票分析或手动启动定时任务后运行。"
-        f"当前策略粒度：{timeframe_label}。策略模式：{strategy_mode_label}。开始日期：{start_date_label}。{auto_execute_label}。",
+        f"⚪ 当前尚未启动定时模拟。先保存参数，再按需要启动。"
+        f"当前策略粒度：{timeframe_label}。策略模式：{strategy_mode_label}。{auto_execute_label}。",
     )
 
 
@@ -1993,71 +2177,87 @@ def handle_manual_scan(scheduler, state=None) -> dict:
 def handle_scheduler_save(
     scheduler,
     *,
-    enabled: bool,
+    portfolio_service,
+    initial_cash: float,
     auto_execute: bool = False,
     interval_minutes: int,
     trading_hours_only: bool,
     analysis_timeframe: str,
     strategy_mode: str | None = None,
-    start_date: str,
     market: str,
     state=None,
 ) -> None:
     update_payload = dict(
-        enabled=enabled,
+        enabled=True,
         auto_execute=auto_execute,
         interval_minutes=interval_minutes,
         trading_hours_only=trading_hours_only,
         analysis_timeframe=analysis_timeframe,
-        start_date=start_date,
+        start_date=date.today().isoformat(),
         market=market,
     )
     if strategy_mode is not None:
         update_payload["strategy_mode"] = strategy_mode
     scheduler.update_config(**update_payload)
-    queue_quant_sim_flash("success", "✅ 定时分析配置已保存", state=state)
+    cash_error = _sync_initial_cash_if_possible(portfolio_service, initial_cash)
+    if cash_error:
+        queue_quant_sim_flash("warning", f"✅ 参数已保存；资金池未更新：{cash_error}", state=state)
+        return
+    queue_quant_sim_flash("success", "✅ 参数已保存", state=state)
 
 
 def handle_scheduler_start(
     scheduler,
     *,
-    enabled: bool,
+    portfolio_service,
+    initial_cash: float,
     auto_execute: bool = False,
     interval_minutes: int,
     trading_hours_only: bool,
     analysis_timeframe: str,
     strategy_mode: str | None = None,
-    start_date: str,
     market: str,
     state=None,
 ) -> bool:
     update_payload = dict(
-        enabled=enabled,
+        enabled=True,
         auto_execute=auto_execute,
         interval_minutes=interval_minutes,
         trading_hours_only=trading_hours_only,
         analysis_timeframe=analysis_timeframe,
-        start_date=start_date,
+        start_date=date.today().isoformat(),
         market=market,
     )
     if strategy_mode is not None:
         update_payload["strategy_mode"] = strategy_mode
     scheduler.update_config(**update_payload)
+    cash_error = _sync_initial_cash_if_possible(portfolio_service, initial_cash)
     started = scheduler.start()
     if started:
-        queue_quant_sim_flash("success", "✅ 定时分析已启动", state=state)
+        if cash_error:
+            queue_quant_sim_flash("warning", f"✅ 定时模拟已启动；资金池未更新：{cash_error}", state=state)
+        else:
+            queue_quant_sim_flash("success", "✅ 定时模拟已启动", state=state)
     else:
-        queue_quant_sim_flash("warning", "定时分析未启动，请先启用并保存配置", state=state)
+        queue_quant_sim_flash("warning", "定时模拟未启动，请先保存参数后重试", state=state)
     return started
 
 
 def handle_scheduler_stop(scheduler, state=None) -> bool:
     stopped = scheduler.stop()
     if stopped:
-        queue_quant_sim_flash("info", "⏹️ 定时分析已停止", state=state)
+        queue_quant_sim_flash("info", "⏹️ 定时模拟已停止", state=state)
     else:
-        queue_quant_sim_flash("warning", "定时分析当前未运行", state=state)
+        queue_quant_sim_flash("warning", "定时模拟当前未运行", state=state)
     return stopped
+
+
+def _sync_initial_cash_if_possible(portfolio_service, initial_cash: float) -> str | None:
+    try:
+        portfolio_service.configure_account(initial_cash)
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def handle_account_update(portfolio_service, initial_cash: float, state=None) -> bool:

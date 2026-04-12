@@ -8,10 +8,20 @@ import os
 import sys
 import pandas as pd
 from datetime import datetime, timedelta
+from contextlib import contextmanager
 from dotenv import load_dotenv
 
 # 加载环境变量
 load_dotenv()
+
+PROXY_ENV_KEYS = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+]
 
 
 def _safe_print(message):
@@ -27,6 +37,22 @@ def _safe_print(message):
         sanitized = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
         stdout.write(sanitized + "\n")
         stdout.flush()
+
+
+@contextmanager
+def _without_proxy_env():
+    """Temporarily disable proxy env vars for direct AkShare/Eastmoney access."""
+    original_env = {key: os.environ.get(key) for key in PROXY_ENV_KEYS}
+    try:
+        for key in PROXY_ENV_KEYS:
+            os.environ.pop(key, None)
+        yield
+    finally:
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 class DataSourceManager:
@@ -77,13 +103,14 @@ class DataSourceManager:
             import akshare as ak
             _safe_print(f"[Akshare] 正在获取 {symbol} 的历史数据...")
             
-            df = ak.stock_zh_a_hist(
-                symbol=symbol,
-                period="daily",
-                start_date=start_date,
-                end_date=end_date,
-                adjust=adjust
-            )
+            with _without_proxy_env():
+                df = ak.stock_zh_a_hist(
+                    symbol=symbol,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust=adjust
+                )
             
             if df is not None and not df.empty:
                 # 标准化列名

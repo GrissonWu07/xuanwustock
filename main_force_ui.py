@@ -5,6 +5,7 @@
 """
 
 import streamlit as st
+import pandas as pd
 from datetime import datetime, timedelta
 from selector_ui_state import load_main_force_state, save_main_force_state
 from batch_deep_analysis import (
@@ -15,7 +16,8 @@ from batch_deep_analysis import (
 from main_force_analysis import MainForceAnalyzer
 from main_force_pdf_generator import display_report_download_section
 from main_force_history_ui import display_batch_history
-from quant_sim.integration import add_stock_to_quant_sim
+from watchlist_selector_integration import add_stock_to_watchlist
+from watchlist_selector_integration import sync_selector_dataframe_to_watchlist
 
 
 def update_main_force_progress_ui(status_widget, progress_bar, detail_placeholder, percent: int, message: str):
@@ -38,8 +40,88 @@ def _extract_main_force_latest_price(recommendation: dict) -> float | None:
     return None
 
 
-def sync_main_force_recommendations_to_quant_sim(recommendations: list[dict]) -> dict:
-    """Sync selected recommendations into the shared quant-sim candidate pool."""
+def _find_first_matching_column(df: pd.DataFrame, patterns: list[str]) -> str | None:
+    for pattern in patterns:
+        matching = [col for col in df.columns if pattern in col]
+        if matching:
+            return matching[0]
+    return None
+
+
+def _extract_numeric_series(df: pd.DataFrame, patterns: list[str], *, scale: float = 1.0) -> pd.Series | None:
+    column_name = _find_first_matching_column(df, patterns)
+    if not column_name:
+        return None
+    series = pd.to_numeric(df[column_name], errors="coerce")
+    if scale != 1.0:
+        series = series / scale
+    return series
+
+
+def build_main_force_candidate_display_df(raw_df: pd.DataFrame) -> pd.DataFrame:
+    candidate_df = pd.DataFrame(index=raw_df.index)
+    candidate_df["加入关注池"] = False
+    candidate_df["股票代码"] = raw_df.get("股票代码", pd.Series([""] * len(raw_df), index=raw_df.index))
+    candidate_df["股票简称"] = raw_df.get("股票简称", pd.Series([""] * len(raw_df), index=raw_df.index))
+
+    industry_col = _find_first_matching_column(raw_df, ["所属行业", "所属同花顺行业"])
+    if industry_col:
+        candidate_df["所属行业"] = raw_df[industry_col]
+    else:
+        candidate_df["所属行业"] = ""
+
+    latest_price_series = _extract_numeric_series(raw_df, ["最新价", "股价"])
+    if latest_price_series is not None:
+        candidate_df["最新价"] = latest_price_series
+
+    main_fund_series = _extract_numeric_series(
+        raw_df,
+        [
+            "区间主力资金流向",
+            "区间主力资金净流入",
+            "主力资金流向",
+            "主力资金净流入",
+            "主力净流入",
+            "主力资金",
+        ],
+        scale=100000000.0,
+    )
+    if main_fund_series is not None:
+        candidate_df["主力资金(亿)"] = main_fund_series
+
+    pct_series = _extract_numeric_series(
+        raw_df,
+        [
+            "区间涨跌幅:前复权",
+            "区间涨跌幅:前复权(%)",
+            "区间涨跌幅(%)",
+            "区间涨跌幅",
+            "涨跌幅:前复权",
+            "涨跌幅:前复权(%)",
+            "涨跌幅(%)",
+            "涨跌幅",
+        ],
+    )
+    if pct_series is not None:
+        candidate_df["区间涨跌幅(%)"] = pct_series
+
+    market_cap_series = _extract_numeric_series(raw_df, ["总市值"], scale=100000000.0)
+    if market_cap_series is not None:
+        candidate_df["总市值(亿)"] = market_cap_series
+
+    pe_series = _extract_numeric_series(raw_df, ["市盈率"])
+    if pe_series is not None:
+        candidate_df["市盈率"] = pe_series
+
+    pb_series = _extract_numeric_series(raw_df, ["市净率"])
+    if pb_series is not None:
+        candidate_df["市净率"] = pb_series
+
+    return candidate_df
+
+
+def sync_main_force_recommendations_to_watchlist(recommendations: list[dict]) -> dict:
+    """Sync selected recommendations into the shared watchlist."""
     summary = {
         "attempted": 0,
         "success_count": 0,
@@ -58,7 +140,7 @@ def sync_main_force_recommendations_to_quant_sim(recommendations: list[dict]) ->
         summary["attempted"] += 1
         latest_price = _extract_main_force_latest_price(recommendation)
         notes = f"主力选股第{recommendation.get('rank', '?')}名；亮点：{recommendation.get('highlights', 'N/A')}"
-        success, message, _ = add_stock_to_quant_sim(
+        success, message, _ = add_stock_to_watchlist(
             stock_code=stock_code,
             stock_name=stock_name,
             source="main_force",
@@ -94,17 +176,12 @@ def display_main_force_selector():
         display_batch_history()
         return
 
-    # 页面标题和历史记录按钮
-    col_title, col_history = st.columns([4, 1])
-    with col_title:
-        st.markdown("## 🎯 主力选股 - 智能筛选优质标的")
-    with col_history:
-        st.write("")  # 占位
-        if st.button("📚 批量分析历史", width='content'):
-            st.session_state.main_force_view_history = True
-            st.rerun()
+    # 页面标题
+    st.markdown("## 🎯 主力选股 - 智能筛选优质标的")
 
-    st.markdown("---")
+    current_result = st.session_state.get("main_force_result")
+    current_analyzer = st.session_state.get("main_force_analyzer")
+    current_selected_at = st.session_state.get("main_force_selected_at")
 
     st.markdown("""
     ### 功能说明
@@ -132,7 +209,8 @@ def display_main_force_selector():
     with col1:
         date_option = st.selectbox(
             "选择时间区间",
-            ["最近3个月", "最近6个月", "最近1年", "自定义日期"]
+            ["最近3个月", "最近6个月", "最近1年", "自定义日期"],
+            key="main_force_date_option",
         )
 
         if date_option == "最近3个月":
@@ -147,7 +225,8 @@ def display_main_force_selector():
         else:
             custom_date = st.date_input(
                 "选择开始日期",
-                value=datetime.now() - timedelta(days=90)
+                value=datetime.now() - timedelta(days=90),
+                key="main_force_custom_date",
             )
             start_date = f"{custom_date.year}年{custom_date.month}月{custom_date.day}日"
             days_ago = None
@@ -159,7 +238,8 @@ def display_main_force_selector():
             max_value=10,
             value=5,
             step=1,
-            help="最终推荐的股票数量"
+            help="最终推荐的股票数量",
+            key="main_force_final_n",
         )
 
     with col3:
@@ -200,7 +280,7 @@ def display_main_force_selector():
     st.markdown("---")
 
     # 开始分析按钮（使用.env中配置的默认模型）
-    if st.button("🚀 开始主力选股", type="primary", width='content'):
+    if st.button("🚀 开始主力选股", type="primary", width='content', key="main_force_start_selector"):
         status_widget = st.status("正在初始化主力选股分析...", expanded=True)
         progress_bar = st.progress(0)
         detail_placeholder = st.empty()
@@ -241,7 +321,7 @@ def display_main_force_selector():
         if result['success']:
             selected_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             st.session_state.main_force_selected_at = selected_at
-            st.session_state.pop("main_force_batch_quant_sync", None)
+            st.session_state.pop("main_force_batch_watchlist_sync", None)
             save_main_force_state(result=result, analyzer=analyzer, selected_at=selected_at)
             status_widget.update(label="主力选股分析完成", state="complete")
             progress_bar.progress(100)
@@ -253,17 +333,17 @@ def display_main_force_selector():
             detail_placeholder.caption(f"当前阶段：分析失败 - {result.get('error', '未知错误')}")
             st.error(f"❌ 分析失败: {result.get('error', '未知错误')}")
 
-    # 显示分析结果
-    if 'main_force_result' in st.session_state:
-        result = st.session_state.main_force_result
+    if current_result and current_result.get("success"):
+        st.markdown("---")
+        st.caption("最近一次主力选股结果会显示在这里，先完成参数设置，再查看候选和推荐会更顺手。")
+        display_analysis_results(
+            current_result,
+            current_analyzer,
+            current_selected_at,
+        )
 
-        if result['success']:
-            display_analysis_results(
-                result,
-                st.session_state.get('main_force_analyzer'),
-                st.session_state.get("main_force_selected_at"),
-            )
-    elif st.session_state.get('main_force_batch_results'):
+    # 显示分析结果
+    if not (current_result and current_result.get("success")) and st.session_state.get('main_force_batch_results'):
         st.markdown("---")
         st.markdown("## 📊 批量深度分析结果")
         display_batch_analysis_results(
@@ -291,118 +371,94 @@ def display_analysis_results(result: dict, analyzer, selected_at: str | None = N
 
     st.markdown("---")
 
-    if selected_at:
-        st.info(f"🕒 最近一次选股时间：{selected_at} | ⭐ 最终推荐：{len(result['final_recommendations'])} 只")
+    summary_col, history_col = st.columns([4.4, 1.0], gap="small")
+    with summary_col:
+        if selected_at:
+            st.info(f"🕒 最近一次选股时间：{selected_at} | ⭐ 最终推荐：{len(result['final_recommendations'])} 只")
+    with history_col:
+        st.markdown('<div style="height: 0.35rem;"></div>', unsafe_allow_html=True)
+        if st.button("📚 查看历史", key="main_force_view_history_inline", use_container_width=True):
+            st.session_state.main_force_view_history = True
+            st.rerun()
 
-    batch_sync_summary = st.session_state.get("main_force_batch_quant_sync")
-    if st.button("🧪 批量加入候选池", key="main_force_batch_quant_sync_button", use_container_width=True):
-        batch_sync_summary = sync_main_force_recommendations_to_quant_sim(
+    batch_sync_summary = st.session_state.get("main_force_batch_watchlist_sync")
+    if st.button("⭐ 批量加入关注池", key="main_force_batch_watchlist_sync_button", use_container_width=True):
+        batch_sync_summary = sync_main_force_recommendations_to_watchlist(
             result.get("final_recommendations", [])
         )
-        st.session_state.main_force_batch_quant_sync = batch_sync_summary
+        st.session_state.main_force_batch_watchlist_sync = batch_sync_summary
     if batch_sync_summary:
         if batch_sync_summary["success_count"] > 0:
-            st.success(f"🧪 已加入 {batch_sync_summary['success_count']} 只主力选股结果到候选池")
+            st.success(f"⭐ 已加入 {batch_sync_summary['success_count']} 只主力选股结果到关注池")
         if batch_sync_summary["failures"]:
             st.warning("；".join(batch_sync_summary["failures"]))
-
-    st.markdown("---")
-
-    # 显示AI分析师完整报告
-    if analyzer and hasattr(analyzer, 'fund_flow_analysis'):
-        display_analyst_reports(analyzer)
-
-    st.markdown("---")
-
-    # 显示推荐股票
-    if result['final_recommendations']:
-        st.markdown("### ⭐ 精选推荐")
-
-        for rec in result['final_recommendations']:
-            with st.expander(
-                f"【第{rec['rank']}名】{rec['symbol']} - {rec['name']}",
-                expanded=(rec['rank'] <= 3)
-            ):
-                display_recommendation_detail(rec)
 
     # 显示候选股票列表
     if analyzer and analyzer.raw_stocks is not None and not analyzer.raw_stocks.empty:
         st.markdown("---")
         st.markdown("### 📋 候选股票列表（筛选后）")
 
-        # 选择关键列显示
-        display_cols = ['股票代码', '股票简称']
-
-        # 添加行业列
-        industry_cols = [col for col in analyzer.raw_stocks.columns if '行业' in col]
-        if industry_cols:
-            display_cols.append(industry_cols[0])
-
-        # 添加区间主力资金净流入（智能匹配）
-        main_fund_col = None
-        main_fund_patterns = [
-            '区间主力资金流向',      # 实际列名
-            '区间主力资金净流入',
-            '主力资金流向',
-            '主力资金净流入',
-            '主力净流入',
-            '主力资金'
-        ]
-        for pattern in main_fund_patterns:
-            matching = [col for col in analyzer.raw_stocks.columns if pattern in col]
-            if matching:
-                main_fund_col = matching[0]
-                break
-        if main_fund_col:
-            display_cols.append(main_fund_col)
-
-        # 添加区间涨跌幅（前复权）（智能匹配）
-        interval_pct_col = None
-        interval_pct_patterns = [
-            '区间涨跌幅:前复权', '区间涨跌幅:前复权(%)', '区间涨跌幅(%)',
-            '区间涨跌幅', '涨跌幅:前复权', '涨跌幅:前复权(%)', '涨跌幅(%)', '涨跌幅'
-        ]
-        for pattern in interval_pct_patterns:
-            matching = [col for col in analyzer.raw_stocks.columns if pattern in col]
-            if matching:
-                interval_pct_col = matching[0]
-                break
-        if interval_pct_col:
-            display_cols.append(interval_pct_col)
-
-        # 添加市值、市盈率、市净率
-        for col_name in ['总市值', '市盈率', '市净率']:
-            matching_cols = [col for col in analyzer.raw_stocks.columns if col_name in col]
-            if matching_cols:
-                display_cols.append(matching_cols[0])
-
-        # 选择存在的列
-        final_cols = [col for col in display_cols if col in analyzer.raw_stocks.columns]
+        candidate_df = build_main_force_candidate_display_df(analyzer.raw_stocks)
 
         # 调试信息：显示找到的列名
         with st.expander("🔍 调试信息 - 查看数据列", expanded=False):
             st.caption("所有可用列:")
             cols_list = list(analyzer.raw_stocks.columns)
             st.write(cols_list)
-            st.caption(f"\n已选择显示的列: {final_cols}")
-            if main_fund_col:
-                st.success(f"✅ 找到主力资金列: {main_fund_col}")
-            else:
-                st.warning("⚠️ 未找到主力资金列")
-            if interval_pct_col:
-                st.success(f"✅ 找到涨跌幅列: {interval_pct_col}")
-            else:
-                st.warning("⚠️ 未找到涨跌幅列")
+            st.caption(f"\n候选表显示列: {list(candidate_df.columns)}")
 
-        # 显示DataFrame
-        display_df = analyzer.raw_stocks[final_cols].copy()
-        st.dataframe(display_df, width='content', height=400)
+        # 显示可勾选DataFrame
+        editable_df = candidate_df.copy()
+        selection_column = "加入关注池"
+        edited_df = st.data_editor(
+            editable_df,
+            hide_index=True,
+            width='stretch',
+            height=400,
+            key="main_force_candidate_editor",
+            column_config={
+                selection_column: st.column_config.CheckboxColumn(
+                    selection_column,
+                    help="勾选想加入我的关注的股票",
+                    default=False,
+                ),
+                "最新价": st.column_config.NumberColumn("最新价", format="%.2f"),
+                "主力资金(亿)": st.column_config.NumberColumn("主力资金(亿)", format="%.2f"),
+                "区间涨跌幅(%)": st.column_config.NumberColumn("区间涨跌幅(%)", format="%.2f"),
+                "总市值(亿)": st.column_config.NumberColumn("总市值(亿)", format="%.2f"),
+                "市盈率": st.column_config.NumberColumn("市盈率", format="%.2f"),
+                "市净率": st.column_config.NumberColumn("市净率", format="%.2f"),
+            },
+            disabled=[col for col in editable_df.columns if col != selection_column],
+        )
+
+        selected_rows = edited_df[edited_df[selection_column]].drop(columns=[selection_column])
+        candidate_sync_summary = st.session_state.get("main_force_candidate_watchlist_sync")
+        if st.button(
+            "⭐ 加入所选关注池",
+            key="main_force_candidate_watchlist_selected_button",
+            use_container_width=True,
+        ):
+            if selected_rows.empty:
+                st.warning("请先勾选候选股票。")
+            else:
+                candidate_sync_summary = sync_selector_dataframe_to_watchlist(
+                    selected_rows,
+                    source="main_force",
+                    note_prefix="主力选股候选",
+                )
+                st.session_state.main_force_candidate_watchlist_sync = candidate_sync_summary
+        if candidate_sync_summary:
+            if candidate_sync_summary["success_count"] > 0:
+                st.success(f"⭐ 已加入 {candidate_sync_summary['success_count']} 只候选股票到关注池")
+            if candidate_sync_summary["failures"]:
+                st.warning("；".join(candidate_sync_summary["failures"]))
 
         # 显示统计
-        st.caption(f"共 {len(display_df)} 只候选股票，显示 {len(final_cols)} 个字段")
+        st.caption(f"共 {len(candidate_df)} 只候选股票，当前表格显示 {len(candidate_df.columns) - 1} 个核心字段")
 
         # 下载按钮
-        csv = display_df.to_csv(index=False, encoding='utf-8-sig')
+        csv = candidate_df.drop(columns=[selection_column]).to_csv(index=False, encoding='utf-8-sig')
         st.download_button(
             label="📥 下载候选列表CSV",
             data=csv,
@@ -417,6 +473,23 @@ def display_analysis_results(result: dict, analyzer, selected_at: str | None = N
             strategy_label="主力选股",
             default_count=min(20, len(analyzer.raw_stocks)),
         )
+
+    # 显示推荐股票
+    if result['final_recommendations']:
+        st.markdown("---")
+        st.markdown("### ⭐ 精选推荐")
+
+        for rec in result['final_recommendations']:
+            with st.expander(
+                f"【第{rec['rank']}名】{rec['symbol']} - {rec['name']}",
+                expanded=(rec['rank'] <= 3)
+            ):
+                display_recommendation_detail(rec)
+
+    # 显示AI分析师完整报告
+    if analyzer and hasattr(analyzer, 'fund_flow_analysis'):
+        st.markdown("---")
+        display_analyst_reports(analyzer)
 
     # 显示PDF报告下载区域
     if analyzer and result:
@@ -447,8 +520,8 @@ def display_recommendation_detail(rec: dict):
         stock_code = str(stock_data.get('股票代码') or rec.get('symbol', '')).split('.')[0].strip()
         stock_name = str(stock_data.get('股票简称') or rec.get('name', '')).strip()
         if stock_code and stock_name:
-            if st.button(f"🧪 加入候选池", key=f"main_force_quant_{stock_code}", use_container_width=True):
-                success, message, _ = add_stock_to_quant_sim(
+            if st.button(f"⭐ 加入关注池", key=f"main_force_watchlist_{stock_code}", use_container_width=True):
+                success, message, _ = add_stock_to_watchlist(
                     stock_code=stock_code,
                     stock_name=stock_name,
                     source="main_force",

@@ -17,8 +17,8 @@ class MainProjectMarketDataProvider:
     def __init__(self, data_fetcher: Optional[SmartMonitorTDXDataFetcher] = None):
         self.data_fetcher = data_fetcher or SmartMonitorTDXDataFetcher()
 
-    def get_comprehensive_data(self, stock_code: str) -> dict[str, Any] | None:
-        return self.data_fetcher.get_comprehensive_data(stock_code)
+    def get_comprehensive_data(self, stock_code: str, preferred_name: str | None = None) -> dict[str, Any] | None:
+        return self.data_fetcher.get_comprehensive_data(stock_code, preferred_name=preferred_name)
 
 
 class StockPolicyAdapter:
@@ -47,7 +47,11 @@ class StockPolicyAdapter:
         analysis_timeframe: str = "1d",
         strategy_mode: str = "auto",
     ) -> Decision:
-        snapshot = market_snapshot or self.market_data_provider.get_comprehensive_data(candidate["stock_code"])
+        preferred_name = candidate.get("stock_name") or candidate.get("name")
+        snapshot = market_snapshot or self.market_data_provider.get_comprehensive_data(
+            candidate["stock_code"],
+            preferred_name=preferred_name,
+        )
         try:
             return self.runtime.evaluate_candidate(
                 candidate=candidate,
@@ -84,7 +88,11 @@ class StockPolicyAdapter:
         analysis_timeframe: str = "1d",
         strategy_mode: str = "auto",
     ) -> Decision:
-        snapshot = market_snapshot or self.market_data_provider.get_comprehensive_data(position["stock_code"])
+        preferred_name = position.get("stock_name") or candidate.get("stock_name") or candidate.get("name")
+        snapshot = market_snapshot or self.market_data_provider.get_comprehensive_data(
+            position["stock_code"],
+            preferred_name=preferred_name,
+        )
         try:
             return self.runtime.evaluate_position(
                 candidate=candidate,
