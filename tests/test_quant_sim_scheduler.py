@@ -195,3 +195,24 @@ def test_scheduler_run_once_passes_strategy_mode_to_engine(tmp_path):
         analysis_timeframe="30m",
         strategy_mode="neutral",
     )
+
+
+def test_scheduler_restores_background_job_from_persisted_config(tmp_path, monkeypatch):
+    first_scheduler = QuantSimScheduler(db_file=tmp_path / "quant_sim.db")
+    first_scheduler.update_config(enabled=True, interval_minutes=20, analysis_timeframe="30m")
+    first_scheduler.stop()
+
+    started = {"count": 0}
+
+    def fake_start(self):
+        started["count"] += 1
+        self.running = True
+        return True
+
+    monkeypatch.setattr(QuantSimScheduler, "start", fake_start)
+
+    restored_scheduler = QuantSimScheduler(db_file=tmp_path / "quant_sim.db")
+
+    assert started["count"] == 1
+    assert restored_scheduler.get_status()["enabled"] is True
+    assert restored_scheduler.get_status()["running"] is True

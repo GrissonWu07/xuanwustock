@@ -42,6 +42,7 @@ class QuantSimScheduler:
         self.thread: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.job_tag = f"quant_sim::{self.db_file}"
+        self._restore_running_state()
 
     def run_once(self, run_reason: str = "scheduled_scan") -> dict[str, int | float]:
         config = self.db.get_scheduler_config()
@@ -178,6 +179,11 @@ class QuantSimScheduler:
     def _clear_jobs(self) -> None:
         for job in self.scheduler.get_jobs(self.job_tag):
             self.scheduler.cancel_job(job)
+
+    def _restore_running_state(self) -> None:
+        config = self.db.get_scheduler_config()
+        if config["enabled"] and not self.running:
+            self.start()
 
     @staticmethod
     def _is_trading_time(market: str) -> bool:
