@@ -111,7 +111,7 @@ export function AiMonitorPage({ client }: AiMonitorPageProps) {
 
   return (
     <div>
-      <PageHeader eyebrow="Monitor" title="AI盯盘" description="AI 盯盘、信号生成和自动决策区域将在这个路由下承接现有业务能力。" />
+      <PageHeader eyebrow="Monitor" title="AI盯盘" description="AI 盯盘、信号生成和自动决策都在这里统一查看与操作。" />
       <div className="stack">
         <WorkbenchCard>
           <h2 className="section-card__title">快照概览</h2>

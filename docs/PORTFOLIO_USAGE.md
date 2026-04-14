@@ -25,7 +25,7 @@ pip install openai  # DeepSeek API使用
 
 ### 2. 访问功能
 
-1. 启动应用：`streamlit run app.py`
+1. 启动应用：`python app.py`
 2. 点击侧边栏**"📊 持仓分析"**按钮
 3. 进入持仓管理界面
 
@@ -258,7 +258,7 @@ cp portfolio_stocks.db portfolio_stocks_backup_$(date +%Y%m%d).db
 3. 时间配置错误（检查系统时间和设定时间）
 
 **解决方案**：
-- 保持Streamlit应用运行（可使用`nohup`或`screen`后台运行）
+- 保持系统服务运行（可使用`nohup`、Windows 服务或容器后台运行）
 - 或使用外部定时工具（如系统cron）调用分析接口
 
 ### Q3: 批量分析失败率高怎么办？

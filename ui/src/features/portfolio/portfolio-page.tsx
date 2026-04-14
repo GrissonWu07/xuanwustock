@@ -57,7 +57,7 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
 
   return (
     <div>
-      <PageHeader eyebrow="Portfolio" title="持仓分析" description="持仓跟踪、组合分析和定时任务将在这个页面中迁入新的工作台壳。" />
+      <PageHeader eyebrow="Portfolio" title="持仓分析" description="持仓跟踪、组合分析和定时任务都在这里统一查看与操作。" />
       <div className="stack">
         <WorkbenchCard>
           <h2 className="section-card__title">快照概览</h2>

@@ -651,7 +651,7 @@ export function mockRunPageAction(page: PageKey, action: string, payload?: unkno
           headline: codes.length > 0 ? `当前结论：已完成 ${codes.length} 只股票的批量分析` : "当前结论：请选择要批量分析的股票",
           decision:
             codes.length > 0
-              ? `批量分析已完成，覆盖 ${joined || "所选股票"}。后续可继续筛入我的关注或推进到量化候选池。`
+              ? `批量分析已完成，覆盖 ${joined || "所选股票"}。可以继续筛入我的关注或推进到量化候选池。`
               : "请选择至少一只股票再进行批量分析。",
           summaryBody:
             codes.length > 0

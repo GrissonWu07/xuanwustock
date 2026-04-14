@@ -37,7 +37,7 @@ export function SettingsPage({ client }: SettingsPageProps) {
       <PageHeader
         eyebrow="Settings"
         title="环境配置"
-        description="模型、数据源、运行参数和路径约定统一在这个页面管理，后续前端迁移也从这里对齐。"
+        description="模型、数据源、运行参数和路径约定统一在这个页面管理。"
       />
 
       <div className="stack">

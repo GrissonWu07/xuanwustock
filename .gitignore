@@ -30,3 +30,4 @@ TradEnv/
 /build/__pycache__/
 ui/node_modules/
 ui/dist/
+/.streamlit/

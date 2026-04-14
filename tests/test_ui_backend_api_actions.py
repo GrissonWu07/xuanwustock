@@ -208,7 +208,7 @@ class FakeRealMonitorScheduler:
 
 
 def test_workbench_analysis_actions_return_real_analysis(tmp_path, monkeypatch):
-    import app.app as app_module
+    import app.stock_analysis_service as app_module
 
     context = _make_context(tmp_path)
     context.watchlist().add_manual_stock("600519")

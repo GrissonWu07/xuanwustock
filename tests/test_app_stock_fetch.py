@@ -1,6 +1,6 @@
 import pandas as pd
 
-import app.app as app_module
+import app.stock_analysis_service as app_module
 
 
 def test_get_stock_data_uses_fast_info_path(monkeypatch):

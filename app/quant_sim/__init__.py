@@ -1,4 +1,4 @@
-"""Unified quant simulation workflow for the main Streamlit app."""
+"""Unified quant simulation workflow for the gateway-backed application."""
 
 from app.quant_kernel.models import Decision
 from app.quant_kernel.portfolio_engine import LotStatus, PositionLot

@@ -43,10 +43,10 @@ COPY . .
 RUN mkdir -p /app/data && chmod 777 /app/data
 
 # 暴露 Python API 默认端口
-EXPOSE 8503
+EXPOSE 8501
 
 # 设置健康检查
-HEALTHCHECK CMD curl --fail http://localhost:8503/api/health || exit 1
+HEALTHCHECK CMD curl --fail http://localhost:8501/api/health || exit 1
 
 # 启动 Python API
 CMD ["python", "app/gateway.py"]

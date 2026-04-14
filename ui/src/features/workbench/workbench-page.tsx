@@ -39,7 +39,7 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
       <PageHeader
         eyebrow="Workbench"
         title="玄武AI智能体股票团队分析系统"
-        description="先看我的关注，再继续做股票分析、发现股票、研究情报和量化验证。整个前端会收敛到这套单页面工作台里。"
+        description="先看我的关注，再继续做股票分析、发现股票、研究情报和量化验证。所有核心操作都围绕这一套单页面工作台展开。"
       />
       <div className="metric-grid">
         {snapshot.metrics.map((item) => (

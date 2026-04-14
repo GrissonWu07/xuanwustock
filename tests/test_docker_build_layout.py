@@ -37,7 +37,8 @@ def test_docker_compose_has_frontend_and_backend_services():
     assert "backend:" in compose
     assert "build/Dockerfile.ui" in compose
     assert "8080:80" in compose
-    assert "8503:8503" in compose
+    assert "8501:8501" in compose
+    assert "8503:8503" not in compose
     assert "/api/health" in compose
     assert "_stcore/health" not in compose
 
@@ -45,7 +46,8 @@ def test_docker_compose_has_frontend_and_backend_services():
 def test_nginx_conf_supports_spa_fallback_and_backend_proxy():
     nginx = (PROJECT_ROOT / "build" / "nginx.conf").read_text(encoding="utf-8")
     assert "try_files $uri /index.html" in nginx
-    assert "proxy_pass http://backend:8503" in nginx
+    assert "proxy_pass http://backend:8501" in nginx
+    assert "proxy_pass http://backend:8503" not in nginx
     assert "/api/" in nginx
 
 

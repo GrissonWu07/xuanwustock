@@ -8,9 +8,12 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config_manager import ConfigManager, config_manager
 from app.database import StockAnalysisDatabase
+from app import stock_analysis_service
 from app.main_force_batch_db import MainForceBatchDatabase
 from app.monitor_db import monitor_db
 from app.portfolio_db import portfolio_db
@@ -36,6 +39,8 @@ from app.monitor_db import StockMonitorDatabase
 from app.watchlist_service import WatchlistService
 
 SERVICE_NAME = "xuanwu-api"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+UI_DIST_DIR = PROJECT_ROOT / "ui" / "dist"
 
 MainForceStockSelector = None
 LowPriceBullSelector = None
@@ -1467,8 +1472,6 @@ def _scheduler_update_kwargs(payload: Any) -> dict[str, Any]:
 
 
 def _action_workbench_analysis(context: UIApiContext, payload: Any) -> dict[str, Any]:
-    import app.app as app_module
-
     body = _payload_dict(payload)
     code = _code_from_payload(body)
     if not code:
@@ -1478,7 +1481,7 @@ def _action_workbench_analysis(context: UIApiContext, payload: Any) -> dict[str,
         selected = []
     cycle = _txt(body.get("cycle"), "1y")
     mode = _txt(body.get("mode"), "单个分析")
-    result = app_module.analyze_single_stock_for_batch(
+    result = stock_analysis_service.analyze_single_stock_for_batch(
         code,
         cycle,
         enabled_analysts_config=_analysis_config(selected),
@@ -1490,8 +1493,8 @@ def _action_workbench_analysis(context: UIApiContext, payload: Any) -> dict[str,
     stock_info = result.get("stock_info") or {}
     stock_name = _txt(stock_info.get("name"), code)
     indicators = result.get("indicators") or {}
-    indicator_explanations = app_module.build_indicator_explanations(indicators, current_price=stock_info.get("current_price"))
-    summary_body = _txt((result.get("discussion_result") or {}).get("summary")) or _txt(app_module.build_indicator_summary(indicator_explanations), "分析完成。")
+    indicator_explanations = stock_analysis_service.build_indicator_explanations(indicators, current_price=stock_info.get("current_price"))
+    summary_body = _txt((result.get("discussion_result") or {}).get("summary")) or _txt(stock_analysis_service.build_indicator_summary(indicator_explanations), "分析完成。")
     final_decision = result.get("final_decision") or {}
     insights = []
     if _txt(final_decision.get("reasoning")):
@@ -1520,8 +1523,6 @@ def _action_workbench_analysis(context: UIApiContext, payload: Any) -> dict[str,
 
 
 def _action_workbench_analysis_batch(context: UIApiContext, payload: Any) -> dict[str, Any]:
-    import app.app as app_module
-
     body = _payload_dict(payload)
     codes = _normalize_codes(body.get("stockCodes") if isinstance(body, dict) else payload)
     if not codes:
@@ -1534,7 +1535,7 @@ def _action_workbench_analysis_batch(context: UIApiContext, payload: Any) -> dic
     insights: list[dict[str, Any]] = []
     curve: list[dict[str, Any]] = []
     for code in codes[:5]:
-        result = app_module.analyze_single_stock_for_batch(
+        result = stock_analysis_service.analyze_single_stock_for_batch(
             code,
             cycle,
             enabled_analysts_config=_analysis_config(selected),
@@ -1954,6 +1955,21 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
 
         action_handler.__name__ = f"post_{page.replace('-', '_').replace('/', '_')}_{action.replace('-', '_')}"
         app.post(path)(action_handler)
+
+    if UI_DIST_DIR.exists():
+        assets_dir = UI_DIST_DIR / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="ui-assets")
+
+        @app.get("/", include_in_schema=False)
+        @app.get("/{client_path:path}", include_in_schema=False)
+        async def spa_entry(client_path: str = ""):
+            if client_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not Found")
+            requested = UI_DIST_DIR / client_path
+            if client_path and requested.is_file():
+                return FileResponse(requested)
+            return FileResponse(UI_DIST_DIR / "index.html")
 
     return app
 

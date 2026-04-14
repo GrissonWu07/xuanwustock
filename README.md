@@ -140,21 +140,22 @@ TDX_ENABLED=true
 - [docs/QUICK_START.md](docs/QUICK_START.md)
 - [docs/环境配置快速指南.md](docs/环境配置快速指南.md)
 
-### 3. 启动应用
+### 3. 启动网关
 
 ```bash
-python app/gateway.py
+python app.py
 ```
 
-默认地址（API 服务）：
+`python app.py` 会启动当前的 Python gateway（网关），并同时提供 SPA 页面与 API：
 
-[http://127.0.0.1:8503/api/health](http://127.0.0.1:8503/api/health)
+- 工作台：[http://127.0.0.1:8501/main](http://127.0.0.1:8501/main)
+- 健康检查：[http://127.0.0.1:8501/api/health](http://127.0.0.1:8501/api/health)
 
-### 新版前端壳
+### 当前前端壳
 
 新的单页面前端工程位于 [ui](/C:/Projects/githubs/aiagents-stock/ui)，产品名统一为 **玄武AI智能体股票团队分析系统**。
 
-它是一个独立的 SPA 工作台，顶部路由清晰，当前主入口包括：
+它是一个独立的 SPA 工作台，由当前 Python gateway 提供 API 支撑，顶部路由清晰，当前主入口包括：
 
 - `/main` 工作台
 - `/discover` 发现股票
@@ -167,7 +168,7 @@ python app/gateway.py
 
 本地联调方式：
 
-1. 在仓库根目录启动 Python API 服务：`python app/gateway.py`
+1. 在仓库根目录启动 Python gateway：`python app.py`
 2. 进入 [ui](/C:/Projects/githubs/aiagents-stock/ui) 后执行：
 
 ```bash
@@ -179,7 +180,7 @@ npm run dev
 
 [http://127.0.0.1:4173](http://127.0.0.1:4173)
 
-Docker 部署则通过 [build/docker-compose.yml](/C:/Projects/githubs/aiagents-stock/build/docker-compose.yml) 以 `nginx` 前端 + Python API 分离方式运行。前端静态站点由 [build/Dockerfile.ui](/C:/Projects/githubs/aiagents-stock/build/Dockerfile.ui) 构建并由 [build/nginx.conf](/C:/Projects/githubs/aiagents-stock/build/nginx.conf) 提供 SPA 历史路由回退和 `/api/` 代理。后端健康检查路径统一为 `/api/health`。
+Docker 部署则通过 [build/docker-compose.yml](/C:/Projects/githubs/aiagents-stock/build/docker-compose.yml) 以 `nginx` 前端 + Python API 分离方式运行。前端静态站点由 [build/Dockerfile.ui](/C:/Projects/githubs/aiagents-stock/build/Dockerfile.ui) 构建并由 [build/nginx.conf](/C:/Projects/githubs/aiagents-stock/build/nginx.conf) 提供 SPA 历史路由回退和 `/api/` 代理。后端健康检查路径统一为 `/api/health`，容器内后端监听端口为 `8501`。
 
 Docker 前端访问地址：
 

@@ -1,4 +1,4 @@
-import app.app as app_module
+import app.stock_analysis_service as app_module
 
 
 def test_build_indicator_explanations_returns_human_readable_labels():

@@ -37,6 +37,18 @@ def test_backend_api_exposes_fastapi_app_and_health_routes():
     assert root.json()["status"] == "ok"
 
 
+def test_backend_api_serves_spa_entry_for_root_and_client_routes():
+    module = _load_backend_api_module()
+    app = module.create_app()
+    client = TestClient(app)
+
+    for route in ("/", "/main", "/discover", "/live-sim"):
+        response = client.get(route)
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+        assert "玄武AI智能体股票团队分析系统" in response.text
+
+
 @pytest.mark.parametrize(
     "page_path, expected_keys",
     [

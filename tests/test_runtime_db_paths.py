@@ -1,8 +1,43 @@
 from pathlib import Path
+import importlib.util
+import sys
 
-from app import database, watchlist_db
-from app.quant_sim import db as quant_db
-from app.runtime_paths import default_log_path, managed_db_path, migrate_known_root_logs
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_module(relative_path: str, module_name: str):
+    path = PROJECT_ROOT / relative_path
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_package(name: str, package_dir: str):
+    init_path = PROJECT_ROOT / package_dir / "__init__.py"
+    spec = importlib.util.spec_from_file_location(
+        name,
+        init_path,
+        submodule_search_locations=[str(PROJECT_ROOT / package_dir)],
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_load_package("app", "app")
+runtime_paths = _load_module("app/runtime_paths.py", "app.runtime_paths")
+database = _load_module("app/database.py", "app.database")
+watchlist_db = _load_module("app/watchlist_db.py", "app.watchlist_db")
+quant_db = _load_module("app/quant_sim/db.py", "app.quant_sim.db")
+
+default_log_path = runtime_paths.default_log_path
+managed_db_path = runtime_paths.managed_db_path
+migrate_known_root_logs = runtime_paths.migrate_known_root_logs
 
 
 def test_managed_db_path_uses_data_directory(tmp_path):

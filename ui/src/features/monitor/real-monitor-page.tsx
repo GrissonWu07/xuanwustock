@@ -350,7 +350,7 @@ export function RealMonitorPage({ client }: RealMonitorPageProps) {
             <div>
               <h2 className="section-card__title">实时操作</h2>
               <p className="section-card__description" style={{ marginBottom: 0 }}>
-                这里保留启动、停止和连接 MiniQMT 的真实动作入口，后续可继续对接后端服务。
+                这里提供启动、停止和连接 MiniQMT 的真实动作入口。
               </p>
             </div>
             <span className="toolbar__spacer" />

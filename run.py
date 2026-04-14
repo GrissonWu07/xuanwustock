@@ -1,5 +1,5 @@
-from app.run import main
+from app.gateway import main
 
 
-if __name__ == "__main__" and main is not None:
+if __name__ == "__main__":
     main()

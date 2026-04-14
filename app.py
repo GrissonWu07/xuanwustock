@@ -1,4 +1,4 @@
-from app.app import main
+from app.gateway import main
 
 
 if __name__ == "__main__":

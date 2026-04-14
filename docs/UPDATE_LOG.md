@@ -461,8 +461,8 @@ python run.py
 ### 持仓定时分析
 
 ```bash
-streamlit run app.py
-→ 侧边栏"📊 持仓分析"
+python app.py
+→ 打开系统后进入"📊 持仓分析"
 → 添加持仓股票
 → 配置定时时间（支持多个）
 → 启动调度器
@@ -471,8 +471,8 @@ streamlit run app.py
 ### 智瞰龙虎批量分析
 
 ```bash
-streamlit run app.py
-→ 侧边栏"🎯 智瞰龙虎"
+python app.py
+→ 打开系统后进入"🎯 智瞰龙虎"
 → 获取龙虎榜数据
 → 切换到"AI评分排名"
 → 选择分析数量

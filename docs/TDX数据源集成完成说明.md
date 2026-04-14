@@ -154,7 +154,7 @@ TDX_BASE_URL=http://192.168.1.222:8080
 
 ```bash
 # 本地部署
-streamlit run app.py
+python app.py
 
 # Docker部署
 docker-compose restart

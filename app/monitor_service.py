@@ -4,7 +4,6 @@ import threading
 import schedule
 from datetime import datetime, timedelta
 from typing import Dict, List
-import streamlit as st
 import os
 import logging
 
@@ -59,14 +58,14 @@ class StockMonitorService:
         self.running = True
         self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.thread.start()
-        st.success("✅ 监测服务已启动")
+        logging.info("监测服务已启动")
     
     def stop_monitoring(self):
         """停止监测服务"""
         self.running = False
         if self.thread:
             self.thread.join(timeout=5)
-        st.info("⏹️ 监测服务已停止")
+        logging.info("监测服务已停止")
     
     def _monitor_loop(self):
         """监测循环"""

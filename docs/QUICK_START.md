@@ -46,10 +46,15 @@ TDX_ENABLED=true
 ## 3. 启动系统
 
 ```bash
-python app/gateway.py
+python app.py
 ```
 
-然后另开一个终端启动前端：
+默认情况下，`python app.py` 启动的网关会同时提供 SPA 页面和 `/api/*`：
+
+- 工作台：[http://127.0.0.1:8501/main](http://127.0.0.1:8501/main)
+- 健康检查：[http://127.0.0.1:8501/api/health](http://127.0.0.1:8501/api/health)
+
+如果你是在开发前端，再另开一个终端启动 Vite：
 
 ```bash
 cd ui
@@ -57,13 +62,9 @@ npm install
 npm run dev
 ```
 
-打开前端：
+前端开发地址：
 
 [http://127.0.0.1:4173](http://127.0.0.1:4173)
-
-后端健康检查：
-
-[http://127.0.0.1:8503/api/health](http://127.0.0.1:8503/api/health)
 
 ---
 

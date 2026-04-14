@@ -7,7 +7,7 @@ services:
       dockerfile: build/Dockerfile
     container_name: agentsstock-backend
     ports:
-      - "8503:8503"
+      - "8501:8501"
     volumes:
       - ../data:/app/data
       - ../.env:/app/.env
@@ -17,7 +17,7 @@ services:
     networks:
       - agentsstock-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8503/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8501/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3

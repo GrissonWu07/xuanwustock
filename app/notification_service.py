@@ -5,7 +5,6 @@ from email.mime.multipart import MIMEMultipart
 import json
 import os
 from typing import Dict, List
-import streamlit as st
 
 from app.monitor_db import monitor_db
 
@@ -17,6 +16,7 @@ class NotificationService:
         from dotenv import load_dotenv
         load_dotenv()
         self.config = self._load_config()
+        self._ui_notifications: list[dict] = []
     
     def _load_config(self) -> Dict:
         """加载通知配置"""
@@ -102,7 +102,7 @@ class NotificationService:
         
         # 如果两者都未启用或都失败，使用界面通知作为备用
         if not success:
-            self._show_streamlit_notification(notification)
+            self._show_ui_notification(notification)
             success = True
         
         return success
@@ -118,7 +118,7 @@ class NotificationService:
                 print(f"  - 发件人: {self.config['email_from'] or '未配置'}")
                 print(f"  - 收件人: {self.config['email_to'] or '未配置'}")
                 print(f"  - 密码: {'已配置' if self.config['email_password'] else '未配置'}")
-                self._show_streamlit_notification(notification)
+                self._show_ui_notification(notification)
                 return True
             
             # 创建邮件
@@ -166,35 +166,31 @@ class NotificationService:
             print(f"邮件发送失败: {e}")
             # 邮件发送失败时，使用界面通知作为备用方案
             print("使用界面通知作为备用方案")
-            self._show_streamlit_notification(notification)
+            self._show_ui_notification(notification)
             return True
-    
-    def _show_streamlit_notification(self, notification: Dict):
-        """在Streamlit界面显示通知"""
-        # 使用session_state存储通知
-        if 'notifications' not in st.session_state:
-            st.session_state.notifications = []
-        
-        # 避免重复通知，使用symbol代替stock_id
+
+    def _show_ui_notification(self, notification: Dict):
+        """Store fallback notifications in process memory when no channel succeeds."""
         notification_key = f"{notification['symbol']}_{notification['type']}_{notification['triggered_at']}"
-        if notification_key not in [n.get('key') for n in st.session_state.notifications]:
-            st.session_state.notifications.append({
-                'key': notification_key,
-                'symbol': notification['symbol'],
-                'name': notification['name'],
-                'type': notification['type'],
-                'message': notification['message'],
-                'timestamp': notification['triggered_at']
-            })
-    
-    def get_streamlit_notifications(self) -> List[Dict]:
-        """获取Streamlit界面通知"""
-        return st.session_state.get('notifications', [])
-    
-    def clear_streamlit_notifications(self):
-        """清空Streamlit界面通知"""
-        if 'notifications' in st.session_state:
-            st.session_state.notifications = []
+        if notification_key not in [n.get('key') for n in self._ui_notifications]:
+            self._ui_notifications.append(
+                {
+                    'key': notification_key,
+                    'symbol': notification['symbol'],
+                    'name': notification['name'],
+                    'type': notification['type'],
+                    'message': notification['message'],
+                    'timestamp': notification['triggered_at'],
+                }
+            )
+
+    def get_ui_notifications(self) -> List[Dict]:
+        """Return fallback in-memory notifications."""
+        return list(self._ui_notifications)
+
+    def clear_ui_notifications(self):
+        """Clear fallback in-memory notifications."""
+        self._ui_notifications = []
     
     def test_email_config(self) -> bool:
         """测试邮件配置"""
