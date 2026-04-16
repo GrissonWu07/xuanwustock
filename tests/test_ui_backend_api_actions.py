@@ -283,7 +283,7 @@ def test_workbench_analysis_actions_return_real_analysis(tmp_path, monkeypatch):
 
     client = TestClient(create_app(context=context))
     batch = client.post(
-        "/api/ui/workbench/actions/analysis-batch",
+        "/api/v1/workbench/actions/analysis-batch",
         json={"stockCodes": ["600519", "600519"], "analysts": ["technical"], "cycle": "1y", "mode": "批量分析"},
     )
     assert batch.status_code == 200
@@ -391,7 +391,7 @@ def test_workbench_analysis_action_returns_job_immediately_and_completes_in_back
     client = TestClient(create_app(context=context))
 
     start = time.monotonic()
-    response = client.post("/api/ui/workbench/actions/analysis", json={"stockCode": "002463"})
+    response = client.post("/api/v1/workbench/actions/analysis", json={"stockCode": "002463"})
     elapsed = time.monotonic() - start
 
     assert response.status_code == 200
@@ -402,7 +402,7 @@ def test_workbench_analysis_action_returns_job_immediately_and_completes_in_back
     assert snapshot["analysisJob"]["symbol"] == "002463"
     assert started.wait(timeout=1)
 
-    running = client.get("/api/ui/workbench")
+    running = client.get("/api/v1/workbench")
     assert running.status_code == 200
     assert running.json()["analysisJob"]["status"] in {"queued", "running"}
     assert running.json()["analysisJob"]["stage"] in {"fetch", "decision", "running", "queued"}
@@ -411,7 +411,7 @@ def test_workbench_analysis_action_returns_job_immediately_and_completes_in_back
     completed_snapshot = None
     deadline = time.time() + 5
     while time.time() < deadline:
-        current = client.get("/api/ui/workbench")
+        current = client.get("/api/v1/workbench")
         assert current.status_code == 200
         payload = current.json()
         if payload.get("analysisJob", {}).get("status") == "completed":
@@ -632,7 +632,7 @@ def test_workbench_analysis_failure_preserves_prior_successful_cached_analysis(t
     )
 
     client = TestClient(create_app(context=context))
-    payload = client.get("/api/ui/workbench").json()
+    payload = client.get("/api/v1/workbench").json()
     analysis = payload["analysis"]
     assert analysis["symbol"] == "002463"
     assert "综合决策暂不可用" not in analysis["decision"]
@@ -736,11 +736,11 @@ def test_workbench_stale_running_job_is_normalized_to_completed_when_analysis_ex
     )
 
     client = TestClient(create_app(context=context))
-    payload = client.get("/api/ui/workbench").json()
+    payload = client.get("/api/v1/workbench").json()
     assert payload["analysisJob"]["status"] == "completed"
     assert "分析已完成" in payload["analysisJob"]["title"]
 
-    rerun = client.post("/api/ui/workbench/actions/analysis", json={"stockCode": "002463"})
+    rerun = client.post("/api/v1/workbench/actions/analysis", json={"stockCode": "002463"})
     assert rerun.status_code == 200
     assert rerun.json()["analysisJob"]["status"] in {"queued", "running"}
 
@@ -970,7 +970,7 @@ def test_discover_snapshot_aggregates_selector_results(tmp_path):
 
     client = TestClient(create_app(context=context))
 
-    response = client.get("/api/ui/discover")
+    response = client.get("/api/v1/discover")
     assert response.status_code == 200
     payload = response.json()
     rows = payload["candidateTable"]["rows"]
@@ -1076,13 +1076,13 @@ def test_discover_run_strategy_executes_real_selector_runners_and_persists_resul
 
     client = TestClient(create_app(context=context))
 
-    response = client.post("/api/ui/discover/actions/run-strategy", json={})
+    response = client.post("/api/v1/discover/actions/run-strategy", json={})
     assert response.status_code == 200
     payload = response.json()
     codes = {row["code"] for row in payload["candidateTable"]["rows"]}
     assert {"688111", "000001", "300750", "600519", "600036"}.issubset(codes)
 
-    persisted = client.get("/api/ui/discover")
+    persisted = client.get("/api/v1/discover")
     assert persisted.status_code == 200
     persisted_codes = {row["code"] for row in persisted.json()["candidateTable"]["rows"]}
     assert {"688111", "000001", "300750", "600519", "600036"}.issubset(persisted_codes)
@@ -1108,31 +1108,31 @@ def test_live_sim_actions_use_scheduler_and_candidate_pool(tmp_path, monkeypatch
 
     client = TestClient(create_app(context=context))
 
-    save_resp = client.post("/api/ui/quant/live-sim/actions/save", json={"strategyMode": "defensive"})
+    save_resp = client.post("/api/v1/quant/live-sim/actions/save", json={"strategyMode": "defensive"})
     assert save_resp.status_code == 200
     assert any(call[0] == "update_config" for call in fake_scheduler.calls)
 
-    start_resp = client.post("/api/ui/quant/live-sim/actions/start", json={})
+    start_resp = client.post("/api/v1/quant/live-sim/actions/start", json={})
     assert start_resp.status_code == 200
     assert start_resp.json()["status"]["running"] == "运行中"
 
-    run_resp = client.post("/api/ui/quant/live-sim/actions/bulk-quant", json={"codes": ["600519", "000001"]})
+    run_resp = client.post("/api/v1/quant/live-sim/actions/bulk-quant", json={"codes": ["600519", "000001"]})
     assert run_resp.status_code == 200
     assert ("run_once", "ui_manual_run") in fake_scheduler.calls
 
-    analyze_resp = client.post("/api/ui/quant/live-sim/actions/analyze-candidate", json="600519")
+    analyze_resp = client.post("/api/v1/quant/live-sim/actions/analyze-candidate", json="600519")
     assert analyze_resp.status_code == 200
     assert analyzed_codes == ["600519"]
 
-    delete_resp = client.post("/api/ui/quant/live-sim/actions/delete-candidate", json={"code": "000001"})
+    delete_resp = client.post("/api/v1/quant/live-sim/actions/delete-candidate", json={"code": "000001"})
     assert delete_resp.status_code == 200
     deleted_rows = delete_resp.json()["candidatePool"]["rows"]
     assert {row["id"] for row in deleted_rows} == {"600519"}
 
-    reset_resp = client.post("/api/ui/quant/live-sim/actions/reset", json={"initialCash": 20000})
+    reset_resp = client.post("/api/v1/quant/live-sim/actions/reset", json={"initialCash": 20000})
     assert reset_resp.status_code == 200
 
-    stop_resp = client.post("/api/ui/quant/live-sim/actions/stop", json={})
+    stop_resp = client.post("/api/v1/quant/live-sim/actions/stop", json={})
     assert stop_resp.status_code == 200
     assert stop_resp.json()["status"]["running"] == "已停止"
 
@@ -1156,24 +1156,24 @@ def test_his_replay_actions_enqueue_cancel_delete_and_rerun(tmp_path, monkeypatc
 
     client = TestClient(create_app(context=context))
 
-    start_resp = client.post("/api/ui/quant/his-replay/actions/start", json={})
+    start_resp = client.post("/api/v1/quant/his-replay/actions/start", json={})
     assert start_resp.status_code == 200
     assert fake_replay.calls and fake_replay.calls[0][0] == "historical"
 
-    continue_resp = client.post("/api/ui/quant/his-replay/actions/continue", json={})
+    continue_resp = client.post("/api/v1/quant/his-replay/actions/continue", json={})
     assert continue_resp.status_code == 200
     assert fake_replay.calls[-1][0] == "past_to_live"
 
-    cancel_resp = client.post("/api/ui/quant/his-replay/actions/cancel", json={"id": run_id})
+    cancel_resp = client.post("/api/v1/quant/his-replay/actions/cancel", json={"id": run_id})
     assert cancel_resp.status_code == 200
     latest_run = context.quant_db().get_sim_runs(limit=1)[0]
     assert latest_run["status"] in {"cancel_requested", "cancelled", "completed"}
 
-    history_resp = client.post("/api/ui/history/actions/rerun", json={})
+    history_resp = client.post("/api/v1/history/actions/rerun", json={})
     assert history_resp.status_code == 200
     assert fake_replay.calls[-1][0] == "historical"
 
-    delete_resp = client.post("/api/ui/quant/his-replay/actions/delete", json={"id": run_id})
+    delete_resp = client.post("/api/v1/quant/his-replay/actions/delete", json={"id": run_id})
     assert delete_resp.status_code == 200
     assert all(int(item["id"]) != run_id for item in context.quant_db().get_sim_runs(limit=20))
 
@@ -1188,20 +1188,20 @@ def test_portfolio_actions_call_scheduler_and_manager(tmp_path, monkeypatch):
 
     client = TestClient(create_app(context=context))
 
-    analyze_resp = client.post("/api/ui/portfolio/actions/analyze", json={"code": "600519"})
+    analyze_resp = client.post("/api/v1/portfolio/actions/analyze", json={"code": "600519"})
     assert analyze_resp.status_code == 200
     assert fake_manager.analyzed == ["600519"]
 
-    refresh_resp = client.post("/api/ui/portfolio/actions/refresh-portfolio", json={})
+    refresh_resp = client.post("/api/v1/portfolio/actions/refresh-portfolio", json={})
     assert refresh_resp.status_code == 200
     assert ("run_now", None) in fake_scheduler.calls
 
-    save_resp = client.post("/api/ui/portfolio/actions/schedule-save", json={"analysis_mode": "parallel"})
+    save_resp = client.post("/api/v1/portfolio/actions/schedule-save", json={"analysis_mode": "parallel"})
     assert save_resp.status_code == 200
     assert any(call[0] == "update" for call in fake_scheduler.calls)
 
-    start_resp = client.post("/api/ui/portfolio/actions/schedule-start", json={})
-    stop_resp = client.post("/api/ui/portfolio/actions/schedule-stop", json={})
+    start_resp = client.post("/api/v1/portfolio/actions/schedule-start", json={})
+    stop_resp = client.post("/api/v1/portfolio/actions/schedule-stop", json={})
     assert start_resp.status_code == 200
     assert stop_resp.status_code == 200
     assert ("start", None) in fake_scheduler.calls
@@ -1225,15 +1225,15 @@ def test_ai_monitor_actions_use_engine_and_delete_rows(tmp_path, monkeypatch):
 
     client = TestClient(create_app(context=context))
 
-    start_resp = client.post("/api/ui/monitor/ai/actions/start", json={"id": "600519"})
-    analyze_resp = client.post("/api/ui/monitor/ai/actions/analyze", json={"id": "600519"})
-    stop_resp = client.post("/api/ui/monitor/ai/actions/stop", json={"id": "600519"})
+    start_resp = client.post("/api/v1/monitor/ai/actions/start", json={"id": "600519"})
+    analyze_resp = client.post("/api/v1/monitor/ai/actions/analyze", json={"id": "600519"})
+    stop_resp = client.post("/api/v1/monitor/ai/actions/stop", json={"id": "600519"})
     assert start_resp.status_code == 200
     assert analyze_resp.status_code == 200
     assert stop_resp.status_code == 200
     assert fake_engine.calls[:3] == [("start", "600519"), ("analyze", "600519"), ("stop", "600519")]
 
-    delete_resp = client.post("/api/ui/monitor/ai/actions/delete", json={"id": "600519"})
+    delete_resp = client.post("/api/v1/monitor/ai/actions/delete", json={"id": "600519"})
     assert delete_resp.status_code == 200
     assert not context.smart_monitor_db().get_monitor_tasks(enabled_only=False)
 
@@ -1255,16 +1255,16 @@ def test_real_monitor_actions_use_scheduler_and_rule_updates(tmp_path, monkeypat
 
     client = TestClient(create_app(context=context))
 
-    start_resp = client.post("/api/ui/monitor/real/actions/start", json={})
-    stop_resp = client.post("/api/ui/monitor/real/actions/stop", json={})
-    refresh_resp = client.post("/api/ui/monitor/real/actions/refresh", json={})
+    start_resp = client.post("/api/v1/monitor/real/actions/start", json={})
+    stop_resp = client.post("/api/v1/monitor/real/actions/stop", json={})
+    refresh_resp = client.post("/api/v1/monitor/real/actions/refresh", json={})
     assert start_resp.status_code == 200
     assert stop_resp.status_code == 200
     assert refresh_resp.status_code == 200
     assert fake_scheduler.calls == ["start", "stop"]
 
     update_resp = client.post(
-        "/api/ui/monitor/real/actions/update-rule",
+        "/api/v1/monitor/real/actions/update-rule",
         json={"index": 0, "title": "高优先级关注", "body": "新的规则说明", "tone": "warning"},
     )
     assert update_resp.status_code == 200
@@ -1273,6 +1273,7 @@ def test_real_monitor_actions_use_scheduler_and_rule_updates(tmp_path, monkeypat
     assert stock["rating"] == "高优先级关注"
     assert stock["entry_range"]["note"] == "新的规则说明"
 
-    delete_resp = client.post("/api/ui/monitor/real/actions/delete-rule", json={"index": 0, "title": "高优先级关注"})
+    delete_resp = client.post("/api/v1/monitor/real/actions/delete-rule", json={"index": 0, "title": "高优先级关注"})
     assert delete_resp.status_code == 200
     assert context.monitor_db().get_monitored_stocks() == []
+

@@ -78,4 +78,5 @@ def test_current_technical_docs_match_gateway_spa_architecture():
         assert "streamlit" not in text.lower()
         assert "app/gateway_api.py" in text or "gateway_api.py" in text
         assert "/main" in text
-        assert "/live-sim" in text or "/api/ui/quant/live-sim" in text
+        assert "/live-sim" in text or "/api/v1/quant/live-sim" in text
+

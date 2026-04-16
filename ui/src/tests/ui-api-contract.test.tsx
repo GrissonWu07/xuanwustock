@@ -33,13 +33,13 @@ describe("ui api contracts", () => {
   it("uses the canonical shared snapshot and action endpoints", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith("/api/ui/quant/live-sim")) {
+      if (url.endsWith("/api/v1/quant/live-sim")) {
         return new Response(JSON.stringify(mockPageSnapshot("live-sim")), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
       }
-      if (url.endsWith("/api/ui/monitor/real/actions/update-rule")) {
+      if (url.endsWith("/api/v1/monitor/real/actions/update-rule")) {
         return new Response(JSON.stringify(mockPageSnapshot("real-monitor")), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -53,9 +53,9 @@ describe("ui api contracts", () => {
     await client.getPageSnapshot("live-sim");
     await client.runPageAction("real-monitor", "update-rule", { index: 0, title: "test" });
 
-    expect(fetchImpl).toHaveBeenCalledWith("/api/ui/quant/live-sim", expect.objectContaining({ method: "GET" }));
+    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/quant/live-sim", expect.objectContaining({ method: "GET" }));
     expect(fetchImpl).toHaveBeenCalledWith(
-      "/api/ui/monitor/real/actions/update-rule",
+      "/api/v1/monitor/real/actions/update-rule",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ index: 0, title: "test" }),
@@ -201,3 +201,4 @@ describe("ui api contracts", () => {
     expect(screen.queryByRole("button", { name: "详情" })).not.toBeInTheDocument();
   });
 });
+

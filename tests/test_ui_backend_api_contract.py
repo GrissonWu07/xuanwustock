@@ -52,16 +52,16 @@ def test_backend_api_serves_spa_entry_for_root_and_client_routes():
 @pytest.mark.parametrize(
     "page_path, expected_keys",
     [
-        ("/api/ui/workbench", {"updatedAt", "metrics", "watchlist", "watchlistMeta", "analysis", "nextSteps", "activity"}),
-        ("/api/ui/discover", {"updatedAt", "metrics", "strategies", "summary", "candidateTable", "recommendation"}),
-        ("/api/ui/research", {"updatedAt", "modules", "marketView", "outputTable", "summary"}),
-        ("/api/ui/portfolio", {"updatedAt", "metrics", "holdings", "attribution", "curve", "actions"}),
-        ("/api/ui/quant/live-sim", {"updatedAt", "config", "status", "metrics", "candidatePool", "pendingSignals", "executionCenter", "holdings", "trades", "curve"}),
-        ("/api/ui/quant/his-replay", {"updatedAt", "config", "metrics", "candidatePool", "tasks", "tradingAnalysis", "holdings", "trades", "signals", "curve"}),
-        ("/api/ui/monitor/ai", {"updatedAt", "metrics", "queue", "signals", "timeline"}),
-        ("/api/ui/monitor/real", {"updatedAt", "metrics", "rules", "triggers", "notificationStatus"}),
-        ("/api/ui/history", {"updatedAt", "metrics", "records", "recentReplay", "timeline"}),
-        ("/api/ui/settings", {"dataSources", "runtimeParams"}),
+        ("/api/v1/workbench", {"updatedAt", "metrics", "watchlist", "watchlistMeta", "analysis", "nextSteps", "activity"}),
+        ("/api/v1/discover", {"updatedAt", "metrics", "strategies", "summary", "candidateTable", "recommendation"}),
+        ("/api/v1/research", {"updatedAt", "modules", "marketView", "outputTable", "summary"}),
+        ("/api/v1/portfolio", {"updatedAt", "metrics", "holdings", "attribution", "curve", "actions"}),
+        ("/api/v1/quant/live-sim", {"updatedAt", "config", "status", "metrics", "candidatePool", "pendingSignals", "executionCenter", "holdings", "trades", "curve"}),
+        ("/api/v1/quant/his-replay", {"updatedAt", "config", "metrics", "candidatePool", "tasks", "tradingAnalysis", "holdings", "trades", "signals", "curve"}),
+        ("/api/v1/monitor/ai", {"updatedAt", "metrics", "queue", "signals", "timeline"}),
+        ("/api/v1/monitor/real", {"updatedAt", "metrics", "rules", "triggers", "notificationStatus"}),
+        ("/api/v1/history", {"updatedAt", "metrics", "records", "recentReplay", "timeline"}),
+        ("/api/v1/settings", {"dataSources", "runtimeParams"}),
     ],
 )
 def test_backend_api_exposes_page_snapshots(page_path: str, expected_keys: set[str]):
@@ -82,8 +82,9 @@ def test_workbench_analysis_contract_includes_decision_and_analyst_sections():
     app = module.create_app()
     client = TestClient(app)
 
-    response = client.get("/api/ui/workbench")
+    response = client.get("/api/v1/workbench")
     assert response.status_code == 200
     analysis = response.json()["analysis"]
     assert "finalDecisionText" in analysis
     assert "analystViews" in analysis
+

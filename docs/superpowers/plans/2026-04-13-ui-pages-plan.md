@@ -35,16 +35,16 @@ def test_reui_snapshot_endpoints_return_all_pages():
     client = TestClient(app)
 
     routes = [
-        "/api/ui/workbench",
-        "/api/ui/discover",
-        "/api/ui/research",
-        "/api/ui/portfolio",
-        "/api/ui/live-sim",
-        "/api/ui/his-replay",
-        "/api/ui/ai-monitor",
-        "/api/ui/real-monitor",
-        "/api/ui/history",
-        "/api/ui/settings",
+        "/api/v1/workbench",
+        "/api/v1/discover",
+        "/api/v1/research",
+        "/api/v1/portfolio",
+        "/api/v1/live-sim",
+        "/api/v1/his-replay",
+        "/api/v1/ai-monitor",
+        "/api/v1/real-monitor",
+        "/api/v1/history",
+        "/api/v1/settings",
     ]
 
     for route in routes:
@@ -112,7 +112,7 @@ def test_workbench_add_watchlist_action_returns_updated_snapshot():
     app = create_reui_app()
     client = TestClient(app)
 
-    response = client.post("/api/ui/workbench/actions/add-watchlist", json={"stockCode": "600519"})
+    response = client.post("/api/v1/workbench/actions/add-watchlist", json={"stockCode": "600519"})
     assert response.status_code == 200
     payload = response.json()
     rows = payload["watchlist"]["rows"]
@@ -124,7 +124,7 @@ def test_live_sim_start_action_returns_updated_status_snapshot():
     app = create_reui_app()
     client = TestClient(app)
 
-    response = client.post("/api/ui/quant/live-sim/actions/start", json={})
+    response = client.post("/api/v1/quant/live-sim/actions/start", json={})
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"]["running"] is True
@@ -141,16 +141,16 @@ Expected: FAIL because the action routes are not implemented yet.
 ```python
 # app/reui_actions.py
 # Register POST routes for:
-# /api/ui/workbench/actions/*
-# /api/ui/discover/actions/*
-# /api/ui/research/actions/*
-# /api/ui/portfolio/actions/*
-# /api/ui/quant/live-sim/actions/*
-# /api/ui/quant/his-replay/actions/*
-# /api/ui/monitor/ai/actions/*
-# /api/ui/monitor/real/actions/*
-# /api/ui/history/actions/*
-# /api/ui/settings/actions/save
+# /api/v1/workbench/actions/*
+# /api/v1/discover/actions/*
+# /api/v1/research/actions/*
+# /api/v1/portfolio/actions/*
+# /api/v1/quant/live-sim/actions/*
+# /api/v1/quant/his-replay/actions/*
+# /api/v1/monitor/ai/actions/*
+# /api/v1/monitor/real/actions/*
+# /api/v1/history/actions/*
+# /api/v1/settings/actions/save
 #
 # Every action must:
 # 1. call existing business logic
@@ -498,3 +498,4 @@ Expected: All commands PASS.
 git add ui/src/lib/api-client.ts ui/src/App.tsx ui/src/routes/index.tsx ui/README.md README.md build/docker-compose.yml build/nginx.conf build/Dockerfile.ui tests/test_reui_layout_docs.py ui/src/tests/reui-routing-smoke.test.tsx
 git commit -m "feat: wire reui live integration and deployment"
 ```
+

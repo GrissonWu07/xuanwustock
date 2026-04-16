@@ -146,35 +146,35 @@ def test_backend_api_dataflow_from_discover_and_research_to_watchlist_and_quant_
     app = module.create_app(context=context)
     client = TestClient(app)
 
-    discover = client.get("/api/ui/discover").json()
+    discover = client.get("/api/v1/discover").json()
     assert discover["candidateTable"]["rows"]
     assert discover["candidateTable"]["rows"][0]["code"] == "600519"
     assert "贵州茅台" in discover["recommendation"]["body"]
     assert any("主力选股" in chip for chip in discover["recommendation"]["chips"])
 
-    research = client.get("/api/ui/research").json()
+    research = client.get("/api/v1/research").json()
     assert research["outputTable"]["rows"]
     assert research["outputTable"]["rows"][0]["code"] == "600519"
 
-    add_watchlist = client.post("/api/ui/discover/actions/item-watchlist", json={"code": "600519"})
+    add_watchlist = client.post("/api/v1/discover/actions/item-watchlist", json={"code": "600519"})
     assert add_watchlist.status_code == 200
-    workbench = client.get("/api/ui/workbench").json()
+    workbench = client.get("/api/v1/workbench").json()
     watchlist_codes = {row["code"] for row in workbench["watchlist"]["rows"]}
     assert "600519" in watchlist_codes
 
-    add_from_research = client.post("/api/ui/research/actions/item-watchlist", json={"code": "000001"})
+    add_from_research = client.post("/api/v1/research/actions/item-watchlist", json={"code": "000001"})
     assert add_from_research.status_code == 200
-    workbench = client.get("/api/ui/workbench").json()
+    workbench = client.get("/api/v1/workbench").json()
     watchlist_codes = {row["code"] for row in workbench["watchlist"]["rows"]}
     assert {"600519", "000001"}.issubset(watchlist_codes)
 
-    batch_quant = client.post("/api/ui/workbench/actions/batch-quant", json={"codes": ["600519", "000001"]})
+    batch_quant = client.post("/api/v1/workbench/actions/batch-quant", json={"codes": ["600519", "000001"]})
     assert batch_quant.status_code == 200
-    live_sim = client.get("/api/ui/quant/live-sim").json()
+    live_sim = client.get("/api/v1/quant/live-sim").json()
     candidate_codes = {row["code"] for row in live_sim["candidatePool"]["rows"]}
     assert {"600519", "000001"}.issubset(candidate_codes)
 
-    replay = client.get("/api/ui/quant/his-replay").json()
+    replay = client.get("/api/v1/quant/his-replay").json()
     assert replay["candidatePool"]["columns"] == ["股票代码", "股票名称", "最新价格"]
     for row in replay["candidatePool"]["rows"]:
         assert "actions" not in row or not row["actions"]
@@ -225,7 +225,7 @@ def test_discover_snapshot_aggregates_multiple_selector_results(tmp_path, monkey
     app = module.create_app(context=context)
     client = TestClient(app)
 
-    discover = client.get("/api/ui/discover").json()
+    discover = client.get("/api/v1/discover").json()
     rows = discover["candidateTable"]["rows"]
     assert [row["code"] for row in rows][:3] == ["000001", "300750", "600519"]
     assert any(strategy["name"] == "低价擒牛" and "最近推荐 1 只" in strategy["status"] for strategy in discover["strategies"])
@@ -296,23 +296,23 @@ def test_discover_snapshot_aggregates_multiple_selector_results(tmp_path, monkey
     monkeypatch.setattr(gateway_api, "ProfitGrowthSelector", FakeProfitGrowthSelector)
     monkeypatch.setattr(gateway_api, "ValueStockSelector", FakeValueStockSelector)
 
-    run_strategy = client.post("/api/ui/discover/actions/run-strategy", json={})
+    run_strategy = client.post("/api/v1/discover/actions/run-strategy", json={})
     assert run_strategy.status_code == 200
     run_rows = run_strategy.json()["candidateTable"]["rows"]
     assert [row["code"] for row in run_rows][:3] == ["600519", "000001", "300750"]
 
-    add_watchlist_1 = client.post("/api/ui/discover/actions/item-watchlist", json={"code": "600519"})
-    add_watchlist_2 = client.post("/api/ui/discover/actions/item-watchlist", json={"code": "000001"})
+    add_watchlist_1 = client.post("/api/v1/discover/actions/item-watchlist", json={"code": "600519"})
+    add_watchlist_2 = client.post("/api/v1/discover/actions/item-watchlist", json={"code": "000001"})
     assert add_watchlist_1.status_code == 200
     assert add_watchlist_2.status_code == 200
 
-    batch_quant = client.post("/api/ui/workbench/actions/batch-quant", json={"codes": ["600519", "000001"]})
+    batch_quant = client.post("/api/v1/workbench/actions/batch-quant", json={"codes": ["600519", "000001"]})
     assert batch_quant.status_code == 200
-    live_sim = client.get("/api/ui/quant/live-sim").json()
+    live_sim = client.get("/api/v1/quant/live-sim").json()
     candidate_codes = {row["code"] for row in live_sim["candidatePool"]["rows"]}
     assert {"600519", "000001"}.issubset(candidate_codes)
 
-    replay = client.get("/api/ui/quant/his-replay").json()
+    replay = client.get("/api/v1/quant/his-replay").json()
     assert replay["candidatePool"]["columns"] == ["股票代码", "股票名称", "最新价格"]
     for row in replay["candidatePool"]["rows"]:
         assert "actions" not in row or not row["actions"]
@@ -389,7 +389,7 @@ def test_backend_api_research_run_module_persists_real_snapshot(tmp_path, monkey
     app = module.create_app(context=context)
     client = TestClient(app)
 
-    response = client.post("/api/ui/research/actions/run-module", json={})
+    response = client.post("/api/v1/research/actions/run-module", json={})
     assert response.status_code == 200
     payload = response.json()
 
@@ -403,6 +403,7 @@ def test_backend_api_research_run_module_persists_real_snapshot(tmp_path, monkey
     assert all(row["source"] in {"智瞰龙虎", "新闻流量", "宏观分析"} for row in payload["outputTable"]["rows"])
     assert payload["summary"]["body"].startswith("已刷新 5 个研究模块，其中 3 只股票有明确输出")
 
-    snapshot = client.get("/api/ui/research").json()
+    snapshot = client.get("/api/v1/research").json()
     assert snapshot["outputTable"]["rows"] == payload["outputTable"]["rows"]
     assert snapshot["modules"][3]["note"] == payload["modules"][3]["note"]
+

@@ -6,43 +6,43 @@ describe("api client endpoints", () => {
   it("uses canonical page and action endpoints for quant and monitor pages", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/ui/quant/live-sim") {
+      if (url === "/api/v1/quant/live-sim") {
         return new Response(JSON.stringify(mockPageSnapshot("live-sim")), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
       }
-      if (url === "/api/ui/quant/live-sim/actions/stop") {
+      if (url === "/api/v1/quant/live-sim/actions/stop") {
         return new Response(JSON.stringify(mockPageSnapshot("live-sim")), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
       }
-      if (url === "/api/ui/portfolio/actions/refresh-portfolio") {
+      if (url === "/api/v1/portfolio/actions/refresh-portfolio") {
         return new Response(JSON.stringify(mockPageSnapshot("portfolio")), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
       }
-      if (url === "/api/ui/portfolio/actions/schedule-start") {
+      if (url === "/api/v1/portfolio/actions/schedule-start") {
         return new Response(JSON.stringify(mockPageSnapshot("portfolio")), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
       }
-      if (url === "/api/ui/portfolio/actions/schedule-save") {
+      if (url === "/api/v1/portfolio/actions/schedule-save") {
         return new Response(JSON.stringify(mockPageSnapshot("portfolio")), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
       }
-      if (url === "/api/ui/portfolio/actions/schedule-stop") {
+      if (url === "/api/v1/portfolio/actions/schedule-stop") {
         return new Response(JSON.stringify(mockPageSnapshot("portfolio")), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
       }
-      if (url === "/api/ui/monitor/real/actions/update-rule") {
+      if (url === "/api/v1/monitor/real/actions/update-rule") {
         return new Response(JSON.stringify(mockPageSnapshot("real-monitor")), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -61,14 +61,14 @@ describe("api client endpoints", () => {
     await client.runPageAction("portfolio", "schedule-stop");
     await client.runPageAction("real-monitor", "update-rule", { index: 0, title: "test" });
 
-    expect(fetchImpl).toHaveBeenCalledWith("/api/ui/quant/live-sim", expect.objectContaining({ method: "GET" }));
-    expect(fetchImpl).toHaveBeenCalledWith("/api/ui/quant/live-sim/actions/stop", expect.objectContaining({ method: "POST" }));
-    expect(fetchImpl).toHaveBeenCalledWith("/api/ui/portfolio/actions/refresh-portfolio", expect.objectContaining({ method: "POST" }));
-    expect(fetchImpl).toHaveBeenCalledWith("/api/ui/portfolio/actions/schedule-save", expect.objectContaining({ method: "POST" }));
-    expect(fetchImpl).toHaveBeenCalledWith("/api/ui/portfolio/actions/schedule-start", expect.objectContaining({ method: "POST" }));
-    expect(fetchImpl).toHaveBeenCalledWith("/api/ui/portfolio/actions/schedule-stop", expect.objectContaining({ method: "POST" }));
+    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/quant/live-sim", expect.objectContaining({ method: "GET" }));
+    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/quant/live-sim/actions/stop", expect.objectContaining({ method: "POST" }));
+    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/portfolio/actions/refresh-portfolio", expect.objectContaining({ method: "POST" }));
+    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/portfolio/actions/schedule-save", expect.objectContaining({ method: "POST" }));
+    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/portfolio/actions/schedule-start", expect.objectContaining({ method: "POST" }));
+    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/portfolio/actions/schedule-stop", expect.objectContaining({ method: "POST" }));
     expect(fetchImpl).toHaveBeenCalledWith(
-      "/api/ui/monitor/real/actions/update-rule",
+      "/api/v1/monitor/real/actions/update-rule",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ index: 0, title: "test" }),
@@ -76,3 +76,4 @@ describe("api client endpoints", () => {
     );
   });
 });
+
