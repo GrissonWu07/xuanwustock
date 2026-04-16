@@ -1,23 +1,26 @@
 import { NavLink } from "react-router-dom";
 import { APP_ROUTE_ITEMS } from "../../routes/manifest";
-
-const groups = Array.from(new Set(APP_ROUTE_ITEMS.map((item) => item.group))).map((group) => ({
-  title: group,
-  items: APP_ROUTE_ITEMS.filter((item) => item.group === group).map((item) => ({
-    to: item.path,
-    label: item.label,
-  })),
-}));
+import { t } from "../../lib/i18n";
 
 export function AppSidebar() {
+  const groupKeys = Array.from(new Set(APP_ROUTE_ITEMS.map((item) => item.groupKey)));
+  const groups = groupKeys.map((groupKey) => ({
+    key: groupKey,
+    title: t(groupKey),
+    items: APP_ROUTE_ITEMS.filter((item) => item.groupKey === groupKey).map((item) => ({
+      to: item.path,
+      label: t(item.labelKey),
+    })),
+  }));
+
   return (
     <aside className="app-sidebar">
       <div className="app-sidebar__brand">
-        <div className="app-sidebar__brand-title">玄武AI智能体股票团队分析系统</div>
-        <div className="app-sidebar__brand-note">工作台入口，统一承接发现、研究、关注与量化流程。</div>
+        <div className="app-sidebar__brand-title">{t("AI Stock Analyst Team")}</div>
+        <div className="app-sidebar__brand-note">{t("Workbench entry for discovery, research, watchlist, and quant flow.")}</div>
       </div>
       {groups.map((group) => (
-        <section className="app-sidebar__group" key={group.title}>
+        <section className="app-sidebar__group" key={group.key}>
           <div className="app-sidebar__group-title">{group.title}</div>
           {group.items.map((item) => (
             <NavLink

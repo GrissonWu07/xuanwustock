@@ -1,4 +1,5 @@
 import type { PageKey, PageSnapshotMap } from "./page-models";
+import { t } from "./i18n";
 export type ApiMode = "live" | "hybrid" | "mock";
 
 export type ApiClientOptions = {
@@ -150,7 +151,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
   const requestPage = async <T,>(page: PageKey): Promise<T> => {
     if (mode === "mock") {
-      throw new ApiError("Mock mode 仅在测试环境提供模拟数据，请使用 mock 后端测试桩", 501, PAGE_ENDPOINTS[page]);
+      throw new ApiError(t("Mock mode is test-only; use mock backend stubs"), 501, PAGE_ENDPOINTS[page]);
     }
     try {
       return await requestLive<T>(PAGE_ENDPOINTS[page]);
@@ -164,7 +165,11 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
   const requestAction = async <T,>(page: PageKey, action: string, payload?: unknown): Promise<T> => {
     if (mode === "mock") {
-      throw new ApiError("Mock mode 仅在测试环境提供模拟数据，请使用 mock 后端测试桩", 501, PAGE_ACTION_ENDPOINTS[page][action] ?? `${PAGE_ENDPOINTS[page]}/actions/${action}`);
+      throw new ApiError(
+        t("Mock mode is test-only; use mock backend stubs"),
+        501,
+        PAGE_ACTION_ENDPOINTS[page][action] ?? `${PAGE_ENDPOINTS[page]}/actions/${action}`,
+      );
     }
     try {
       const endpoint = PAGE_ACTION_ENDPOINTS[page][action] ?? `${PAGE_ENDPOINTS[page]}/actions/${action}`;
@@ -180,11 +185,19 @@ export function createApiClient(options: ApiClientOptions = {}) {
     }
   };
 
+  const requestTask = async <T,>(taskId: string): Promise<T> => {
+    if (!taskId.trim()) {
+      throw new ApiError(t("Missing task id"), 400, `/api/v1/tasks/${taskId}`);
+    }
+    return await requestLive<T>(`/api/v1/tasks/${taskId}`);
+  };
+
   return {
     baseUrl,
     mode,
     getPageSnapshot: requestPage,
     runPageAction: requestAction,
+    getTaskStatus: requestTask,
   };
 }
 

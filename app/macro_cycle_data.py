@@ -9,7 +9,6 @@ from app.akshare_client import ak
 import pandas as pd
 from datetime import datetime, timedelta
 import warnings
-import time
 import logging
 import traceback
 
@@ -23,19 +22,14 @@ class MacroCycleDataFetcher:
 
     def __init__(self):
         print("[宏观周期] 数据采集器初始化...")
-        self.max_retries = 3
 
     def _safe_request(self, func, *args, **kwargs):
-        """安全请求，带重试"""
-        for i in range(self.max_retries):
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                if i < self.max_retries - 1:
-                    time.sleep(2)
-                else:
-                    logger.warning(f"请求失败: {e}")
-                    return None
+        """统一走 app.akshare_client 的重试与退避策略。"""
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.warning(f"请求失败: {e}")
+            return None
 
     def get_all_macro_data(self) -> dict:
         """

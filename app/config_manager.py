@@ -1,11 +1,4 @@
-"""
-配置管理模块
-统一从 SQLite 持久化读取/保存系统配置。
-
-兼容约定：
-- 保留 read_env / write_env 方法名，避免影响既有调用方。
-- .env 仅用于首次初始化导入默认值，后续以数据库为准。
-"""
+"""Configuration manager based on SQLite persistence."""
 
 from __future__ import annotations
 
@@ -17,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from app.console_utils import safe_print as print
+from app.i18n import t
 from app.runtime_paths import default_db_path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +19,7 @@ DEFAULT_SETTINGS_DB = default_db_path("settings.db")
 
 
 class ConfigManager:
-    """配置管理器（SQLite 持久化）"""
+    """Configuration manager (SQLite persistence)."""
 
     def __init__(self, env_file: str = str(DEFAULT_ENV_FILE), db_file: str = str(DEFAULT_SETTINGS_DB)):
         env_path = Path(env_file)
@@ -37,110 +31,110 @@ class ConfigManager:
         self.default_config = {
             "AI_API_KEY": {
                 "value": "",
-                "description": "AI API密钥（OpenRouter/OpenAI兼容）",
+                "description": t("AI API key (OpenRouter/OpenAI compatible)"),
                 "required": True,
                 "type": "password",
             },
             "AI_API_BASE_URL": {
                 "value": "https://openrouter.ai/api/v1",
-                "description": "AI API地址（OpenAI兼容）",
+                "description": t("AI API base URL (OpenAI compatible)"),
                 "required": False,
                 "type": "text",
             },
             "DEFAULT_MODEL_NAME": {
                 "value": "deepseek/deepseek-v3.2",
-                "description": "默认模型名称（支持OpenAI兼容模型）",
+                "description": t("Default model name (OpenAI-compatible)"),
                 "required": False,
                 "type": "select",
             },
             "TUSHARE_TOKEN": {
                 "value": "",
-                "description": "Tushare数据接口Token（可选）",
+                "description": t("Tushare token (optional)"),
                 "required": False,
                 "type": "password",
             },
             "MINIQMT_ENABLED": {
                 "value": "false",
-                "description": "启用MiniQMT量化交易",
+                "description": t("Enable MiniQMT trading"),
                 "required": False,
                 "type": "boolean",
             },
             "MINIQMT_ACCOUNT_ID": {
                 "value": "",
-                "description": "MiniQMT账户ID",
+                "description": t("MiniQMT account ID"),
                 "required": False,
                 "type": "text",
             },
             "MINIQMT_HOST": {
                 "value": "127.0.0.1",
-                "description": "MiniQMT服务器地址",
+                "description": t("MiniQMT host"),
                 "required": False,
                 "type": "text",
             },
             "MINIQMT_PORT": {
                 "value": "58610",
-                "description": "MiniQMT服务器端口",
+                "description": t("MiniQMT port"),
                 "required": False,
                 "type": "text",
             },
             "EMAIL_ENABLED": {
                 "value": "false",
-                "description": "启用邮件通知",
+                "description": t("Enable email notifications"),
                 "required": False,
                 "type": "boolean",
             },
             "SMTP_SERVER": {
                 "value": "",
-                "description": "SMTP服务器地址",
+                "description": t("SMTP server"),
                 "required": False,
                 "type": "text",
             },
             "SMTP_PORT": {
                 "value": "587",
-                "description": "SMTP服务器端口",
+                "description": t("SMTP port"),
                 "required": False,
                 "type": "text",
             },
             "EMAIL_FROM": {
                 "value": "",
-                "description": "发件人邮箱",
+                "description": t("Sender email"),
                 "required": False,
                 "type": "text",
             },
             "EMAIL_PASSWORD": {
                 "value": "",
-                "description": "邮箱授权码",
+                "description": t("Email authorization code"),
                 "required": False,
                 "type": "password",
             },
             "EMAIL_TO": {
                 "value": "",
-                "description": "收件人邮箱",
+                "description": t("Recipient email"),
                 "required": False,
                 "type": "text",
             },
             "WEBHOOK_ENABLED": {
                 "value": "false",
-                "description": "启用Webhook通知",
+                "description": t("Enable webhook notifications"),
                 "required": False,
                 "type": "boolean",
             },
             "WEBHOOK_TYPE": {
                 "value": "dingtalk",
-                "description": "Webhook类型（dingtalk/feishu）",
+                "description": t("Webhook type (dingtalk/feishu)"),
                 "required": False,
                 "type": "select",
                 "options": ["dingtalk", "feishu"],
             },
             "WEBHOOK_URL": {
                 "value": "",
-                "description": "Webhook地址",
+                "description": t("Webhook URL"),
                 "required": False,
                 "type": "text",
             },
             "WEBHOOK_KEYWORD": {
-                "value": "aiagents通知",
-                "description": "Webhook自定义关键词（钉钉安全验证）",
+                "value": "aiagents-notify",
+                "description": t("Webhook custom keyword (for DingTalk security check)"),
                 "required": False,
                 "type": "text",
             },
@@ -186,7 +180,7 @@ class ConfigManager:
                         value = value[1:-1]
                     values[key] = value
         except Exception as exc:
-            print(f"读取.env文件失败: {exc}")
+            print(t("Failed to read .env: {error}", error=exc))
         return values
 
     @staticmethod
@@ -242,7 +236,7 @@ class ConfigManager:
         self._upsert_many(seed)
 
     def read_env(self) -> Dict[str, str]:
-        """读取配置（兼容旧方法名，实际来源为数据库）。"""
+        """Read settings (legacy method name, source is SQLite)."""
         config = self._read_db_values()
         for key, meta in self.default_config.items():
             if key not in config:
@@ -254,7 +248,7 @@ class ConfigManager:
         return config
 
     def write_env(self, config: Dict[str, str]) -> bool:
-        """保存配置（兼容旧方法名，实际写入数据库）。"""
+        """Persist settings (legacy method name, writes to SQLite)."""
         try:
             current = self.read_env()
             merged = {key: current.get(key, str(meta["value"])) for key, meta in self.default_config.items()}
@@ -269,11 +263,11 @@ class ConfigManager:
             self._upsert_many(merged)
             return True
         except Exception as exc:
-            print(f"保存配置失败: {exc}")
+            print(t("Failed to save settings: {error}", error=exc))
             return False
 
     def get_config_info(self) -> Dict[str, Dict[str, Any]]:
-        """获取配置信息（包含描述、类型等）。"""
+        """Return settings metadata (description/type/options)."""
         current_values = self.read_env()
         config_info: Dict[str, Dict[str, Any]] = {}
         for key, info in self.default_config.items():
@@ -294,24 +288,24 @@ class ConfigManager:
 
                 model_cfg["options"] = list(model_config.model_options.keys())
             except Exception as exc:
-                print(f"加载模型选项失败: {exc}")
+                print(t("Failed to load model options: {error}", error=exc))
                 fallback = [model_cfg.get("value") or "deepseek/deepseek-v3.2", "deepseek/deepseek-reasoner"]
                 model_cfg["options"] = list(dict.fromkeys([str(item) for item in fallback if item]))
         return config_info
 
     def validate_config(self, config: Dict[str, str]) -> tuple[bool, str]:
-        """验证配置。"""
+        """Validate settings."""
         for key, info in self.default_config.items():
             if info["required"] and not config.get(key):
-                return False, f"必填项 {info['description']} 不能为空"
+                return False, t("Required field {field} cannot be empty", field=info["description"])
 
         api_key = config.get("AI_API_KEY", "")
         if api_key and len(api_key) < 20:
-            return False, "AI API Key格式不正确（长度太短）"
-        return True, "配置验证通过"
+            return False, t("AI API key format is invalid (too short)")
+        return True, t("Configuration validated")
 
     def reload_config(self):
-        """将数据库配置回写到运行时环境并热重载 app.config。"""
+        """Write settings to runtime env and hot-reload app.config."""
         values = self.read_env()
         for key, value in values.items():
             os.environ[key] = "" if value is None else str(value)
@@ -323,6 +317,6 @@ class ConfigManager:
             pass
 
 
-# 全局配置管理器实例
+# Global singleton
 config_manager = ConfigManager()
 

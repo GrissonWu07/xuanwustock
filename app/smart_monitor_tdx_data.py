@@ -5,6 +5,9 @@
 
 from app.console_utils import safe_print as print
 import logging
+import os
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -20,6 +23,13 @@ DEFAULT_TDX_PORT = 7709
 DEFAULT_TDX_TIMEOUT = 5
 DEFAULT_HOST_LIMIT = 10
 SECURITY_LIST_PAGE_SIZE = 1000
+DEFAULT_DEPRIORITIZED_TDX_HOSTS = {
+    ("218.85.139.19", 7709),
+    ("218.85.139.20", 7709),
+    ("58.23.131.163", 7709),
+    ("218.6.170.47", 7709),
+}
+DEFAULT_DEPRIORITIZED_TDX_NAME_KEYWORDS = ("长城国瑞",)
 
 KLINE_TYPE_MAP = {
     "minute5": 0,
@@ -35,6 +45,8 @@ KLINE_TYPE_MAP = {
 
 class SmartMonitorTDXDataFetcher:
     """基于 pytdx 的 TDX 数据获取器"""
+    _HOST_HEALTH_LOCK = threading.Lock()
+    _HOST_HEALTH: Dict[Tuple[str, int], Dict[str, float]] = {}
 
     def __init__(
         self,
@@ -62,6 +74,7 @@ class SmartMonitorTDXDataFetcher:
         effective_fallback_hosts = fallback_hosts if fallback_hosts is not None else config_fallback_hosts
         effective_hosts_file = hosts_file if hosts_file is not None else config_hosts_file
 
+        self._deprioritized_host_keys, self._deprioritized_host_only, self._deprioritized_name_keywords = self._load_deprioritized_hosts()
         self.hosts = self._build_hosts(effective_host, port, effective_fallback_hosts, effective_hosts_file)
         self._name_cache: Dict[Tuple[int, str], str] = {}
 
@@ -457,7 +470,7 @@ class SmartMonitorTDXDataFetcher:
     def _call_with_failover(self, operation):
         last_error = None
 
-        for name, host, port in self.hosts:
+        for name, host, port in self._prioritize_hosts(self.hosts):
             api = TdxHq_API(multithread=False, heartbeat=False, auto_retry=True, raise_exception=True)
             try:
                 connection = api.connect(host, port, self.timeout)
@@ -465,10 +478,12 @@ class SmartMonitorTDXDataFetcher:
                     raise ConnectionError(f"连接 {host}:{port} 失败")
 
                 result = operation(api)
+                self._record_host_success(host, port)
                 api.disconnect()
                 return result
             except Exception as exc:
                 last_error = exc
+                self._record_host_failure(host, port)
                 self.logger.warning(f"TDX服务器 {name}({host}:{port}) 请求失败: {type(exc).__name__}: {exc}")
                 try:
                     api.disconnect()
@@ -522,7 +537,84 @@ class SmartMonitorTDXDataFetcher:
             seen.add(key)
             deduplicated.append((name, host_name, host_port))
 
-        return deduplicated
+        return self._prioritize_hosts(deduplicated)
+
+    def _load_deprioritized_hosts(self) -> tuple[set[tuple[str, int]], set[str], tuple[str, ...]]:
+        host_keys = set(DEFAULT_DEPRIORITIZED_TDX_HOSTS)
+        host_only: set[str] = set()
+        name_keywords = tuple(DEFAULT_DEPRIORITIZED_TDX_NAME_KEYWORDS)
+
+        raw = os.getenv("TDX_DEPRIORITIZED_HOSTS", "").strip()
+        if raw:
+            for item in raw.split(","):
+                value = item.strip()
+                if not value:
+                    continue
+                if ":" in value:
+                    host_name, raw_port = value.rsplit(":", 1)
+                    try:
+                        host_keys.add((host_name.strip(), int(raw_port)))
+                        continue
+                    except ValueError:
+                        pass
+                host_only.add(value)
+
+        return host_keys, host_only, name_keywords
+
+    def _is_deprioritized_host(self, name: str, host: str, port: int) -> bool:
+        if (host, port) in self._deprioritized_host_keys:
+            return True
+        if host in self._deprioritized_host_only:
+            return True
+        return any(keyword in name for keyword in self._deprioritized_name_keywords)
+
+    @classmethod
+    def _get_host_health(cls, host: str, port: int) -> Dict[str, float]:
+        key = (host, port)
+        with cls._HOST_HEALTH_LOCK:
+            state = cls._HOST_HEALTH.get(key)
+            if state is None:
+                state = {"successes": 0.0, "failures": 0.0, "blocked_until": 0.0}
+                cls._HOST_HEALTH[key] = state
+            return dict(state)
+
+    @classmethod
+    def _record_host_success(cls, host: str, port: int) -> None:
+        key = (host, port)
+        with cls._HOST_HEALTH_LOCK:
+            state = cls._HOST_HEALTH.setdefault(key, {"successes": 0.0, "failures": 0.0, "blocked_until": 0.0})
+            state["successes"] = float(state.get("successes", 0.0)) + 1.0
+            state["failures"] = max(0.0, float(state.get("failures", 0.0)) - 1.0)
+            state["blocked_until"] = 0.0
+
+    @classmethod
+    def _record_host_failure(cls, host: str, port: int) -> None:
+        key = (host, port)
+        now = time.monotonic()
+        with cls._HOST_HEALTH_LOCK:
+            state = cls._HOST_HEALTH.setdefault(key, {"successes": 0.0, "failures": 0.0, "blocked_until": 0.0})
+            failures = float(state.get("failures", 0.0)) + 1.0
+            state["failures"] = failures
+            penalty_step = max(0.0, failures - 1.0)
+            cooldown = min(240.0, 5.0 * (2.0 ** min(penalty_step, 5.0)))
+            state["blocked_until"] = max(float(state.get("blocked_until", 0.0)), now + cooldown)
+
+    def _prioritize_hosts(self, hosts: Sequence[Tuple[str, str, int]]) -> List[Tuple[str, str, int]]:
+        now = time.monotonic()
+
+        def _sort_key(item: Tuple[str, str, int]) -> tuple[float, float, float, str]:
+            name, host, port = item
+            health = self._get_host_health(host, port)
+            failures = float(health.get("failures", 0.0))
+            successes = float(health.get("successes", 0.0))
+            blocked_until = float(health.get("blocked_until", 0.0))
+            static_penalty = 1000.0 if self._is_deprioritized_host(name, host, port) else 0.0
+            blocked_penalty = 200.0 if blocked_until > now else 0.0
+            dynamic_penalty = min(120.0, failures * 12.0) - min(20.0, successes * 2.0)
+            score = static_penalty + blocked_penalty + dynamic_penalty
+            return (score, failures, -successes, name)
+
+        return sorted(list(hosts), key=_sort_key)
 
     def _normalize_stock_code(self, stock_code: str) -> str:
         code = stock_code.strip().upper()

@@ -3,13 +3,12 @@ import { IconButton } from "../../components/ui/icon-button";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import type { TableSection } from "../../lib/page-models";
 import { useSelection } from "../../lib/use-selection";
+import { t } from "../../lib/i18n";
 
 type WatchlistPanelProps = {
   watchlist: TableSection;
-  quantCount: number;
-  refreshHint: string;
-  onAddWatchlist: (code: string) => void;
-  onRefresh: () => void;
+  onAddWatchlist: (code: string) => Promise<void> | void;
+  onRefresh: (codes: string[]) => void;
   onBatchQuant: (codes: string[]) => void;
   onBatchAnalyzeInput: (codes: string[]) => void;
   onClearSelection: () => void;
@@ -22,19 +21,10 @@ const panelStyle: React.CSSProperties = {
   gap: "16px",
 };
 
-const inputRowStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "minmax(0, 1fr) auto",
-  gap: "12px",
-  alignItems: "end",
-};
-
 const PAGE_SIZE = 50;
 
 export function WatchlistPanel({
   watchlist,
-  quantCount,
-  refreshHint,
   onAddWatchlist,
   onRefresh,
   onBatchQuant,
@@ -43,9 +33,12 @@ export function WatchlistPanel({
   onRemoveWatchlist,
   onAnalyzeWatchlist,
 }: WatchlistPanelProps) {
-  const [symbol, setSymbol] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [inlineAddOpen, setInlineAddOpen] = useState(false);
+  const [inlineCode, setInlineCode] = useState("");
+  const [inlineSaving, setInlineSaving] = useState(false);
+  const [inlineError, setInlineError] = useState("");
   const normalizedSearch = search.trim().toLowerCase();
   const filteredRows = useMemo(() => {
     if (!normalizedSearch) return watchlist.rows;
@@ -84,13 +77,6 @@ export function WatchlistPanel({
   const selectedCodes = selection.selectedIds;
   const selectedRows = pageRows.filter((row) => selectedCodes.includes(row.id));
 
-  const handleAdd = () => {
-    const value = symbol.trim();
-    if (!value) return;
-    onAddWatchlist(value);
-    setSymbol("");
-  };
-
   const handleBatchQuant = () => {
     if (selectedCodes.length > 0) {
       onBatchQuant(selectedCodes);
@@ -103,83 +89,75 @@ export function WatchlistPanel({
     }
   };
 
+  const handleRefresh = () => {
+    const targetCodes = (selectedCodes.length > 0 ? selectedCodes : pageRows.map((row) => row.id)).filter(Boolean);
+    if (targetCodes.length === 0) return;
+    onRefresh(targetCodes);
+  };
+
+  const submitInlineAdd = async () => {
+    if (inlineSaving) return;
+    const value = inlineCode.trim();
+    if (!value) return;
+    setInlineSaving(true);
+    setInlineError("");
+    try {
+      await Promise.resolve(onAddWatchlist(value));
+      setInlineAddOpen(false);
+      setInlineCode("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("Invalid stock code");
+      setInlineError(message || t("Invalid stock code"));
+    } finally {
+      setInlineSaving(false);
+    }
+  };
+
   return (
     <WorkbenchCard>
       <div style={panelStyle}>
         <div>
-          <h2 className="section-card__title">我的关注</h2>
-          <p className="section-card__description">
-            先看你真正关心的股票。来自发现股票和研究情报的结果都会汇总到这里，再继续推进到股票分析和量化候选池。
-          </p>
+          <h2 className="section-card__title">{t("My watchlist")}</h2>
         </div>
-
-        <div style={inputRowStyle}>
-          <label className="field">
-            <span className="field__label">股票代码</span>
-            <input
-              className="input"
-              placeholder="例如 600519 / 300390 / AAPL"
-              value={symbol}
-              onChange={(event) => setSymbol(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  handleAdd();
-                }
-              }}
-            />
-          </label>
-          <button className="button button--primary" type="button" onClick={handleAdd} disabled={!symbol.trim()}>
-            添加
-          </button>
-        </div>
-
-        <div className="watchlist-search-row">
-          <label className="field watchlist-search-field">
-            <span className="field__label">搜索股票</span>
-            <input
-              className="input"
-              placeholder="按代码、名称、来源或状态搜索"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </label>
-          <div className="watchlist-search-meta">
-            <span className="badge badge--neutral">共 {filteredRows.length} 只</span>
-            <span className="watchlist-search-meta__hint">
-              {filteredRows.length === 0
-                ? "没有匹配结果"
-                : `第 ${Math.min((currentPage - 1) * PAGE_SIZE + 1, filteredRows.length)} - ${Math.min(
-                    currentPage * PAGE_SIZE,
-                    filteredRows.length,
-                  )} 条`}
-            </span>
-          </div>
-        </div>
-
-        <p className="table__caption">{refreshHint}</p>
 
         <div className="watchlist-toolbar" data-testid="watchlist-toolbar">
           <div className="watchlist-toolbar__cluster" data-testid="watchlist-toolbar-cluster">
             <div className="watchlist-toolbar__actions" data-testid="watchlist-toolbar-actions">
-              <IconButton icon="↻" label="刷新报价" tone="neutral" onClick={onRefresh} />
+              <input
+                className="input"
+                aria-label={t("Search")}
+                placeholder={t("Search")}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                style={{ width: "220px", minWidth: "180px", height: "40px" }}
+              />
+              <IconButton
+                icon="+"
+                label={t("Inline add")}
+                tone="neutral"
+                onClick={() => {
+                  setInlineAddOpen(true);
+                  setInlineError("");
+                }}
+              />
+              <IconButton icon="↻" label={t("Refresh stock info")} tone="neutral" onClick={handleRefresh} />
               <IconButton
                 icon="🧪"
-                label="加入量化候选"
+                label={t("Add to quant candidates")}
                 tone="accent"
                 onClick={handleBatchQuant}
                 disabled={selectedCodes.length === 0}
               />
               <IconButton
                 icon="🔎"
-                label="加入分析输入"
+                label={t("Add to analysis input")}
                 tone="accent"
                 onClick={handleBatchAnalyzeInput}
                 disabled={selectedCodes.length === 0}
               />
               <IconButton
                 icon="✕"
-                label="清空选择"
+                label={t("Clear selection")}
                 tone="neutral"
                 onClick={() => {
                   selection.clear();
@@ -188,8 +166,7 @@ export function WatchlistPanel({
               />
             </div>
             <div className="watchlist-toolbar__status" data-testid="watchlist-toolbar-status">
-              <span className="watchlist-toolbar__count">已选 {selectedCodes.length} 只股票</span>
-              <span className="badge badge--neutral">量化候选 {quantCount}</span>
+              <span className="watchlist-toolbar__count">{t("Selected {count} stocks", { count: selectedCodes.length })}</span>
             </div>
           </div>
         </div>
@@ -213,24 +190,81 @@ export function WatchlistPanel({
                   <input
                     ref={selectAllRef}
                     type="checkbox"
-                    aria-label="全选当前关注股票"
+                    aria-label={t("Select all current watchlist stocks")}
                     checked={selection.allSelected}
                     onChange={selection.toggleAll}
                   />
                 </th>
                 {watchlist.columns.map((column) => (
-                  <th key={column}>{column}</th>
+                  <th key={column}>{t(column)}</th>
                 ))}
-              <th className="table__actions-head">操作</th>
+              <th className="table__actions-head">{t("Actions")}</th>
             </tr>
           </thead>
           <tbody>
+                {inlineAddOpen ? (
+                  <tr className="table__row--selected">
+                    <td className="table__checkbox-cell" />
+                    <td>
+                      <input
+                        className="input"
+                        autoFocus
+                        value={inlineCode}
+                        placeholder={t("Stock code")}
+                        onChange={(event) => setInlineCode(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            void submitInlineAdd();
+                          }
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            setInlineAddOpen(false);
+                            setInlineCode("");
+                            setInlineError("");
+                          }
+                        }}
+                      />
+                    </td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td className="table__actions-cell">
+                      <div className="table__actions">
+                        <IconButton
+                          icon="✓"
+                          label={t("Add")}
+                          tone="accent"
+                          disabled={inlineSaving || !inlineCode.trim()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void submitInlineAdd();
+                          }}
+                        />
+                        <IconButton
+                          icon="✕"
+                          label={t("Cancel")}
+                          tone="neutral"
+                          disabled={inlineSaving}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setInlineAddOpen(false);
+                            setInlineCode("");
+                            setInlineError("");
+                          }}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
                 {pageRows.length === 0 ? (
                 <tr>
                   <td className="table__empty" colSpan={watchlist.columns.length + 2}>
                     {filteredRows.length === 0
-                      ? watchlist.emptyLabel ?? "暂无关注股票，请先从工作台、发现股票或研究情报加入。"
-                      : "当前页没有股票，请切换分页或调整搜索条件。"}
+                      ? (watchlist.emptyLabel ? t(watchlist.emptyLabel) : t("My watchlist is empty"))
+                      : t("Current page has no stocks. Switch page or adjust search.")}
                   </td>
                 </tr>
               ) : (
@@ -246,7 +280,7 @@ export function WatchlistPanel({
                       <td className="table__checkbox-cell">
                         <input
                           type="checkbox"
-                          aria-label={`选择 ${row.cells[1] ?? row.id}`}
+                          aria-label={t("Select {name}", { name: String(row.cells[1] ?? row.id) })}
                           checked={isSelected}
                           onClick={(event) => event.stopPropagation()}
                           onChange={() => selection.toggle(row.id)}
@@ -254,14 +288,14 @@ export function WatchlistPanel({
                       </td>
                       {row.cells.map((cell, index) => (
                         <td key={`${row.id}-${index}`} className={index === 0 ? "table__cell-strong" : undefined}>
-                          {cell}
+                          {typeof cell === "string" ? t(cell) : cell}
                         </td>
                       ))}
                       <td className="table__actions-cell">
                         <div className="table__actions">
                           <IconButton
                             icon="🔎"
-                            label={`分析 ${row.id}`}
+                            label={t("Analyze {code}", { code: row.id })}
                             tone="accent"
                             onClick={(event) => {
                               event.stopPropagation();
@@ -270,7 +304,7 @@ export function WatchlistPanel({
                           />
                           <IconButton
                             icon="🧪"
-                            label={`加入量化候选 ${row.id}`}
+                            label={t("Add quant candidate {code}", { code: row.id })}
                             tone="neutral"
                             onClick={(event) => {
                               event.stopPropagation();
@@ -279,7 +313,7 @@ export function WatchlistPanel({
                           />
                           <IconButton
                             icon="🗑"
-                            label={`删除 ${row.id}`}
+                            label={t("Delete {code}", { code: row.id })}
                             tone="danger"
                             onClick={(event) => {
                               event.stopPropagation();
@@ -296,10 +330,15 @@ export function WatchlistPanel({
             </table>
           </div>
         </div>
+        {inlineError ? (
+          <div className="summary-item">
+            <div className="summary-item__body">{inlineError}</div>
+          </div>
+        ) : null}
         <div className="watchlist-pagination" data-testid="watchlist-pagination">
           <div className="watchlist-pagination__summary">
             <span className="watchlist-pagination__count">
-              共 {filteredRows.length} 只，当前第 {currentPage} / {pageCount} 页
+              {t("Total {count}, page {current}/{total}", { count: filteredRows.length, current: currentPage, total: pageCount })}
             </span>
           </div>
           <div className="watchlist-pagination__controls">
@@ -309,7 +348,7 @@ export function WatchlistPanel({
               onClick={() => setPage((current) => Math.max(1, current - 1))}
               disabled={currentPage === 1}
             >
-              上一页
+              {t("Previous")}
             </button>
             {Array.from({ length: pageCount }, (_, index) => index + 1).map((number) => (
               <button
@@ -328,15 +367,15 @@ export function WatchlistPanel({
               onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
               disabled={currentPage === pageCount}
             >
-              下一页
+              {t("Next")}
             </button>
           </div>
         </div>
         {selectedRows.length > 0 ? (
           <div className="summary-item summary-item--accent">
-            <div className="summary-item__title">当前选择</div>
+            <div className="summary-item__title">{t("Current selection")}</div>
             <div className="summary-item__body">
-              {selectedRows.map((row) => `${row.cells[0]} ${row.cells[1]} · ${row.cells[3]}`).join("、")}
+              {selectedRows.map((row) => `${row.cells[0]} ${row.cells[1]} · ${row.cells[3]}`).join(", ")}
             </div>
           </div>
         ) : null}

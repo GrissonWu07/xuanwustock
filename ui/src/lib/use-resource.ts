@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useState } from "react";
 import { ApiError, fetchJson } from "./api";
+import { t } from "./i18n";
 
 type ResourceStatus = "idle" | "loading" | "success" | "error";
 
@@ -51,7 +52,7 @@ export function useResource<T>(path: string | null, options: Options<T> = {}): R
         const apiError =
           requestError instanceof ApiError
             ? requestError
-            : new ApiError(requestError instanceof Error ? requestError.message : "请求失败", path);
+            : new ApiError(requestError instanceof Error ? requestError.message : t("Request failed"), path);
         setError(apiError);
         setStatus("error");
       });

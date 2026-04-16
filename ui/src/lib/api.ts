@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 export class ApiError extends Error {
   readonly endpoint: string;
   readonly status?: number;
@@ -75,7 +77,7 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
 
   if (!response.ok) {
     throw new ApiError(
-      extractMessage(payload, response.statusText || "请求失败"),
+      extractMessage(payload, response.statusText || t("Request failed")),
       path,
       response.status,
       payload,

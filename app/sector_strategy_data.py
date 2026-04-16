@@ -8,7 +8,6 @@ from app.akshare_client import ak
 import pandas as pd
 from datetime import datetime, timedelta
 import warnings
-import time
 import logging
 import os
 from dotenv import load_dotenv
@@ -25,9 +24,6 @@ class SectorStrategyDataFetcher:
     
     def __init__(self):
         print("[智策] 板块数据获取器初始化...")
-        self.max_retries = 3  # 最大重试次数
-        self.retry_delay = 2  # 重试延迟（秒）
-        self.request_delay = 1  # 请求间隔（秒）
         
         # 初始化数据库和日志
         self.database = SectorStrategyDatabase()
@@ -42,20 +38,8 @@ class SectorStrategyDataFetcher:
             self.logger.setLevel(logging.INFO)
     
     def _safe_request(self, func, *args, **kwargs):
-        """安全的请求函数，包含重试机制"""
-        for attempt in range(self.max_retries):
-            try:
-                result = func(*args, **kwargs)
-                # 添加请求延迟，避免请求过快
-                time.sleep(self.request_delay)
-                return result
-            except Exception as e:
-                if attempt < self.max_retries - 1:
-                    print(f"    请求失败，{self.retry_delay}秒后重试... (尝试 {attempt + 1}/{self.max_retries})")
-                    time.sleep(self.retry_delay)
-                else:
-                    print(f"    请求失败，已达最大重试次数: {e}")
-                    raise e
+        """统一走 app.akshare_client 的重试与退避策略。"""
+        return func(*args, **kwargs)
     
     def get_all_sector_data(self):
         """

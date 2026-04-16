@@ -287,8 +287,6 @@ class MacroAnalysisDataFetcher:
                 level=logging.INFO,
                 format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
             )
-        self.ak_retry_attempts = 3
-        self.ak_retry_delay = 0.8
 
     def fetch_all_data(self) -> Dict[str, Any]:
         """获取完整宏观分析所需数据"""
@@ -353,21 +351,11 @@ class MacroAnalysisDataFetcher:
         return data["returndata"]
 
     def _call_with_retries(self, label: str, code: str, func, **kwargs):
-        for attempt in range(1, self.ak_retry_attempts + 1):
-            try:
-                return func(**kwargs)
-            except Exception as exc:
-                if attempt >= self.ak_retry_attempts:
-                    raise
-                self.logger.warning(
-                    "%s失败（%s/%s）股票=%s，重试中：%s",
-                    label,
-                    attempt,
-                    self.ak_retry_attempts,
-                    code,
-                    exc,
-                )
-                time.sleep(self.ak_retry_delay * attempt)
+        try:
+            return func(**kwargs)
+        except Exception as exc:
+            self.logger.warning("%s失败 股票=%s：%s", label, code, exc)
+            raise
 
     def _fetch_nbs_series(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
         params = {

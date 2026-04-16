@@ -84,7 +84,40 @@ export type ActionTile = {
   href: string;
 };
 
+export type TaskStatus = "idle" | "queued" | "running" | "completed" | "failed";
+
+export type TaskJob = {
+  id: string;
+  status: TaskStatus;
+  title: string;
+  message: string;
+  stage?: string;
+  progress?: number;
+  symbol?: string;
+  startedAt?: string;
+  updatedAt?: string;
+};
+
+export type WorkbenchAnalysisResult = {
+  symbol: string;
+  stockName?: string;
+  analysts?: SelectableOption[];
+  mode?: string;
+  cycle?: string;
+  inputHint?: string;
+  summaryTitle: string;
+  summaryBody: string;
+  generatedAt?: string;
+  indicators: SummaryMetric[];
+  decision: string;
+  finalDecisionText?: string;
+  insights: Insight[];
+  analystViews?: Insight[];
+  curve: ChartPoint[];
+};
+
 export type WorkbenchSnapshot = {
+  taskId?: string;
   updatedAt: string;
   metrics: SummaryMetric[];
   watchlist: TableSection;
@@ -95,6 +128,7 @@ export type WorkbenchSnapshot = {
   };
   analysis: {
     symbol: string;
+    stockName?: string;
     analysts: SelectableOption[];
     mode: string;
     cycle: string;
@@ -108,23 +142,15 @@ export type WorkbenchSnapshot = {
     insights: Insight[];
     analystViews?: Insight[];
     curve: ChartPoint[];
+    results?: WorkbenchAnalysisResult[];
   };
-  analysisJob?: {
-    id: string;
-    status: "idle" | "queued" | "running" | "completed" | "failed";
-    title: string;
-    message: string;
-    stage?: string;
-    progress?: number;
-    symbol?: string;
-    startedAt?: string;
-    updatedAt?: string;
-  } | null;
+  analysisJob?: TaskJob | null;
   nextSteps: ActionTile[];
   activity: TimelineItem[];
 };
 
 export type DiscoverSnapshot = {
+  taskId?: string;
   updatedAt: string;
   metrics: SummaryMetric[];
   strategies: {
@@ -143,9 +169,11 @@ export type DiscoverSnapshot = {
     body: string;
     chips: string[];
   };
+  taskJob?: TaskJob | null;
 };
 
 export type ResearchSnapshot = {
+  taskId?: string;
   updatedAt: string;
   modules: {
     name: string;
@@ -158,6 +186,7 @@ export type ResearchSnapshot = {
     title: string;
     body: string;
   };
+  taskJob?: TaskJob | null;
 };
 
 export type PortfolioSnapshot = {

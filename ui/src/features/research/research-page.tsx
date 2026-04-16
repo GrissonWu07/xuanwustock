@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ApiClient } from "../../lib/api-client";
+import { apiClient, type ApiClient } from "../../lib/api-client";
 import { IconButton } from "../../components/ui/icon-button";
 import { PageHeader } from "../../components/ui/page-header";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
 import { usePageData } from "../../lib/use-page-data";
 import { useSelection } from "../../lib/use-selection";
+import type { ResearchSnapshot } from "../../lib/page-models";
+import { t } from "../../lib/i18n";
 
 type ResearchPageProps = {
   client?: ApiClient;
@@ -28,24 +30,15 @@ type ResearchModuleWithInsights = {
 };
 
 const extractOutputCount = (output: string) => {
-  const match = output.match(/(\d+)\s*[只支]?/);
+  const match = output.match(/(\d+)/);
   return match ? Number.parseInt(match[1], 10) : 0;
 };
 
 const extractOutputSentiment = (output: string) => {
-  const longMatch = output.match(/看多\s*(\d+)\s*\/\s*看空\s*(\d+)/);
-  if (longMatch) {
-    const bullish = Number.parseInt(longMatch[1], 10);
-    const bearish = Number.parseInt(longMatch[2], 10);
-    if (!Number.isNaN(bullish) && !Number.isNaN(bearish)) {
-      return { bullish, bearish, total: bullish + bearish };
-    }
-  }
-  const bullishMatch = output.match(/看多\s*(\d+)/);
-  const bearishMatch = output.match(/看空\s*(\d+)/);
-  if (bullishMatch && bearishMatch) {
-    const bullish = Number.parseInt(bullishMatch[1], 10);
-    const bearish = Number.parseInt(bearishMatch[1], 10);
+  const pairMatch = output.match(/(\d+)\s*\/\s*(\d+)/);
+  if (pairMatch) {
+    const bullish = Number.parseInt(pairMatch[1], 10);
+    const bearish = Number.parseInt(pairMatch[2], 10);
     return { bullish, bearish, total: bullish + bearish };
   }
   return null;
@@ -60,9 +53,8 @@ const getOutputScore = (output: string) => {
 };
 
 const getOutputTone = (output: string) => {
-  if (output.includes("市场判断")) return "warning";
-  if (output.includes("股票输出")) return "accent";
-  if (output.includes("情报")) return "neutral";
+  if (output.includes("/")) return "warning";
+  if (extractOutputCount(output) > 0) return "accent";
   return "neutral";
 };
 
@@ -73,22 +65,14 @@ const normalizeText = (value: string) =>
     .replace(/[#*`]/g, "")
     .toLowerCase();
 
-const isCompositeInsight = (item: { title: string; body: string }) => {
-  return (
-    item.title.includes("综合研判") ||
-    /以下是基于/.test(item.body) ||
-    /多维度综合研判/.test(item.body) ||
-    /首席策略师综合报告/.test(item.body)
-  );
-};
+const isCompositeInsight = () => false;
 
 const hasStructuredText = (output: string) => {
   const trimmed = output.trim();
   if (!trimmed) return false;
-  if (/^\s*(看多|看空)\s*\d+\s*\/\s*(看多|看空)\s*\d+\s*$/.test(trimmed)) return false;
-  if (/(股票输出|情报|市场判断)/.test(trimmed)) return false;
+  if (/^\s*\d+\s*\/\s*\d+\s*$/.test(trimmed)) return false;
   if (/^\s*\d+[^\n\r]*$/.test(trimmed)) return false;
-  return trimmed.length >= 18 || trimmed.includes("#") || trimmed.includes("**") || trimmed.includes("---") || trimmed.includes("。");
+  return trimmed.length >= 18 || trimmed.includes("#") || trimmed.includes("**") || trimmed.includes("---") || trimmed.includes(".");
 };
 
 const cleanStructuredText = (value: string) =>
@@ -117,8 +101,8 @@ const extractStructuredSections = (note: string) => {
   validLines.forEach((line) => {
     const headingMatch = line.match(/^#{1,6}\s*(.+)$/);
     if (headingMatch) {
-      if (sections.length === 0 && intro.length > 0) {
-        sections.push({ title: "市场要点", body: cleanStructuredText(intro.join("\n")) });
+    if (sections.length === 0 && intro.length > 0) {
+        sections.push({ title: t("Market highlights"), body: cleanStructuredText(intro.join("\n")) });
         intro.length = 0;
       }
       finalizeSection();
@@ -134,7 +118,7 @@ const extractStructuredSections = (note: string) => {
   });
 
   if (sections.length === 0 && intro.length > 0) {
-    sections.push({ title: "市场要点", body: cleanStructuredText(intro.join("\n")) });
+    sections.push({ title: t("Market highlights"), body: cleanStructuredText(intro.join("\n")) });
   }
   if (current && (current.body || intro.length === 0)) {
     finalizeSection();
@@ -150,7 +134,7 @@ const extractStructuredSections = (note: string) => {
     .filter(Boolean)
     .slice(0, 8)
     .map((segment, index) => ({
-      title: `${index + 1}）详细内容`,
+      title: t("{index}) Details", { index: index + 1 }),
       body: cleanStructuredText(segment),
     }));
 };
@@ -158,7 +142,7 @@ const extractStructuredSections = (note: string) => {
 const normalizeComparableText = (value: string) =>
   cleanStructuredText(value)
     .replace(/\s+/g, "")
-    .replace(/[：:，,。.!！？?；;、“”"'（）()]/g, "")
+    .replace(/[:,.!?;'"()]/g, "")
     .toLowerCase();
 
 const isInsightDuplicateForModule = (moduleName: string, note: string, insight: { title: string; body: string }) => {
@@ -176,26 +160,11 @@ const isInsightDuplicateForModule = (moduleName: string, note: string, insight: 
   return normalizedNote.includes(normalizedInsightBody);
 };
 
-const isAggregateInsight = (item: { title: string; body: string }) => {
-  const title = normalizeText(item.title);
-  return (
-    title.includes("市场洞察") ||
-    title.includes("市场判断") ||
-    title.includes("综合研判") ||
-    title.includes("统一研判") ||
-    title.includes("总览") ||
-    isCompositeInsight(item)
-  );
-};
+const isAggregateInsight = (_item: { title: string; body: string }) => false;
 
 const buildModuleAliases = (moduleName: string) => {
   const normalized = normalizeText(moduleName);
   const aliases = new Set<string>([normalized]);
-  if (moduleName.includes("智策")) aliases.add(normalizeText("板块"));
-  if (moduleName.includes("智瞰")) aliases.add(normalizeText("龙虎"));
-  if (moduleName.includes("新闻")) aliases.add(normalizeText("新闻"), normalizeText("交易"));
-  if (moduleName.includes("宏观")) aliases.add(normalizeText("宏观"), normalizeText("周期"));
-  if (moduleName.includes("周期")) aliases.add(normalizeText("宏观"), normalizeText("周期"));
   return Array.from(aliases).filter(Boolean);
 };
 
@@ -213,22 +182,17 @@ const moduleMatchesInsight = (moduleName: string, insight: { title: string; body
 };
 
 const resolveModuleOwner = (insight: { title: string; body: string }, moduleNames: string[]) => {
-  const title = insight.title;
-  if (/行业映射/.test(title)) {
-    return moduleNames.find((name) => normalizeText(name).includes("宏观"));
-  }
-  if (/交易信号/.test(title)) {
-    return moduleNames.find((name) => normalizeText(name).includes("新闻"));
-  }
-
   return moduleNames.find((name) => moduleMatchesInsight(name, insight));
 };
 
 export function ResearchPage({ client }: ResearchPageProps) {
+  const taskClient = client ?? apiClient;
   const resource = usePageData("research", client);
   const [search, setSearch] = useState("");
   const [batching, setBatching] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [runFeedback, setRunFeedback] = useState("");
+  const [taskJob, setTaskJob] = useState<ResearchSnapshot["taskJob"]>(null);
   const [selectedModuleName, setSelectedModuleName] = useState("");
   const selectAllRef = useRef<HTMLInputElement | null>(null);
 
@@ -236,6 +200,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
   const searchTerm = search.trim();
   const normalizedSearch = searchTerm.toLowerCase();
   const sourceRows = snapshot?.outputTable.rows ?? [];
+  const researchBusy = Boolean(taskJob && ["queued", "running"].includes(taskJob.status));
   const filteredRows = useMemo(
     () =>
       sourceRows.filter((row) => {
@@ -305,22 +270,22 @@ export function ResearchPage({ client }: ResearchPageProps) {
   const selectedPreview = selectedRows.slice(0, 3);
   const selectedPreviewLabel =
     selection.selectedCount > 0
-      ? `${selection.selectedCount} 只股票已选中，支持直接批量加入我的关注。`
-      : "先勾选股票输出，再统一加入我的关注池。";
+      ? t("{count} stocks selected. Batch add to watchlist is available.", { count: selection.selectedCount })
+      : t("Select stock outputs first, then batch add to watchlist.");
   const outputEmptyLabel = normalizedSearch
-    ? `未找到匹配“${searchTerm}”的股票输出`
-    : snapshot?.outputTable.emptyLabel ?? "暂无股票输出";
+    ? t('No stock output matches "{keyword}"', { keyword: searchTerm })
+    : snapshot?.outputTable.emptyLabel ?? t("No stock output");
   const outputEmptyMessage =
     normalizedSearch && snapshot
-      ? "可以尝试输入代码、名称、来源模块或后续动作重新筛选。"
+      ? t("Try filtering by code, name, source module, or next action.")
       : snapshot?.outputTable.emptyMessage;
 
   const derivedMetrics = snapshot
     ? [
-        { label: "情报模块", value: String(snapshot.modules.length) },
-        { label: "股票输出", value: String(snapshot.outputTable.rows.length) },
-        { label: "市场判断", value: String(snapshot.marketView.length) },
-        { label: "最近更新", value: snapshot.updatedAt || "--" },
+        { label: t("Research modules"), value: String(snapshot.modules.length) },
+        { label: t("Stock outputs"), value: String(snapshot.outputTable.rows.length) },
+        { label: t("Market view"), value: String(snapshot.marketView.length) },
+        { label: t("Last update"), value: snapshot.updatedAt || "--" },
       ]
     : [];
 
@@ -340,13 +305,47 @@ export function ResearchPage({ client }: ResearchPageProps) {
   };
 
   const handleRunModule = async (moduleName?: string) => {
-    if (isRegenerating) return;
+    if (isRegenerating || researchBusy) return;
     setIsRegenerating(true);
+    setRunFeedback(t("Submitting research task..."));
+    const pollTask = async (taskId: string) => {
+      for (let index = 0; index < 180; index += 1) {
+        const latest = (await taskClient.getTaskStatus(taskId)) as ResearchSnapshot["taskJob"];
+        setTaskJob(latest);
+        if (latest && ["completed", "failed"].includes(latest.status)) {
+          await resource.refresh();
+          return latest;
+        }
+        await new Promise((resolve) => {
+          setTimeout(resolve, 1000);
+        });
+      }
+      await resource.refresh();
+      return null;
+    };
     try {
+      const payload = moduleName ? { module: moduleName } : undefined;
+      const result = await resource.runAction("run-module", payload);
+      if (!result) {
+        setRunFeedback(t("Research task submission failed. Please retry."));
+        return;
+      }
+      const taskId = result?.taskId;
+      if (taskId) {
+        const finished = await pollTask(taskId);
+        if (finished?.status === "completed") {
+          setRunFeedback(finished.message || t("Research refreshed."));
+        } else if (finished?.status === "failed") {
+          setRunFeedback(t("Research task failed: {message}", { message: finished.message || t("Please check task logs") }));
+        } else {
+          setRunFeedback(t("Research task submitted and running in background."));
+        }
+        return;
+      }
       if (moduleName) {
-        await resource.runAction("run-module", { module: moduleName });
+        setRunFeedback(t("Module {name} refreshed.", { name: moduleName }));
       } else {
-        await resource.runAction("run-module");
+        setRunFeedback(t("Research refreshed."));
       }
     } finally {
       setIsRegenerating(false);
@@ -359,38 +358,42 @@ export function ResearchPage({ client }: ResearchPageProps) {
     }
   }, [selection.someSelected]);
 
+  useEffect(() => {
+    setTaskJob(snapshot?.taskJob ?? null);
+  }, [snapshot?.taskJob]);
+
   if (resource.status === "loading" && !snapshot) {
-    return <PageLoadingState title="研究情报加载中" description="正在读取板块、龙虎榜、新闻和宏观判断。" />;
+    return <PageLoadingState title={t("Research loading...")} description={t("Loading sector, dragon-tiger list, news, and macro view.")} />;
   }
 
   if (resource.status === "error" && !snapshot) {
     return (
       <PageErrorState
-        title="研究情报加载失败"
-        description={resource.error ?? "无法加载研究情报数据，请稍后重试。"}
-        actionLabel="重新加载"
+        title={t("Research failed to load")}
+        description={resource.error ?? t("Unable to load research data. Please retry later.")}
+        actionLabel={t("Refresh")}
         onAction={resource.refresh}
       />
     );
   }
 
   if (!snapshot) {
-    return <PageEmptyState title="研究情报暂无数据" description="后台尚未返回研究情报快照。" actionLabel="刷新" onAction={resource.refresh} />;
+    return <PageEmptyState title={t("Research has no data")} description={t("Backend has not returned a research snapshot yet.")} actionLabel={t("Refresh")} onAction={resource.refresh} />;
   }
 
   return (
     <div>
       <PageHeader
         eyebrow="Research"
-        title="研究情报"
-        description="把智策板块、智瞰龙虎、新闻流量、宏观分析和宏观周期统一收在一个聚合页里。有股票输出时再加入我的关注。"
+        title={t("Research")}
+        description={t("Aggregate sector strategy, dragon-tiger list, news flow, macro analysis, and macro cycle in one page.")}
         actions={
           <>
-          <button className="button button--secondary" type="button" onClick={() => void handleRunModule()} disabled={isRegenerating}>
-            {isRegenerating ? "重新生成中..." : "重新生成"}
+          <button className="button button--secondary" type="button" onClick={() => void handleRunModule()} disabled={isRegenerating || researchBusy}>
+            {isRegenerating || researchBusy ? t("Regenerating...") : t("Regenerate")}
           </button>
             <button className="button button--primary" type="button" onClick={() => void handleBatchWatchlist()} disabled={!canBatchWatchlist || batching}>
-              批量加入关注池
+              {t("Add selected to watchlist")}
             </button>
           </>
         }
@@ -406,10 +409,11 @@ export function ResearchPage({ client }: ResearchPageProps) {
         </div>
 
         <WorkbenchCard>
-          <h2 className="section-card__title">模块分析</h2>
+          <h2 className="section-card__title">{t("Module analysis")}</h2>
           <p className="section-card__description">{snapshot.summary.title}</p>
+          {runFeedback ? <div className="discover-candidate-toolbar__feedback">{runFeedback}</div> : null}
           <div className="research-module-layout">
-            <aside className="research-module-list" aria-label="研究情报模块列表">
+            <aside className="research-module-list" aria-label={t("Research module list")}>
               {modulesWithInsights.map((module) => {
                 const isActive = module.name === selectedModule?.name;
                 return (
@@ -430,7 +434,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                 <div className="research-module-card research-module-card--detail">
                   <div className="research-module-card__output">
                     <div className="research-module-card__output-meta">
-                      <span>产出可视化</span>
+                      <span>{t("Output visualization")}</span>
                       <span>{selectedModule.output}</span>
                     </div>
                     <div className="research-module-card__meter-track">
@@ -446,7 +450,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                               <div
                                 className="research-module-card__meter-fill research-module-card__meter-fill--accent"
                                 style={{ width: `${Math.min(100, bullishRate)}%` }}
-                                title={`看多 ${sentiment.bullish}`}
+                                title={t("Bullish {count}", { count: sentiment.bullish })}
                               />
                               <div
                                 className="research-module-card__meter-track-separator"
@@ -455,7 +459,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                               <div
                                 className="research-module-card__meter-fill research-module-card__meter-fill--muted"
                                 style={{ width: `${Math.min(100, bearishRate)}%` }}
-                                title={`看空 ${sentiment.bearish}`}
+                                title={t("Bearish {count}", { count: sentiment.bearish })}
                               />
                             </>
                           );
@@ -474,13 +478,13 @@ export function ResearchPage({ client }: ResearchPageProps) {
                     <div>
                       <h3 className="research-module-card__name">{selectedModule.name}</h3>
                       <div className="research-module-card__note">
-                        {selectedModule.sections.length > 0 ? "完整研判已展开，下方查看各主题细节。" : selectedModule.note}
+                        {selectedModule.sections.length > 0 ? t("Full analysis expanded. See thematic details below.") : selectedModule.note}
                       </div>
                     </div>
                     <span className={`badge badge--${getOutputTone(selectedModule.output)}`}>{selectedModule.output}</span>
                   </div>
                   <div className="research-module-card__divider" />
-                  <div className="research-module-card__insight-title">完整详情</div>
+                  <div className="research-module-card__insight-title">{t("Top-level result")}</div>
                   {selectedModule.sections.length > 0 ? (
                     <div className="research-module-card__insight-list">
                       {selectedModule.sections.map((section, index) => (
@@ -497,12 +501,12 @@ export function ResearchPage({ client }: ResearchPageProps) {
                   ) : selectedModule.outputDetail ? (
                     <p className="research-module-card__empty-note">{selectedModule.outputDetail}</p>
                   ) : (
-                    <p className="research-module-card__empty-note">该模块暂无结构化细节，持续刷新后会自动补齐。</p>
+                    <p className="research-module-card__empty-note">{t("No structured detail for this module yet.")}</p>
                   )}
                   {selectedModule.insights.length > 0 ? (
                     <>
                       <div className="research-module-card__divider" />
-                      <div className="research-module-card__insight-title">补充洞察</div>
+                      <div className="research-module-card__insight-title">{t("Additional insights")}</div>
                       <div className="research-module-card__insight-list">
                         {selectedModule.insights.map((insight, index) => (
                           <div className="research-module-card__insight-item" key={`${insight.title}-${index}`}>
@@ -520,11 +524,11 @@ export function ResearchPage({ client }: ResearchPageProps) {
         </WorkbenchCard>
 
         <WorkbenchCard>
-          <h2 className="section-card__title">研究结论</h2>
+          <h2 className="section-card__title">{t("Research summary")}</h2>
           <p className="section-card__description">{snapshot.summary.body}</p>
           <div className="summary-list">
             <div className="summary-item">
-              <div className="summary-item__title">结论摘要</div>
+              <div className="summary-item__title">{t("Summary")}</div>
               <div className="summary-item__body">{snapshot.summary.title}</div>
             </div>
           </div>
@@ -534,42 +538,42 @@ export function ResearchPage({ client }: ResearchPageProps) {
           <div className="toolbar">
             <div>
               <h2 className="section-card__title" style={{ margin: 0 }}>
-                股票输出
+                {t("Stock outputs")}
               </h2>
               <p className="table__caption" style={{ marginBottom: 0 }}>
-                只有研究模块明确输出股票时，才会出现加入我的关注的操作。
+                {t("Watchlist actions appear only when a module outputs explicit stocks.")}
               </p>
             </div>
             <span className="toolbar__spacer" />
             <label className="field" style={{ minWidth: "260px" }}>
-              <span className="field__label">搜索输出</span>
+              <span className="field__label">{t("Search output")}</span>
               <input
                 className="input"
-                placeholder="输入代码、名称、来源或原因"
+                placeholder={t("Input code, name, source, or reason")}
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
               />
             </label>
-            <span className="badge badge--neutral">输出 {filteredRows.length} 只</span>
-            <span className="badge badge--accent">已选 {selection.selectedCount} 只</span>
+            <span className="badge badge--neutral">{t("Selected output {count}", { count: filteredRows.length })}</span>
+            <span className="badge badge--accent">{t("Selected {count} stocks", { count: selection.selectedCount })}</span>
           </div>
           <div className="toolbar" style={{ marginTop: "10px" }}>
             <IconButton
               icon="↻"
-              label={isRegenerating ? "刷新中" : "刷新研究情报"}
+              label={isRegenerating ? t("Running...") : t("Refresh research")}
               tone="neutral"
-              disabled={isRegenerating}
+              disabled={isRegenerating || researchBusy}
               onClick={() => void handleRunModule(selectedModule?.name)}
             />
             <IconButton
               icon="⭐"
-              label="批量加入关注池"
+              label={t("Add selected to watchlist")}
               tone="accent"
               onClick={() => void handleBatchWatchlist()}
               disabled={!canBatchWatchlist || batching}
             />
-            <IconButton icon="✕" label="清空选择" tone="neutral" onClick={selection.clear} />
-            <span className="toolbar__status">已选 {selection.selectedCount} 只股票</span>
+            <IconButton icon="✕" label={t("Clear selection")} tone="neutral" onClick={selection.clear} />
+            <span className="toolbar__status">{t("Selected {count} stocks", { count: selection.selectedCount })}</span>
           </div>
           <div className="table-shell">
             <table className="table">
@@ -579,7 +583,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                     <input
                       ref={selectAllRef}
                       type="checkbox"
-                      aria-label="全选当前研究输出"
+                      aria-label={t("Select all current research outputs")}
                       checked={selection.allSelected}
                       onChange={selection.toggleAll}
                     />
@@ -587,7 +591,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                   {snapshot.outputTable.columns.map((column) => (
                     <th key={column}>{column}</th>
                   ))}
-                  <th className="table__actions-head">操作</th>
+                  <th className="table__actions-head">{t("Actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -606,7 +610,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                       <td className="table__checkbox-cell">
                         <input
                           type="checkbox"
-                          aria-label={`选择 ${row.cells[1] ?? row.id}`}
+                          aria-label={t("Select {name}", { name: String(row.cells[1] ?? row.id) })}
                           checked={selection.isSelected(row.id)}
                           onChange={() => selection.toggle(row.id)}
                         />
@@ -620,7 +624,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                         <div className="table__actions">
                           <button className="button button--secondary" type="button" onClick={() => handleSingleWatchlist(row.id)}>
                             <span aria-hidden="true">{row.actions?.[0]?.icon ?? "⭐"}</span>
-                            <span>{row.actions?.[0]?.label ?? "加入关注池"}</span>
+                            <span>{row.actions?.[0]?.label ?? t("Add to watchlist")}</span>
                           </button>
                         </div>
                       </td>
@@ -633,12 +637,12 @@ export function ResearchPage({ client }: ResearchPageProps) {
         </WorkbenchCard>
 
         <WorkbenchCard>
-          <h2 className="section-card__title">最近结果摘要</h2>
+          <h2 className="section-card__title">{t("Latest result summary")}</h2>
           <p className="section-card__description">{snapshot.summary.body}</p>
           <div className="summary-list">
             <div className="summary-item">
               <div className="summary-item__title">{snapshot.summary.title}</div>
-              <div className="summary-item__body">快照更新时间：{snapshot.updatedAt}</div>
+              <div className="summary-item__body">{t("Snapshot updated at: {time}", { time: snapshot.updatedAt })}</div>
             </div>
           </div>
           <div className="chip-row">
@@ -651,15 +655,15 @@ export function ResearchPage({ client }: ResearchPageProps) {
           <div className="card-divider" />
           <div className="summary-list">
             <div className="summary-item">
-              <div className="summary-item__title">当前选择与回写</div>
+              <div className="summary-item__title">{t("Current step")}</div>
               <div className="summary-item__body">
-                {selectedRows.length > 0 ? selectedPreviewLabel : "研究模块默认展示市场判断，只有明确股票输出时才允许加入我的关注。"}
+                {selectedRows.length > 0 ? selectedPreviewLabel : t("Research defaults to market view; watchlist add appears only with explicit stock outputs.")}
               </div>
               {selectedPreview.length > 0 ? (
                 <div className="chip-row" style={{ marginTop: "10px" }}>
                   {selectedPreview.map((row) => (
                     <span className="badge badge--neutral" key={row.id}>
-                      {row.cells[1] ?? row.id} · {row.cells[2] ?? row.source ?? "来源未标注"}
+                      {row.cells[1] ?? row.id} · {row.cells[2] ?? row.source ?? t("Source not marked")}
                     </span>
                   ))}
                 </div>

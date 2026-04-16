@@ -167,16 +167,25 @@ class WatchlistDB:
         latest_signal: str | None = None,
         latest_price: float | None = None,
         stock_name: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         normalized_code = str(stock_code).strip().upper()
         with self._connect() as conn:
             cursor = conn.cursor()
+            metadata_json: str | None = None
+            if isinstance(metadata, dict) and metadata:
+                cursor.execute("SELECT metadata_json FROM watchlist WHERE stock_code = ?", (normalized_code,))
+                existing = cursor.fetchone()
+                merged_metadata = self._decode_json(existing["metadata_json"], {}) if existing else {}
+                merged_metadata.update(metadata)
+                metadata_json = json.dumps(merged_metadata, ensure_ascii=False)
             cursor.execute(
                 """
                 UPDATE watchlist
                 SET stock_name = COALESCE(?, stock_name),
                     latest_signal = COALESCE(?, latest_signal),
                     latest_price = COALESCE(?, latest_price),
+                    metadata_json = COALESCE(?, metadata_json),
                     updated_at = ?
                 WHERE stock_code = ?
                 """,
@@ -184,6 +193,7 @@ class WatchlistDB:
                     stock_name,
                     latest_signal,
                     float(latest_price) if latest_price is not None else None,
+                    metadata_json,
                     datetime.now().isoformat(timespec="seconds"),
                     normalized_code,
                 ),

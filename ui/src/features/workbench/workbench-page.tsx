@@ -7,6 +7,7 @@ import { usePageData } from "../../lib/use-page-data";
 import { NextStepsPanel } from "./next-steps-panel";
 import { StockAnalysisPanel } from "./stock-analysis-panel";
 import { WatchlistPanel } from "./watchlist-panel";
+import { t } from "../../lib/i18n";
 
 type WorkbenchPageProps = {
   client?: ApiClient;
@@ -25,30 +26,31 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
   const analysisDecision = (snapshot?.analysis?.finalDecisionText ?? snapshot?.analysis?.decision ?? "").trim();
   const placeholderTexts = new Set([
     "",
-    "先从我的关注里添加股票，再开始分析。",
-    "请输入股票代码后，系统会生成完整的分析结果。",
-    "请输入股票代码后再查看分析结果。",
-    "分析完成。",
+    t("Add symbols to watchlist first, then start analysis."),
+    t("Enter stock code to generate full analysis results."),
+    t("Enter stock code before viewing analysis."),
+    t("Analysis completed."),
   ]);
   const hasUsableAnalysis = Boolean(
     snapshot?.analysis?.generatedAt ||
       (analysisSummary && !placeholderTexts.has(analysisSummary)) ||
       (analysisDecision && !placeholderTexts.has(analysisDecision)) ||
-      snapshot?.analysis?.analystViews?.length,
+      snapshot?.analysis?.analystViews?.length ||
+      snapshot?.analysis?.results?.length,
   );
   const showAnalysisBusy = localAnalysisPending || analysisBusy;
-  const analysisBusyMessage = analysisJob?.message ?? "正在分析中...";
+  const analysisBusyMessage = analysisJob?.message ?? t("Starting...");
   const analysisRefreshFailure =
     analysisJob?.status === "failed" && hasUsableAnalysis
       ? {
-          title: "最近一次刷新失败",
-          body: analysisJob.message ?? "当前显示的是最近一次成功分析。",
+          title: t("Refresh failed most recently"),
+          body: analysisJob.message ?? t("Currently showing the latest successful analysis."),
           generatedAt: snapshot?.analysis?.generatedAt ?? "",
         }
       : null;
 
   useEffect(() => {
-    // 仅在后端显式提供异步任务状态时轮询，避免同步分析结果被默认快照覆盖。
+    // Poll only when backend provides async task states, to avoid overriding sync analysis by default snapshots.
     if (!analysisBusy) return undefined;
     const timer = window.setInterval(() => {
       void resource.refresh();
@@ -62,22 +64,22 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
   }, [analysisBusy]);
 
   if (resource.status === "loading" && !resource.data) {
-    return <PageLoadingState title="工作台加载中" description="正在拉取我的关注、股票分析和下一步入口。" />;
+    return <PageLoadingState title={t("Workbench loading...")} description={t("Loading watchlist, stock analysis, and next-step entries.")} />;
   }
 
   if (resource.status === "error" && !resource.data) {
     return (
       <PageErrorState
-        title="工作台加载失败"
-        description={resource.error ?? "无法加载工作台数据，请稍后重试。"}
-        actionLabel="重新加载"
+        title={t("Workbench failed to load")}
+        description={resource.error ?? t("Unable to load workbench data. Please retry later.")}
+        actionLabel={t("Refresh")}
         onAction={resource.refresh}
       />
     );
   }
 
   if (!snapshot) {
-    return <PageEmptyState title="工作台暂无数据" description="后台尚未返回工作台快照。" actionLabel="刷新" onAction={resource.refresh} />;
+    return <PageEmptyState title={t("Workbench has no data")} description={t("Backend has not returned a workbench snapshot yet.")} actionLabel={t("Refresh")} onAction={resource.refresh} />;
   }
 
   const handleAnalyze = async (payload: { symbol: string; analysts: string[]; mode: string; cycle: string }) => {
@@ -116,6 +118,12 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
     setAnalysisInputSeed(normalized.join(","));
   };
 
+  const handleRefreshWatchlist = async (codes: string[]) => {
+    if (codes.length === 0) return;
+    await resource.runAction("refresh-watchlist", { codes, fullRefresh: true, triggerAt: Date.now() });
+    await resource.refresh();
+  };
+
   const defaultAnalysts = (() => {
     const selected = snapshot.analysis.analysts.filter((item) => item.selected).map((item) => item.value);
     return selected.length > 0 ? selected : DEFAULT_ANALYSTS;
@@ -124,14 +132,14 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
   return (
     <div>
       <PageHeader
-        eyebrow="玄武AI智能体股票团队分析系统"
-        title="工作台"
-        description="先看我的关注 -> 将股票加入我的关注，再继续做股票分析、发现股票、研究情报和量化验证。所有核心操作都围绕当前工作台页面展开。"
+        eyebrow={t("AI Stock Analyst Team")}
+        title={t("Workbench")}
+        description={t("Start with watchlist, then continue with stock analysis, discovery, research, and quant validation on this page.")}
       />
       <div className="metric-grid">
         {snapshot.metrics.map((item) => (
           <WorkbenchCard className="metric-card" key={item.label}>
-            <div className="metric-card__label">{item.label}</div>
+            <div className="metric-card__label">{t(item.label)}</div>
             <div className="metric-card__value">{item.value}</div>
           </WorkbenchCard>
         ))}
@@ -140,10 +148,15 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
         <div className="stack">
           <WatchlistPanel
             watchlist={snapshot.watchlist}
-            quantCount={snapshot.watchlistMeta.quantCount}
-            refreshHint={snapshot.watchlistMeta.refreshHint}
-            onAddWatchlist={(code) => resource.runAction("add-watchlist", { code })}
-            onRefresh={() => resource.runAction("refresh-watchlist")}
+            onAddWatchlist={async (code) => {
+              const result = await resource.runAction("add-watchlist", { code });
+              if (!result) {
+                throw new Error(resource.error ?? t("Invalid stock code"));
+              }
+            }}
+            onRefresh={(codes) => {
+              void handleRefreshWatchlist(codes);
+            }}
             onBatchQuant={(codes) => resource.runAction("batch-quant", { codes })}
             onBatchAnalyzeInput={handleBatchFillAnalysisInput}
             onClearSelection={() => resource.runAction("clear-selection")}

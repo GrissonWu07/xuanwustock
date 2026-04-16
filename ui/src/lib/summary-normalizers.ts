@@ -10,6 +10,7 @@ import type {
   WorkbenchAnalysis,
   WorkbenchOverview,
 } from "./contracts";
+import { t } from "./i18n";
 
 type AnyRecord = Record<string, unknown>;
 
@@ -45,7 +46,7 @@ function normalizeMetrics(value: unknown): SummaryMetric[] {
   return asArray(value).map((item) => {
     const record = asObject(item);
     return {
-      label: asString(record.label ?? record.title ?? record.name, "未命名指标"),
+      label: asString(record.label ?? record.title ?? record.name, t("Unnamed metric")),
       value: pickText(record.value ?? record.amount ?? record.count ?? record.text, "0"),
       hint: asString(record.hint ?? record.description ?? record.note, undefined as never),
       delta: asString(record.delta, undefined as never),
@@ -61,8 +62,8 @@ function normalizeWatchlistRows(value: unknown): WatchlistRow[] {
       name: asString(record.name ?? record.stock_name, "N/A"),
       price: pickText(record.price ?? record.latest_price ?? record.current_price, "-"),
       source: asString(record.source ?? record.origin, "manual"),
-      status: asString(record.status ?? record.state, "待分析"),
-      quantStatus: asString(record.quantStatus ?? record.quant_status ?? record.in_quant_pool, "未加入"),
+      status: asString(record.status ?? record.state, t("Pending analysis")),
+      quantStatus: asString(record.quantStatus ?? record.quant_status ?? record.in_quant_pool, t("Not added")),
     };
   });
 }
@@ -72,7 +73,7 @@ function normalizeWorkbenchAnalysis(value: unknown): WorkbenchAnalysis {
   const evidence = asArray(record.evidence).map((item) => {
     const evidenceRecord = asObject(item);
     return {
-      label: asString(evidenceRecord.label ?? evidenceRecord.title, "量化证据"),
+      label: asString(evidenceRecord.label ?? evidenceRecord.title, t("Quant evidence")),
       value: asString(evidenceRecord.value ?? evidenceRecord.summary, ""),
       note: asString(evidenceRecord.note, undefined as never),
     };
@@ -81,11 +82,11 @@ function normalizeWorkbenchAnalysis(value: unknown): WorkbenchAnalysis {
   return {
     symbol: asString(record.symbol ?? record.code, ""),
     name: asString(record.name ?? record.stock_name, ""),
-    mode: asString(record.mode ?? record.analysisMode, "单股分析"),
+    mode: asString(record.mode ?? record.analysisMode, t("Single analysis")),
     period: asString(record.period ?? record.timeframe, "1y"),
     analysts: asStringArray(record.analysts ?? record.team ?? record.teamMembers),
-    headline: asString(record.headline ?? record.summary ?? record.verdict, "等待分析结果"),
-    verdict: asString(record.verdict ?? record.action ?? record.decision, "等待分析"),
+    headline: asString(record.headline ?? record.summary ?? record.verdict, t("Waiting for analysis result")),
+    verdict: asString(record.verdict ?? record.action ?? record.decision, t("Pending analysis")),
     highlights: asStringArray(record.highlights ?? record.bullets ?? record.key_points),
     evidence,
     action: asString(record.action ?? record.suggestion, undefined as never),
@@ -96,7 +97,7 @@ function normalizeNextSteps(value: unknown) {
   return asArray(value).map((item) => {
     const record = asObject(item);
     return {
-      label: asString(record.label ?? record.name, "下一步"),
+      label: asString(record.label ?? record.name, t("Next step")),
       hint: asString(record.hint ?? record.description, ""),
       to: asString(record.to ?? record.path, "/main"),
       tone: (record.tone as "primary" | "neutral" | "danger" | undefined) ?? "neutral",
@@ -109,9 +110,9 @@ function normalizeDiscoveryStrategies(value: unknown): DiscoveryStrategy[] {
     const record = asObject(item);
     return {
       key: asString(record.key ?? record.id, "unknown"),
-      name: asString(record.name, "未命名策略"),
+      name: asString(record.name, t("Unnamed strategy")),
       note: asString(record.note ?? record.description, ""),
-      status: asString(record.status ?? record.state, "待运行"),
+      status: asString(record.status ?? record.state, t("Pending run")),
       candidateCount: typeof record.candidateCount === "number" ? record.candidateCount : undefined,
     };
   });
@@ -123,7 +124,7 @@ function normalizeDiscoveryCandidates(value: unknown): DiscoveryCandidate[] {
     return {
       code: asString(record.code ?? record.symbol, "--"),
       name: asString(record.name ?? record.stock_name, "N/A"),
-      industry: asString(record.industry ?? record.sector, "未分类"),
+      industry: asString(record.industry ?? record.sector, t("Uncategorized")),
       source: asString(record.source ?? record.strategy ?? record.origin, "unknown"),
       latestPrice: pickText(record.latestPrice ?? record.latest_price ?? record.price, "-"),
       reason: asString(record.reason ?? record.note ?? record.action, ""),
@@ -136,9 +137,9 @@ function normalizeResearchModules(value: unknown): ResearchModule[] {
     const record = asObject(item);
     return {
       key: asString(record.key ?? record.id, "unknown"),
-      name: asString(record.name, "未命名模块"),
+      name: asString(record.name, t("Unnamed module")),
       note: asString(record.note ?? record.description, ""),
-      output: asString(record.output ?? record.result, "情报结论"),
+      output: asString(record.output ?? record.result, t("Research conclusion")),
     };
   });
 }
@@ -150,7 +151,7 @@ function normalizeResearchStocks(value: unknown): ResearchStockOutput[] {
       code: asString(record.code ?? record.symbol, "--"),
       name: asString(record.name ?? record.stock_name, "N/A"),
       source: asString(record.source ?? record.module, "unknown"),
-      action: asString(record.action ?? record.suggestion, "加入我的关注"),
+      action: asString(record.action ?? record.suggestion, t("Add to watchlist")),
       reason: asString(record.reason ?? record.note ?? record.detail, ""),
     };
   });
@@ -164,7 +165,7 @@ export function normalizeWorkbenchOverview(value: unknown): WorkbenchOverview {
     metrics: normalizeMetrics(record.metrics ?? record.summary_cards ?? record.summary),
     watchlist: {
       rows: normalizeWatchlistRows(watchlist.rows ?? record.watchlistRows ?? record.rows),
-      emptyMessage: asString(watchlist.emptyMessage ?? record.watchlistEmptyMessage ?? record.emptyMessage, "当前没有股票"),
+      emptyMessage: asString(watchlist.emptyMessage ?? record.watchlistEmptyMessage ?? record.emptyMessage, t("No stocks")),
     },
     analysis: normalizeWorkbenchAnalysis(record.analysis ?? record.stockAnalysis ?? record.currentAnalysis),
     nextSteps: normalizeNextSteps(record.nextSteps ?? record.actions ?? record.shortcuts),
@@ -181,7 +182,7 @@ export function normalizeDiscoveryOverview(value: unknown): DiscoveryOverview {
     candidateTable: {
       rows: normalizeDiscoveryCandidates(candidateTable.rows ?? record.candidates ?? record.rows),
       summary: asString(candidateTable.summary ?? record.summaryText ?? record.subtitle, ""),
-      emptyMessage: asString(candidateTable.emptyMessage ?? record.emptyMessage, "没有候选股票"),
+      emptyMessage: asString(candidateTable.emptyMessage ?? record.emptyMessage, t("No candidate stocks")),
     },
     highlights: asStringArray(record.highlights ?? record.notes ?? record.bullets),
   };
@@ -197,7 +198,7 @@ export function normalizeResearchOverview(value: unknown): ResearchOverview {
     marketJudgment: asStringArray(record.marketJudgment ?? record.marketView ?? record.market_judgment),
     stockOutputs: {
       rows: normalizeResearchStocks(stockOutputs.rows ?? record.outputs ?? record.rows),
-      emptyMessage: asString(stockOutputs.emptyMessage ?? record.emptyMessage, "暂无股票输出"),
+      emptyMessage: asString(stockOutputs.emptyMessage ?? record.emptyMessage, t("No stock output")),
     },
     highlights: asStringArray(record.highlights ?? record.notes ?? record.bullets),
   };

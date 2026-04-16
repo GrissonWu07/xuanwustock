@@ -11,23 +11,23 @@ import { SettingsPage } from "../features/settings/settings-page";
 
 export type AppRouteItem = {
   path: string;
-  label: string;
-  group: string;
+  labelKey: string;
+  groupKey: string;
   element: ReactNode;
 };
 
 export const APP_ROUTE_ITEMS: AppRouteItem[] = [
-  { path: "/main", label: "工作台", group: "工作台", element: <WorkbenchPage /> },
-  { path: "/discover", label: "发现股票", group: "发现与情报", element: <DiscoverPage /> },
-  { path: "/research", label: "研究情报", group: "发现与情报", element: <ResearchPage /> },
-  { path: "/portfolio", label: "持仓分析", group: "投资管理", element: <PortfolioPage /> },
-  { path: "/live-sim", label: "量化模拟", group: "投资管理", element: <LiveSimPage /> },
-  { path: "/his-replay", label: "历史回放", group: "投资管理", element: <HisReplayPage /> },
-  { path: "/ai-monitor", label: "AI盯盘", group: "投资管理", element: <AiMonitorPage /> },
-  { path: "/real-monitor", label: "实时监控", group: "投资管理", element: <RealMonitorPage /> },
-  { path: "/settings", label: "环境配置", group: "系统", element: <SettingsPage /> },
+  { path: "/main", labelKey: "Workbench", groupKey: "Workbench", element: <WorkbenchPage /> },
+  { path: "/discover", labelKey: "Discover", groupKey: "Discover", element: <DiscoverPage /> },
+  { path: "/research", labelKey: "Research", groupKey: "Discover", element: <ResearchPage /> },
+  { path: "/portfolio", labelKey: "Portfolio", groupKey: "Portfolio", element: <PortfolioPage /> },
+  { path: "/live-sim", labelKey: "Quant simulation", groupKey: "Portfolio", element: <LiveSimPage /> },
+  { path: "/his-replay", labelKey: "Historical replay", groupKey: "Portfolio", element: <HisReplayPage /> },
+  { path: "/ai-monitor", labelKey: "AI monitor", groupKey: "Portfolio", element: <AiMonitorPage /> },
+  { path: "/real-monitor", labelKey: "Real-time monitor", groupKey: "Portfolio", element: <RealMonitorPage /> },
+  { path: "/settings", labelKey: "Settings", groupKey: "Settings", element: <SettingsPage /> },
 ];
 
 export const APP_ROUTE_LABELS = Object.fromEntries(
-  APP_ROUTE_ITEMS.map((item) => [item.path, item.label]),
+  APP_ROUTE_ITEMS.map((item) => [item.path, item.labelKey]),
 ) as Record<string, string>;
