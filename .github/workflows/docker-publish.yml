@@ -180,6 +180,6 @@ jobs:
               attempt=$((attempt + 1))
             done
           }
-          retry_cmd docker --config "$DOCKER_CONFIG" compose -f build/docker-compose.deploy.yml pull
-          docker --config "$DOCKER_CONFIG" compose -f build/docker-compose.deploy.yml up -d --remove-orphans
+          retry_cmd docker compose -f build/docker-compose.deploy.yml pull
+          docker compose -f build/docker-compose.deploy.yml up -d --remove-orphans
           docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
