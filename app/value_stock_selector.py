@@ -6,11 +6,23 @@
 """
 
 from app.console_utils import safe_print as print
+import os
+from contextlib import contextmanager
 import pandas as pd
 import pywencai
 from datetime import datetime
 from typing import Tuple, Optional
 import time
+
+
+PROXY_ENV_KEYS = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+]
 
 
 class ValueStockSelector:
@@ -64,17 +76,36 @@ class ValueStockSelector:
             print(f"\n查询语句: {query}")
             print(f"正在调用问财接口...")
 
-            # 调用pywencai
-            result = pywencai.get(query=query, loop=True)
+            # 调用pywencai（增加重试与退避，避免偶发空响应）
+            result = None
+            failures = []
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    with self._without_proxy_env():
+                        result = pywencai.get(query=query, loop=True, retry=1, sleep=0)
+                    if result is None:
+                        raise ValueError("问财接口返回空结果")
+                    break
+                except Exception as exc:
+                    failure_message = self._format_query_error(exc)
+                    failures.append(f"第{attempt}次: {failure_message}")
+                    if attempt < max_attempts:
+                        wait_seconds = attempt
+                        print(f"⚠️ 问财查询失败（{failure_message}），{wait_seconds}s后重试...")
+                        time.sleep(wait_seconds)
 
             if result is None:
-                return False, None, "问财接口返回None，请检查网络或稍后重试"
+                latest = failures[-1] if failures else "问财接口返回None，请检查网络或稍后重试"
+                return False, None, f"问财查询失败，{latest}"
 
             # 转换为DataFrame
             df_result = self._convert_to_dataframe(result)
 
             if df_result is None or df_result.empty:
                 return False, None, "未获取到符合条件的股票数据"
+            if not self._is_valid_stock_dataframe(df_result):
+                return False, None, "问财返回的数据格式异常，未识别到股票代码/简称字段"
 
             print(f"✅ 成功获取 {len(df_result)} 只股票")
 
@@ -117,9 +148,30 @@ class ValueStockSelector:
         except Exception as e:
             error_msg = f"获取数据失败: {str(e)}"
             print(f"❌ {error_msg}")
-            import traceback
-            traceback.print_exc()
             return False, None, error_msg
+
+    @staticmethod
+    @contextmanager
+    def _without_proxy_env():
+        """Temporarily disable proxy env vars for pywencai direct access."""
+        original_env = {key: os.environ.get(key) for key in PROXY_ENV_KEYS}
+        try:
+            for key in PROXY_ENV_KEYS:
+                os.environ.pop(key, None)
+            yield
+        finally:
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    @staticmethod
+    def _format_query_error(error: Exception) -> str:
+        message = str(error).strip() or error.__class__.__name__
+        if "NoneType" in message and "get" in message:
+            return "问财响应为空（未返回有效data字段）"
+        return message
 
     def _convert_to_dataframe(self, result) -> Optional[pd.DataFrame]:
         """将pywencai返回结果转换为DataFrame"""
@@ -141,6 +193,14 @@ class ValueStockSelector:
         except Exception as e:
             print(f"转换DataFrame失败: {e}")
             return None
+
+    @staticmethod
+    def _is_valid_stock_dataframe(df: pd.DataFrame) -> bool:
+        required_column_markers = ("股票代码", "股票简称")
+        return all(
+            any(marker in str(column) for column in df.columns)
+            for marker in required_column_markers
+        )
 
     def get_stock_codes(self) -> list:
         """
