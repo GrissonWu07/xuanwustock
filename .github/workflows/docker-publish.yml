@@ -121,6 +121,23 @@ jobs:
             retry_push "$tag"
           done
 
+      - name: Export deploy images
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          docker save "${IMAGE_NAME}:latest" -o service-image.tar
+          docker save "${IMAGE_NAME}:ui-latest" -o ui-image.tar
+
+      - name: Upload deploy images artifact
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-images
+          path: |
+            service-image.tar
+            ui-image.tar
+          retention-days: 1
+
   deploy-on-mac:
     needs: build-and-push
     if: ${{ needs.build-and-push.result == 'success' && github.ref == 'refs/heads/main' }}
@@ -154,29 +171,20 @@ jobs:
               "https://index.docker.io/v1/": {
                 "auth": "$AUTH"
               }
+              }
             }
-          }
           EOF
 
-      - name: Pull and restart services
+      - name: Download deploy images artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-images
+          path: /tmp/xuanwustock-images
+
+      - name: Load and restart services
         run: |
           set -euo pipefail
-          retry_cmd() {
-            local max_attempts=5
-            local attempt=1
-            while [ "$attempt" -le "$max_attempts" ]; do
-              if "$@"; then
-                return 0
-              fi
-              if [ "$attempt" -eq "$max_attempts" ]; then
-                return 1
-              fi
-              local sleep_s=$((attempt * 5))
-              echo "Command failed (attempt ${attempt}/${max_attempts}), retrying in ${sleep_s}s..."
-              sleep "$sleep_s"
-              attempt=$((attempt + 1))
-            done
-          }
-          retry_cmd docker compose -f build/docker-compose.deploy.yml pull
+          docker load -i /tmp/xuanwustock-images/service-image.tar
+          docker load -i /tmp/xuanwustock-images/ui-image.tar
           docker compose -f build/docker-compose.deploy.yml up -d --remove-orphans
           docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
