@@ -29,7 +29,7 @@ services:
       dockerfile: build/Dockerfile.ui
     container_name: xuanwustock-ui
     ports:
-      - "8080:80"
+      - "12080:80"
     depends_on:
       backend:
         condition: service_healthy
