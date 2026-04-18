@@ -132,6 +132,9 @@ jobs:
       - self-hosted
       - macOS
       - xuanwustock
+    env:
+      APP_HOME: /Users/grisson.wu/app/xuanwustock
+      DOCKER_CONFIG: /Users/grisson.wu/app/xuanwustock/.docker
     permissions:
       contents: read
 
@@ -142,8 +145,16 @@ jobs:
       - name: Prepare Docker config
         run: |
           set -euo pipefail
+          mkdir -p "$APP_HOME"
+          mkdir -p "$APP_HOME/data"
+          mkdir -p "$APP_HOME/config"
           mkdir -p "$DOCKER_CONFIG"
           printf '{}\n' > "$DOCKER_CONFIG/config.json"
+
+      - name: Prepare deploy compose under app home
+        run: |
+          set -euo pipefail
+          cp build/docker-compose.deploy.yml "$APP_HOME/config/docker-compose.deploy.yml"
 
       - name: Configure registry auth
         env:
@@ -189,8 +200,9 @@ jobs:
           SHORT_SHA="${GITHUB_SHA::7}"
           SERVICE_IMAGE_TAG="sha-${SHORT_SHA}"
           UI_IMAGE_TAG="ui-sha-${SHORT_SHA}"
-          export SERVICE_IMAGE_TAG UI_IMAGE_TAG
+          XUANWUSTOCK_DATA_DIR="$APP_HOME/data"
+          export SERVICE_IMAGE_TAG UI_IMAGE_TAG XUANWUSTOCK_DATA_DIR
           retry_pull "${IMAGE_NAME}:${SERVICE_IMAGE_TAG}"
           retry_pull "${IMAGE_NAME}:${UI_IMAGE_TAG}"
-          docker compose -f build/docker-compose.deploy.yml up -d --remove-orphans
+          docker compose -f "$APP_HOME/config/docker-compose.deploy.yml" up -d --remove-orphans
           docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
