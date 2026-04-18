@@ -257,10 +257,183 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
         }
         for i, item in enumerate(context.candidate_pool().list_candidates(status="active"))
     ]
+
     if not run:
-        return {"updatedAt": _now(), "config": {"mode": "历史区间", "range": "--", "timeframe": "30m", "market": "CN", "strategyMode": "auto"}, "metrics": [_metric("回放结果", "--"), _metric("最终总权益", "--"), _metric("交易笔数", "0"), _metric("胜率", "--")], "candidatePool": _table(["股票代码", "股票名称", "最新价格"], candidate_rows, "暂无候选股票"), "tasks": [], "tradingAnalysis": {"title": "交易分析", "body": "暂无回放记录。", "chips": []}, "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], [], "暂无持仓"), "trades": _table(["时间", "代码", "动作", "数量", "价格", "备注"], [], "暂无交易记录"), "signals": _table(["时间", "代码", "动作", "策略", "执行结果"], [], "暂无信号"), "curve": []}
+        return {
+            "updatedAt": _now(),
+            "config": {
+                "mode": "历史区间",
+                "range": "--",
+                "timeframe": "30m",
+                "market": "CN",
+                "strategyMode": "auto",
+            },
+            "metrics": [
+                _metric("回放结果", "--"),
+                _metric("最终总权益", "--"),
+                _metric("交易笔数", "0"),
+                _metric("胜率", "--"),
+            ],
+            "candidatePool": _table(["股票代码", "股票名称", "最新价格"], candidate_rows, "暂无候选股票"),
+            "tasks": [],
+            "tradingAnalysis": {"title": "交易分析", "body": "暂无回放记录。", "chips": []},
+            "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], [], "暂无持仓"),
+            "trades": _table(["时间", "信号ID", "代码", "动作", "数量", "价格"], [], "暂无交易记录"),
+            "signals": _table(["信号ID", "时间", "代码", "动作", "策略", "执行结果"], [], "暂无信号"),
+            "curve": [],
+        }
+
     rid = int(run["id"])
-    return {"updatedAt": _now(), "config": {"mode": _txt(run.get("mode"), "historical_range"), "range": f"{_txt(run.get('start_datetime'), '--')} -> {_txt(run.get('end_datetime'), 'now')}", "timeframe": _txt(run.get("timeframe"), "30m"), "market": _txt(run.get("market"), "CN"), "strategyMode": _txt(run.get("selected_strategy_mode") or run.get("strategy_mode"), "auto")}, "metrics": [_metric("回放结果", _pct(run.get("total_return_pct"))), _metric("最终总权益", _num(run.get("final_equity"), 0)), _metric("交易笔数", _txt(run.get("trade_count"), "0")), _metric("胜率", _pct(run.get("win_rate")))], "candidatePool": _table(["股票代码", "股票名称", "最新价格"], candidate_rows, "暂无候选股票"), "tasks": [{"id": f"#{item.get('id')}", "status": _txt(item.get("status"), "completed"), "range": f"{_txt(item.get('start_datetime'), '--')} -> {_txt(item.get('end_datetime'), 'now')}", "note": _txt(item.get("status_message") or f"{item.get('checkpoint_count', 0)} 个检查点")} for item in runs[:10]], "tradingAnalysis": {"title": "交易分析", "body": "回放页会把交易分析拆成“人话结论 + 策略解释 + 量化证据”三层。", "chips": [_txt(f"已实现盈亏 {run.get('realized_pnl', 0)}"), _txt(f"最终总权益 {run.get('final_equity', 0)}"), _txt(f"交易笔数 {run.get('trade_count', 0)}")]}, "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], [{"id": _txt(item.get("stock_code"), str(i)), "cells": [_txt(item.get("stock_code")), _txt(item.get("stock_name")), _txt(item.get("quantity"), "0"), _num(item.get("avg_price")), _num(item.get("latest_price")), _pct(item.get("unrealized_pnl"))], "code": _txt(item.get("stock_code")), "name": _txt(item.get("stock_name"))} for i, item in enumerate(db.get_sim_run_positions(rid))], "暂无持仓"), "trades": _table(["时间", "代码", "动作", "数量", "价格", "备注"], [{"id": _txt(item.get("id"), str(i)), "cells": [_txt(item.get("executed_at") or item.get("created_at"), "--"), _txt(item.get("stock_code")), _txt(item.get("action")), _txt(item.get("quantity"), "0"), _num(item.get("price")), _txt(item.get("note") or "自动执行")]} for i, item in enumerate(db.get_sim_run_trades(rid))], "暂无交易记录"), "signals": _table(["时间", "代码", "动作", "策略", "执行结果"], [{"id": _txt(item.get("id"), str(i)), "cells": [_txt(item.get("created_at") or item.get("checkpoint_at"), "--"), _txt(item.get("stock_code")), _txt(item.get("action")), _txt(item.get("decision_type") or "自动"), _txt(item.get("signal_status") or item.get("execution_note") or "待处理")], "actions": [{"label": "详情", "icon": "🔎"}]} for i, item in enumerate(db.get_sim_run_signals(rid))], "暂无信号"), "curve": [{"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)} for i, item in enumerate(db.get_sim_run_snapshots(rid))]}
+
+    def _format_vote_summary(raw_value: Any) -> str:
+        if isinstance(raw_value, dict):
+            parts = [f"{_txt(key)}: {_txt(value)}" for key, value in raw_value.items() if _txt(key)]
+            return "；".join(parts)
+        if isinstance(raw_value, list):
+            parts = []
+            for item in raw_value:
+                if isinstance(item, dict):
+                    title = _txt(item.get("name") or item.get("analyst") or item.get("source"))
+                    vote = _txt(item.get("vote") or item.get("decision") or item.get("action"))
+                    score = _txt(item.get("score") or item.get("confidence"))
+                    values = [text for text in [title, vote, score] if text]
+                    if values:
+                        parts.append(" / ".join(values))
+                else:
+                    text = _txt(item)
+                    if text:
+                        parts.append(text)
+            return "；".join(parts)
+        return _txt(raw_value)
+
+    signal_rows: list[dict[str, Any]] = []
+    for i, item in enumerate(db.get_sim_run_signals(rid)):
+        signal_id = _txt(item.get("id"), str(i))
+        strategy_profile = item.get("strategy_profile") if isinstance(item.get("strategy_profile"), dict) else {}
+        vote_payload = (
+            strategy_profile.get("vote_summary")
+            or strategy_profile.get("votes")
+            or strategy_profile.get("vote")
+            or strategy_profile.get("voting")
+        )
+        vote_text = _format_vote_summary(vote_payload) or _txt(strategy_profile.get("vote_text"), "暂无投票数据")
+        analysis_text = _txt(
+            strategy_profile.get("analysis")
+            or strategy_profile.get("analysis_summary")
+            or strategy_profile.get("decision_reason")
+            or item.get("reasoning"),
+            "暂无分析数据",
+        )
+        decision_type = _txt(item.get("decision_type"), "自动")
+        signal_status = _txt(item.get("signal_status") or item.get("execution_note"), "待处理")
+        confidence = _txt(item.get("confidence"), "0")
+        tech_score = _txt(item.get("tech_score"), "0")
+        context_score = _txt(item.get("context_score"), "0")
+        checkpoint_at = _txt(item.get("checkpoint_at") or item.get("created_at"), "--")
+        action_text = _txt(item.get("action"), "HOLD").upper()
+        signal_rows.append(
+            {
+                "id": signal_id,
+                "cells": [
+                    f"#{signal_id}",
+                    checkpoint_at,
+                    _txt(item.get("stock_code")),
+                    action_text,
+                    decision_type,
+                    signal_status,
+                ],
+                "actions": [{"label": "详情", "icon": "🔎", "tone": "accent", "action": "show-signal-detail"}],
+                "analysis": analysis_text,
+                "votes": vote_text,
+                "decisionType": decision_type,
+                "signalStatus": signal_status,
+                "confidence": confidence,
+                "techScore": tech_score,
+                "contextScore": context_score,
+                "checkpointAt": checkpoint_at,
+                "code": _txt(item.get("stock_code")),
+                "name": _txt(item.get("stock_name")),
+            }
+        )
+
+    trade_rows = [
+        {
+            "id": _txt(item.get("id"), str(i)),
+            "cells": [
+                _txt(item.get("executed_at") or item.get("created_at"), "--"),
+                f"#{_txt(item.get('signal_id'))}" if _txt(item.get("signal_id")) else "--",
+                _txt(item.get("stock_code")),
+                _txt(item.get("action"), "HOLD").upper(),
+                _txt(item.get("quantity"), "0"),
+                _num(item.get("price")),
+            ],
+            "code": _txt(item.get("stock_code")),
+            "name": _txt(item.get("stock_name")),
+        }
+        for i, item in enumerate(db.get_sim_run_trades(rid))
+    ]
+
+    return {
+        "updatedAt": _now(),
+        "config": {
+            "mode": _txt(run.get("mode"), "historical_range"),
+            "range": f"{_txt(run.get('start_datetime'), '--')} -> {_txt(run.get('end_datetime'), 'now')}",
+            "timeframe": _txt(run.get("timeframe"), "30m"),
+            "market": _txt(run.get("market"), "CN"),
+            "strategyMode": _txt(run.get("selected_strategy_mode") or run.get("strategy_mode"), "auto"),
+        },
+        "metrics": [
+            _metric("回放结果", _pct(run.get("total_return_pct"))),
+            _metric("最终总权益", _num(run.get("final_equity"), 0)),
+            _metric("交易笔数", _txt(run.get("trade_count"), "0")),
+            _metric("胜率", _pct(run.get("win_rate"))),
+        ],
+        "candidatePool": _table(["股票代码", "股票名称", "最新价格"], candidate_rows, "暂无候选股票"),
+        "tasks": [
+            {
+                "id": f"#{item.get('id')}",
+                "status": _txt(item.get("status"), "completed"),
+                "range": f"{_txt(item.get('start_datetime'), '--')} -> {_txt(item.get('end_datetime'), 'now')}",
+                "note": _txt(item.get("status_message") or f"{item.get('checkpoint_count', 0)} 个检查点"),
+            }
+            for item in runs[:10]
+        ],
+        "tradingAnalysis": {
+            "title": "交易分析",
+            "body": "回放页会把交易分析拆成“人话结论 + 策略解释 + 量化证据”三层。",
+            "chips": [
+                _txt(f"已实现盈亏 {run.get('realized_pnl', 0)}"),
+                _txt(f"最终总权益 {run.get('final_equity', 0)}"),
+                _txt(f"交易笔数 {run.get('trade_count', 0)}"),
+            ],
+        },
+        "holdings": _table(
+            ["代码", "名称", "数量", "成本", "现价", "浮盈亏"],
+            [
+                {
+                    "id": _txt(item.get("stock_code"), str(i)),
+                    "cells": [
+                        _txt(item.get("stock_code")),
+                        _txt(item.get("stock_name")),
+                        _txt(item.get("quantity"), "0"),
+                        _num(item.get("avg_price")),
+                        _num(item.get("latest_price")),
+                        _pct(item.get("unrealized_pnl")),
+                    ],
+                    "code": _txt(item.get("stock_code")),
+                    "name": _txt(item.get("stock_name")),
+                }
+                for i, item in enumerate(db.get_sim_run_positions(rid))
+            ],
+            "暂无持仓",
+        ),
+        "trades": _table(["时间", "信号ID", "代码", "动作", "数量", "价格"], trade_rows, "暂无交易记录"),
+        "signals": _table(["信号ID", "时间", "代码", "动作", "策略", "执行结果"], signal_rows, "暂无信号"),
+        "curve": [
+            {"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
+            for i, item in enumerate(db.get_sim_run_snapshots(rid))
+        ],
+    }
 
 
 def _snapshot_ai_monitor(context: UIApiContext) -> dict[str, Any]:

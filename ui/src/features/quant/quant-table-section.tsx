@@ -11,6 +11,7 @@ type QuantTableSectionProps = {
   meta?: string[];
   actionsHead?: string;
   actionVariant?: "icon" | "chip";
+  tableLayout?: "fixed" | "auto";
   toolbar?: ReactNode;
   onRowAction?: (row: TableRow, action: TableAction) => void;
 };
@@ -32,10 +33,30 @@ export function QuantTableSectionCard({
   meta = [],
   actionsHead,
   actionVariant = "icon",
+  tableLayout = "fixed",
   toolbar,
   onRowAction,
 }: QuantTableSectionProps) {
   const showActions = Boolean(actionsHead) || table.rows.some((row) => (row.actions?.length ?? 0) > 0);
+  const tableClassName = tableLayout === "auto" ? "table table--auto" : "table";
+
+  const renderCell = (cell: string, column: string, index: number) => {
+    const normalizedColumn = String(column).toLowerCase();
+    const isActionColumn = normalizedColumn.includes("动作") || normalizedColumn === "action";
+    if (isActionColumn) {
+      const signalAction = String(cell).trim().toUpperCase();
+      if (signalAction === "BUY" || signalAction === "BUG") {
+        return <span className="signal-pill signal-pill--buy">{cell}</span>;
+      }
+      if (signalAction === "SELL") {
+        return <span className="signal-pill signal-pill--sell">{cell}</span>;
+      }
+      if (signalAction === "HOLD") {
+        return <span className="signal-pill signal-pill--hold">{cell}</span>;
+      }
+    }
+    return <>{cell}</>;
+  };
 
   return (
     <WorkbenchCard>
@@ -59,7 +80,7 @@ export function QuantTableSectionCard({
         {toolbar}
       </div>
       <div className="table-shell">
-        <table className="table">
+        <table className={tableClassName}>
           <thead>
             <tr>
               {table.columns.map((column) => (
@@ -85,7 +106,7 @@ export function QuantTableSectionCard({
                 <tr key={row.id}>
                   {row.cells.map((cell, index) => (
                     <td key={`${row.id}-${index}`} className={index === 0 ? "table__cell-strong" : undefined}>
-                      {cell}
+                      {renderCell(String(cell), String(table.columns[index] ?? ""), index)}
                     </td>
                   ))}
                   {showActions ? (

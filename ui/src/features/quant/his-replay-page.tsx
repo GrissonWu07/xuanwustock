@@ -6,6 +6,7 @@ import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
 import { Sparkline } from "../../components/ui/sparkline";
 import { usePageData } from "../../lib/use-page-data";
+import type { TableAction, TableRow } from "../../lib/page-models";
 import { summarizeTaskStatuses, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
 
@@ -71,6 +72,17 @@ const taskBadgeTone: Record<string, "neutral" | "success" | "warning" | "danger"
   cancelled: "danger",
 };
 
+type ReplaySignalRow = TableRow & {
+  analysis?: string;
+  votes?: string;
+  signalStatus?: string;
+  decisionType?: string;
+  confidence?: string;
+  techScore?: string;
+  contextScore?: string;
+  checkpointAt?: string;
+};
+
 export function HisReplayPage({ client }: HisReplayPageProps) {
   const resource = usePageData("his-replay", client);
   const snapshot = resource.data;
@@ -86,6 +98,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [replayUntilNow, setReplayUntilNow] = useState(false);
   const [overwriteLive, setOverwriteLive] = useState(false);
   const [autoStartScheduler, setAutoStartScheduler] = useState(true);
+  const [activeSignal, setActiveSignal] = useState<ReplaySignalRow | null>(null);
 
   useEffect(() => {
     if (!snapshot) {
@@ -105,6 +118,24 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     setOverwriteLive(false);
     setAutoStartScheduler(true);
   }, [snapshotVersion]);
+
+  useEffect(() => {
+    if (!snapshot) {
+      setActiveSignal(null);
+      return;
+    }
+    const signalRows = snapshot.signals.rows as ReplaySignalRow[];
+    if (signalRows.length === 0) {
+      setActiveSignal(null);
+      return;
+    }
+    setActiveSignal((prev) => {
+      if (prev && signalRows.some((item) => item.id === prev.id)) {
+        return signalRows.find((item) => item.id === prev.id) ?? signalRows[0];
+      }
+      return signalRows[0];
+    });
+  }, [snapshotVersion, snapshot]);
 
   if (resource.status === "loading" && !resource.data) {
     return <PageLoadingState title="历史回放加载中" description="正在读取回放任务、候选池和交易结果。" />;
@@ -128,6 +159,12 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const taskSummary = summarizeTaskStatuses(snapshot.tasks);
   const replayModeLabel = toDisplayText(snapshot.config.mode, "未知");
   const replayTaskLabel = taskSummary.running > 0 ? `进行中 ${taskSummary.running}` : `已完成 ${taskSummary.completed}`;
+  const handleSignalRowAction = (row: TableRow, action: TableAction) => {
+    if (action.action !== "show-signal-detail") {
+      return;
+    }
+    setActiveSignal(row as ReplaySignalRow);
+  };
 
   return (
     <div>
@@ -381,12 +418,13 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             />
           </div>
 
-          <div className="section-grid">
+          <div className="stack">
             <QuantTableSectionCard
               title="成交明细"
               table={snapshot.trades}
               emptyTitle={snapshot.trades.emptyLabel ?? "成交明细暂无数据"}
               emptyDescription={snapshot.trades.emptyMessage ?? "历史回放执行后，所有成交会统一落在这里。"}
+              tableLayout="auto"
             />
             <QuantTableSectionCard
               title="信号记录"
@@ -395,7 +433,35 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               emptyDescription={snapshot.signals.emptyMessage ?? "回放过程中生成的信号会展示在这里，便于快速核对执行结果。"}
               actionsHead="操作"
               actionVariant="chip"
+              tableLayout="auto"
+              onRowAction={handleSignalRowAction}
             />
+            <WorkbenchCard>
+              <h2 className="section-card__title">信号详情</h2>
+              {activeSignal ? (
+                <div className="summary-list">
+                  <div className="summary-item">
+                    <div className="summary-item__title">{`信号 ${activeSignal.id}`}</div>
+                    <div className="summary-item__body">{`代码 ${activeSignal.code ?? "--"} · 动作 ${activeSignal.cells[3] ?? "--"} · 执行结果 ${activeSignal.signalStatus ?? activeSignal.cells[5] ?? "--"}`}</div>
+                    <div className="summary-item__body">{`策略 ${activeSignal.decisionType ?? activeSignal.cells[4] ?? "--"} · 置信度 ${activeSignal.confidence ?? "--"} · 技术分 ${activeSignal.techScore ?? "--"} · 环境分 ${activeSignal.contextScore ?? "--"}`}</div>
+                    <div className="summary-item__body">{`时间 ${activeSignal.checkpointAt ?? activeSignal.cells[1] ?? "--"}`}</div>
+                  </div>
+                  <div className="summary-item">
+                    <div className="summary-item__title">分析数据</div>
+                    <div className="summary-item__body markdown-body">{activeSignal.analysis ?? "暂无分析数据"}</div>
+                  </div>
+                  <div className="summary-item">
+                    <div className="summary-item__title">投票数据</div>
+                    <div className="summary-item__body markdown-body">{activeSignal.votes ?? "暂无投票数据"}</div>
+                  </div>
+                </div>
+              ) : (
+                <div className="summary-item summary-item--accent">
+                  <div className="summary-item__title">暂无可查看信号</div>
+                  <div className="summary-item__body">当信号记录有数据时，点击“详情”即可查看对应分析与投票结果。</div>
+                </div>
+              )}
+            </WorkbenchCard>
           </div>
         </div>
       </div>

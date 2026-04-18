@@ -220,7 +220,7 @@ a {
 
 .workbench-layout {
   display: grid;
-  grid-template-columns: minmax(0, 2.4fr) 320px;
+  grid-template-columns: 1fr;
   gap: 18px;
 }
 
@@ -336,8 +336,8 @@ a {
 }
 
 .next-steps {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -347,6 +347,10 @@ a {
   border-radius: 14px;
   padding: 12px 14px;
   font-weight: 600;
+}
+
+.next-steps-panel .section-card__description {
+  margin-bottom: 12px;
 }
 
 .placeholder-grid {
@@ -869,8 +873,8 @@ a {
 
 .analyst-layout {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
 }
 
@@ -905,8 +909,8 @@ a {
   border: 1px solid var(--soft-line);
   border-radius: 14px;
   background: #fbfdff;
-  padding: 14px 16px;
-  min-height: 220px;
+  padding: 18px 20px;
+  min-height: 320px;
 }
 
 .evidence-grid {
@@ -993,6 +997,16 @@ a {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
+}
+
+.table--auto {
+  table-layout: auto;
+}
+
+.table--auto td,
+.table--auto th {
+  white-space: normal;
+  word-break: break-word;
 }
 
 .table th,
@@ -1124,6 +1138,37 @@ a {
   color: var(--text-soft);
   font-size: 0.88rem;
   margin: 0 0 12px;
+}
+
+.signal-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 56px;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.signal-pill--buy {
+  color: #18794e;
+  background: rgba(24, 121, 78, 0.12);
+  border-color: rgba(24, 121, 78, 0.2);
+}
+
+.signal-pill--sell {
+  color: #c93d39;
+  background: rgba(239, 83, 80, 0.12);
+  border-color: rgba(239, 83, 80, 0.22);
+}
+
+.signal-pill--hold {
+  color: #8e6515;
+  background: rgba(248, 190, 92, 0.18);
+  border-color: rgba(248, 190, 92, 0.24);
 }
 
 .insight-list {
@@ -1577,6 +1622,10 @@ a {
   }
 
   .research-module-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .next-steps {
     grid-template-columns: 1fr;
   }
 
