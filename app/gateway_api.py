@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+import re
 from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request
@@ -306,21 +307,77 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
             return "；".join(parts)
         return _txt(raw_value)
 
+    def _format_explainability_votes(strategy_profile: dict[str, Any]) -> str:
+        explainability = strategy_profile.get("explainability") if isinstance(strategy_profile.get("explainability"), dict) else {}
+        if not explainability:
+            return ""
+
+        lines: list[str] = []
+        tech_votes = explainability.get("tech_votes")
+        if isinstance(tech_votes, list) and tech_votes:
+            lines.append("技术投票")
+            for item in tech_votes:
+                if not isinstance(item, dict):
+                    continue
+                factor = _txt(item.get("factor") or item.get("name") or item.get("title"))
+                signal = _txt(item.get("signal") or item.get("vote") or item.get("decision"))
+                score = _txt(item.get("score"))
+                reason = _txt(item.get("reason"))
+                chunks = [part for part in [factor, signal, f"score={score}" if score else "", reason] if part]
+                if chunks:
+                    lines.append(f"- {' | '.join(chunks)}")
+
+        context_votes = explainability.get("context_votes")
+        if isinstance(context_votes, list) and context_votes:
+            lines.append("环境投票")
+            for item in context_votes:
+                if not isinstance(item, dict):
+                    continue
+                component = _txt(item.get("component") or item.get("factor") or item.get("name"))
+                score = _txt(item.get("score"))
+                reason = _txt(item.get("reason"))
+                chunks = [part for part in [component, f"score={score}" if score else "", reason] if part]
+                if chunks:
+                    lines.append(f"- {' | '.join(chunks)}")
+
+        dual_track = explainability.get("dual_track")
+        if isinstance(dual_track, dict) and dual_track:
+            lines.append("双轨决策")
+            pairs = [
+                ("tech", _txt(dual_track.get("tech_signal"))),
+                ("context", _txt(dual_track.get("context_signal"))),
+                ("resonance", _txt(dual_track.get("resonance_type"))),
+                ("rule", _txt(dual_track.get("rule_hit"))),
+                ("final", _txt(dual_track.get("final_action"))),
+            ]
+            summary = " | ".join([f"{k}={v}" for k, v in pairs if v])
+            if summary:
+                lines.append(f"- {summary}")
+
+        return "\n".join(lines)
+
     signal_rows: list[dict[str, Any]] = []
     for i, item in enumerate(db.get_sim_run_signals(rid)):
         signal_id = _txt(item.get("id"), str(i))
         strategy_profile = item.get("strategy_profile") if isinstance(item.get("strategy_profile"), dict) else {}
+        explainability = strategy_profile.get("explainability") if isinstance(strategy_profile.get("explainability"), dict) else {}
+        dual_track = explainability.get("dual_track") if isinstance(explainability.get("dual_track"), dict) else {}
         vote_payload = (
             strategy_profile.get("vote_summary")
             or strategy_profile.get("votes")
             or strategy_profile.get("vote")
             or strategy_profile.get("voting")
         )
-        vote_text = _format_vote_summary(vote_payload) or _txt(strategy_profile.get("vote_text"), "暂无投票数据")
+        vote_text = (
+            _format_vote_summary(vote_payload)
+            or _format_explainability_votes(strategy_profile)
+            or _txt(strategy_profile.get("vote_text"), "暂无投票数据")
+        )
         analysis_text = _txt(
             strategy_profile.get("analysis")
             or strategy_profile.get("analysis_summary")
             or strategy_profile.get("decision_reason")
+            or dual_track.get("final_reason")
             or item.get("reasoning"),
             "暂无分析数据",
         )
@@ -373,6 +430,59 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
         for i, item in enumerate(db.get_sim_run_trades(rid))
     ]
 
+    task_items: list[dict[str, Any]] = []
+    for item in runs[:10]:
+        run_id = int(item.get("id") or 0)
+        status_text = _txt(item.get("status"), "completed")
+        progress_total = int(_float(item.get("progress_total"), 0.0) or 0.0)
+        progress_current = int(_float(item.get("progress_current"), 0.0) or 0.0)
+        if progress_total > 0:
+            progress_pct = max(0, min(int(round((progress_current / progress_total) * 100)), 100))
+        elif status_text in {"completed", "failed", "cancelled"}:
+            progress_pct = 100
+        else:
+            progress_pct = 0
+        position_rows: list[dict[str, Any]] = []
+        for idx, position in enumerate(db.get_sim_run_positions(run_id)):
+            avg_price = _float(position.get("avg_price"), 0.0) or 0.0
+            latest_price = _float(position.get("latest_price"), 0.0) or 0.0
+            unrealized_pnl = _float(position.get("unrealized_pnl"), 0.0) or 0.0
+            unrealized_pnl_pct = ((latest_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+            position_rows.append(
+                {
+                    "id": _txt(position.get("stock_code"), str(idx)),
+                    "cells": [
+                        _txt(position.get("stock_code")),
+                        _txt(position.get("stock_name")),
+                        _txt(position.get("quantity"), "0"),
+                        _num(position.get("avg_price")),
+                        _num(position.get("latest_price")),
+                        _num(unrealized_pnl),
+                        _pct(unrealized_pnl_pct),
+                    ],
+                    "code": _txt(position.get("stock_code")),
+                    "name": _txt(position.get("stock_name")),
+                }
+            )
+
+        task_items.append(
+            {
+                "id": f"#{item.get('id')}",
+                "runId": _txt(item.get("id")),
+                "status": status_text,
+                "stage": _txt(item.get("status_message") or f"{item.get('checkpoint_count', 0)} 个检查点"),
+                "progress": progress_pct,
+                "startAt": _txt(item.get("start_datetime"), "--"),
+                "endAt": _txt(item.get("end_datetime"), "--"),
+                "range": f"{_txt(item.get('start_datetime'), '--')} -> {_txt(item.get('end_datetime'), 'now')}",
+                "returnPct": _pct(item.get("total_return_pct")),
+                "finalEquity": _num(item.get("final_equity"), 0),
+                "tradeCount": _txt(item.get("trade_count"), "0"),
+                "winRate": _pct(item.get("win_rate")),
+                "holdings": position_rows,
+            }
+        )
+
     return {
         "updatedAt": _now(),
         "config": {
@@ -389,23 +499,11 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
             _metric("胜率", _pct(run.get("win_rate"))),
         ],
         "candidatePool": _table(["股票代码", "股票名称", "最新价格"], candidate_rows, "暂无候选股票"),
-        "tasks": [
-            {
-                "id": f"#{item.get('id')}",
-                "status": _txt(item.get("status"), "completed"),
-                "range": f"{_txt(item.get('start_datetime'), '--')} -> {_txt(item.get('end_datetime'), 'now')}",
-                "note": _txt(item.get("status_message") or f"{item.get('checkpoint_count', 0)} 个检查点"),
-            }
-            for item in runs[:10]
-        ],
+        "tasks": task_items,
         "tradingAnalysis": {
             "title": "交易分析",
             "body": "回放页会把交易分析拆成“人话结论 + 策略解释 + 量化证据”三层。",
-            "chips": [
-                _txt(f"已实现盈亏 {run.get('realized_pnl', 0)}"),
-                _txt(f"最终总权益 {run.get('final_equity', 0)}"),
-                _txt(f"交易笔数 {run.get('trade_count', 0)}"),
-            ],
+            "chips": [],
         },
         "holdings": _table(
             ["代码", "名称", "数量", "成本", "现价", "浮盈亏"],
@@ -433,6 +531,775 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
             {"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
             for i, item in enumerate(db.get_sim_run_snapshots(rid))
         ],
+    }
+
+
+def _safe_json_load(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _profile_text(value: Any, default: str = "--") -> str:
+    if isinstance(value, dict):
+        return _txt(value.get("key") or value.get("label") or value.get("name") or value.get("value"), default)
+    return _txt(value, default)
+
+
+def _to_vote_row(item: Any, default_signal: str = "") -> dict[str, str]:
+    if not isinstance(item, dict):
+        return {"factor": _txt(item), "signal": default_signal, "score": "", "reason": ""}
+    return {
+        "factor": _txt(item.get("factor") or item.get("component") or item.get("name") or item.get("title")),
+        "signal": _txt(item.get("signal") or item.get("vote") or item.get("decision"), default_signal),
+        "score": _txt(item.get("score") or item.get("confidence")),
+        "reason": _txt(item.get("reason") or item.get("note") or item.get("detail")),
+    }
+
+
+def _extract_technical_indicators(*, tech_votes: list[dict[str, Any]], reasoning: str) -> list[dict[str, str]]:
+    patterns = [
+        ("现价", r"现价\s*(-?\d+(?:\.\d+)?)"),
+        ("成本", r"成本\s*(-?\d+(?:\.\d+)?)"),
+        ("MA5", r"MA5\s*(-?\d+(?:\.\d+)?)"),
+        ("MA10", r"MA10\s*(-?\d+(?:\.\d+)?)"),
+        ("MA20", r"MA20\s*(-?\d+(?:\.\d+)?)"),
+        ("MA60", r"MA60\s*(-?\d+(?:\.\d+)?)"),
+        ("MACD", r"MACD\s*(-?\d+(?:\.\d+)?)"),
+        ("RSI12", r"RSI12\s*(-?\d+(?:\.\d+)?)"),
+        ("量比", r"量比\s*(-?\d+(?:\.\d+)?)"),
+        ("浮盈亏", r"浮盈亏\s*(-?\d+(?:\.\d+)?)%"),
+    ]
+    indicator_map: dict[str, dict[str, str]] = {}
+
+    def _add_indicator(name: str, value: str, source: str, note: str = "") -> None:
+        normalized = _txt(name)
+        if not normalized or normalized in indicator_map:
+            return
+        indicator_map[normalized] = {
+            "name": normalized,
+            "value": _txt(value),
+            "source": source,
+            "note": _txt(note),
+        }
+
+    for vote in tech_votes:
+        if not isinstance(vote, dict):
+            continue
+        factor = _txt(vote.get("factor") or vote.get("name"))
+        score_text = _txt(vote.get("score"))
+        reason = _txt(vote.get("reason"))
+        if factor and score_text:
+            _add_indicator(f"{factor}打分", score_text, "tech_vote", reason)
+        if reason:
+            for metric, pattern in patterns:
+                matched = re.search(pattern, reason)
+                if matched:
+                    value = _txt(matched.group(1))
+                    if metric == "浮盈亏":
+                        value = f"{value}%"
+                    _add_indicator(metric, value, "tech_vote_reason", reason)
+
+    text = _txt(reasoning)
+    if text:
+        for metric, pattern in patterns:
+            matched = re.search(pattern, text)
+            if matched:
+                value = _txt(matched.group(1))
+                if metric == "浮盈亏":
+                    value = f"{value}%"
+                _add_indicator(metric, value, "reasoning")
+
+    return list(indicator_map.values())
+
+
+def _detect_provider(api_base_url: str) -> str:
+    base = api_base_url.lower()
+    if "openrouter.ai" in base:
+        return "openrouter"
+    if "openai.com" in base:
+        return "openai"
+    return "openai-compatible"
+
+
+def _build_runtime_context(
+    context: UIApiContext,
+    *,
+    source: str,
+    strategy_profile: dict[str, Any],
+    replay_run: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    config = context.config_manager.read_env()
+    scheduler_status = context.scheduler().get_status()
+
+    model_name = _txt(config.get("DEFAULT_MODEL_NAME"), "--")
+    api_base_url = _txt(config.get("AI_API_BASE_URL"), "--")
+    provider = _detect_provider(api_base_url)
+
+    if source == "replay":
+        market = _txt((replay_run or {}).get("market"), _txt(scheduler_status.get("market"), "CN"))
+        timeframe = _profile_text((replay_run or {}).get("timeframe"), _profile_text(strategy_profile.get("analysis_timeframe"), _txt(scheduler_status.get("analysis_timeframe"), "30m")))
+        strategy_mode = _profile_text((replay_run or {}).get("selected_strategy_mode") or (replay_run or {}).get("strategy_mode"), _profile_text(strategy_profile.get("strategy_mode"), _txt(scheduler_status.get("strategy_mode"), "auto")))
+    else:
+        market = _txt(scheduler_status.get("market"), "CN")
+        timeframe = _profile_text(strategy_profile.get("analysis_timeframe"), _txt(scheduler_status.get("analysis_timeframe"), "30m"))
+        strategy_mode = _profile_text(strategy_profile.get("strategy_mode"), _txt(scheduler_status.get("strategy_mode"), "auto"))
+
+    return {
+        "model": model_name,
+        "provider": provider,
+        "apiBaseUrl": api_base_url,
+        "market": market,
+        "timeframe": timeframe,
+        "strategyMode": strategy_mode,
+        "autoExecute": bool(scheduler_status.get("auto_execute")),
+        "intervalMinutes": _txt(scheduler_status.get("interval_minutes"), "--"),
+        "lastRunAt": _txt(scheduler_status.get("last_run_at"), "--"),
+        "source": source,
+    }
+
+
+def _vote_line(item: dict[str, Any]) -> str:
+    factor = _txt(item.get("factor") or item.get("component") or item.get("name") or item.get("title"), "因子")
+    signal = _txt(item.get("signal") or item.get("vote") or item.get("decision"), "--")
+    score = _txt(item.get("score") or item.get("confidence"), "--")
+    reason = _txt(item.get("reason") or item.get("note") or item.get("detail"), "--")
+    return f"{factor}: {signal} (score={score}) · {reason}"
+
+
+def _vote_sort_key(item: dict[str, Any]) -> float:
+    return abs(_float(item.get("score"), 0.0) or 0.0)
+
+
+def _humanize_signal(signal: Any) -> str:
+    normalized = _txt(signal, "--").upper()
+    mapping = {
+        "BUY": "看多（买入）",
+        "SELL": "看空（卖出）",
+        "HOLD": "中性（持有）",
+        "CONTEXT": "环境信号",
+    }
+    return mapping.get(normalized, _txt(signal, "--"))
+
+
+def _derive_keep_position_pct(action: Any, position_size_pct: Any) -> str:
+    ratio = _float(position_size_pct)
+    action_upper = _txt(action, "--").upper()
+    if action_upper == "HOLD":
+        return "维持当前仓位（不变）"
+    if ratio is None:
+        return "--"
+    ratio = max(0.0, min(100.0, float(ratio)))
+    if action_upper == "SELL":
+        keep = max(0.0, 100.0 - ratio)
+    elif action_upper == "BUY":
+        keep = ratio
+    else:
+        return "--"
+    text = f"{keep:.2f}"
+    return text.rstrip("0").rstrip(".")
+
+
+def _dual_track_basis_lines(decision: dict[str, Any], effective_thresholds: dict[str, Any]) -> list[str]:
+    tech_signal = _txt(decision.get("techSignal"), "--")
+    context_signal = _txt(decision.get("contextSignal"), "--")
+    decision_type = _txt(decision.get("decisionType"), "--")
+    resonance_type = _txt(decision.get("resonanceType"), "--")
+    rule_hit = _txt(decision.get("ruleHit"), "--")
+    final_action = _txt(decision.get("finalAction") or decision.get("action"), "--")
+    position_size_pct = _txt(decision.get("positionSizePct"), "--")
+    keep_position_pct = _derive_keep_position_pct(final_action, position_size_pct)
+    tech_score = _txt(decision.get("techScore"), "--")
+    context_score = _txt(decision.get("contextScore"), "--")
+
+    buy_threshold = _txt(effective_thresholds.get("buy_threshold"), "--")
+    sell_threshold = _txt(effective_thresholds.get("sell_threshold"), "--")
+    max_position_ratio = _txt(effective_thresholds.get("max_position_ratio"), "--")
+    allow_pyramiding_raw = _txt(effective_thresholds.get("allow_pyramiding")).strip().lower()
+    allow_pyramiding = "允许" if allow_pyramiding_raw in {"1", "true", "yes", "y", "on"} else "不允许"
+    confirmation = _txt(effective_thresholds.get("confirmation"), "--")
+
+    merge_reason_map = {
+        "sell_divergence": "技术轨给出看空，但环境轨未同向看空，系统按“风险优先”的背离规则处理，优先保护资金。",
+        "buy_divergence": "技术轨给出看多，但环境轨未同向看多，系统按“确认优先”的背离规则处理，避免盲目追涨。",
+        "resonance_full": "技术轨与环境轨同向且强度高，形成强共振，允许更高执行力度。",
+        "resonance_heavy": "技术轨与环境轨同向，形成偏强共振，执行力度高于常规。",
+        "resonance_moderate": "技术轨与环境轨同向但强度中等，按中等共振规则执行。",
+        "resonance_standard": "技术轨与环境轨方向一致但强度一般，按标准共振执行。",
+        "neutral_hold": "双轨没有形成明确同向信号，系统保持中性观望。",
+    }
+    merge_reason = merge_reason_map.get(rule_hit) or merge_reason_map.get(decision_type) or "系统先判断双轨是否同向，再按共振/背离规则确定最终动作和仓位。"
+    position_semantics = "目标买入仓位" if _txt(final_action).upper() == "BUY" else ("建议卖出比例" if _txt(final_action).upper() == "SELL" else "建议仓位")
+    if keep_position_pct == "--":
+        keep_segment = ""
+    elif keep_position_pct.endswith("%") or "不变" in keep_position_pct:
+        keep_segment = f"，建议保持仓位 {keep_position_pct}"
+    else:
+        keep_segment = f"，建议保持仓位 {keep_position_pct}%"
+
+    return [
+        "双轨决策=技术轨 + 环境轨。技术轨反映价格/指标信号，环境轨反映市场状态与风险约束，二者先独立打分再合并。",
+        f"技术轨结论: {_humanize_signal(tech_signal)}，技术分 {tech_score}（阈值: 买入>= {buy_threshold}，卖出<= {sell_threshold}）。",
+        f"环境轨结论: {_humanize_signal(context_signal)}，环境分 {context_score}（环境分越高，越支持进攻；越低，越偏防守）。",
+        f"合并判定: 决策类型 {decision_type}，共振类型 {resonance_type}，规则命中 {rule_hit}。{merge_reason}",
+        f"执行结果: 最终动作为 {_humanize_signal(final_action)}，{position_semantics} {position_size_pct}%{keep_segment}（上限比例 {max_position_ratio}，{allow_pyramiding}加仓，确认条件: {confirmation}）。",
+    ]
+
+
+def _build_explanation_payload(
+    *,
+    decision: dict[str, Any],
+    analysis_text: str,
+    reasoning_text: str,
+    tech_votes_raw: list[dict[str, Any]],
+    context_votes_raw: list[dict[str, Any]],
+    effective_thresholds: dict[str, Any],
+) -> dict[str, Any]:
+    top_tech = sorted([item for item in tech_votes_raw if isinstance(item, dict)], key=_vote_sort_key, reverse=True)[:5]
+    top_context = sorted([item for item in context_votes_raw if isinstance(item, dict)], key=_vote_sort_key, reverse=True)[:5]
+    threshold_lines = [f"{_txt(k)}={_txt(v)}" for k, v in effective_thresholds.items() if _txt(k)]
+    context_score_total = 0.0
+    context_breakdown: list[str] = []
+    for item in context_votes_raw:
+        if not isinstance(item, dict):
+            continue
+        name = _txt(item.get("component") or item.get("factor") or item.get("name"), "component")
+        score_value = _float(item.get("score"), 0.0) or 0.0
+        context_score_total += score_value
+        context_breakdown.append(f"{name}={score_value:+.4f}")
+
+    summary_lines = [
+        f"本次决策为 {decision.get('action', '--')}，决策类型 {decision.get('decisionType', '--')}，状态 {decision.get('status', '--')}。",
+        f"技术信号 {decision.get('techSignal', '--')}，环境信号 {decision.get('contextSignal', '--')}，共振类型 {decision.get('resonanceType', '--')}，规则命中 {decision.get('ruleHit', '--')}。",
+        f"置信度 {decision.get('confidence', '--')}，技术分 {decision.get('techScore', '--')}，环境分 {decision.get('contextScore', '--')}，建议仓位 {decision.get('positionSizePct', '--')}%。",
+    ]
+
+    if threshold_lines:
+        summary_lines.append("阈值参考: " + " | ".join(threshold_lines[:8]))
+
+    return {
+        "summary": "\n".join(summary_lines),
+        "contextScoreExplain": {
+            "formula": "环境分 = 来源先验 + 趋势 + 价格结构 + 动量 + 风险平衡 + 流动性 + 时段，并截断到 [-1, 1]。",
+            "confidenceFormula": "环境置信度 = clamp(0.56 + abs(趋势+结构+动量+时段)*0.45 + abs(流动性)*0.2, 0.45, 0.92)。",
+            "componentBreakdown": context_breakdown,
+            "componentSum": round(context_score_total, 4),
+            "finalScore": _txt(decision.get("contextScore"), "0"),
+        },
+        "basis": [
+            f"决策点: {decision.get('checkpointAt', '--')}",
+            f"时间粒度: {decision.get('analysisTimeframe', '--')}，策略模式: {decision.get('strategyMode', '--')}",
+            f"市场状态: {decision.get('marketRegime', '--')}，基本面质量: {decision.get('fundamentalQuality', '--')}",
+            f"风险风格: {decision.get('riskStyle', '--')}（auto={decision.get('autoInferredRiskStyle', '--')}）",
+            *_dual_track_basis_lines(decision, effective_thresholds),
+            f"最终理由: {decision.get('finalReason', '--')}",
+        ],
+        "techEvidence": [_vote_line(item) for item in top_tech],
+        "contextEvidence": [_vote_line(item) for item in top_context],
+        "thresholdEvidence": threshold_lines,
+        "original": {
+            "analysis": analysis_text,
+            "reasoning": reasoning_text,
+        },
+    }
+
+
+def _build_vote_overview(
+    *,
+    tech_votes_raw: list[dict[str, Any]],
+    context_votes_raw: list[dict[str, Any]],
+) -> dict[str, Any]:
+    def _extract_weight(item: dict[str, Any]) -> float:
+        for key in ("weight", "vote_weight", "factor_weight", "w"):
+            value = _float(item.get(key))
+            if value is not None:
+                return value
+        return 1.0
+
+    def _extract_contribution(item: dict[str, Any], score: float, weight: float) -> float:
+        for key in ("weighted_score", "weightedScore", "contribution", "vote_score"):
+            value = _float(item.get(key))
+            if value is not None:
+                return value
+        return score * weight
+
+    rows: list[dict[str, str]] = []
+    tech_sum = 0.0
+    context_sum = 0.0
+    tech_count = 0
+    context_count = 0
+
+    for track, raw_votes in (("technical", tech_votes_raw), ("context", context_votes_raw)):
+        for index, item in enumerate(raw_votes):
+            vote_row = _to_vote_row(item, default_signal="CONTEXT" if track == "context" else "")
+            if isinstance(item, dict):
+                voter = _txt(
+                    item.get("agent")
+                    or item.get("analyst")
+                    or item.get("factor")
+                    or item.get("component")
+                    or item.get("name")
+                    or item.get("title"),
+                    vote_row.get("factor") or f"{track}-voter-{index + 1}",
+                )
+                signal = _txt(item.get("signal") or item.get("vote") or item.get("decision"), vote_row.get("signal") or "--")
+                score_value = _float(item.get("score"), _float(item.get("confidence"), 0.0)) or 0.0
+                weight_value = _extract_weight(item)
+                contribution_value = _extract_contribution(item, score_value, weight_value)
+                reason = _txt(item.get("reason") or item.get("note") or item.get("detail"), vote_row.get("reason") or "--")
+                calculation = _txt(
+                    item.get("calculation") or item.get("formula"),
+                    f"单票贡献 = score({score_value:+.4f}) x weight({weight_value:.4f}) = {contribution_value:+.4f}",
+                )
+            else:
+                voter = _txt(vote_row.get("factor"), f"{track}-voter-{index + 1}")
+                signal = _txt(vote_row.get("signal"), "--")
+                score_value = _float(vote_row.get("score"), 0.0) or 0.0
+                weight_value = 1.0
+                contribution_value = score_value
+                reason = _txt(vote_row.get("reason"), "--")
+                calculation = f"单票贡献 = score({score_value:+.4f}) x weight(1.0000) = {contribution_value:+.4f}"
+
+            if track == "technical":
+                tech_sum += contribution_value
+                tech_count += 1
+            else:
+                context_sum += contribution_value
+                context_count += 1
+
+            rows.append(
+                {
+                    "track": track,
+                    "voter": voter,
+                    "signal": signal,
+                    "score": f"{score_value:+.4f}",
+                    "weight": f"{weight_value:.4f}",
+                    "contribution": f"{contribution_value:+.4f}",
+                    "reason": reason,
+                    "calculation": calculation,
+                }
+            )
+
+    tech_clamped = max(-1.0, min(1.0, tech_sum))
+    context_clamped = max(-1.0, min(1.0, context_sum))
+
+    return {
+        "voterCount": len(rows),
+        "technicalVoterCount": tech_count,
+        "contextVoterCount": context_count,
+        "formula": "单票贡献 = score x weight；分轨得分 = clamp(Σ单票贡献, -1, 1)。",
+        "technicalAggregation": f"技术轨汇总: Σ贡献={tech_sum:+.4f}，截断后={tech_clamped:+.4f}。",
+        "contextAggregation": f"环境轨汇总: Σ贡献={context_sum:+.4f}，截断后={context_clamped:+.4f}。",
+        "rows": rows,
+    }
+
+
+def _extract_vote_list(explainability: dict[str, Any], keys: tuple[str, ...]) -> list[Any]:
+    for key in keys:
+        value = explainability.get(key)
+        if isinstance(value, list):
+            return value
+    votes_obj = explainability.get("votes")
+    if isinstance(votes_obj, dict):
+        for key in keys:
+            value = votes_obj.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _parse_metric_float(value: Any) -> float | None:
+    text = _txt(value)
+    if not text:
+        return None
+    matched = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not matched:
+        return None
+    try:
+        return float(matched.group(0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _indicator_derivation(
+    *,
+    name: str,
+    value: Any,
+    source: str,
+    note: str,
+    metric_values: dict[str, float],
+) -> str:
+    metric_name = _txt(name)
+    metric_upper = metric_name.upper()
+    metric_value = _parse_metric_float(value)
+    current_price = metric_values.get("现价")
+    ma20 = metric_values.get("MA20")
+    k_value = metric_values.get("K值")
+    d_value = metric_values.get("D值")
+
+    def _trend_vs_ma(ma_name: str, ma_value: float | None) -> str:
+        if current_price is None or ma_value is None:
+            return f"{ma_name} 是对应周期均线，用于判断该周期趋势方向与支撑/压力。"
+        if current_price > ma_value:
+            return f"当前价高于 {ma_name}，该周期趋势偏强，回踩 {ma_name} 常作为支撑位观察。"
+        if current_price < ma_value:
+            return f"当前价低于 {ma_name}，该周期趋势偏弱，{ma_name} 更可能形成上方压力。"
+        return f"当前价接近 {ma_name}，多空在该周期均衡，需结合成交量确认方向。"
+
+    if metric_name.endswith("打分"):
+        if metric_value is None:
+            return "该项为单因子投票分，正值偏多、负值偏空，绝对值越大影响越大。"
+        if metric_value > 0:
+            return f"该因子投票分为正({metric_value:+.4f})，对最终买入方向提供增量支持。"
+        if metric_value < 0:
+            return f"该因子投票分为负({metric_value:+.4f})，对最终卖出/谨慎方向提供增量支持。"
+        return "该因子投票分接近 0，对最终决策影响中性。"
+
+    if metric_name == "现价":
+        if current_price is None or ma20 is None:
+            return "现价是决策时点的成交参考价，用于与均线和阈值比较。"
+        if current_price > ma20:
+            return f"现价高于 MA20（{ma20:.2f}），中期趋势仍偏强。"
+        if current_price < ma20:
+            return f"现价低于 MA20（{ma20:.2f}），中期趋势转弱，需防回撤扩大。"
+        return f"现价与 MA20（{ma20:.2f}）接近，中期方向尚不明确。"
+
+    if metric_name == "成本":
+        if current_price is None or metric_value is None:
+            return "成本用于衡量当前仓位盈亏与风控空间。"
+        pnl = (current_price - metric_value) / metric_value * 100 if metric_value else 0.0
+        if pnl >= 0:
+            return f"按当前价估算浮盈约 {pnl:.2f}%，可结合止盈阈值评估是否继续持有。"
+        return f"按当前价估算浮亏约 {abs(pnl):.2f}%，需优先关注止损纪律。"
+
+    if metric_upper in {"MA5", "MA10", "MA20", "MA60"}:
+        return _trend_vs_ma(metric_upper, metric_value)
+
+    if metric_upper in {"RSI", "RSI12"}:
+        if metric_value is None:
+            return "RSI 反映价格动量强弱，常用 30/70 识别超卖/超买。"
+        if metric_value >= 70:
+            return f"RSI={metric_value:.2f} 处于偏高区，短线可能过热，追高性价比下降。"
+        if metric_value <= 30:
+            return f"RSI={metric_value:.2f} 处于偏低区，短线超卖，需观察是否出现止跌信号。"
+        return f"RSI={metric_value:.2f} 位于中性区间，动量未到极端。"
+
+    if metric_upper == "MACD":
+        if metric_value is None:
+            return "MACD 衡量趋势动量，正值偏多、负值偏空。"
+        if metric_value > 0:
+            return f"MACD={metric_value:.4f} 为正，动量结构偏多。"
+        if metric_value < 0:
+            return f"MACD={metric_value:.4f} 为负，动量结构偏空。"
+        return "MACD 接近 0，趋势动量处于切换边缘。"
+
+    if metric_name == "信号线":
+        return "信号线用于和 MACD 做交叉判断，MACD 上穿信号线通常视为动量改善。"
+
+    if metric_name == "布林上轨":
+        if current_price is None or metric_value is None:
+            return "布林上轨代表近期波动上边界，接近时通常意味着波动与回撤风险加大。"
+        if current_price >= metric_value:
+            return "现价触及/接近布林上轨，短线容易出现震荡或回落。"
+        return "现价低于布林上轨，仍有上行空间但需关注量能是否匹配。"
+
+    if metric_name == "布林下轨":
+        if current_price is None or metric_value is None:
+            return "布林下轨代表近期波动下边界，接近时需观察是否出现止跌信号。"
+        if current_price <= metric_value:
+            return "现价触及/接近布林下轨，短线可能超跌，需结合成交量确认反弹有效性。"
+        return "现价高于布林下轨，价格仍处正常波动带内。"
+
+    if metric_name == "K值":
+        if metric_value is None:
+            return "K 值是 KDJ 的快线，对短周期波动较敏感。"
+        if d_value is None:
+            return f"K 值为 {metric_value:.2f}，用于观察短线动量强弱。"
+        if metric_value > d_value:
+            return f"K({metric_value:.2f}) 高于 D({d_value:.2f})，短线动量偏强。"
+        if metric_value < d_value:
+            return f"K({metric_value:.2f}) 低于 D({d_value:.2f})，短线动量偏弱。"
+        return f"K 与 D 均约 {metric_value:.2f}，短线方向暂不明显。"
+
+    if metric_name == "D值":
+        if metric_value is None:
+            return "D 值是 KDJ 的慢线，用于平滑短线噪音。"
+        if k_value is None:
+            return f"D 值为 {metric_value:.2f}，可配合 K 值判断拐点。"
+        if k_value > metric_value:
+            return f"K({k_value:.2f}) 上于 D({metric_value:.2f})，短线结构偏多。"
+        if k_value < metric_value:
+            return f"K({k_value:.2f}) 下于 D({metric_value:.2f})，短线结构偏空。"
+        return "K 与 D 重合，短线方向等待进一步确认。"
+
+    if metric_name == "量比":
+        if metric_value is None:
+            return "量比反映当前成交活跃度，相对 1 越高说明放量越明显。"
+        if metric_value >= 1.5:
+            return f"量比={metric_value:.2f}，成交明显放大，信号有效性通常更高。"
+        if metric_value <= 0.8:
+            return f"量比={metric_value:.2f}，成交偏弱，趋势延续性需要谨慎评估。"
+        return f"量比={metric_value:.2f}，成交活跃度处于常态区间。"
+
+    if metric_name == "浮盈亏":
+        if metric_value is None:
+            return "浮盈亏用于评估持仓安全垫与止盈止损空间。"
+        if metric_value >= 0:
+            return f"当前浮盈 {metric_value:.2f}%，可结合回撤容忍度动态止盈。"
+        return f"当前浮亏 {abs(metric_value):.2f}%，应优先遵守止损规则。"
+
+    if note:
+        return f"该指标来自决策时的原始说明：{note}"
+    if source == "tech_vote":
+        return "该指标来自技术投票子模型的直接打分输出。"
+    if source == "tech_vote_reason":
+        return "该指标来自技术投票理由中的数值抽取，用于还原投票依据。"
+    if source == "reasoning":
+        return "该指标来自决策文本中的显式数值，已结构化用于复盘。"
+    return "该指标用于补充决策依据。"
+
+
+def _build_parameter_details(
+    *,
+    decision: dict[str, Any],
+    runtime_context: dict[str, Any],
+    technical_indicators: list[dict[str, str]],
+    effective_thresholds: dict[str, Any],
+    tech_votes_raw: list[dict[str, Any]],
+    context_votes_raw: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    def _item(name: str, value: Any, source: str, derivation: str) -> dict[str, str]:
+        return {
+            "name": _txt(name),
+            "value": _txt(value, "--"),
+            "source": _txt(source),
+            "derivation": _txt(derivation),
+        }
+
+    tech_vote_sum = sum((_float(item.get("score"), 0.0) or 0.0) for item in tech_votes_raw if isinstance(item, dict))
+    tech_vote_clamped = max(-1.0, min(1.0, tech_vote_sum))
+    context_vote_sum = sum((_float(item.get("score"), 0.0) or 0.0) for item in context_votes_raw if isinstance(item, dict))
+    context_vote_clamped = max(-1.0, min(1.0, context_vote_sum))
+
+    rows: list[dict[str, str]] = [
+        _item("动作", decision.get("action"), "DualTrackResolver.resolve", "由技术信号、环境信号与规则命中共同决定最终 BUY/SELL/HOLD。"),
+        _item("决策类型", decision.get("decisionType"), "DualTrackResolver.resolve", "根据共振/背离/否决路径设置，如 dual_track_resonance、dual_track_divergence、dual_track_hold。"),
+        _item("技术信号", decision.get("techSignal"), "KernelStrategyRuntime._select_tech_action", "tech_score >= buy_threshold => BUY；<= sell_threshold => SELL；否则 HOLD。"),
+        _item("环境信号", decision.get("contextSignal"), "KernelStrategyRuntime._select_context_signal", "context_score >= 0.3 => BUY；<= -0.3 => SELL；否则 HOLD。"),
+        _item("技术分", decision.get("techScore"), "KernelStrategyRuntime._calculate_candidate_tech_votes / _calculate_position_tech_votes", f"技术投票分值求和后截断到 [-1,1]。当前投票和={tech_vote_sum:.4f}，截断后={tech_vote_clamped:.4f}。"),
+        _item("环境分", decision.get("contextScore"), "MarketRegimeContextProvider.score_context", f"来源先验+趋势+结构+动量+风险平衡+流动性+时段求和后截断到 [-1,1]。当前组件和={context_vote_sum:.4f}，截断后={context_vote_clamped:.4f}。"),
+        _item("置信度", decision.get("confidence"), "KernelStrategyRuntime._select_tech_confidence", "base_confidence + |tech_score|*tech_weight + max(context_score,0)*context_weight + 风格加成，之后夹在[min_confidence,max_confidence]。"),
+        _item(
+            "仓位建议(%)",
+            decision.get("positionSizePct"),
+            "DualTrackResolver._calculate_position_rule",
+            "BUY 时表示目标买入仓位比例；SELL 时表示建议卖出比例（100% 即清仓可卖仓位）；HOLD 时通常为 0。由技术分与环境分命中共振/背离规则后得到。",
+        ),
+        _item(
+            "建议保持仓位",
+            _derive_keep_position_pct(decision.get("action"), decision.get("positionSizePct")),
+            "DualTrackResolver._calculate_position_rule",
+            "BUY 时等于目标买入仓位；SELL 时 = 100% - 建议卖出比例；HOLD 时表示维持当前仓位不变。",
+        ),
+        _item("规则命中", decision.get("ruleHit"), "DualTrackResolver._calculate_position_rule", "按 resonance_full/heavy/moderate/standard/divergence 等规则判定。"),
+        _item("共振类型", decision.get("resonanceType"), "DualTrackResolver.resolve", "由仓位比例和背离状态映射 full/heavy/moderate/light 等类型。"),
+        _item("市场", runtime_context.get("market"), "调度配置/回放任务", "实时模式取 scheduler.market；回放模式取 sim_runs.market。"),
+        _item("分析粒度", runtime_context.get("timeframe"), "调度配置/回放任务/策略配置", "实时模式优先取策略分析粒度，其次 scheduler.analysis_timeframe；回放模式取 sim_runs.timeframe。"),
+        _item("策略模式", runtime_context.get("strategyMode"), "调度配置/回放任务/策略配置", "实时模式优先取策略模式，其次 scheduler.strategy_mode；回放模式取 sim_runs.selected_strategy_mode。"),
+    ]
+
+    for key, value in effective_thresholds.items():
+        threshold_key = _txt(key)
+        if not threshold_key:
+            continue
+        rows.append(
+            _item(
+                f"阈值.{threshold_key}",
+                value,
+                "KernelStrategyRuntime._resolve_thresholds",
+                "由风险风格参数与分析粒度参数融合得到 effective_thresholds。",
+            )
+        )
+
+    metric_values = {
+        _txt(item.get("name")): _parse_metric_float(item.get("value"))
+        for item in technical_indicators
+        if _txt(item.get("name"))
+    }
+    for indicator in technical_indicators:
+        name = _txt(indicator.get("name"))
+        if not name:
+            continue
+        source = _txt(indicator.get("source"), "行情快照")
+        note = _txt(indicator.get("note"))
+        rows.append(
+            _item(
+                f"指标.{name}",
+                indicator.get("value"),
+                source,
+                _indicator_derivation(
+                    name=name,
+                    value=indicator.get("value"),
+                    source=source,
+                    note=note,
+                    metric_values=metric_values,
+                ),
+            )
+        )
+
+    return rows
+
+
+def _build_signal_detail_payload(
+    context: UIApiContext,
+    signal: dict[str, Any],
+    *,
+    source: str,
+    replay_run: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    strategy_profile = _safe_json_load(signal.get("strategy_profile"))
+    explainability = _safe_json_load(strategy_profile.get("explainability"))
+    dual_track = _safe_json_load(explainability.get("dual_track"))
+    tech_votes_raw = _extract_vote_list(explainability, ("tech_votes", "technical_votes", "techVotes", "tech"))
+    context_votes_raw = _extract_vote_list(explainability, ("context_votes", "market_votes", "contextVotes", "context"))
+    tech_votes = [_to_vote_row(item) for item in tech_votes_raw]
+    context_votes = [_to_vote_row(item, default_signal="CONTEXT") for item in context_votes_raw]
+
+    analysis_text = _txt(
+        strategy_profile.get("analysis")
+        or strategy_profile.get("analysis_summary")
+        or strategy_profile.get("decision_reason")
+        or dual_track.get("final_reason")
+        or signal.get("reasoning"),
+        "暂无分析数据",
+    )
+    reasoning_text = _txt(signal.get("reasoning"), analysis_text)
+
+    decision = {
+        "id": _txt(signal.get("id")),
+        "source": source,
+        "stockCode": _txt(signal.get("stock_code")),
+        "stockName": _txt(signal.get("stock_name")),
+        "action": _txt(signal.get("action"), "HOLD").upper(),
+        "status": _txt(signal.get("signal_status") or signal.get("status") or signal.get("execution_note"), "observed"),
+        "decisionType": _txt(signal.get("decision_type") or dual_track.get("decision_type"), "auto"),
+        "confidence": _txt(signal.get("confidence"), "0"),
+        "positionSizePct": _txt(signal.get("position_size_pct"), "0"),
+        "techScore": _txt(signal.get("tech_score"), "0"),
+        "contextScore": _txt(signal.get("context_score"), "0"),
+        "checkpointAt": _txt(signal.get("checkpoint_at") or signal.get("updated_at") or signal.get("created_at"), "--"),
+        "createdAt": _txt(signal.get("created_at"), "--"),
+        "analysisTimeframe": _profile_text(strategy_profile.get("analysis_timeframe"), "--"),
+        "strategyMode": _profile_text(strategy_profile.get("strategy_mode"), "--"),
+        "marketRegime": _txt(strategy_profile.get("market_regime"), "--"),
+        "fundamentalQuality": _txt(strategy_profile.get("fundamental_quality"), "--"),
+        "riskStyle": _txt(_safe_json_load(strategy_profile.get("risk_style")).get("label") or strategy_profile.get("risk_style"), "--"),
+        "autoInferredRiskStyle": _txt(strategy_profile.get("auto_inferred_risk_style"), "--"),
+        "techSignal": _txt(dual_track.get("tech_signal"), "--"),
+        "contextSignal": _txt(dual_track.get("context_signal"), "--"),
+        "resonanceType": _txt(dual_track.get("resonance_type"), "--"),
+        "ruleHit": _txt(dual_track.get("rule_hit"), "--"),
+        "finalAction": _txt(dual_track.get("final_action") or signal.get("action"), "HOLD").upper(),
+        "finalReason": _txt(dual_track.get("final_reason") or reasoning_text, "--"),
+        "positionRatio": _txt(dual_track.get("position_ratio"), _txt(signal.get("position_size_pct"), "0")),
+    }
+
+    technical_indicators = _extract_technical_indicators(tech_votes=tech_votes_raw, reasoning=reasoning_text)
+    effective_thresholds = _safe_json_load(strategy_profile.get("effective_thresholds"))
+    runtime_context = _build_runtime_context(
+        context,
+        source=source,
+        strategy_profile=strategy_profile,
+        replay_run=replay_run,
+    )
+    explanation = _build_explanation_payload(
+        decision=decision,
+        analysis_text=analysis_text,
+        reasoning_text=reasoning_text,
+        tech_votes_raw=tech_votes_raw,
+        context_votes_raw=context_votes_raw,
+        effective_thresholds=effective_thresholds,
+    )
+    vote_overview = _build_vote_overview(
+        tech_votes_raw=tech_votes_raw,
+        context_votes_raw=context_votes_raw,
+    )
+    parameter_details = _build_parameter_details(
+        decision=decision,
+        runtime_context=runtime_context,
+        technical_indicators=technical_indicators,
+        effective_thresholds=effective_thresholds,
+        tech_votes_raw=tech_votes_raw,
+        context_votes_raw=context_votes_raw,
+    )
+
+    return {
+        "updatedAt": _now(),
+        "analysis": analysis_text,
+        "reasoning": reasoning_text,
+        "runtimeContext": runtime_context,
+        "explanation": explanation,
+        "voteOverview": vote_overview,
+        "parameterDetails": parameter_details,
+        "decision": decision,
+        "techVotes": tech_votes,
+        "contextVotes": context_votes,
+        "technicalIndicators": technical_indicators,
+        "effectiveThresholds": [{"name": _txt(k), "value": _txt(v)} for k, v in effective_thresholds.items() if _txt(k)],
+        "strategyProfile": strategy_profile,
+    }
+
+
+def _find_signal_detail(context: UIApiContext, signal_id: str, *, source: str = "auto") -> dict[str, Any]:
+    db = context.quant_db()
+    normalized_source = _txt(source, "auto").lower()
+    sid_int = _int(signal_id)
+    if sid_int is None:
+        raise HTTPException(status_code=400, detail=f"Invalid signal id: {signal_id}")
+
+    if normalized_source in {"auto", "live"}:
+        live_signal = next((item for item in db.get_signals(limit=5000) if _int(item.get("id")) == sid_int), None)
+        if live_signal:
+            return _build_signal_detail_payload(context, live_signal, source="live")
+
+    if normalized_source in {"auto", "replay"}:
+        run_rows = db.get_sim_runs(limit=30)
+        for run in run_rows:
+            run_id = _int(run.get("id"))
+            if run_id is None:
+                continue
+            replay_signal = next((item for item in db.get_sim_run_signals(run_id) if _int(item.get("id")) == sid_int), None)
+            if replay_signal:
+                return _build_signal_detail_payload(context, replay_signal, source="replay", replay_run=run)
+
+    raise HTTPException(status_code=404, detail=f"Signal not found: {signal_id}")
+
+
+def _live_signal_table(context: UIApiContext, limit: int = 200) -> dict[str, Any]:
+    db = context.quant_db()
+    safe_limit = max(1, min(limit, 500))
+    rows: list[dict[str, Any]] = []
+    for i, item in enumerate(db.get_signals(limit=safe_limit)):
+        signal_id = _txt(item.get("id"), str(i))
+        rows.append(
+            {
+                "id": signal_id,
+                "cells": [
+                    f"#{signal_id}",
+                    _txt(item.get("updated_at") or item.get("created_at"), "--"),
+                    _txt(item.get("stock_code")),
+                    _txt(item.get("action"), "HOLD").upper(),
+                    _txt(item.get("decision_type"), "auto"),
+                    _txt(item.get("status"), "observed"),
+                ],
+                "actions": [{"label": "详情", "icon": "🔎", "tone": "accent", "action": "show-signal-detail"}],
+                "code": _txt(item.get("stock_code")),
+                "name": _txt(item.get("stock_name")),
+            }
+        )
+    return {
+        "updatedAt": _now(),
+        "table": _table(["信号ID", "时间", "代码", "动作", "策略", "状态"], rows, "暂无信号"),
     }
 
 
@@ -878,6 +1745,14 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
         if not task:
             raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
         return manager.task_response(task, txt=_txt, int_fn=_int)
+
+    @app.get("/api/v1/quant/signals/{signal_id}")
+    def get_signal_detail(signal_id: str, source: str = "auto") -> dict[str, Any]:
+        return _find_signal_detail(api_context, signal_id, source=source)
+
+    @app.get("/api/v1/quant/live-sim/signals")
+    def get_live_sim_signals(limit: int = 200) -> dict[str, Any]:
+        return _live_signal_table(api_context, limit=limit)
 
     for path, page in {
         "/api/v1/workbench": "workbench",

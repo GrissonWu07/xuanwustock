@@ -107,7 +107,7 @@ class AsyncTaskManagerBase:
     ) -> dict[str, Any] | None:
         if not task:
             return None
-        return {
+        payload: dict[str, Any] = {
             "id": txt(task.get("id"), ""),
             "status": txt(task.get("status"), "idle"),
             "title": txt(task.get("title"), self.task_title),
@@ -118,6 +118,16 @@ class AsyncTaskManagerBase:
             "startedAt": txt(task.get("started_at"), ""),
             "updatedAt": txt(task.get("updated_at"), ""),
         }
+        if isinstance(task.get("codes"), list):
+            payload["stockCodes"] = [txt(item, "") for item in task.get("codes") if txt(item, "")]
+        if isinstance(task.get("results"), list):
+            results = [item for item in task.get("results") if isinstance(item, dict)]
+            payload["resultCount"] = len(results)
+            payload["completedSymbols"] = [txt(item.get("symbol"), "") for item in results if txt(item.get("symbol"), "")]
+        if isinstance(task.get("errors"), list):
+            errors = [item for item in task.get("errors") if isinstance(item, dict)]
+            payload["failedSymbols"] = [txt(item.get("symbol"), "") for item in errors if txt(item.get("symbol"), "")]
+        return payload
 
     def task_response(
         self,

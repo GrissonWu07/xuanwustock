@@ -10,10 +10,9 @@ type WatchlistPanelProps = {
   onAddWatchlist: (code: string) => Promise<void> | void;
   onRefresh: (codes: string[]) => void;
   onBatchQuant: (codes: string[]) => void;
-  onBatchAnalyzeInput: (codes: string[]) => void;
+  onBatchAnalyze: (codes: string[]) => void;
   onClearSelection: () => void;
   onRemoveWatchlist: (code: string) => void;
-  onAnalyzeWatchlist: (code: string) => void;
 };
 
 const panelStyle: React.CSSProperties = {
@@ -28,10 +27,9 @@ export function WatchlistPanel({
   onAddWatchlist,
   onRefresh,
   onBatchQuant,
-  onBatchAnalyzeInput,
+  onBatchAnalyze,
   onClearSelection,
   onRemoveWatchlist,
-  onAnalyzeWatchlist,
 }: WatchlistPanelProps) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -83,9 +81,9 @@ export function WatchlistPanel({
     }
   };
 
-  const handleBatchAnalyzeInput = () => {
+  const handleBatchAnalyze = () => {
     if (selectedCodes.length > 0) {
-      onBatchAnalyzeInput(selectedCodes);
+      onBatchAnalyze(selectedCodes);
     }
   };
 
@@ -150,9 +148,9 @@ export function WatchlistPanel({
               />
               <IconButton
                 icon="🔎"
-                label={t("Add to analysis input")}
+                label={t("Start analysis")}
                 tone="accent"
-                onClick={handleBatchAnalyzeInput}
+                onClick={handleBatchAnalyze}
                 disabled={selectedCodes.length === 0}
               />
               <IconButton
@@ -293,15 +291,6 @@ export function WatchlistPanel({
                       ))}
                       <td className="table__actions-cell">
                         <div className="table__actions">
-                          <IconButton
-                            icon="🔎"
-                            label={t("Analyze {code}", { code: row.id })}
-                            tone="accent"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onAnalyzeWatchlist(row.id);
-                            }}
-                          />
                           <IconButton
                             icon="🧪"
                             label={t("Add quant candidate {code}", { code: row.id })}

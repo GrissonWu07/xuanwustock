@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type { ApiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
 import { StrategyNarrativeCard } from "../../components/ui/strategy-narrative";
@@ -6,6 +7,7 @@ import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
 import { Sparkline } from "../../components/ui/sparkline";
 import { usePageData } from "../../lib/use-page-data";
+import type { TableSection } from "../../lib/page-models";
 import { toDisplayCount, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
 
@@ -23,6 +25,7 @@ const STRATEGY_MODE_OPTIONS = [
 ];
 
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
+const SIGNAL_PAGE_SIZE = 20;
 
 function parseIntervalMinutes(value: string) {
   const match = String(value).match(/(\d+)/);
@@ -54,11 +57,16 @@ function parseAutoExecute(value: string) {
   return normalized === "true" || normalized === "1" || normalized.includes("开");
 }
 
+function normalizeSignalAction(value: string) {
+  return String(value ?? "").trim().toUpperCase();
+}
+
 type LiveSimPageProps = {
   client?: ApiClient;
 };
 
 export function LiveSimPage({ client }: LiveSimPageProps) {
+  const navigate = useNavigate();
   const resource = usePageData("live-sim", client);
   const snapshot = resource.data;
   const snapshotVersion = snapshot?.updatedAt ?? "loading";
@@ -69,6 +77,15 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const [autoExecute, setAutoExecute] = useState(true);
   const [initialCash, setInitialCash] = useState(100000);
   const [actionPending, setActionPending] = useState<"save" | "reset" | "start" | "stop" | null>(null);
+  const [signalTable, setSignalTable] = useState<TableSection>({
+    columns: ["信号ID", "时间", "代码", "动作", "策略", "状态"],
+    rows: [],
+    emptyLabel: "暂无信号",
+  });
+  const [signalLoading, setSignalLoading] = useState(false);
+  const [signalStockFilter, setSignalStockFilter] = useState("");
+  const [signalActionFilter, setSignalActionFilter] = useState("ALL");
+  const [signalPage, setSignalPage] = useState(1);
 
   useEffect(() => {
     if (!snapshot) {
@@ -82,6 +99,46 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     setAutoExecute(parseAutoExecute(snapshot.config.autoExecute));
     setInitialCash(Number.parseFloat(String(snapshot.config.initialCapital)) || 100000);
   }, [snapshotVersion]);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadSignals() {
+      setSignalLoading(true);
+      try {
+        const response = await fetch("/api/v1/quant/live-sim/signals?limit=200", {
+          headers: { Accept: "application/json" },
+        });
+        if (!response.ok) {
+          throw new Error(`Request failed: ${response.status}`);
+        }
+        const payload = (await response.json()) as { table?: TableSection };
+        if (mounted && payload.table) {
+          setSignalTable(payload.table);
+        }
+      } catch {
+        if (mounted) {
+          setSignalTable({
+            columns: ["信号ID", "时间", "代码", "动作", "策略", "状态"],
+            rows: [],
+            emptyLabel: "暂无信号",
+            emptyMessage: "信号加载失败，请稍后重试。",
+          });
+        }
+      } finally {
+        if (mounted) {
+          setSignalLoading(false);
+        }
+      }
+    }
+    void loadSignals();
+    return () => {
+      mounted = false;
+    };
+  }, [snapshotVersion]);
+
+  useEffect(() => {
+    setSignalPage(1);
+  }, [signalStockFilter, signalActionFilter, snapshotVersion]);
 
   if (resource.status === "loading" && !resource.data) {
     return <PageLoadingState title="量化模拟加载中" description="正在读取定时任务配置、候选池和账户结果。" />;
@@ -107,6 +164,87 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const runningState = toDisplayText(snapshot.status.running, "未知");
   const runningNormalized = String(snapshot.status.running ?? "").trim().toLowerCase();
   const isRunning = runningNormalized.includes("运行中") || runningNormalized.includes("running");
+  const signalActionOptions = Array.from(new Set(signalTable.rows.map((row) => normalizeSignalAction(String(row.cells[3] ?? ""))).filter(Boolean)));
+  const filteredSignalRows = signalTable.rows.filter((row) => {
+    const keyword = signalStockFilter.trim().toLowerCase();
+    const code = String(row.code ?? row.cells[2] ?? "").toLowerCase();
+    const name = String(row.name ?? "").toLowerCase();
+    const codeCell = String(row.cells[2] ?? "").toLowerCase();
+    const action = normalizeSignalAction(String(row.cells[3] ?? ""));
+    const stockMatched = !keyword || code.includes(keyword) || name.includes(keyword) || codeCell.includes(keyword);
+    const actionMatched = signalActionFilter === "ALL" || action === signalActionFilter;
+    return stockMatched && actionMatched;
+  });
+  const signalPages = Math.max(1, Math.ceil(filteredSignalRows.length / SIGNAL_PAGE_SIZE));
+  const currentSignalPage = Math.min(signalPage, signalPages);
+  const pagedSignalTable: TableSection = {
+    ...signalTable,
+    rows: filteredSignalRows.slice((currentSignalPage - 1) * SIGNAL_PAGE_SIZE, currentSignalPage * SIGNAL_PAGE_SIZE),
+  };
+  const toolbarControlHeight = "40px";
+  const renderSignalPager = () => (
+    <div className="chip-row">
+      <button
+        className="button button--secondary button--small"
+        type="button"
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 18px" }}
+        disabled={currentSignalPage <= 1}
+        onClick={() => setSignalPage((page) => Math.max(1, page - 1))}
+      >
+        上一页
+      </button>
+      <span
+        className="badge badge--neutral"
+        style={{
+          height: toolbarControlHeight,
+          minHeight: toolbarControlHeight,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "0 16px",
+        }}
+      >
+        {`第 ${currentSignalPage} / ${signalPages} 页`}
+      </span>
+      <button
+        className="button button--secondary button--small"
+        type="button"
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 18px" }}
+        disabled={currentSignalPage >= signalPages}
+        onClick={() => setSignalPage((page) => Math.min(signalPages, page + 1))}
+      >
+        下一页
+      </button>
+    </div>
+  );
+  const renderSignalToolbar = () => (
+    <div style={{ display: "flex", gap: "8px", alignItems: "center", justifyContent: "flex-end", flexWrap: "nowrap" }}>
+      <input
+        className="input"
+        style={{ width: "160px", height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
+        placeholder="按代码/名称过滤"
+        value={signalStockFilter}
+        onChange={(event) => setSignalStockFilter(event.target.value)}
+      />
+      <select
+        className="input"
+        style={{ width: "120px", height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
+        value={signalActionFilter}
+        onChange={(event) => setSignalActionFilter(event.target.value)}
+      >
+        <option value="ALL">全部动作</option>
+        {signalActionOptions.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+      {renderSignalPager()}
+      <span className="summary-item__body" style={{ margin: 0, whiteSpace: "nowrap" }}>
+        {signalLoading ? "加载中..." : `筛选后 ${filteredSignalRows.length} 条`}
+      </span>
+    </div>
+  );
 
   return (
     <div>
@@ -387,6 +525,26 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
               </div>
             )}
           </WorkbenchCard>
+
+          <QuantTableSectionCard
+            title="信号记录"
+            description="点击详情进入统一信号详情页，查看投票、决策依据和技术指标快照。"
+            table={pagedSignalTable}
+            emptyTitle={signalTable.emptyLabel ?? "暂无信号"}
+            emptyDescription={signalTable.emptyMessage ?? "当前没有可查看的信号记录。"}
+            actionsHead="操作"
+            actionVariant="chip"
+            tableLayout="auto"
+            toolbar={renderSignalToolbar()}
+            onRowAction={(row, action) => {
+              const actionKey = String(action.action ?? "").trim().toLowerCase();
+              const actionLabel = String(action.label ?? "").trim().toLowerCase();
+              if (!(actionKey === "show-signal-detail" || actionLabel === "详情" || actionLabel === "detail")) {
+                return;
+              }
+              navigate(`/signal-detail/${encodeURIComponent(row.id)}?source=live`);
+            }}
+          />
 
           <WorkbenchCard>
             <h2 className="section-card__title">账户结果</h2>

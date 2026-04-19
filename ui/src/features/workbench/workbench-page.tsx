@@ -118,6 +118,28 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
     setAnalysisInputSeed(normalized.join(","));
   };
 
+  const handleBatchAnalyzeFromWatchlist = (codes: string[]) => {
+    const normalized = Array.from(new Set(codes.map((item) => item.trim()).filter(Boolean)));
+    if (normalized.length === 0) return;
+    handleBatchFillAnalysisInput(normalized);
+    const cycle = snapshot.analysis.cycle;
+    if (normalized.length === 1) {
+      void handleAnalyze({
+        symbol: normalized[0],
+        analysts: defaultAnalysts,
+        mode: t("Single analysis"),
+        cycle,
+      });
+      return;
+    }
+    void handleBatchAnalyze({
+      stockCodes: normalized,
+      analysts: defaultAnalysts,
+      mode: t("Batch analysis"),
+      cycle,
+    });
+  };
+
   const handleRefreshWatchlist = async (codes: string[]) => {
     if (codes.length === 0) return;
     await resource.runAction("refresh-watchlist", { codes, fullRefresh: true, triggerAt: Date.now() });
@@ -158,17 +180,9 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
               void handleRefreshWatchlist(codes);
             }}
             onBatchQuant={(codes) => resource.runAction("batch-quant", { codes })}
-            onBatchAnalyzeInput={handleBatchFillAnalysisInput}
+            onBatchAnalyze={handleBatchAnalyzeFromWatchlist}
             onClearSelection={() => resource.runAction("clear-selection")}
             onRemoveWatchlist={(code) => resource.runAction("delete-watchlist", { code })}
-            onAnalyzeWatchlist={(code) =>
-              handleAnalyze({
-                symbol: code,
-                analysts: defaultAnalysts,
-                mode: snapshot.analysis.mode,
-                cycle: snapshot.analysis.cycle,
-              })
-            }
           />
           <StockAnalysisPanel
             analysis={snapshot.analysis}

@@ -180,7 +180,7 @@ def build_workbench_analysis_payload(
     summary_body = _txt(_dict_value(discussion_result, "summary")) or _txt(discussion_result)
     if not summary_body:
         summary_body = _txt(stock_analysis_service.build_indicator_summary(indicator_explanations), t("Analysis completed."))
-    summary_body = _snippet(summary_body, 1200, t("Analysis completed."))
+    summary_body = _txt(summary_body, t("Analysis completed."))
 
     analyst_views: list[dict[str, Any]] = []
     insights: list[dict[str, Any]] = []
@@ -191,10 +191,10 @@ def build_workbench_analysis_payload(
     operation_advice = _txt(_dict_value(final_decision, "operation_advice"))
     final_reasoning = _txt(_dict_value(final_decision, "reasoning")) or operation_advice or _txt(_dict_value(final_decision, "decision_text"))
     if final_reasoning:
-        insights.append(_insight(t("Action advice"), _snippet(final_reasoning, 500), "accent"))
+        insights.append(_insight(t("Action advice"), _txt(final_reasoning), "accent"))
     risk_warning = _txt(_dict_value(final_decision, "risk_warning"))
     if risk_warning:
-        insights.append(_insight(t("Risk warning"), _snippet(risk_warning, 400), "warning"))
+        insights.append(_insight(t("Risk warning"), _txt(risk_warning), "warning"))
     decision_detail_lines = [f"- {t('Investment rating')}: {decision_rating}"]
     detail_fields = [
         (t("Target price"), "target_price"),
@@ -218,7 +218,7 @@ def build_workbench_analysis_payload(
         if not agent_text:
             continue
         agent_name = _txt(agent_result.get("agent_name"), _analysis_agent_title(key))
-        analyst_views.append(_insight(agent_name, _snippet(agent_text, 800)))
+        analyst_views.append(_insight(agent_name, _txt(agent_text)))
 
     return {
         "symbol": code,

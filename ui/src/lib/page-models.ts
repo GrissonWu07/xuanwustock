@@ -94,6 +94,10 @@ export type TaskJob = {
   stage?: string;
   progress?: number;
   symbol?: string;
+  stockCodes?: string[];
+  completedSymbols?: string[];
+  failedSymbols?: string[];
+  resultCount?: number;
   startedAt?: string;
   updatedAt?: string;
 };
@@ -240,9 +244,18 @@ export type ReplaySnapshot = {
   candidatePool: TableSection;
   tasks: {
     id: string;
+    runId?: string;
     status: string;
+    stage?: string;
+    startAt?: string;
+    endAt?: string;
     range: string;
-    note: string;
+    note?: string;
+    returnPct?: string;
+    finalEquity?: string;
+    tradeCount?: string;
+    winRate?: string;
+    holdings?: TableRow[];
   }[];
   tradingAnalysis: {
     title: string;

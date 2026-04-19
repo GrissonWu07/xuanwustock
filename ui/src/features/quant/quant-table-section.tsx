@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import type { TableAction, TableRow, TableSection } from "../../lib/page-models";
+import { localizeDecisionCode } from "./quant-decision-localizer";
 
 type QuantTableSectionProps = {
   title: string;
@@ -43,6 +44,7 @@ export function QuantTableSectionCard({
   const renderCell = (cell: string, column: string, index: number) => {
     const normalizedColumn = String(column).toLowerCase();
     const isActionColumn = normalizedColumn.includes("动作") || normalizedColumn === "action";
+    const isStrategyColumn = normalizedColumn.includes("策略") || normalizedColumn === "strategy";
     if (isActionColumn) {
       const signalAction = String(cell).trim().toUpperCase();
       if (signalAction === "BUY" || signalAction === "BUG") {
@@ -54,6 +56,9 @@ export function QuantTableSectionCard({
       if (signalAction === "HOLD") {
         return <span className="signal-pill signal-pill--hold">{cell}</span>;
       }
+    }
+    if (isStrategyColumn) {
+      return <>{localizeDecisionCode(String(cell))}</>;
     }
     return <>{cell}</>;
   };
@@ -114,7 +119,7 @@ export function QuantTableSectionCard({
                       <div className="table__actions">
                         {row.actions?.map((action) => {
                           const tone = action.tone ?? "neutral";
-                          if (action.action && onRowAction) {
+                          if (onRowAction) {
                             if (actionVariant === "chip") {
                               return (
                                 <button
@@ -122,7 +127,7 @@ export function QuantTableSectionCard({
                                   className="chip chip--active"
                                   type="button"
                                   aria-label={action.label}
-                                  onClick={() => onRowAction(row, action)}
+                                    onClick={() => onRowAction(row, action)}
                                 >
                                   {action.icon ?? action.label}
                                   <span>{action.label}</span>

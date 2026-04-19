@@ -342,6 +342,18 @@ export function StockAnalysisPanel({
   const discussionStage = resolveStageState("discussion", stageKey, busy);
   const decisionStage = resolveStageState("decision", stageKey, busy);
   const hasCachedAnalysis = Boolean(displayAnalysis.generatedAt || displayAnalysis.summaryBody || analystViews.length > 0);
+  const jobStockCodes = useMemo(() => {
+    const taskCodes = Array.isArray(analysisJob?.stockCodes) ? analysisJob.stockCodes : splitSymbols(symbol);
+    return Array.from(new Set(taskCodes.map((item) => item.trim()).filter(Boolean)));
+  }, [analysisJob?.stockCodes, symbol]);
+  const completedSymbols = useMemo(
+    () => new Set((analysisJob?.completedSymbols ?? []).map((item) => item.trim()).filter(Boolean)),
+    [analysisJob?.completedSymbols],
+  );
+  const failedSymbols = useMemo(
+    () => new Set((analysisJob?.failedSymbols ?? []).map((item) => item.trim()).filter(Boolean)),
+    [analysisJob?.failedSymbols],
+  );
 
   const handleToggleAnalyst = (value: string) => {
     setSelectedAnalysts((current) =>
@@ -526,6 +538,44 @@ export function StockAnalysisPanel({
                   <StageBadge state={decisionStage} />
                 </div>
               </div>
+              {jobStockCodes.length > 0 ? (
+                <div className="summary-item" style={{ marginTop: "10px" }}>
+                  <div className="summary-item__title">{t("Analyzing symbols")}</div>
+                  <div className="chip-row" style={{ marginTop: "8px" }}>
+                    {jobStockCodes.map((code) => {
+                      const state =
+                        failedSymbols.has(code)
+                          ? "failed"
+                          : completedSymbols.has(code)
+                            ? "completed"
+                            : analysisJob?.symbol === code
+                              ? "running"
+                              : "queued";
+                      const toneClass =
+                        state === "failed"
+                          ? "badge--danger"
+                          : state === "completed"
+                            ? "badge--success"
+                            : state === "running"
+                              ? "badge--accent"
+                              : "badge--neutral";
+                      const stateText =
+                        state === "failed"
+                          ? t("Failed")
+                          : state === "completed"
+                            ? t("Completed")
+                            : state === "running"
+                              ? t("In progress")
+                              : t("Queued");
+                      return (
+                        <span className={`badge ${toneClass}`} key={`${code}-${state}`}>
+                          {`${code} · ${stateText}`}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
               {hasCachedAnalysis ? (
                 <div className="analysis-stage-panel__hint">{t("Showing latest successful analysis until new one completes.")}</div>
               ) : null}

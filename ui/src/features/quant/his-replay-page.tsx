@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type { ApiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
-import { StrategyNarrativeCard } from "../../components/ui/strategy-narrative";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
 import { Sparkline } from "../../components/ui/sparkline";
 import { usePageData } from "../../lib/use-page-data";
-import type { TableAction, TableRow } from "../../lib/page-models";
+import type { TableAction, TableRow, TableSection } from "../../lib/page-models";
 import { summarizeTaskStatuses, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
 
@@ -71,19 +71,34 @@ const taskBadgeTone: Record<string, "neutral" | "success" | "warning" | "danger"
   queued: "neutral",
   cancelled: "danger",
 };
+const PAGE_SIZE = 20;
 
-type ReplaySignalRow = TableRow & {
-  analysis?: string;
-  votes?: string;
-  signalStatus?: string;
-  decisionType?: string;
-  confidence?: string;
-  techScore?: string;
-  contextScore?: string;
-  checkpointAt?: string;
-};
+function localizeTaskStatus(status: string) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "completed") return "已完成";
+  if (normalized === "running") return "进行中";
+  if (normalized === "queued") return "排队中";
+  if (normalized === "cancelled" || normalized === "canceled") return "已取消";
+  if (normalized === "failed") return "失败";
+  return status || "--";
+}
+
+function normalizeAction(cell: string) {
+  return String(cell || "").trim().toUpperCase();
+}
+
+function withCodeName(rows: TableRow[], codeColumnIndex: number): TableRow[] {
+  return rows.map((row) => {
+    const code = String(row.code ?? row.cells[codeColumnIndex] ?? "").trim();
+    const name = String(row.name ?? "").trim();
+    const merged = name && name !== code ? `${code} ${name}` : code;
+    const cells = row.cells.map((cell, index) => (index === codeColumnIndex ? merged : cell));
+    return { ...row, cells };
+  });
+}
 
 export function HisReplayPage({ client }: HisReplayPageProps) {
+  const navigate = useNavigate();
   const resource = usePageData("his-replay", client);
   const snapshot = resource.data;
   const snapshotVersion = snapshot?.updatedAt ?? "loading";
@@ -98,7 +113,13 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [replayUntilNow, setReplayUntilNow] = useState(false);
   const [overwriteLive, setOverwriteLive] = useState(false);
   const [autoStartScheduler, setAutoStartScheduler] = useState(true);
-  const [activeSignal, setActiveSignal] = useState<ReplaySignalRow | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [tradeStockFilter, setTradeStockFilter] = useState("");
+  const [tradeActionFilter, setTradeActionFilter] = useState("ALL");
+  const [signalStockFilter, setSignalStockFilter] = useState("");
+  const [signalActionFilter, setSignalActionFilter] = useState("ALL");
+  const [tradePage, setTradePage] = useState(1);
+  const [signalPage, setSignalPage] = useState(1);
 
   useEffect(() => {
     if (!snapshot) {
@@ -117,25 +138,33 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     setReplayUntilNow(false);
     setOverwriteLive(false);
     setAutoStartScheduler(true);
+    setSelectedTaskId((prev) => {
+      if (prev && snapshot.tasks.some((task) => task.id === prev)) {
+        return prev;
+      }
+      const runningTask = snapshot.tasks.find((task) => String(task.status).toLowerCase() === "running");
+      if (runningTask) {
+        return runningTask.id;
+      }
+      return snapshot.tasks[0]?.id ?? "";
+    });
   }, [snapshotVersion]);
 
   useEffect(() => {
     if (!snapshot) {
-      setActiveSignal(null);
       return;
     }
-    const signalRows = snapshot.signals.rows as ReplaySignalRow[];
-    if (signalRows.length === 0) {
-      setActiveSignal(null);
-      return;
-    }
-    setActiveSignal((prev) => {
-      if (prev && signalRows.some((item) => item.id === prev.id)) {
-        return signalRows.find((item) => item.id === prev.id) ?? signalRows[0];
-      }
-      return signalRows[0];
-    });
+    setTradePage(1);
+    setSignalPage(1);
   }, [snapshotVersion, snapshot]);
+
+  useEffect(() => {
+    setTradePage(1);
+  }, [tradeStockFilter, tradeActionFilter]);
+
+  useEffect(() => {
+    setSignalPage(1);
+  }, [signalStockFilter, signalActionFilter]);
 
   if (resource.status === "loading" && !resource.data) {
     return <PageLoadingState title="历史回放加载中" description="正在读取回放任务、候选池和交易结果。" />;
@@ -159,11 +188,147 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const taskSummary = summarizeTaskStatuses(snapshot.tasks);
   const replayModeLabel = toDisplayText(snapshot.config.mode, "未知");
   const replayTaskLabel = taskSummary.running > 0 ? `进行中 ${taskSummary.running}` : `已完成 ${taskSummary.completed}`;
+  const runningTask = snapshot.tasks.find((task) => String(task.status).toLowerCase() === "running") ?? null;
+  const runningProgress = Math.max(0, Math.min(Number(runningTask?.progress ?? 0), 100));
+  const selectedTask = snapshot.tasks.find((task) => task.id === selectedTaskId) ?? snapshot.tasks[0] ?? null;
+  const selectedTaskRange = selectedTask?.range || snapshot.config.range;
+  const selectedTaskStatusLabel = selectedTask ? localizeTaskStatus(selectedTask.status) : "--";
+  const selectedTaskStageLabel = selectedTask?.stage || "--";
+  const selectedTaskStartedAt = selectedTask?.startAt || "--";
+  const selectedTaskEndedAt = selectedTask?.endAt || "--";
+  const selectedTaskHoldings: TableSection = {
+    columns: ["代码", "名称", "数量", "成本", "现价", "浮盈亏(元)", "浮盈亏(%)"],
+    rows: selectedTask?.holdings ?? [],
+    emptyLabel: "暂无持仓",
+    emptyMessage: "选中任务没有持仓记录，可能已清仓或尚未执行到持仓阶段。",
+  };
+  const tradeRows = withCodeName(snapshot.trades.rows, 2);
+  const signalRows = withCodeName(snapshot.signals.rows, 2);
+  const tradeActionOptions = Array.from(
+    new Set(
+      snapshot.trades.rows
+        .map((row) => normalizeAction(String(row.cells[3] ?? "")))
+        .filter(Boolean),
+    ),
+  );
+  const signalActionOptions = Array.from(
+    new Set(
+      snapshot.signals.rows
+        .map((row) => normalizeAction(String(row.cells[3] ?? "")))
+        .filter(Boolean),
+    ),
+  );
+  const filteredTradeRows = tradeRows.filter((row) => {
+    const stockKeyword = tradeStockFilter.trim().toLowerCase();
+    const code = String(row.code ?? "").toLowerCase();
+    const name = String(row.name ?? "").toLowerCase();
+    const codeCell = String(row.cells[2] ?? "").toLowerCase();
+    const action = normalizeAction(String(row.cells[3] ?? ""));
+    const stockMatched = !stockKeyword || code.includes(stockKeyword) || name.includes(stockKeyword) || codeCell.includes(stockKeyword);
+    const actionMatched = tradeActionFilter === "ALL" || action === tradeActionFilter;
+    return stockMatched && actionMatched;
+  });
+  const filteredSignalRows = signalRows.filter((row) => {
+    const stockKeyword = signalStockFilter.trim().toLowerCase();
+    const code = String(row.code ?? "").toLowerCase();
+    const name = String(row.name ?? "").toLowerCase();
+    const codeCell = String(row.cells[2] ?? "").toLowerCase();
+    const action = normalizeAction(String(row.cells[3] ?? ""));
+    const stockMatched = !stockKeyword || code.includes(stockKeyword) || name.includes(stockKeyword) || codeCell.includes(stockKeyword);
+    const actionMatched = signalActionFilter === "ALL" || action === signalActionFilter;
+    return stockMatched && actionMatched;
+  });
+  const tradePages = Math.max(1, Math.ceil(filteredTradeRows.length / PAGE_SIZE));
+  const signalPages = Math.max(1, Math.ceil(filteredSignalRows.length / PAGE_SIZE));
+  const pagedTrades = {
+    ...snapshot.trades,
+    rows: filteredTradeRows.slice((tradePage - 1) * PAGE_SIZE, tradePage * PAGE_SIZE),
+  };
+  const pagedSignals = {
+    ...snapshot.signals,
+    rows: filteredSignalRows.slice((signalPage - 1) * PAGE_SIZE, signalPage * PAGE_SIZE),
+  };
+  const toolbarControlHeight = "40px";
+  const renderPager = (page: number, pages: number, setPage: (value: number) => void) => (
+    <div className="chip-row">
+      <button
+        className="button button--secondary button--small"
+        type="button"
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 18px" }}
+        disabled={page <= 1}
+        onClick={() => setPage(page - 1)}
+      >
+        上一页
+      </button>
+      <span
+        className="badge badge--neutral"
+        style={{
+          height: toolbarControlHeight,
+          minHeight: toolbarControlHeight,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "0 16px",
+        }}
+      >
+        {`第 ${page} / ${pages} 页`}
+      </span>
+      <button
+        className="button button--secondary button--small"
+        type="button"
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 18px" }}
+        disabled={page >= pages}
+        onClick={() => setPage(page + 1)}
+      >
+        下一页
+      </button>
+    </div>
+  );
+  const renderFilterToolbar = (
+    stockFilter: string,
+    setStockFilter: (value: string) => void,
+    actionFilter: string,
+    setActionFilter: (value: string) => void,
+    actionOptions: string[],
+    page: number,
+    pages: number,
+    setPage: (value: number) => void,
+    filteredCountText: string,
+  ) => (
+    <div style={{ display: "flex", gap: "8px", alignItems: "center", justifyContent: "flex-end", flexWrap: "nowrap" }}>
+      <input
+        className="input"
+        style={{ width: "160px", height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
+        placeholder="按代码/名称过滤"
+        value={stockFilter}
+        onChange={(event) => setStockFilter(event.target.value)}
+      />
+      <select
+        className="input"
+        style={{ width: "120px", height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
+        value={actionFilter}
+        onChange={(event) => setActionFilter(event.target.value)}
+      >
+        <option value="ALL">全部动作</option>
+        {actionOptions.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+      {renderPager(page, pages, setPage)}
+      <span className="summary-item__body" style={{ margin: 0, whiteSpace: "nowrap" }}>
+        {filteredCountText}
+      </span>
+    </div>
+  );
   const handleSignalRowAction = (row: TableRow, action: TableAction) => {
-    if (action.action !== "show-signal-detail") {
+    const actionKey = String(action.action ?? "").trim().toLowerCase();
+    const actionLabel = String(action.label ?? "").trim().toLowerCase();
+    if (!(actionKey === "show-signal-detail" || actionLabel === "详情" || actionLabel === "detail")) {
       return;
     }
-    setActiveSignal(row as ReplaySignalRow);
+    navigate(`/signal-detail/${encodeURIComponent(row.id)}?source=replay`);
   };
 
   return (
@@ -176,7 +341,10 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
           <div className="chip-row">
             <span className="badge badge--neutral">快照 {snapshot.updatedAt}</span>
             <span className="badge badge--accent">任务 {snapshot.tasks.length}</span>
-            <span className="badge badge--success">{replayTaskLabel}</span>
+            <span className={`badge ${runningTask ? "badge--accent" : "badge--success"}`}>
+              {runningTask ? `执行中 ${runningProgress}%` : replayTaskLabel}
+            </span>
+            {runningTask?.stage ? <span className="badge badge--neutral">{runningTask.stage}</span> : null}
           </div>
         }
       />
@@ -184,22 +352,6 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         <div className="stack">
           <WorkbenchCard>
             <h2 className="section-card__title">回放配置</h2>
-            <p className="section-card__description">直接选择模式、时间范围和粒度，然后对当前量化候选池发起回放任务。</p>
-            <div className="mini-metric-grid">
-              <div className="mini-metric">
-                <div className="mini-metric__label">模式</div>
-                <div className="mini-metric__value">{replayModeLabel}</div>
-              </div>
-              <div className="mini-metric">
-                <div className="mini-metric__label">粒度</div>
-                <div className="mini-metric__value">{snapshot.config.timeframe}</div>
-              </div>
-              <div className="mini-metric">
-                <div className="mini-metric__label">策略模式</div>
-                <div className="mini-metric__value">{snapshot.config.strategyMode}</div>
-              </div>
-            </div>
-            <div className="card-divider" />
             <div className="summary-list">
               <label className="field">
                 <span className="field__label">回放模式</span>
@@ -303,6 +455,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               <button
                 className="button button--primary"
                 type="button"
+                disabled={resource.status === "loading"}
                 onClick={() =>
                   void resource.runAction(replayMode === "continuous_to_live" ? "continue" : "start", {
                     startDateTime: `${startDate} ${startTime}:00`,
@@ -315,7 +468,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                   })
                 }
               >
-                {replayMode === "continuous_to_live" ? "接续" : "回放"}
+                {replayMode === "continuous_to_live" ? "接续" : "开始回溯"}
               </button>
               <button className="button button--secondary" type="button" onClick={() => void resource.runAction("cancel")}>
                 取消
@@ -336,24 +489,9 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             meta={[`表内 ${snapshot.candidatePool.rows.length} 只`, `区间 ${snapshot.config.range}`]}
           />
 
-          <StrategyNarrativeCard
-            title="回放结论"
-            summary={`历史回放围绕 ${snapshot.config.timeframe} 粒度和 ${snapshot.config.strategyMode} 策略复现 ${snapshot.config.range} 区间表现。`}
-            recommendation="优先查看交易分析和成交明细，再决定是否沿用当前策略模式进入实时模拟。"
-            reasons={[
-              `模式 ${snapshot.config.mode}`,
-              `区间 ${snapshot.config.range}`,
-              `粒度 ${snapshot.config.timeframe}`,
-              `策略模式 ${snapshot.config.strategyMode}`,
-            ]}
-            evidence={[
-              { label: "回放结果", value: snapshot.metrics[0]?.value ?? "-" },
-              { label: "最终总权益", value: snapshot.metrics[1]?.value ?? "-" },
-              { label: "交易笔数", value: snapshot.metrics[2]?.value ?? "-" },
-              { label: "胜率", value: snapshot.metrics[3]?.value ?? "-" },
-            ]}
-          />
+        </div>
 
+        <div className="stack">
           <WorkbenchCard>
             <h2 className="section-card__title">回放任务</h2>
             <div className="chip-row" style={{ marginBottom: "12px" }}>
@@ -363,106 +501,109 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             </div>
             {snapshot.tasks.length > 0 ? (
               <div className="summary-list">
-                {snapshot.tasks.map((task) => (
-                  <div className="summary-item" key={task.id}>
-                    <div className="summary-item__title">
-                      {task.id} · <span className={`badge badge--${taskBadgeTone[task.status] ?? "neutral"}`}>{task.status}</span>
+                <label className="field">
+                  <span className="field__label">选择任务</span>
+                  <select className="input" value={selectedTask?.id ?? ""} onChange={(event) => setSelectedTaskId(event.target.value)}>
+                    {snapshot.tasks.map((task) => (
+                      <option key={task.id} value={task.id}>
+                        {`${task.id} · ${localizeTaskStatus(task.status)}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selectedTask ? (
+                  <>
+                    <div className="summary-item">
+                      <div className="summary-item__title">回放结论</div>
+                      <div className="summary-item__body">{`${selectedTask.id} · ${selectedTaskStatusLabel}`}</div>
+                      <div className="summary-item__body">{`执行阶段：${selectedTaskStageLabel}`}</div>
+                      <div className="summary-item__body">{`开始时间：${selectedTaskStartedAt}`}</div>
+                      <div className="summary-item__body">{`结束时间：${selectedTaskEndedAt}`}</div>
+                      <div className="summary-item__body">{`区间：${selectedTaskRange}`}</div>
+                      <div className="summary-item__body">{`模式：${replayModeLabel} · 粒度：${snapshot.config.timeframe} · 策略模式：${snapshot.config.strategyMode}`}</div>
                     </div>
-                    <div className="summary-item__body">{task.range}</div>
-                    <div className="card-divider" />
-                    <div className="summary-item__body">{task.note}</div>
-                  </div>
-                ))}
+                    <div className="mini-metric-grid" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "8px" }}>
+                      <div className="mini-metric">
+                        <div className="mini-metric__label">最终盈亏比例</div>
+                        <div className="mini-metric__value">{selectedTask.returnPct || "--"}</div>
+                      </div>
+                      <div className="mini-metric">
+                        <div className="mini-metric__label">最终现金价值</div>
+                        <div className="mini-metric__value">{selectedTask.finalEquity || "--"}</div>
+                      </div>
+                      <div className="mini-metric">
+                        <div className="mini-metric__label">交易笔数</div>
+                        <div className="mini-metric__value">{selectedTask.tradeCount || "0"}</div>
+                      </div>
+                      <div className="mini-metric">
+                        <div className="mini-metric__label">胜率</div>
+                        <div className="mini-metric__value">{selectedTask.winRate || "--"}</div>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
               </div>
             ) : (
               <div className="summary-item summary-item--accent">
                 <div className="summary-item__title">暂无回放任务</div>
-                <div className="summary-item__body">当前没有排队中的历史回放任务，点击“回放”后会在这里创建新任务。</div>
+                <div className="summary-item__body">当前没有排队中的历史回放任务，点击“开始回溯”后会在这里创建新任务。</div>
               </div>
             )}
           </WorkbenchCard>
-        </div>
 
-        <div className="stack">
-          <div className="metric-grid">
-            {snapshot.metrics.map((metric) => (
-              <WorkbenchCard className="metric-card" key={metric.label}>
-                <div className="metric-card__label">{metric.label}</div>
-                <div className="metric-card__value">{metric.value}</div>
-              </WorkbenchCard>
-            ))}
-          </div>
+          <QuantTableSectionCard
+            title="历史持仓"
+            table={selectedTaskHoldings}
+            emptyTitle={selectedTaskHoldings.emptyLabel ?? "历史持仓暂无数据"}
+            emptyDescription={selectedTaskHoldings.emptyMessage ?? "选中任务没有持仓记录。"}
+            tableLayout="auto"
+          />
+
+          <QuantTableSectionCard
+            title="成交明细"
+            table={pagedTrades}
+            emptyTitle={snapshot.trades.emptyLabel ?? "成交明细暂无数据"}
+            emptyDescription={snapshot.trades.emptyMessage ?? "历史回放执行后，所有成交会统一落在这里。"}
+            tableLayout="auto"
+            toolbar={renderFilterToolbar(
+              tradeStockFilter,
+              setTradeStockFilter,
+              tradeActionFilter,
+              setTradeActionFilter,
+              tradeActionOptions,
+              tradePage,
+              tradePages,
+              setTradePage,
+              `筛选后 ${filteredTradeRows.length} 条`,
+            )}
+          />
 
           <WorkbenchCard>
-            <h2 className="section-card__title">{snapshot.tradingAnalysis.title}</h2>
-            <p className="section-card__description">{snapshot.tradingAnalysis.body}</p>
-            <div className="chip-row">
-              {snapshot.tradingAnalysis.chips.map((chip) => (
-                <span className="chip chip--active" key={chip}>
-                  {chip}
-                </span>
-              ))}
-            </div>
+            <h2 className="section-card__title">资金曲线</h2>
+            <Sparkline points={snapshot.curve} />
           </WorkbenchCard>
 
-          <div className="section-grid">
-            <WorkbenchCard>
-              <h2 className="section-card__title">资金曲线</h2>
-              <Sparkline points={snapshot.curve} />
-            </WorkbenchCard>
-            <QuantTableSectionCard
-              title="结束持仓"
-              table={snapshot.holdings}
-              emptyTitle={snapshot.holdings.emptyLabel ?? "结束持仓暂无数据"}
-              emptyDescription={snapshot.holdings.emptyMessage ?? "如果回放还没有收盘，这里会等任务完成后再补齐。"}
-            />
-          </div>
-
-          <div className="stack">
-            <QuantTableSectionCard
-              title="成交明细"
-              table={snapshot.trades}
-              emptyTitle={snapshot.trades.emptyLabel ?? "成交明细暂无数据"}
-              emptyDescription={snapshot.trades.emptyMessage ?? "历史回放执行后，所有成交会统一落在这里。"}
-              tableLayout="auto"
-            />
-            <QuantTableSectionCard
-              title="信号记录"
-              table={snapshot.signals}
-              emptyTitle={snapshot.signals.emptyLabel ?? "信号记录暂无数据"}
-              emptyDescription={snapshot.signals.emptyMessage ?? "回放过程中生成的信号会展示在这里，便于快速核对执行结果。"}
-              actionsHead="操作"
-              actionVariant="chip"
-              tableLayout="auto"
-              onRowAction={handleSignalRowAction}
-            />
-            <WorkbenchCard>
-              <h2 className="section-card__title">信号详情</h2>
-              {activeSignal ? (
-                <div className="summary-list">
-                  <div className="summary-item">
-                    <div className="summary-item__title">{`信号 ${activeSignal.id}`}</div>
-                    <div className="summary-item__body">{`代码 ${activeSignal.code ?? "--"} · 动作 ${activeSignal.cells[3] ?? "--"} · 执行结果 ${activeSignal.signalStatus ?? activeSignal.cells[5] ?? "--"}`}</div>
-                    <div className="summary-item__body">{`策略 ${activeSignal.decisionType ?? activeSignal.cells[4] ?? "--"} · 置信度 ${activeSignal.confidence ?? "--"} · 技术分 ${activeSignal.techScore ?? "--"} · 环境分 ${activeSignal.contextScore ?? "--"}`}</div>
-                    <div className="summary-item__body">{`时间 ${activeSignal.checkpointAt ?? activeSignal.cells[1] ?? "--"}`}</div>
-                  </div>
-                  <div className="summary-item">
-                    <div className="summary-item__title">分析数据</div>
-                    <div className="summary-item__body markdown-body">{activeSignal.analysis ?? "暂无分析数据"}</div>
-                  </div>
-                  <div className="summary-item">
-                    <div className="summary-item__title">投票数据</div>
-                    <div className="summary-item__body markdown-body">{activeSignal.votes ?? "暂无投票数据"}</div>
-                  </div>
-                </div>
-              ) : (
-                <div className="summary-item summary-item--accent">
-                  <div className="summary-item__title">暂无可查看信号</div>
-                  <div className="summary-item__body">当信号记录有数据时，点击“详情”即可查看对应分析与投票结果。</div>
-                </div>
-              )}
-            </WorkbenchCard>
-          </div>
+          <QuantTableSectionCard
+            title="信号记录"
+            table={pagedSignals}
+            emptyTitle={snapshot.signals.emptyLabel ?? "信号记录暂无数据"}
+            emptyDescription={snapshot.signals.emptyMessage ?? "回放过程中生成的信号会展示在这里，便于快速核对执行结果。"}
+            actionsHead="操作"
+            actionVariant="chip"
+            tableLayout="auto"
+            toolbar={renderFilterToolbar(
+              signalStockFilter,
+              setSignalStockFilter,
+              signalActionFilter,
+              setSignalActionFilter,
+              signalActionOptions,
+              signalPage,
+              signalPages,
+              setSignalPage,
+              `筛选后 ${filteredSignalRows.length} 条`,
+            )}
+            onRowAction={handleSignalRowAction}
+          />
         </div>
       </div>
     </div>

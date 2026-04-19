@@ -5,7 +5,8 @@ import { setI18nLocale, t, useI18nLocale } from "../../lib/i18n";
 export function AppHeader() {
   const location = useLocation();
   const locale = useI18nLocale();
-  const title = t(APP_ROUTE_LABELS[location.pathname] ?? "Workbench");
+  const titleKey = location.pathname.startsWith("/signal-detail/") ? "Signal detail" : APP_ROUTE_LABELS[location.pathname] ?? "Workbench";
+  const title = t(titleKey);
 
   return (
     <header className="app-header">

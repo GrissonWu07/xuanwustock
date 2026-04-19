@@ -911,6 +911,9 @@ a {
   background: #fbfdff;
   padding: 18px 20px;
   min-height: 320px;
+  max-height: min(620px, 72vh);
+  overflow: auto;
+  padding-right: 14px;
 }
 
 .evidence-grid {
@@ -1154,15 +1157,15 @@ a {
 }
 
 .signal-pill--buy {
-  color: #18794e;
-  background: rgba(24, 121, 78, 0.12);
-  border-color: rgba(24, 121, 78, 0.2);
-}
-
-.signal-pill--sell {
   color: #c93d39;
   background: rgba(239, 83, 80, 0.12);
   border-color: rgba(239, 83, 80, 0.22);
+}
+
+.signal-pill--sell {
+  color: #18794e;
+  background: rgba(24, 121, 78, 0.12);
+  border-color: rgba(24, 121, 78, 0.2);
 }
 
 .signal-pill--hold {
@@ -1479,8 +1482,25 @@ a {
   stroke-width: 1;
 }
 
+.sparkline__crosshair {
+  stroke: rgba(79, 110, 247, 0.35);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
 .sparkline__dot {
   fill: var(--accent);
+}
+
+.sparkline__point-hit {
+  fill: transparent;
+  cursor: crosshair;
+}
+
+.sparkline__point-active {
+  fill: var(--accent);
+  stroke: #ffffff;
+  stroke-width: 1.2;
 }
 
 .sparkline__value-tag {

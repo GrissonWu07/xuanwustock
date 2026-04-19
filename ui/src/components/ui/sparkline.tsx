@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ChartPoint } from "../../lib/page-models";
 
 type SparklineProps = {
@@ -11,6 +12,18 @@ const formatPrice = (value: number) => {
   if (!Number.isFinite(value)) return "--";
   if (Math.abs(value) >= 1000) return value.toFixed(1);
   return value.toFixed(2);
+};
+
+const formatSigned = (value: number) => {
+  if (!Number.isFinite(value)) return "--";
+  const text = formatPrice(Math.abs(value));
+  return value >= 0 ? `+${text}` : `-${text}`;
+};
+
+const formatPct = (value: number) => {
+  if (!Number.isFinite(value)) return "--";
+  const text = Math.abs(value).toFixed(2);
+  return value >= 0 ? `+${text}%` : `-${text}%`;
 };
 
 const formatLabel = (label: string) => {
@@ -42,6 +55,8 @@ const buildVisibleLabels = (points: ChartPoint[]) => {
 };
 
 export function Sparkline({ points, height = 88 }: SparklineProps) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
   if (points.length < 2) {
     return (
       <div className="empty-note" style={{ minHeight: height }}>
@@ -59,15 +74,20 @@ export function Sparkline({ points, height = 88 }: SparklineProps) {
   const range = max - min || 1;
   const step = width / (points.length - 1);
   const visibleLabels = buildVisibleLabels(points);
-  const coords = points
-    .map((point, index) => {
+  const pointCoords = points.map((point, index) => {
       const x = index * step;
       const y = padding + (1 - (point.value - min) / range) * (height - padding * 2);
-      return `${x},${y}`;
-    })
-    .join(" ");
-  const latestX = (points.length - 1) * step;
-  const latestY = padding + (1 - (latest - min) / range) * (height - padding * 2);
+      return { x, y };
+    });
+  const coords = pointCoords.map((point) => `${point.x},${point.y}`).join(" ");
+  const latestX = pointCoords[pointCoords.length - 1].x;
+  const latestY = pointCoords[pointCoords.length - 1].y;
+  const activeIndex = hoveredIndex ?? points.length - 1;
+  const activePoint = points[activeIndex] ?? points[points.length - 1];
+  const activeCoord = pointCoords[activeIndex] ?? pointCoords[pointCoords.length - 1];
+  const firstValue = values[0];
+  const activePnl = activePoint.value - firstValue;
+  const activePnlPct = firstValue !== 0 ? (activePnl / firstValue) * 100 : 0;
   const topGridY = padding;
   const midGridY = padding + (height - padding * 2) * 0.5;
   const bottomGridY = height - padding;
@@ -75,11 +95,12 @@ export function Sparkline({ points, height = 88 }: SparklineProps) {
   return (
     <div className="sparkline">
       <div className="sparkline__meta" aria-live="polite">
-        <span>最高 {formatPrice(max)}</span>
-        <span>最新 {formatPrice(latest)}</span>
-        <span>最低 {formatPrice(min)}</span>
+        <span>{`时间 ${activePoint.label || "--"}`}</span>
+        <span>{`权益 ${formatPrice(activePoint.value)}`}</span>
+        <span>{`区间盈亏 ${formatSigned(activePnl)} (${formatPct(activePnlPct)})`}</span>
+        <span>{`最高 ${formatPrice(max)} / 最低 ${formatPrice(min)}`}</span>
       </div>
-      <div className="sparkline__chart" style={{ height }}>
+      <div className="sparkline__chart" style={{ height }} onMouseLeave={() => setHoveredIndex(null)}>
         <svg
           className="sparkline__svg"
           viewBox={`0 0 ${width} ${height}`}
@@ -90,7 +111,28 @@ export function Sparkline({ points, height = 88 }: SparklineProps) {
           <line x1={0} y1={midGridY} x2={width} y2={midGridY} className="sparkline__grid" />
           <line x1={0} y1={bottomGridY} x2={width} y2={bottomGridY} className="sparkline__grid" />
           <polyline points={coords} className="sparkline__line" vectorEffect="non-scaling-stroke" />
+          <line x1={activeCoord.x} y1={topGridY} x2={activeCoord.x} y2={bottomGridY} className="sparkline__crosshair" />
+          {pointCoords.map((point, index) => {
+            const pointValue = points[index].value;
+            const pointPnl = pointValue - firstValue;
+            const pointPnlPct = firstValue !== 0 ? (pointPnl / firstValue) * 100 : 0;
+            return (
+              <circle
+                key={`${points[index].label}-${index}`}
+                cx={point.x}
+                cy={point.y}
+                r={6}
+                className="sparkline__point-hit"
+                onMouseEnter={() => setHoveredIndex(index)}
+                onFocus={() => setHoveredIndex(index)}
+                onBlur={() => setHoveredIndex(null)}
+              >
+                <title>{`${points[index].label} | 权益 ${formatPrice(pointValue)} | 区间盈亏 ${formatSigned(pointPnl)} (${formatPct(pointPnlPct)})`}</title>
+              </circle>
+            );
+          })}
           <circle cx={latestX} cy={latestY} r={3} className="sparkline__dot" />
+          <circle cx={activeCoord.x} cy={activeCoord.y} r={3.5} className="sparkline__point-active" />
           <text x={width - 2} y={Math.max(padding + 10, latestY - 6)} textAnchor="end" className="sparkline__value-tag">
             {formatPrice(latest)}
           </text>
