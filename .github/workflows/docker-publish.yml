@@ -29,17 +29,32 @@ jobs:
           mkdir -p "$DOCKER_CONFIG"
           printf '{}\n' > "$DOCKER_CONFIG/config.json"
 
-      - name: Configure registry auth
+      - name: Configure registry auth (best effort)
+        continue-on-error: true
         env:
           REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKERHUB_PASSWORD }}
         run: |
           set -euo pipefail
           if [ -z "${REGISTRY_USERNAME}" ] || [ -z "${REGISTRY_PASSWORD}" ]; then
-            echo "Missing Docker registry credentials"
-            exit 1
+            echo "Missing Docker registry credentials, skip login and rely on anonymous pull"
+            exit 0
           fi
-          echo "$REGISTRY_PASSWORD" | docker --config "$DOCKER_CONFIG" login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
+          max_attempts=6
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            if echo "$REGISTRY_PASSWORD" | docker --config "$DOCKER_CONFIG" login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin; then
+              exit 0
+            fi
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "Docker login failed after ${max_attempts} attempts, continue without login"
+              exit 0
+            fi
+            sleep_s=$((attempt * 5))
+            echo "Docker login failed (attempt ${attempt}/${max_attempts}), retrying in ${sleep_s}s..."
+            sleep "$sleep_s"
+            attempt=$((attempt + 1))
+          done
 
       - name: Build and push backend image
         run: |
