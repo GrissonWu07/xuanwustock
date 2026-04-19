@@ -60,10 +60,21 @@ RUN npm config set registry https://registry.npmmirror.com/
 # 复制依赖文件
 COPY requirements.txt .
 
-# 安装Python依赖（使用清华源，更稳定）
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple/ && \
-    pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn && \
-    pip install --no-cache-dir --default-timeout=1000 -r requirements.txt
+# 安装Python依赖（多源回退 + 重试，降低镜像源波动导致的构建失败）
+RUN set -eux; \
+    PIP_INDEX_URLS="https://pypi.tuna.tsinghua.edu.cn/simple/ https://mirrors.aliyun.com/pypi/simple/ https://pypi.org/simple"; \
+    INSTALL_OK=0; \
+    for index in $PIP_INDEX_URLS; do \
+      host=$(echo "$index" | awk -F/ '{print $3}'); \
+      echo "Installing Python deps from ${index}"; \
+      if pip install --no-cache-dir --default-timeout=1000 --index-url "$index" --trusted-host "$host" -r requirements.txt; then \
+        INSTALL_OK=1; \
+        break; \
+      fi; \
+      echo "Install failed from ${index}, trying next mirror..."; \
+      sleep 2; \
+    done; \
+    if [ "$INSTALL_OK" -ne 1 ]; then echo "Failed to install Python deps from all mirrors"; exit 1; fi
 
 # 复制项目文件
 COPY . .
