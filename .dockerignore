@@ -14,6 +14,12 @@ dist/
 venv/
 .venv/
 
+# Node.js 构建产物与依赖
+node_modules/
+ui/node_modules/
+ui/.vite/
+ui/dist/
+
 # Docker compatibility shim
 # Docker 只会从构建上下文根目录读取 .dockerignore，因此这里保留一份与
 # build/.dockerignore 一致的规则；正式 Docker 配置文件位于 build/ 目录。

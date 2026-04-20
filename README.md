@@ -184,7 +184,7 @@ Docker 部署则通过 [build/docker-compose.yml](/C:/Projects/githubs/aiagents-
 
 Docker 前端访问地址：
 
-[http://localhost:8080](http://localhost:8080)
+[http://localhost:12080](http://localhost:12080)
 
 ---
 

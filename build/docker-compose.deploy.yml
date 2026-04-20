@@ -7,7 +7,7 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - ${XUANWUSTOCK_DATA_DIR:-/Users/grisson.wu/app/xuanwustock/data}:/app/data
+      - ${XUANWUSTOCK_DATA_DIR:-./data}:/app/data
     environment:
       - TZ=Asia/Shanghai
     restart: unless-stopped
