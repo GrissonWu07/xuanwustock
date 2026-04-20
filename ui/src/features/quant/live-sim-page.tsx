@@ -2,10 +2,8 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { ApiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
-import { StrategyNarrativeCard } from "../../components/ui/strategy-narrative";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
-import { Sparkline } from "../../components/ui/sparkline";
 import { usePageData } from "../../lib/use-page-data";
 import type { TableSection } from "../../lib/page-models";
 import { toDisplayCount, toDisplayText } from "./quant-display";
@@ -84,7 +82,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   });
   const [signalLoading, setSignalLoading] = useState(false);
   const [signalStockFilter, setSignalStockFilter] = useState("");
-  const [signalActionFilter, setSignalActionFilter] = useState("ALL");
+  const [signalActionFilter, setSignalActionFilter] = useState("TRADE");
   const [signalPage, setSignalPage] = useState(1);
 
   useEffect(() => {
@@ -141,14 +139,14 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   }, [signalStockFilter, signalActionFilter, snapshotVersion]);
 
   if (resource.status === "loading" && !resource.data) {
-    return <PageLoadingState title="量化模拟加载中" description="正在读取定时任务配置、候选池和账户结果。" />;
+    return <PageLoadingState title="实时模拟加载中" description="正在读取定时任务配置、候选池和账户结果。" />;
   }
 
   if (resource.status === "error" && !resource.data) {
     return (
       <PageErrorState
-        title="量化模拟加载失败"
-        description={resource.error ?? "无法加载量化模拟数据，请稍后重试。"}
+        title="实时模拟加载失败"
+        description={resource.error ?? "无法加载实时模拟数据，请稍后重试。"}
         actionLabel="重新加载"
         onAction={resource.refresh}
       />
@@ -156,7 +154,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   }
 
   if (!snapshot) {
-    return <PageEmptyState title="量化模拟暂无数据" description="后台尚未返回量化模拟快照。" actionLabel="刷新" onAction={resource.refresh} />;
+    return <PageEmptyState title="实时模拟暂无数据" description="后台尚未返回实时模拟快照。" actionLabel="刷新" onAction={resource.refresh} />;
   }
 
   const candidateCodes = snapshot.candidatePool.rows.map((row) => row.id);
@@ -172,7 +170,10 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     const codeCell = String(row.cells[2] ?? "").toLowerCase();
     const action = normalizeSignalAction(String(row.cells[3] ?? ""));
     const stockMatched = !keyword || code.includes(keyword) || name.includes(keyword) || codeCell.includes(keyword);
-    const actionMatched = signalActionFilter === "ALL" || action === signalActionFilter;
+    const actionMatched =
+      signalActionFilter === "ALL"
+      || (signalActionFilter === "TRADE" && (action === "BUY" || action === "BUG" || action === "SELL"))
+      || action === signalActionFilter;
     return stockMatched && actionMatched;
   });
   const signalPages = Math.max(1, Math.ceil(filteredSignalRows.length / SIGNAL_PAGE_SIZE));
@@ -232,6 +233,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         value={signalActionFilter}
         onChange={(event) => setSignalActionFilter(event.target.value)}
       >
+        <option value="TRADE">BUY/SELL</option>
         <option value="ALL">全部动作</option>
         {signalActionOptions.map((option) => (
           <option key={option} value={option}>
@@ -250,7 +252,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     <div>
       <PageHeader
         eyebrow="Quant"
-        title="量化模拟"
+        title="实时模拟"
         description="围绕共享量化候选池运行模拟账户、策略信号、自动执行和账户结果。"
         actions={
           <div className="chip-row">
@@ -425,42 +427,9 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             </div>
           </WorkbenchCard>
 
-          <StrategyNarrativeCard
-            title="策略解释"
-            summary="量化模拟围绕共享候选池展开，当前以 30m 粒度、自动策略和自动执行状态持续运行。"
-            recommendation="建议继续观察执行中心里的 BUY / SELL 跳转，若仓位不足一手会按规则直接提示跳过。"
-            reasons={[
-              `策略模式 ${snapshot.config.strategyMode}`,
-              `分析粒度 ${snapshot.config.timeframe}`,
-              `自动执行 ${snapshot.config.autoExecute}`,
-              `候选数量 ${snapshot.status.candidateCount}`,
-            ]}
-            evidence={[
-              { label: "间隔", value: snapshot.config.interval },
-              { label: "市场", value: snapshot.config.market },
-              { label: "初始资金", value: snapshot.config.initialCapital },
-              { label: "最近执行", value: snapshot.status.lastRun },
-              { label: "下次执行", value: snapshot.status.nextRun },
-            ]}
-          />
-
           <WorkbenchCard>
             <h2 className="section-card__title">运行状态</h2>
-            <p className="section-card__description">这里展示当前定时任务的运行状态和关键参数。</p>
-            <div className="mini-metric-grid">
-              <div className="mini-metric">
-                <div className="mini-metric__label">定时状态</div>
-                <div className="mini-metric__value">{snapshot.status.running}</div>
-              </div>
-              <div className="mini-metric">
-                <div className="mini-metric__label">最近执行</div>
-                <div className="mini-metric__value">{snapshot.status.lastRun}</div>
-              </div>
-              <div className="mini-metric">
-                <div className="mini-metric__label">下次执行</div>
-                <div className="mini-metric__value">{snapshot.status.nextRun}</div>
-              </div>
-            </div>
+            <p className="section-card__description">{`定时状态：${snapshot.status.running}；最近执行：${snapshot.status.lastRun}；下次执行：${snapshot.status.nextRun}。`}</p>
           </WorkbenchCard>
         </div>
 
@@ -475,8 +444,21 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           </div>
 
           <QuantTableSectionCard
+            title="当前持仓"
+            table={snapshot.holdings}
+            emptyTitle={snapshot.holdings.emptyLabel ?? "当前持仓暂无数据"}
+            emptyDescription={snapshot.holdings.emptyMessage ?? "模拟账户当前还没有形成持仓，待下一轮信号触发后会在这里补充。"}
+          />
+          <QuantTableSectionCard
+            title="成交记录"
+            table={snapshot.trades}
+            emptyTitle={snapshot.trades.emptyLabel ?? "成交记录暂无数据"}
+            emptyDescription={snapshot.trades.emptyMessage ?? "如果调度还没有生成新的成交，这里会先保持为空。"}
+          />
+
+          <QuantTableSectionCard
             title="量化候选池"
-            description="候选池由“我的关注”人工推进到这里，再进入量化模拟和历史回放。"
+            description="候选池由“我的关注”人工推进到这里，再进入实时模拟和历史回放。"
             table={snapshot.candidatePool}
             emptyTitle={snapshot.candidatePool.emptyLabel ?? "候选池暂无数据"}
             emptyDescription={
@@ -484,16 +466,6 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             }
             meta={[`表内 ${snapshot.candidatePool.rows.length} 只`, `待量化 ${candidateCount}`]}
             actionsHead="操作"
-            toolbar={
-              <button
-                className="button button--secondary"
-                type="button"
-                onClick={() => void resource.runAction("bulk-quant", { codes: candidateCodes })}
-                disabled={candidateCodes.length === 0}
-              >
-                批量量化候选池
-              </button>
-            }
             onRowAction={(row, action) => {
               void resource.runAction(action.action ?? "analyze-candidate", row.id);
             }}
@@ -545,38 +517,6 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
               navigate(`/signal-detail/${encodeURIComponent(row.id)}?source=live`);
             }}
           />
-
-          <WorkbenchCard>
-            <h2 className="section-card__title">账户结果</h2>
-            <div className="mini-metric-grid">
-              {snapshot.metrics.slice(0, 3).map((metric) => (
-                <div className="mini-metric" key={`account-${metric.label}`}>
-                  <div className="mini-metric__label">{metric.label}</div>
-                  <div className="mini-metric__value">{metric.value}</div>
-                </div>
-              ))}
-            </div>
-            <div className="card-divider" />
-            <h3 className="section-card__title" style={{ fontSize: "1.2rem" }}>
-              权益曲线
-            </h3>
-            <Sparkline points={snapshot.curve} />
-          </WorkbenchCard>
-
-          <div className="section-grid">
-            <QuantTableSectionCard
-              title="当前持仓"
-              table={snapshot.holdings}
-              emptyTitle={snapshot.holdings.emptyLabel ?? "当前持仓暂无数据"}
-              emptyDescription={snapshot.holdings.emptyMessage ?? "模拟账户当前还没有形成持仓，待下一轮信号触发后会在这里补充。"}
-            />
-            <QuantTableSectionCard
-              title="成交记录"
-              table={snapshot.trades}
-              emptyTitle={snapshot.trades.emptyLabel ?? "成交记录暂无数据"}
-              emptyDescription={snapshot.trades.emptyMessage ?? "如果调度还没有生成新的成交，这里会先保持为空。"}
-            />
-          </div>
         </div>
       </div>
     </div>

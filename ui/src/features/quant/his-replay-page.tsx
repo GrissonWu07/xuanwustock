@@ -117,7 +117,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [tradeStockFilter, setTradeStockFilter] = useState("");
   const [tradeActionFilter, setTradeActionFilter] = useState("ALL");
   const [signalStockFilter, setSignalStockFilter] = useState("");
-  const [signalActionFilter, setSignalActionFilter] = useState("ALL");
+  const [signalActionFilter, setSignalActionFilter] = useState("TRADE");
   const [tradePage, setTradePage] = useState(1);
   const [signalPage, setSignalPage] = useState(1);
 
@@ -235,7 +235,10 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     const codeCell = String(row.cells[2] ?? "").toLowerCase();
     const action = normalizeAction(String(row.cells[3] ?? ""));
     const stockMatched = !stockKeyword || code.includes(stockKeyword) || name.includes(stockKeyword) || codeCell.includes(stockKeyword);
-    const actionMatched = signalActionFilter === "ALL" || action === signalActionFilter;
+    const actionMatched =
+      signalActionFilter === "ALL"
+      || (signalActionFilter === "TRADE" && (action === "BUY" || action === "BUG" || action === "SELL"))
+      || action === signalActionFilter;
     return stockMatched && actionMatched;
   });
   const tradePages = Math.max(1, Math.ceil(filteredTradeRows.length / PAGE_SIZE));
@@ -294,6 +297,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     pages: number,
     setPage: (value: number) => void,
     filteredCountText: string,
+    includeTradePreset: boolean = false,
   ) => (
     <div style={{ display: "flex", gap: "8px", alignItems: "center", justifyContent: "flex-end", flexWrap: "nowrap" }}>
       <input
@@ -309,6 +313,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         value={actionFilter}
         onChange={(event) => setActionFilter(event.target.value)}
       >
+        {includeTradePreset ? <option value="TRADE">BUY/SELL</option> : null}
         <option value="ALL">全部动作</option>
         {actionOptions.map((option) => (
           <option key={option} value={option}>
@@ -575,6 +580,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               tradePages,
               setTradePage,
               `筛选后 ${filteredTradeRows.length} 条`,
+              false,
             )}
           />
 
@@ -601,6 +607,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               signalPages,
               setSignalPage,
               `筛选后 ${filteredSignalRows.length} 条`,
+              true,
             )}
             onRowAction={handleSignalRowAction}
           />

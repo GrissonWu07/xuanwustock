@@ -5,7 +5,6 @@ import { ResearchPage } from "../features/research/research-page";
 import { PortfolioPage } from "../features/portfolio/portfolio-page";
 import { LiveSimPage } from "../features/quant/live-sim-page";
 import { HisReplayPage } from "../features/quant/his-replay-page";
-import { AiMonitorPage } from "../features/monitor/ai-monitor-page";
 import { RealMonitorPage } from "../features/monitor/real-monitor-page";
 import { SettingsPage } from "../features/settings/settings-page";
 
@@ -23,7 +22,6 @@ export const APP_ROUTE_ITEMS: AppRouteItem[] = [
   { path: "/portfolio", labelKey: "Portfolio", groupKey: "Portfolio", element: <PortfolioPage /> },
   { path: "/live-sim", labelKey: "Quant simulation", groupKey: "Portfolio", element: <LiveSimPage /> },
   { path: "/his-replay", labelKey: "Historical replay", groupKey: "Portfolio", element: <HisReplayPage /> },
-  { path: "/ai-monitor", labelKey: "AI monitor", groupKey: "Portfolio", element: <AiMonitorPage /> },
   { path: "/real-monitor", labelKey: "Real-time monitor", groupKey: "Portfolio", element: <RealMonitorPage /> },
   { path: "/settings", labelKey: "Settings", groupKey: "Settings", element: <SettingsPage /> },
 ];

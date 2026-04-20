@@ -53,6 +53,66 @@ type VoteOverview = {
   rows: VoteDetailRow[];
 };
 
+type AiMonitorValueRow = {
+  label: string;
+  value: string;
+  note?: string;
+};
+
+type AiMonitorHistoryRow = {
+  id: string;
+  decisionTime: string;
+  action: string;
+  confidence: string;
+  riskLevel: string;
+  positionSizePct: string;
+  stopLossPct: string;
+  takeProfitPct: string;
+  tradingSession: string;
+  executed: boolean;
+  executionResult: string;
+  reasoning: string;
+};
+
+type AiMonitorTradeRow = {
+  id: string;
+  tradeTime: string;
+  tradeType: string;
+  quantity: string;
+  price: string;
+  amount: string;
+  commission: string;
+  tax: string;
+  profitLoss: string;
+  orderStatus: string;
+};
+
+type AiMonitorPayload = {
+  available: boolean;
+  stockCode: string;
+  matchedMode: string;
+  message: string;
+  decision: {
+    id: string;
+    decisionTime: string;
+    action: string;
+    confidence: string;
+    riskLevel: string;
+    positionSizePct: string;
+    stopLossPct: string;
+    takeProfitPct: string;
+    tradingSession: string;
+    executed: boolean;
+    executionResult: string;
+    reasoning: string;
+  };
+  keyLevels: AiMonitorValueRow[];
+  marketData: AiMonitorValueRow[];
+  accountData: AiMonitorValueRow[];
+  history: AiMonitorHistoryRow[];
+  trades: AiMonitorTradeRow[];
+};
+
 type SignalDetailPayload = {
   updatedAt: string;
   analysis: string;
@@ -109,6 +169,33 @@ type SignalDetailPayload = {
   effectiveThresholds: ThresholdRow[];
   voteOverview?: VoteOverview;
   parameterDetails?: ParameterDetailRow[];
+  aiMonitor?: AiMonitorPayload;
+};
+
+const emptyAiMonitor: AiMonitorPayload = {
+  available: false,
+  stockCode: "",
+  matchedMode: "none",
+  message: "",
+  decision: {
+    id: "",
+    decisionTime: "--",
+    action: "HOLD",
+    confidence: "--",
+    riskLevel: "--",
+    positionSizePct: "--",
+    stopLossPct: "--",
+    takeProfitPct: "--",
+    tradingSession: "--",
+    executed: false,
+    executionResult: "--",
+    reasoning: "--",
+  },
+  keyLevels: [],
+  marketData: [],
+  accountData: [],
+  history: [],
+  trades: [],
 };
 
 const emptyDetail: SignalDetailPayload = {
@@ -172,6 +259,7 @@ const emptyDetail: SignalDetailPayload = {
     rows: [],
   },
   parameterDetails: [],
+  aiMonitor: emptyAiMonitor,
 };
 
 function tableRowEmpty(colSpan: number, text: string) {
@@ -202,6 +290,8 @@ const ENV_COMPONENT_KEY_MAP: Record<string, string> = {
   risk_balance: "Env component:risk_balance",
   liquidity: "Env component:liquidity",
   session: "Env component:session",
+  execution_feedback: "执行反馈",
+  account_posture: "账户态势",
 };
 
 const THRESHOLD_KEY_MAP: Record<string, string> = {
@@ -210,12 +300,25 @@ const THRESHOLD_KEY_MAP: Record<string, string> = {
   max_position_ratio: "Threshold:max_position_ratio",
   allow_pyramiding: "Threshold:allow_pyramiding",
   confirmation: "Threshold:confirmation",
+  dynamic_stop_loss_pct: "动态止损(%)",
+  dynamic_take_profit_pct: "动态止盈(%)",
+  execution_feedback_delta: "执行反馈修正分",
+  account_posture_delta: "账户态势修正分",
+  available_cash_ratio: "可用资金占比",
+  position_sizing_multiplier: "仓位缩放系数",
+  suggested_position_pct: "建议仓位(%)",
 };
 
 function _localizeEnvComponentName(name: string): string {
   const normalized = String(name || "").trim().toLowerCase();
   const key = ENV_COMPONENT_KEY_MAP[normalized];
-  return key ? t(key) : name;
+  if (!key) {
+    return name;
+  }
+  if (key.includes(":")) {
+    return t(key);
+  }
+  return key;
 }
 
 function _localizeThresholdName(rawName: string): string {
@@ -224,7 +327,8 @@ function _localizeThresholdName(rawName: string): string {
     return text;
   }
   const pureKey = text.startsWith("阈值.") ? text.slice(3) : text;
-  const localized = THRESHOLD_KEY_MAP[pureKey] ? t(THRESHOLD_KEY_MAP[pureKey]) : pureKey;
+  const mapped = THRESHOLD_KEY_MAP[pureKey];
+  const localized = mapped ? (mapped.includes(":") ? t(mapped) : mapped) : pureKey;
   return text.startsWith("阈值.") ? `${t("Threshold prefix")}${localized}` : localized;
 }
 
@@ -353,6 +457,17 @@ function _localizeDynamicText(rawText: string): string {
   }
 
   return text;
+}
+
+function _localizeAiMatchedMode(mode: string): string {
+  const key = String(mode || "").trim().toLowerCase();
+  if (key === "checkpoint_aligned") {
+    return "按信号时间对齐";
+  }
+  if (key === "latest") {
+    return "取最新盯盘决策";
+  }
+  return "--";
 }
 
 export function SignalDetailPage() {
@@ -503,6 +618,8 @@ export function SignalDetailPage() {
     rows: [],
   };
   const voteRows = voteOverview.rows ?? [];
+  const aiMonitor = detail.aiMonitor ?? emptyAiMonitor;
+  const aiDecision = aiMonitor.decision ?? emptyAiMonitor.decision;
   const keepPositionPct = (() => {
     const actionUpper = String(decision.action || "").trim().toUpperCase();
     const raw = Number(String(decision.positionSizePct ?? "").replace("%", "").trim());
@@ -545,7 +662,7 @@ export function SignalDetailPage() {
               type="button"
               onClick={() => navigate(decision.source === "replay" ? "/his-replay" : "/live-sim")}
             >
-              {decision.source === "replay" ? "历史回放" : "量化模拟"}
+              {decision.source === "replay" ? "历史回放" : "实时模拟"}
             </button>
           </div>
         }
@@ -590,6 +707,142 @@ export function SignalDetailPage() {
               </div>
             </>
           ) : null}
+
+          <div className="card-divider" />
+          <h3 className="section-card__title" style={{ fontSize: "1.1rem" }}>AI盯盘策略分析</h3>
+          {!aiMonitor.available ? (
+            <div className="summary-item">
+              <div className="summary-item__title">状态</div>
+              <div className="summary-item__body">{aiMonitor.message || "当前股票暂无 AI 盯盘策略记录"}</div>
+            </div>
+          ) : (
+            <>
+              <div className="mini-metric-grid" style={{ marginTop: "10px" }}>
+                <div className="mini-metric"><div className="mini-metric__label">匹配方式</div><div className="mini-metric__value">{_localizeAiMatchedMode(aiMonitor.matchedMode)}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">决策时间</div><div className="mini-metric__value">{aiDecision.decisionTime}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">操作</div><div className="mini-metric__value">{localizeDecisionCode(aiDecision.action)}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">置信度</div><div className="mini-metric__value">{aiDecision.confidence}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">风险等级</div><div className="mini-metric__value">{_localizeDynamicText(aiDecision.riskLevel)}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">建议仓位(%)</div><div className="mini-metric__value">{aiDecision.positionSizePct}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">止损(%)</div><div className="mini-metric__value">{aiDecision.stopLossPct}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">止盈(%)</div><div className="mini-metric__value">{aiDecision.takeProfitPct}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">交易时段</div><div className="mini-metric__value">{aiDecision.tradingSession}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">执行状态</div><div className="mini-metric__value">{aiDecision.executed ? "已执行" : "未执行"}</div></div>
+              </div>
+
+              <div className="summary-item" style={{ marginTop: "10px" }}>
+                <div className="summary-item__title">策略理由</div>
+                <div className="summary-item__body markdown-body" style={{ whiteSpace: "pre-wrap", maxHeight: "220px", overflowY: "auto" }}>
+                  {_localizeDynamicText(aiDecision.reasoning || "--")}
+                </div>
+                <div className="summary-item__body">{_localizeDynamicText(aiDecision.executionResult || "--")}</div>
+              </div>
+
+              <div className="table-shell" style={{ marginTop: "10px" }}>
+                <table className="table table--auto">
+                  <thead>
+                    <tr><th>关键价位</th><th>数值</th></tr>
+                  </thead>
+                  <tbody>
+                    {(aiMonitor.keyLevels ?? []).length === 0
+                      ? tableRowEmpty(2, "暂无关键价位")
+                      : (aiMonitor.keyLevels ?? []).map((item, index) => (
+                          <tr key={`ai-level-${index}`}>
+                            <td>{_localizeDynamicText(item.label)}</td>
+                            <td>{item.value}</td>
+                          </tr>
+                        ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-shell" style={{ marginTop: "10px" }}>
+                <table className="table table--auto">
+                  <thead>
+                    <tr><th>市场与技术快照</th><th>值</th><th>说明</th></tr>
+                  </thead>
+                  <tbody>
+                    {(aiMonitor.marketData ?? []).length === 0
+                      ? tableRowEmpty(3, "暂无市场快照")
+                      : (aiMonitor.marketData ?? []).map((item, index) => (
+                          <tr key={`ai-market-${index}`}>
+                            <td>{_localizeDynamicText(item.label)}</td>
+                            <td>{item.value}</td>
+                            <td>{_localizeDynamicText(item.note || "--")}</td>
+                          </tr>
+                        ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-shell" style={{ marginTop: "10px" }}>
+                <table className="table table--auto">
+                  <thead>
+                    <tr><th>账户快照</th><th>值</th><th>说明</th></tr>
+                  </thead>
+                  <tbody>
+                    {(aiMonitor.accountData ?? []).length === 0
+                      ? tableRowEmpty(3, "暂无账户快照")
+                      : (aiMonitor.accountData ?? []).map((item, index) => (
+                          <tr key={`ai-account-${index}`}>
+                            <td>{_localizeDynamicText(item.label)}</td>
+                            <td>{item.value}</td>
+                            <td>{_localizeDynamicText(item.note || "--")}</td>
+                          </tr>
+                        ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-shell" style={{ marginTop: "10px" }}>
+                <table className="table table--auto">
+                  <thead>
+                    <tr><th>时间</th><th>动作</th><th>置信度</th><th>风险</th><th>仓位(%)</th><th>止损(%)</th><th>止盈(%)</th><th>执行</th></tr>
+                  </thead>
+                  <tbody>
+                    {(aiMonitor.history ?? []).length === 0
+                      ? tableRowEmpty(8, "暂无 AI 盯盘历史")
+                      : (aiMonitor.history ?? []).map((item, index) => (
+                          <tr key={`ai-history-${index}`}>
+                            <td>{item.decisionTime}</td>
+                            <td>{localizeDecisionCode(item.action)}</td>
+                            <td>{item.confidence}</td>
+                            <td>{_localizeDynamicText(item.riskLevel)}</td>
+                            <td>{item.positionSizePct}</td>
+                            <td>{item.stopLossPct}</td>
+                            <td>{item.takeProfitPct}</td>
+                            <td>{item.executed ? "已执行" : "未执行"}</td>
+                          </tr>
+                        ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-shell" style={{ marginTop: "10px" }}>
+                <table className="table table--auto">
+                  <thead>
+                    <tr><th>盯盘交易时间</th><th>动作</th><th>数量</th><th>价格</th><th>金额</th><th>费用</th><th>盈亏</th><th>状态</th></tr>
+                  </thead>
+                  <tbody>
+                    {(aiMonitor.trades ?? []).length === 0
+                      ? tableRowEmpty(8, "暂无盯盘交易记录")
+                      : (aiMonitor.trades ?? []).map((item, index) => (
+                          <tr key={`ai-trade-${index}`}>
+                            <td>{item.tradeTime}</td>
+                            <td>{localizeDecisionCode(item.tradeType)}</td>
+                            <td>{item.quantity}</td>
+                            <td>{item.price}</td>
+                            <td>{item.amount}</td>
+                            <td>{`${item.commission}/${item.tax}`}</td>
+                            <td>{item.profitLoss}</td>
+                            <td>{_localizeDynamicText(item.orderStatus)}</td>
+                          </tr>
+                        ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
 
           <div className="card-divider" />
           <h3 className="section-card__title" style={{ fontSize: "1.1rem" }}>投票明细</h3>
