@@ -624,6 +624,20 @@ function _localizeComponentBreakdownLine(line: string): string {
   return `${_localizeEnvComponentName(match[1])}=${match[2]}`;
 }
 
+function _localizeTrackBias(rawValue: string): string {
+  const value = String(rawValue || "").trim().toUpperCase();
+  if (value === "BUY") {
+    return "偏多";
+  }
+  if (value === "SELL") {
+    return "偏空";
+  }
+  if (value === "HOLD") {
+    return "中性";
+  }
+  return _localizeDynamicText(rawValue || "--");
+}
+
 const STATUS_KEY_MAP: Record<string, string> = {
   pending: "Status:pending",
   observed: "Status:observed",
@@ -1131,7 +1145,8 @@ export function SignalDetailPage() {
       ? "目标买入仓位(%)"
       : String(decision.action || "").toUpperCase() === "SELL"
       ? "建议卖出比例(%)"
-      : "仓位建议(%)";
+      : "仓位建议";
+  const positionMetricValue = String(decision.action || "").toUpperCase() === "HOLD" ? "不变" : decision.positionSizePct;
   const strategyExplainability = detail.strategyProfile?.explainability ?? {};
   const technicalBreakdown = strategyExplainability.technical_breakdown ?? {};
   const contextBreakdown = strategyExplainability.context_breakdown ?? {};
@@ -1145,6 +1160,10 @@ export function SignalDetailPage() {
   const minFusionConfidenceValue = _parseNumberish(findThreshold("min_fusion_confidence"));
   const fusionScoreValue = _parseNumberish(fusionBreakdown.fusion_score ?? findThreshold("fusion_score"));
   const fusionConfidenceValue = _parseNumberish(fusionBreakdown.fusion_confidence ?? decision.confidence);
+  const coreRuleAction = String(fusionBreakdown.core_rule_action ?? decision.ruleHit ?? "--");
+  const weightedThresholdAction = String(fusionBreakdown.weighted_threshold_action ?? "--");
+  const weightedGateAction = String(fusionBreakdown.weighted_action_raw ?? "--");
+  const finalActionForChain = String(fusionBreakdown.final_action ?? decision.finalAction ?? decision.action ?? "--");
   const techTrackScoreValue = _parseNumberish(technicalBreakdown.track?.score ?? decision.techScore);
   const contextTrackScoreValue = _parseNumberish(contextBreakdown.track?.score ?? decision.contextScore);
   const techTrackEnabled = fusionBreakdown.tech_enabled !== false;
@@ -1269,7 +1288,7 @@ export function SignalDetailPage() {
           ? "技术轨 BUY 门已关闭。"
           : techGateReasons.length > 0
           ? techGateReasons.map(_humanizeGateReason).join("；")
-          : `当前技术信号 ${localizeDecisionCode(decision.techSignal)}。`
+          : `当前技术轨方向 ${_localizeTrackBias(decision.techSignal)}。`
     },
     {
       key: "context-buy-gate",
@@ -1289,7 +1308,7 @@ export function SignalDetailPage() {
           ? "环境轨 BUY 门已关闭。"
           : contextGateReasons.length > 0
           ? contextGateReasons.map(_humanizeGateReason).join("；")
-          : `当前环境信号 ${localizeDecisionCode(decision.contextSignal)}。`
+          : `当前环境轨方向 ${_localizeTrackBias(decision.contextSignal)}。`
     },
   ];
   const decisionSummaryLine =
@@ -1303,7 +1322,7 @@ export function SignalDetailPage() {
   const primaryNegativeDriver = topNegativeDrivers[0];
   const driverSummaryLine =
     primaryNegativeDriver && fusionScoreValue !== null && buyThresholdValue !== null
-      ? `技术轨有 ${signalCount.buy} 个正向投票，但最大负贡献 ${primaryNegativeDriver.label} ${_formatSigned(primaryNegativeDriver.contribution)} 将技术信号压到 ${localizeDecisionCode(decision.techSignal)}，最终融合分 ${fusionScoreValue.toFixed(4)} 仍低于买入阈值 ${buyThresholdValue.toFixed(4)}。`
+      ? `技术轨有 ${signalCount.buy} 个正向投票，但最大负贡献 ${primaryNegativeDriver.label} ${_formatSigned(primaryNegativeDriver.contribution)} 将技术轨方向压到 ${_localizeTrackBias(decision.techSignal)}，最终融合分 ${fusionScoreValue.toFixed(4)} 仍低于买入阈值 ${buyThresholdValue.toFixed(4)}。`
       : "通过分轨贡献和 Top 驱动查看技术票与环境票如何共同形成最终动作。";
   const filteredVoteRows = voteRows.filter((item) => {
     if (voteTrackFilter !== "all" && item.track !== voteTrackFilter) {
@@ -1367,7 +1386,10 @@ export function SignalDetailPage() {
                 </div>
                 <div className="summary-item__body">{decisionSummaryLine}</div>
                 <div className="summary-item__body">
-                  {`规则层：技术 ${localizeDecisionCode(decision.techSignal)} + 环境 ${localizeDecisionCode(decision.contextSignal)} -> ${localizeDecisionCode(decision.ruleHit)}。`}
+                  {`规则层：技术轨${_localizeTrackBias(decision.techSignal)} + 环境轨${_localizeTrackBias(decision.contextSignal)}。`}
+                </div>
+                <div className="summary-item__body">
+                  {`动作链路：核心规则 ${localizeDecisionCode(coreRuleAction)} -> 加权阈值 ${localizeDecisionCode(weightedThresholdAction)} -> 加权门控 ${localizeDecisionCode(weightedGateAction)} -> 最终 ${localizeDecisionCode(finalActionForChain)}。`}
                 </div>
                 <div className="summary-item__body">
                   {`模板：配置 ${_localizeDynamicText(decision.configuredProfile)}，实际 ${_localizeDynamicText(decision.appliedProfile)}。`}
@@ -1384,9 +1406,9 @@ export function SignalDetailPage() {
                 <div className="mini-metric"><div className="mini-metric__label">融合置信度</div><div className="mini-metric__value">{fusionConfidenceValue === null ? "--" : fusionConfidenceValue.toFixed(4)}</div></div>
                 <div className="mini-metric"><div className="mini-metric__label">技术分</div><div className="mini-metric__value">{decision.techScore}</div></div>
                 <div className="mini-metric"><div className="mini-metric__label">环境分</div><div className="mini-metric__value">{decision.contextScore}</div></div>
-                <div className="mini-metric"><div className="mini-metric__label">规则命中</div><div className="mini-metric__value">{localizeDecisionCode(decision.ruleHit)}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">核心规则动作</div><div className="mini-metric__value">{localizeDecisionCode(coreRuleAction)}</div></div>
                 <div className="mini-metric"><div className="mini-metric__label">策略模式</div><div className="mini-metric__value">{localizeStrategyMode(decision.strategyMode)}</div></div>
-                <div className="mini-metric"><div className="mini-metric__label">{positionMetricLabel}</div><div className="mini-metric__value">{decision.positionSizePct}</div></div>
+                <div className="mini-metric"><div className="mini-metric__label">{positionMetricLabel}</div><div className="mini-metric__value">{positionMetricValue}</div></div>
                 <div className="mini-metric"><div className="mini-metric__label">建议保持仓位</div><div className="mini-metric__value">{keepPositionPct}</div></div>
               </div>
             </section>
@@ -1404,7 +1426,7 @@ export function SignalDetailPage() {
                     <div className="summary-item__title">为什么停在这里</div>
                     <div className="summary-item__body">{decisionSummaryLine}</div>
                     <div className="summary-item__body">
-                      {`动作链路：技术 ${localizeDecisionCode(decision.techSignal)} + 环境 ${localizeDecisionCode(decision.contextSignal)} -> ${localizeDecisionCode(decision.ruleHit)} -> ${localizeDecisionCode(decision.finalAction)}。`}
+                      {`动作链路：核心规则 ${localizeDecisionCode(coreRuleAction)} -> 加权阈值 ${localizeDecisionCode(weightedThresholdAction)} -> 加权门控 ${localizeDecisionCode(weightedGateAction)} -> 最终 ${localizeDecisionCode(finalActionForChain)}。`}
                     </div>
                     <div className="summary-item__body">
                       {`阈值区间：买入 ${buyThresholdValue === null ? "--" : buyThresholdValue.toFixed(4)} / 卖出 ${sellThresholdValue === null ? "--" : sellThresholdValue.toFixed(4)} / 融合置信度 ${fusionConfidenceValue === null ? "--" : fusionConfidenceValue.toFixed(4)}。`}
@@ -1596,12 +1618,12 @@ export function SignalDetailPage() {
 
                 {thresholdRows.length > 0 ? (
                   <div>
-                    <h3 className="section-card__title" style={{ fontSize: "1.05rem" }}>阈值参数</h3>
+                    <h3 className="section-card__title" style={{ fontSize: "1.05rem" }}>运行参数快照</h3>
                     <CompactDataTable
                       isCompactLayout={isCompactLayout}
-                      headers={["阈值参数", "值", "来源", "计算方式"]}
+                      headers={["运行参数", "值", "来源", "计算方式"]}
                       coreIndexes={[0, 1, 2]}
-                      emptyText="暂无阈值参数"
+                      emptyText="暂无运行参数"
                       rows={thresholdRows.map((item, index) => ({
                         key: `threshold-${index}`,
                         cells: [

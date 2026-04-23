@@ -1853,6 +1853,33 @@ def _humanize_signal(signal: Any) -> str:
     return mapping.get(normalized, _txt(signal, "--"))
 
 
+def _track_direction_label(signal: Any) -> str:
+    normalized = _txt(signal, "--").upper()
+    mapping = {
+        "BUY": "偏多",
+        "SELL": "偏空",
+        "HOLD": "中性",
+        "CONTEXT": "环境信号",
+    }
+    return mapping.get(normalized, _txt(signal, "--"))
+
+
+def _position_metric_label(action: Any) -> str:
+    action_upper = _txt(action, "--").upper()
+    if action_upper == "BUY":
+        return "目标买入仓位(%)"
+    if action_upper == "SELL":
+        return "建议卖出比例(%)"
+    return "仓位建议"
+
+
+def _position_metric_value(action: Any, position_size_pct: Any) -> str:
+    action_upper = _txt(action, "--").upper()
+    if action_upper == "HOLD":
+        return "不变"
+    return _txt(position_size_pct, "--")
+
+
 def _derive_keep_position_pct(action: Any, position_size_pct: Any) -> str:
     ratio = _float(position_size_pct)
     action_upper = _txt(action, "--").upper()
@@ -2043,8 +2070,8 @@ def _build_explanation_payload(
         )
 
     summary_lines = [
-        f"本次信号采用结构化双轨算法，模式 {mode}。最终动作 {final_action}，融合分 {fusion_score}，融合置信度 {fusion_conf}。",
-        f"策略模板：配置={_txt(decision.get('configuredProfile'), '--')}，应用={_txt(decision.get('appliedProfile'), '--')}，AI动态={_txt(decision.get('aiDynamicStrategy'), '--')}。"
+        f"本次信号采用结构化双轨算法，双轨融合模式 {mode}。最终动作 {final_action}，融合分 {fusion_score}，融合置信度 {fusion_conf}。",
+        f"策略模板：配置={_txt(decision.get('configuredProfile'), '--')}，应用={_txt(decision.get('appliedProfile'), '--')}，AI动态调整模式={_txt(decision.get('aiDynamicStrategy'), '--')}。"
         + (
             "（本次发生模板切换）"
             if _txt(decision.get("aiProfileSwitched"), "").lower() in {"1", "true", "yes", "是"}
@@ -2062,6 +2089,7 @@ def _build_explanation_payload(
         f"决策点: {_txt(decision.get('checkpointAt'), '--')}",
         f"轨道权重: 技术轨 raw={tech_weight_raw}, norm={tech_weight_norm}; 环境轨 raw={context_weight_raw}, norm={context_weight_norm}",
         f"融合参数: divergence={divergence}, divergence_penalty={divergence_penalty}, sign_conflict={sign_conflict}",
+        f"canonical_breakdown: tech_score={tech_score}, context_score={context_score}, tech_confidence={tech_conf}, context_confidence={context_conf}, fusion_score={fusion_score}, fusion_confidence={fusion_conf}",
         f"阈值: buy={_txt(fusion_breakdown.get('buy_threshold_eff'), '--')} (base={_txt(fusion_breakdown.get('buy_threshold_base'), '--')}), "
         + f"sell={_txt(fusion_breakdown.get('sell_threshold_eff'), '--')} (base={_txt(fusion_breakdown.get('sell_threshold_base'), '--')}), "
         + f"sell_precedence_gate={_txt(fusion_breakdown.get('sell_precedence_gate'), '--')}, mode={_txt(fusion_breakdown.get('threshold_mode'), '--')}",
@@ -2069,7 +2097,6 @@ def _build_explanation_payload(
         *context_group_lines,
         *decision_path_lines,
         *veto_lines,
-        f"最终理由: {_txt(decision.get('finalReason') or reasoning_text, '--')}",
     ]
 
     context_component_breakdown = [
@@ -2457,6 +2484,8 @@ def _build_parameter_details(
 
         tech_track = _safe_json_load(technical_breakdown.get("track"))
         context_track = _safe_json_load(context_breakdown.get("track"))
+        position_metric_label = _position_metric_label(decision.get("action"))
+        position_metric_value = _position_metric_value(decision.get("action"), decision.get("positionSizePct"))
 
         rows: list[dict[str, str]] = [
             _item("动作", decision.get("action"), "fusion_breakdown.final_action", "最终动作来自结构化融合层输出（含 veto/门控/规则合并）。"),
@@ -2464,8 +2493,8 @@ def _build_parameter_details(
             _item("核心规则动作", fusion_breakdown.get("core_rule_action"), "fusion_breakdown.core_rule_action", "仅规则引擎输出，不含 veto。"),
             _item("加权阈值动作", fusion_breakdown.get("weighted_threshold_action"), "fusion_breakdown.weighted_threshold_action", "仅由融合分与阈值比较得到的动作。"),
             _item("加权门控后动作", fusion_breakdown.get("weighted_action_raw"), "fusion_breakdown.weighted_action_raw", "在阈值动作基础上应用置信度与分轨门控后的动作。"),
-            _item("技术信号", decision.get("techSignal"), "technical_breakdown.track.score", "技术轨信号由技术轨 TrackScore 符号映射：>0 BUY，<0 SELL，=0 HOLD。"),
-            _item("环境信号", decision.get("contextSignal"), "context_breakdown.track.score", "环境轨信号由环境轨 TrackScore 符号映射：>0 BUY，<0 SELL，=0 HOLD。"),
+            _item("技术轨方向", _track_direction_label(decision.get("techSignal")), "technical_breakdown.track.score", "技术轨方向由技术轨 TrackScore 符号映射：>0 偏多，<0 偏空，=0 中性。"),
+            _item("环境轨方向", _track_direction_label(decision.get("contextSignal")), "context_breakdown.track.score", "环境轨方向由环境轨 TrackScore 符号映射：>0 偏多，<0 偏空，=0 中性。"),
             _item("技术分", decision.get("techScore"), "technical_breakdown.track.score", "技术轨分值=Σ(组权重归一化 × 组分值)，组分值=Σ(组内维度归一化权重 × 维度分)。"),
             _item("环境分", decision.get("contextScore"), "context_breakdown.track.score", "环境轨分值=Σ(组权重归一化 × 组分值)，组分值=Σ(组内维度归一化权重 × 维度分)。"),
             _item("技术轨置信度", tech_track.get("confidence"), "technical_breakdown.track.confidence", "技术轨置信度=Σ(组权重 × 组覆盖率)/Σ组权重。"),
@@ -2477,25 +2506,25 @@ def _build_parameter_details(
                 "fusion_breakdown.fusion_confidence",
                 "融合置信度=base_confidence × (1 - divergence_penalty)，用于 BUY 门控和动作稳定性控制。",
             ),
-            _item("仓位建议(%)", decision.get("positionSizePct"), "signal.position_size_pct", "仓位建议由融合动作与风险约束共同决定。"),
+            _item(position_metric_label, position_metric_value, "signal.position_size_pct", "仓位建议由融合动作与风险约束共同决定；HOLD 时显示为不变。"),
             _item(
                 "建议保持仓位",
                 _derive_keep_position_pct(decision.get("action"), decision.get("positionSizePct")),
                 "signal.position_size_pct",
                 "BUY 时等于目标买入仓位；SELL 时 = 100% - 建议卖出比例；HOLD 时保持不变。",
             ),
-            _item("规则命中", decision.get("ruleHit"), "dual_track.rule_hit", "规则命中来自双轨规则融合结果。"),
-            _item("共振类型", decision.get("resonanceType"), "dual_track.resonance_type", "共振类型用于说明双轨是否同向及其强弱。"),
+            _item("规则命中（兼容派生）", decision.get("ruleHit"), "dual_track.rule_hit", "兼容派生字段，来自 legacy dual_track 摘要，仅用于辅助对照，不作为 canonical 决策口径。"),
+            _item("共振类型（兼容派生）", decision.get("resonanceType"), "dual_track.resonance_type", "兼容派生字段，来自 legacy dual_track 摘要，仅用于辅助对照，不作为 canonical 决策口径。"),
             _item("市场", runtime_context.get("market"), "调度配置/回放任务", "实时模式取 scheduler.market；回放模式取 sim_runs.market。"),
             _item("配置模板", decision.get("configuredProfile"), "sim_scheduler_config.strategy_profile_id", "当前调度配置中的策略模板。"),
             _item("应用模板", decision.get("appliedProfile"), "strategy_profile.selected_strategy_profile", "该条信号实际使用的策略模板（信号快照）。"),
-            _item("AI动态策略", decision.get("aiDynamicStrategy"), "sim_scheduler_config.ai_dynamic_strategy", "AI 动态策略开关状态，控制是否允许按市场切换模板/权重。"),
+            _item("AI动态调整模式", decision.get("aiDynamicStrategy"), "sim_scheduler_config.ai_dynamic_strategy", "AI 动态调整模式，控制是否允许按市场切换模板/权重。"),
             _item("AI动态强度", decision.get("aiDynamicStrength"), "sim_scheduler_config.ai_dynamic_strength", "AI 动态调整强度（0~1，越大调整越激进）。"),
             _item("AI回看窗口(小时)", decision.get("aiDynamicLookback"), "sim_scheduler_config.ai_dynamic_lookback", "AI 评估市场状态时使用的回看窗口。"),
             _item("AI是否切换模板", decision.get("aiProfileSwitched"), "strategy_profile.selected_strategy_profile", "配置模板与应用模板不一致时为“是”，表示本次触发了动态切换。"),
             _item("分析粒度", runtime_context.get("timeframe"), "调度配置/回放任务/策略配置", "实时模式优先策略粒度，其次 scheduler.analysis_timeframe；回放模式取 sim_runs.timeframe。"),
             _item("策略模式", runtime_context.get("strategyMode"), "调度配置/回放任务/策略配置", "实时模式优先策略模式，其次 scheduler.strategy_mode；回放模式取 sim_runs.selected_strategy_mode。"),
-            _item("双轨模式", fusion_breakdown.get("mode"), "fusion_breakdown.mode", "融合模式支持 rule_only / weighted_only / hybrid。"),
+            _item("双轨融合模式", fusion_breakdown.get("mode"), "fusion_breakdown.mode", "双轨融合模式支持 rule_only / weighted_only / hybrid。"),
             _item("技术轨权重(raw)", fusion_breakdown.get("tech_weight_raw"), "fusion_breakdown.tech_weight_raw", "技术轨原始权重，融合前参数。"),
             _item("环境轨权重(raw)", fusion_breakdown.get("context_weight_raw"), "fusion_breakdown.context_weight_raw", "环境轨原始权重，融合前参数。"),
             _item("技术轨权重(norm)", fusion_breakdown.get("tech_weight_norm"), "fusion_breakdown.tech_weight_norm", "技术轨融合归一化权重。"),
@@ -2980,6 +3009,13 @@ def _build_signal_detail_payload(
     tech_signal_value = _score_to_signal(_float(tech_score_value, 0.0) or 0.0)
     context_signal_value = _score_to_signal(_float(context_score_value, 0.0) or 0.0)
     final_action_value = _txt(fusion_breakdown.get("final_action") or dual_track.get("final_action") or signal.get("action"), "HOLD").upper()
+    final_reason_value = (
+        f"core_rule={_txt(fusion_breakdown.get('core_rule_action'), '--')}; "
+        f"weighted_threshold={_txt(fusion_breakdown.get('weighted_threshold_action'), '--')}; "
+        f"weighted_gate={_txt(fusion_breakdown.get('weighted_action_raw'), '--')}; "
+        f"final={final_action_value}; tech_score={tech_score_value}; context_score={context_score_value}; "
+        f"fusion_score={_txt(fusion_breakdown.get('fusion_score'), '--')}"
+    )
 
     decision = {
         "id": _txt(signal.get("id")),
@@ -3006,7 +3042,7 @@ def _build_signal_detail_payload(
         "resonanceType": _txt(dual_track.get("resonance_type"), "--"),
         "ruleHit": _txt(dual_track.get("rule_hit"), _txt(fusion_breakdown.get("mode"), "--")),
         "finalAction": final_action_value,
-        "finalReason": _txt(dual_track.get("final_reason") or reasoning_text, "--"),
+        "finalReason": final_reason_value,
         "positionRatio": _txt(dual_track.get("position_ratio"), _txt(signal.get("position_size_pct"), "0")),
         "configuredProfile": configured_profile_label,
         "appliedProfile": (

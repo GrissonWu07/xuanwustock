@@ -121,6 +121,120 @@ def _make_context(tmp_path: Path):
     )
 
 
+def _seed_structured_signal_for_detail(context: gateway_api.UIApiContext) -> int:
+    db = context.quant_db()
+    db.update_scheduler_config(
+        strategy_profile_id="aggressive_v23",
+        ai_dynamic_strategy="hybrid",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
+    )
+
+    explainability = {
+        "technical_breakdown": {
+            "track": {"score": 0.036346, "confidence": 0.607384, "available": True, "track_unavailable": False},
+            "groups": [
+                {"id": "trend", "score": 0.03802, "coverage": 0.8, "weight_raw": 1.0, "weight_norm_in_track": 0.25, "track_contribution": 0.03802},
+                {"id": "momentum", "score": 0.061856, "coverage": 0.85, "weight_raw": 0.9, "weight_norm_in_track": 0.25, "track_contribution": 0.061856},
+                {"id": "volume_confirmation", "score": 0.149914, "coverage": 0.6, "weight_raw": 0.8, "weight_norm_in_track": 0.25, "track_contribution": 0.149914},
+                {"id": "volatility_risk", "score": -0.213443, "coverage": 0.5, "weight_raw": 1.2, "weight_norm_in_track": 0.25, "track_contribution": -0.213443},
+            ],
+            "dimensions": [
+                {"id": "trend_direction", "group": "trend", "score": 1.0, "track_contribution": 0.0884, "reason": "trend up"},
+                {"id": "price_vs_ma20", "group": "trend", "score": 1.0, "track_contribution": 0.0752, "reason": "price above ma20"},
+                {"id": "boll_position", "group": "volatility_risk", "score": -0.6, "track_contribution": -0.213443, "reason": "boll high"},
+            ],
+        },
+        "context_breakdown": {
+            "track": {"score": 0.033122, "confidence": 0.706667, "available": True, "track_unavailable": False},
+            "groups": [
+                {"id": "market_structure", "score": 0.014812, "coverage": 1.0, "weight_raw": 1.0, "weight_norm_in_track": 0.25, "track_contribution": 0.014812},
+                {"id": "risk_account", "score": -0.034901, "coverage": 0.52, "weight_raw": 1.3, "weight_norm_in_track": 0.25, "track_contribution": -0.034901},
+                {"id": "tradability_timing", "score": 0.012252, "coverage": 1.0, "weight_raw": 0.8, "weight_norm_in_track": 0.25, "track_contribution": 0.012252},
+                {"id": "source_execution", "score": 0.040959, "coverage": 0.4, "weight_raw": 1.1, "weight_norm_in_track": 0.25, "track_contribution": 0.040959},
+            ],
+            "dimensions": [
+                {"id": "price_structure", "group": "market_structure", "score": 0.14, "track_contribution": 0.012252, "reason": "bull stack"},
+                {"id": "risk_balance", "group": "risk_account", "score": -0.08, "track_contribution": -0.034901, "reason": "risk high"},
+                {"id": "source_prior", "group": "source_execution", "score": 0.28, "track_contribution": 0.040959, "reason": "source prior"},
+            ],
+        },
+        "fusion_breakdown": {
+            "mode": "hybrid",
+            "tech_score": 0.036346,
+            "context_score": 0.033122,
+            "tech_confidence": 0.607384,
+            "context_confidence": 0.706667,
+            "fusion_score": 0.034331,
+            "fusion_confidence": 0.668627,
+            "fusion_confidence_base": 0.669436,
+            "buy_threshold_base": 0.82,
+            "buy_threshold_eff": 0.8773,
+            "sell_threshold_base": -0.12,
+            "sell_threshold_eff": -0.1562,
+            "weighted_threshold_action": "HOLD",
+            "weighted_action_raw": "HOLD",
+            "weighted_gate_fail_reasons": [],
+            "core_rule_action": "HOLD",
+            "final_action": "HOLD",
+            "tech_weight_raw": 0.75,
+            "tech_weight_norm": 0.375,
+            "context_weight_raw": 1.25,
+            "context_weight_norm": 0.625,
+            "divergence": 0.001612,
+            "divergence_penalty": 0.001209,
+            "sign_conflict": 0,
+            "sell_precedence_gate": 0.2,
+            "threshold_mode": "strict",
+            "veto_source_mode": "structured",
+        },
+        "dual_track": {
+            "rule_hit": "neutral_hold",
+            "resonance_type": "neutral",
+            "final_reason": "技术评分 0.11，上下文评分 0.48。",
+        },
+        "decision_path": [
+            {"step": "veto_first", "matched": "false", "detail": "no_veto"},
+            {"step": "mode", "matched": "hybrid", "detail": "hybrid_matrix"},
+        ],
+        "vetoes": [],
+    }
+    strategy_profile = {
+        "analysis_timeframe": "30m",
+        "strategy_mode": "auto",
+        "market_regime": {"label": "牛市"},
+        "fundamental_quality": {"label": "中性"},
+        "risk_style": {"label": "稳重"},
+        "auto_inferred_risk_style": {"label": "稳重"},
+        "selected_strategy_profile": {"id": "conservative_v23", "name": "保守 (conservative_v23)", "version": "2"},
+        "effective_thresholds": {
+            "buy_threshold": 0.8773,
+            "sell_threshold": -0.1562,
+            "max_position_ratio": 0.5,
+            "allow_pyramiding": False,
+            "confirmation": "30分钟信号确认",
+        },
+        "analysis": "旧自然语言摘要：技术评分 0.11，上下文评分 0.48。",
+        "decision_reason": "旧自然语言摘要：技术评分 0.11，上下文评分 0.48。",
+        "explainability": explainability,
+    }
+    return db.add_signal(
+        {
+            "stock_code": "002463",
+            "stock_name": "沪电股份",
+            "action": "HOLD",
+            "confidence": 66,
+            "reasoning": "旧自然语言摘要：技术评分 0.11，上下文评分 0.48。",
+            "status": "observed",
+            "position_size_pct": 0.0,
+            "decision_type": "dual_track_weighted_hold",
+            "tech_score": 0.11,
+            "context_score": 0.48,
+            "strategy_profile": strategy_profile,
+        }
+    )
+
+
 def test_backend_api_dataflow_from_discover_and_research_to_watchlist_and_quant_pool(tmp_path):
     module = _load_backend_api_module()
     selector_dir = tmp_path / "selector_results"
@@ -178,6 +292,33 @@ def test_backend_api_dataflow_from_discover_and_research_to_watchlist_and_quant_
     assert replay["candidatePool"]["columns"] == ["股票代码", "股票名称", "最新价格"]
     for row in replay["candidatePool"]["rows"]:
         assert "actions" not in row or not row["actions"]
+
+
+def test_signal_detail_prefers_canonical_breakdown_and_clean_audit_labels(tmp_path):
+    context = _make_context(tmp_path)
+    signal_id = _seed_structured_signal_for_detail(context)
+    client = TestClient(gateway_api.create_app(context=context))
+
+    response = client.get(f"/api/v1/quant/signals/{signal_id}?source=live")
+
+    assert response.status_code == 200
+    payload = response.json()
+    rows = {row["name"]: row for row in payload["parameterDetails"]}
+    basis_lines = payload["explanation"]["basis"]
+
+    assert payload["decision"]["techScore"] == "0.036346"
+    assert payload["decision"]["contextScore"] == "0.033122"
+    assert rows["环境分"]["value"] == "0.033122"
+    assert rows["环境轨置信度"]["value"] == "0.706667"
+    assert rows["技术轨方向"]["value"] == "偏多"
+    assert rows["环境轨方向"]["value"] == "偏多"
+    assert rows["仓位建议"]["value"] == "不变"
+    assert rows["AI动态调整模式"]["value"] == "hybrid"
+    assert rows["双轨融合模式"]["value"] == "hybrid"
+    assert "兼容派生" in rows["规则命中（兼容派生）"]["name"]
+    assert "兼容派生" in rows["共振类型（兼容派生）"]["name"]
+    assert not any("最终理由:" in line for line in basis_lines)
+    assert not any("技术评分 0.11" in line for line in basis_lines)
 
 
 def test_discover_snapshot_aggregates_multiple_selector_results(tmp_path, monkeypatch):

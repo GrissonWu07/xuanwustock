@@ -109,6 +109,30 @@ const mockPayload = {
   },
   parameterDetails: [
     {
+      name: "技术轨方向",
+      value: "偏空",
+      source: "technical_breakdown.track.score",
+      derivation: "技术轨方向由 track score 的正负号映射得到。",
+    },
+    {
+      name: "环境轨方向",
+      value: "偏多",
+      source: "context_breakdown.track.score",
+      derivation: "环境轨方向由 track score 的正负号映射得到。",
+    },
+    {
+      name: "AI动态调整模式",
+      value: "hybrid",
+      source: "sim_scheduler_config.ai_dynamic_strategy",
+      derivation: "AI 动态调整模式控制模板/权重是否可按市场动态放大。",
+    },
+    {
+      name: "双轨融合模式",
+      value: "hybrid",
+      source: "fusion_breakdown.mode",
+      derivation: "双轨融合模式决定规则层与加权层如何合并。",
+    },
+    {
       name: "市场",
       value: "CN",
       source: "scheduler",
@@ -269,6 +293,9 @@ describe("SignalDetailPage", () => {
     expect(screen.getByText("投票明细")).toBeInTheDocument();
     expect(screen.getByText("审计模式")).toBeInTheDocument();
     expect(screen.getAllByText(/未买入：融合分/).length).toBeGreaterThan(0);
+    expect(screen.getByText("规则层：技术轨偏空 + 环境轨偏多。")).toBeInTheDocument();
+    expect(screen.getAllByText("动作链路：核心规则 Hold -> 加权阈值 Hold -> 加权门控 Hold -> 最终 Hold。").length).toBeGreaterThan(0);
+    expect(screen.queryByText("0.0")).not.toBeInTheDocument();
   });
 
   it("keeps vote details and audit text collapsed until expanded", async () => {
@@ -283,6 +310,14 @@ describe("SignalDetailPage", () => {
 
     expect(await screen.findByText("ONLY_IN_VOTE_TABLE")).toBeInTheDocument();
     expect(screen.getByText("ONLY_IN_AUDIT")).toBeInTheDocument();
+    expect(screen.getByText("运行参数快照")).toBeInTheDocument();
+    expect(screen.getByText("技术轨方向")).toBeInTheDocument();
+    expect(screen.getByText("环境轨方向")).toBeInTheDocument();
+    expect(screen.getByText("AI动态调整模式")).toBeInTheDocument();
+    expect(screen.getByText("双轨融合模式")).toBeInTheDocument();
+    expect(screen.queryByText("阈值参数")).not.toBeInTheDocument();
+    expect(screen.queryByText("技术信号")).not.toBeInTheDocument();
+    expect(screen.queryByText("环境信号")).not.toBeInTheDocument();
   });
 
   it("uses split desktop layouts for gate and contribution sections", async () => {
