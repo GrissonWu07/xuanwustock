@@ -1157,7 +1157,7 @@ class KernelStrategyRuntime:
         if isinstance(strategy_profile_binding, dict):
             config_payload = strategy_profile_binding.get("config")
             if isinstance(config_payload, dict):
-                schema_version = str(config_payload.get("schema_version") or "quant_explain/v2.3")
+                schema_version = str(config_payload.get("schema_version") or "quant_explain")
                 base = config_payload.get("base")
                 profiles = config_payload.get("profiles")
                 if isinstance(base, dict) and isinstance(profiles, dict):
@@ -1212,7 +1212,7 @@ class KernelStrategyRuntime:
                 "final_action": resolved.action,
                 "final_reason": resolved.reason,
             },
-            "explain_schema_version": "quant_explain/v2.3",
+            "explain_schema_version": "quant_explain",
             "profile_kind": profile_kind,
             "technical_breakdown": technical_breakdown,
             "context_breakdown": context_breakdown,

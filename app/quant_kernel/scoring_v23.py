@@ -1,4 +1,4 @@
-"""Quant explain v2.3 weighted scoring pipeline."""
+"""Quant explain weighted scoring pipeline."""
 
 from __future__ import annotations
 

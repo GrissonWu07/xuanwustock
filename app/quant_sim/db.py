@@ -3200,7 +3200,7 @@ class QuantSimDB:
     def _validate_and_normalize_strategy_profile_config(self, config: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(config, dict):
             raise ValueError("strategy profile config must be an object")
-        schema_version = str(config.get("schema_version") or "quant_explain/v2.3").strip() or "quant_explain/v2.3"
+        schema_version = str(config.get("schema_version") or "quant_explain").strip() or "quant_explain"
         base = config.get("base")
         profiles = config.get("profiles")
         if not isinstance(base, dict) or not isinstance(profiles, dict):

@@ -353,7 +353,7 @@ class StrategyScoringConfig:
     @classmethod
     def default(cls) -> "StrategyScoringConfig":
         payload = deepcopy(STRATEGY_SCORING_CONFIG)
-        return cls(schema_version="quant_explain/v2.3", base=payload["base"], profiles=payload["profiles"])
+        return cls(schema_version="quant_explain", base=payload["base"], profiles=payload["profiles"])
 
     def resolve(self, profile: str | None = None) -> dict[str, Any]:
         selected = (profile or "").strip().lower()
