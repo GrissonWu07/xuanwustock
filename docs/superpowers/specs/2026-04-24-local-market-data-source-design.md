@@ -1,7 +1,7 @@
 # Local Market Data Source Design
 
 **Date:** 2026-04-24  
-**Status:** ready for review  
+**Status:** requirement-aligned, ready for review  
 **Scope:** local-first Parquet market-data layer for AKShare, TDX, and Tushare.
 
 ## 1. Objective
@@ -16,6 +16,29 @@ The required behavior is:
 - Misses, stale realtime records, or incomplete historical ranges trigger remote fetch, then persist back to the matching local source.
 - Technical indicators must calculate from local-first OHLCV data, not bypass the local source.
 - Docker deployment must mount the data directory so Parquet files survive container rebuilds and restarts.
+
+## 1.1 Requirement Traceability
+
+| User requirement | Spec coverage | Implementation rule |
+| --- | --- | --- |
+| Add a local data source using `par` format | Use Parquet files under `data/local_sources/` | All persisted market-data cache files use `.parquet`; no CSV/JSON cache is accepted for OHLCV/quote datasets. |
+| Every fetch reads local first | Sections 7, 9, 17 | Public data fetch methods must call the local-first client before any remote provider call. |
+| If local misses, fetch AKShare/Tushare/TDX in the backend | Sections 7, 8, 9 | Miss, partial coverage, stale realtime data, or force-refresh can call the matching remote provider. |
+| After remote success, save locally | Sections 7, 12, 13 | Successful remote responses must be normalized, merged, de-duplicated, and atomically written back to the matching local namespace. |
+| Historical data should not repeatedly query realtime/remote providers | Sections 7.1, 7.2, 9.6, 17 | Repeated same source/symbol/range request must hit Parquet on the second call. Replay must not refetch cached checkpoint windows. |
+| All technical indicators must support local source | Sections 2, 6.1, 9.2, 9.3, 9.4, 9.5, 17 | RSI, MA, MACD, Bollinger, KDJ, OBV, ATR, volume ratio, and any future indicator must use local-first OHLCV. |
+| Local AK maps to remote AK | Sections 5, 7.4, 8.1 | AKShare remote results are stored only under `data/local_sources/akshare/`. |
+| Local TDX maps to remote TDX | Sections 5, 7.4, 8.2 | TDX remote results are stored only under `data/local_sources/tdx/`. |
+| Local Tushare maps to remote Tushare | Sections 5, 7.4, 8.3 | Tushare remote results are stored only under `data/local_sources/tushare/`. |
+| Docker deployment must mount data files | Section 11 | Compose files must mount `/app/data`; Dockerfiles must create `/app/data/local_sources`; docs must explain backup/restore. |
+
+## 1.2 Hard Requirements
+
+- No production market-data path may directly call AKShare, Tushare, or TDX if a local-first wrapper exists for that dataset.
+- Implementation must include a grep-based audit for direct usages of `app.akshare_client.ak`, `tushare`, `TdxHq_API`, and pytdx fetch calls.
+- Direct provider calls are allowed only inside source-specific local clients, low-level remote methods, tests, or diagnostic scripts such as `app/test_tdx_api.py`.
+- A feature is not complete if it only supports replay. Workbench analysis, realtime simulation, historical replay, watchlist helpers, and strategy helpers must all use the same local-first path for supported datasets.
+- A feature is not complete if Docker runtime data is kept only inside the image layer. `data/local_sources/` must be host-mounted through `/app/data`.
 
 ## 2. Non-Goals
 
@@ -78,6 +101,8 @@ Optional later split if files grow too large:
 
 - `app/market_data_normalizers.py`
 - `app/market_data_schemas.py`
+
+`LocalMarketDataStore` should default its root from `LOCAL_MARKET_DATA_DIR`. If the environment variable is absent, it should use `app.runtime_paths.DATA_DIR / "local_sources"` so local development and Docker use the same data-root convention.
 
 ## 5. Storage Layout
 
@@ -167,6 +192,8 @@ All K-line data should be persisted with canonical columns:
 - `adjust`: `qfq`, `hfq`, or `none`.
 - `timeframe`: `1d`, `1m`, `5m`, `15m`, `30m`, `1h`, `1w`, or `1mo`.
 - `fetched_at`: local fetch timestamp.
+- `provider`: remote provider identity, one of `akshare`, `tdx`, or `tushare`.
+- `cache_source`: read path identity, one of `local_akshare`, `remote_akshare`, `local_tdx`, `remote_tdx`, `local_tushare`, or `remote_tushare`.
 
 Provider-specific original columns may be preserved with `raw_` prefix only when useful. Strategy and indicator code must read canonical columns.
 
@@ -188,6 +215,8 @@ Provider-specific original columns may be preserved with `raw_` prefix only when
 - `quote_time`
 - `source`
 - `fetched_at`
+- `provider`
+- `cache_source`
 
 Realtime quote files are append/upsert by `quote_time` and `fetched_at`, but readers normally return the newest fresh row.
 
@@ -202,8 +231,28 @@ Realtime quote files are append/upsert by `quote_time` and `fetched_at`, but rea
 - `circulating_market_cap`
 - `source`
 - `fetched_at`
+- `provider`
+- `cache_source`
 
 Basic info TTL should be long because it rarely changes.
+
+### 6.4 Returned Source Fields
+
+Existing callers may already depend on `data_source` values such as `tdx`, `akshare`, or `tushare`. To preserve compatibility:
+
+- Keep existing `data_source` or `source` values as the remote provider identity.
+- Add optional `cache_source` to indicate whether the row came from local Parquet or remote refresh.
+- Add optional `cache_status` for observability.
+
+Example:
+
+```python
+{
+    "data_source": "tdx",
+    "cache_source": "local_tdx",
+    "cache_status": "hit",
+}
+```
 
 ## 7. Local-First Rules
 
@@ -382,6 +431,35 @@ Update:
 
 RSI, MA5, and MA20 must read local-first historical OHLCV.
 
+### 9.5a Technical Indicator Inventory
+
+The implementation must cover every technical indicator currently calculated in the project:
+
+- `StockDataFetcher.calculate_technical_indicators`
+  - MA5, MA10, MA20, MA60
+  - RSI
+  - MACD, MACD signal, MACD histogram
+  - Bollinger upper/middle/lower
+  - KDJ K/D
+  - Volume MA5 and volume ratio
+- `SmartMonitorTDXDataFetcher._calculate_all_indicators`
+  - MA5, MA20, MA60, MA20 slope
+  - MACD DIF/DEA/hist
+  - RSI6, RSI12, RSI24
+  - KDJ K/D/J
+  - OBV
+  - ATR
+  - Bollinger upper/mid/lower and Bollinger position
+  - Volume MA5/MA10 and volume ratio
+- `SmartMonitorDataFetcher._calculate_all_indicators`
+  - same smart-monitor indicator family as above.
+- `ValueStockStrategy.calculate_rsi`
+  - RSI for sell checks.
+- `LowPriceBullService._get_stock_data`
+  - MA5/MA20 for sell checks.
+
+Any new indicator added later must depend on a local-first OHLCV input contract instead of calling a remote provider directly.
+
 ### 9.6 Quant Simulation and Replay
 
 Quant simulation already flows through `MainProjectMarketDataProvider` and `SmartMonitorTDXDataFetcher`.
@@ -429,7 +507,7 @@ Pandas Parquet support requires `pyarrow` or `fastparquet`. Use `pyarrow` for fi
 
 ### 11.2 Dockerfile
 
-`build/Dockerfile` must:
+`build/Dockerfile` and `build/Dockerfile国内源版` must:
 
 - install `pyarrow` through `requirements.txt`.
 - create the local data directory:
@@ -443,6 +521,8 @@ RUN mkdir -p /app/data/local_sources && chmod -R 777 /app/data
 ```dockerfile
 ENV LOCAL_MARKET_DATA_DIR=/app/data/local_sources
 ```
+
+`build/Dockerfile.ui` does not need market-data changes because the UI container does not read Parquet files.
 
 ### 11.3 Compose Files
 
@@ -470,6 +550,8 @@ environment:
 
 The existing `/app/data` mount is sufficient as long as `local_sources` is under `/app/data`. The explicit environment variable is still required so the path is auditable.
 
+No compose file may mount only `data/local_sources` while leaving the rest of `/app/data` unmounted, because SQLite databases and Parquet cache must live under the same persistent host data root.
+
 ### 11.4 Ignore Rules
 
 Add to `.gitignore` and `.dockerignore`:
@@ -477,6 +559,8 @@ Add to `.gitignore` and `.dockerignore`:
 ```text
 data/local_sources/
 ```
+
+Also update `build/.dockerignore` if it differs from root `.dockerignore`.
 
 Reason:
 
@@ -580,6 +664,7 @@ Assertions must verify:
 - technical indicators use local-first K-line data when available.
 - repeated calls do not call remote fetch twice.
 - Docker path defaults do not break local development.
+- direct remote call inventory does not regress for covered production paths.
 
 ### 15.3 Manual Verification
 
@@ -590,6 +675,7 @@ python -m pytest tests/test_local_market_data_store.py tests/test_local_market_d
 python -m pytest tests/test_data_source_manager.py tests/test_smart_monitor_tdx_data.py tests/test_stock_data_tdx_fallback.py -q
 python -m pytest tests/test_quant_sim_stockpolicy_adapter.py tests/test_quant_replay_engine.py -q
 docker compose -f build/docker-compose.yml config
+docker compose -f build/docker-compose.deploy.yml config
 ```
 
 Build check:
@@ -633,7 +719,7 @@ This reduces repeated quote/name lookup pressure.
 - Daily basic.
 - Security list/name cache improvements.
 
-These are useful but should not block the main performance fix.
+These are part of the full local-source requirement. They are later phases only to reduce delivery risk; final acceptance still requires every supported AKShare/Tushare/TDX production data path to be routed through local-first storage or explicitly documented as out of scope.
 
 ## 17. Acceptance Criteria
 
@@ -648,4 +734,5 @@ Implementation is complete when:
 - Docker Compose mounts `/app/data`, sets `LOCAL_MARKET_DATA_DIR`, and keeps Parquet files on the host.
 - `.gitignore` and `.dockerignore` exclude `data/local_sources/`.
 - Tests cover local hit, miss, partial refill, source isolation, and TTL behavior.
-
+- `build/Dockerfile国内源版`, `build/Dockerfile`, `build/docker-compose.yml`, `build/docker-compose.deploy.yml`, root `.dockerignore`, and `build/.dockerignore` are updated where applicable.
+- A provider-call audit confirms no covered production path bypasses local-first clients.
