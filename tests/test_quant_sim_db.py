@@ -100,23 +100,35 @@ def test_scheduler_config_persists_strategy_mode(tmp_path):
     assert config["strategy_mode"] == "defensive"
 
 
-def test_builtin_strategy_profiles_use_lowered_fusion_buy_thresholds(tmp_path):
+def test_builtin_strategy_profiles_rebalance_fusion_gates_by_strategy(tmp_path):
     db = QuantSimDB(tmp_path / "app.quant_sim.db")
 
     configs = db._build_builtin_strategy_profile_configs()
+    aggressive_position = _resolve_profile(configs["aggressive"], "position")
+    stable_candidate = _resolve_profile(configs["stable"], "candidate")
+    stable_position = _resolve_profile(configs["stable"], "position")
+    conservative_candidate = _resolve_profile(configs["conservative"], "candidate")
+    conservative_position = _resolve_profile(configs["conservative"], "position")
 
     assert configs["aggressive"]["profiles"]["candidate"]["dual_track"]["fusion_buy_threshold"] == 0.35
     assert configs["aggressive"]["profiles"]["candidate"]["dual_track"]["fusion_sell_threshold"] == -0.30
-    assert configs["aggressive"]["profiles"]["position"]["dual_track"]["fusion_buy_threshold"] == 0.52
-    assert configs["aggressive"]["profiles"]["position"]["dual_track"]["fusion_sell_threshold"] == -0.24
-    assert configs["stable"]["profiles"]["candidate"]["dual_track"]["fusion_buy_threshold"] == 0.45
-    assert configs["stable"]["profiles"]["candidate"]["dual_track"]["fusion_sell_threshold"] == -0.26
-    assert configs["stable"]["profiles"]["position"]["dual_track"]["fusion_buy_threshold"] == 0.60
-    assert configs["stable"]["profiles"]["position"]["dual_track"]["fusion_sell_threshold"] == -0.20
-    assert configs["conservative"]["profiles"]["candidate"]["dual_track"]["fusion_buy_threshold"] == 0.55
-    assert configs["conservative"]["profiles"]["candidate"]["dual_track"]["fusion_sell_threshold"] == -0.22
-    assert configs["conservative"]["profiles"]["position"]["dual_track"]["fusion_buy_threshold"] == 0.68
-    assert configs["conservative"]["profiles"]["position"]["dual_track"]["fusion_sell_threshold"] == -0.16
+    assert aggressive_position["dual_track"]["fusion_buy_threshold"] == 0.50
+    assert aggressive_position["dual_track"]["min_fusion_confidence"] == 0.42
+
+    assert stable_candidate["dual_track"]["fusion_buy_threshold"] == 0.43
+    assert stable_candidate["dual_track"]["min_fusion_confidence"] == 0.46
+    assert stable_position["dual_track"]["fusion_buy_threshold"] == 0.57
+    assert stable_position["dual_track"]["min_fusion_confidence"] == 0.50
+
+    assert conservative_candidate["dual_track"]["track_weights"] == {"tech": 0.9, "context": 1.1}
+    assert conservative_candidate["dual_track"]["fusion_buy_threshold"] == 0.48
+    assert conservative_candidate["dual_track"]["min_fusion_confidence"] == 0.56
+    assert conservative_candidate["dual_track"]["min_tech_score_for_buy"] == 0.05
+    assert conservative_candidate["dual_track"]["min_context_score_for_buy"] == 0.03
+    assert conservative_candidate["dual_track"]["min_tech_confidence_for_buy"] == 0.54
+    assert conservative_candidate["dual_track"]["min_context_confidence_for_buy"] == 0.56
+    assert conservative_position["dual_track"]["fusion_buy_threshold"] == 0.58
+    assert conservative_position["dual_track"]["min_fusion_confidence"] == 0.60
 
 
 def test_aggressive_candidate_profile_downweights_low_value_missing_dimensions(tmp_path):
@@ -367,6 +379,67 @@ def test_replace_sim_run_results_persists_strategy_signals(tmp_path):
     assert signals[0]["checkpoint_at"] == "2026-04-01 10:00:00"
     assert len(trades) == 1
     assert trades[0]["signal_id"] == signals[0]["id"]
+
+
+def test_upsert_sim_run_signals_updates_existing_checkpoint_signal(tmp_path):
+    db = QuantSimDB(tmp_path / "app.quant_sim.db")
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-09 15:00:00",
+        initial_cash=100000.0,
+        status="running",
+    )
+
+    db.upsert_sim_run_signals(
+        run_id,
+        [
+            {
+                "id": 101,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "confidence": 82,
+                "reasoning": "第一次写入",
+                "position_size_pct": 60.0,
+                "decision_type": "dual_track_resonance",
+                "tech_score": 0.72,
+                "context_score": 0.28,
+                "strategy_profile": {"analysis_timeframe": {"key": "30m"}},
+                "checkpoint_at": "2026-04-01 10:00:00",
+                "created_at": "2026-04-01 10:00:01",
+            }
+        ],
+    )
+    db.upsert_sim_run_signals(
+        run_id,
+        [
+            {
+                "id": 101,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "confidence": 88,
+                "reasoning": "第二次刷新",
+                "position_size_pct": 55.0,
+                "decision_type": "dual_track_resonance",
+                "tech_score": 0.81,
+                "context_score": 0.35,
+                "strategy_profile": {"analysis_timeframe": {"key": "30m"}},
+                "checkpoint_at": "2026-04-01 10:00:00",
+                "created_at": "2026-04-01 10:00:02",
+            }
+        ],
+    )
+
+    signals = db.get_sim_run_signals(run_id)
+
+    assert len(signals) == 1
+    assert signals[0]["confidence"] == 88
+    assert signals[0]["reasoning"] == "第二次刷新"
+    assert signals[0]["position_size_pct"] == 55.0
 
 
 def test_delete_sim_run_removes_all_replay_artifacts(tmp_path):

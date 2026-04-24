@@ -421,6 +421,44 @@ def test_historical_replay_persists_run_strategy_signals(tmp_path):
     assert replay_signals[0]["strategy_profile"]["analysis_timeframe"]["key"] == "30m"
 
 
+def test_historical_replay_persists_signals_incrementally_per_checkpoint(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=10.0,
+        notes="回放增量信号测试",
+    )
+
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=FakeSnapshotProvider(),
+        adapter=FakeAdapter(),
+    )
+
+    visible_signal_counts: list[int] = []
+    original_add_checkpoint = replay_service.db.add_sim_run_checkpoint
+
+    def recording_add_checkpoint(run_id, *args, **kwargs):
+        visible_signal_counts.append(len(replay_service.db.get_sim_run_signals(run_id)))
+        return original_add_checkpoint(run_id, *args, **kwargs)
+
+    monkeypatch.setattr(replay_service.db, "add_sim_run_checkpoint", recording_add_checkpoint)
+
+    summary = replay_service.run_historical_range(
+        start_datetime=datetime(2026, 1, 5, 0, 0),
+        end_datetime=datetime(2026, 1, 6, 23, 59),
+        timeframe="30m",
+        market="CN",
+    )
+
+    assert summary["status"] == "completed"
+    assert visible_signal_counts
+    assert visible_signal_counts[0] > 0
+
+
 def test_historical_replay_persists_selected_strategy_mode(tmp_path):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)

@@ -28,6 +28,9 @@ TEMPLATE_BY_PROFILE_ID = {profile_id: variant for variant, profile_id in BUILTIN
 TEMPLATE_ORDER = {"conservative": 0, "stable": 1, "aggressive": 2}
 MIN_SWITCH_COMPONENTS = 2
 MIN_COMPONENT_SIGNAL_SCORE = 0.08
+OVERLAY_RISK_ON = "risk_on"
+OVERLAY_NEUTRAL = "neutral"
+OVERLAY_RISK_OFF = "risk_off"
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -117,14 +120,21 @@ class DynamicStrategyController:
             stock_name=stock_name,
             lookback_hours=lookback,
         )
-        recommended_template_variant = self._select_template(float(signal["score"]))
+        signal_score = float(signal["score"])
+        signal_confidence = float(signal["confidence"])
+        recommended_template_variant = self._select_template(signal_score)
         switch_plan = self._plan_template_switch(
             base_template_variant=base_template_variant,
             recommended_template_variant=recommended_template_variant,
-            signal_score=float(signal["score"]),
-            signal_confidence=float(signal["confidence"]),
+            signal_score=signal_score,
+            signal_confidence=signal_confidence,
             strength=strength,
             components=signal.get("components", []),
+        )
+        overlay_regime = self._select_overlay_regime(
+            signal_score=signal_score,
+            signal_confidence=signal_confidence,
+            strength=strength,
         )
         if mode == "weights":
             switch_plan = {
@@ -157,7 +167,7 @@ class DynamicStrategyController:
             if isinstance(config_payload, dict):
                 adjusted = self._apply_dynamic_weight_overlay(
                     config_payload,
-                    signal_score=float(signal["score"]),
+                    overlay_regime=overlay_regime,
                     strength=strength,
                 )
                 binding["config"] = adjusted
@@ -167,8 +177,8 @@ class DynamicStrategyController:
             "enabled": True,
             "strength": strength,
             "lookback_hours": lookback,
-            "score": round(float(signal["score"]), 4),
-            "confidence": round(float(signal["confidence"]), 4),
+            "score": round(signal_score, 4),
+            "confidence": round(signal_confidence, 4),
             "base_profile_id": base_profile_id,
             "base_template_variant": base_template_variant,
             "recommended_template_variant": recommended_template_variant,
@@ -177,6 +187,7 @@ class DynamicStrategyController:
             "applied_template_profile_id": applied_template_profile_id,
             "template_switch_applied": bool(switch_plan["template_switch_applied"]),
             "template_switch_reason": str(switch_plan["template_switch_reason"]),
+            "overlay_regime": overlay_regime,
             "evidence": switch_plan["evidence"],
             "components": signal.get("components", []),
         }
@@ -568,10 +579,13 @@ class DynamicStrategyController:
         self,
         config: dict[str, Any],
         *,
-        signal_score: float,
+        overlay_regime: str,
         strength: float,
     ) -> dict[str, Any]:
         payload = self._deep_copy_json(config)
+        base = payload.get("base")
+        if isinstance(base, dict):
+            self._adjust_base_dual_track(base, overlay_regime=overlay_regime, strength=strength)
         profiles = payload.get("profiles")
         if not isinstance(profiles, dict):
             return payload
@@ -579,72 +593,101 @@ class DynamicStrategyController:
             profile_payload = profiles.get(profile_key)
             if not isinstance(profile_payload, dict):
                 continue
-            self._adjust_technical(profile_payload, signal_score=signal_score, strength=strength)
-            self._adjust_context(profile_payload, signal_score=signal_score, strength=strength)
-            self._adjust_dual_track(profile_payload, signal_score=signal_score, strength=strength)
+            self._adjust_technical(profile_payload, overlay_regime=overlay_regime, strength=strength)
+            self._adjust_context(profile_payload, overlay_regime=overlay_regime, strength=strength)
+            self._adjust_profile_dual_track(profile_payload, overlay_regime=overlay_regime, strength=strength)
         return payload
 
-    def _adjust_technical(self, profile_payload: dict[str, Any], *, signal_score: float, strength: float) -> None:
+    def _adjust_technical(self, profile_payload: dict[str, Any], *, overlay_regime: str, strength: float) -> None:
         technical = profile_payload.get("technical")
         if not isinstance(technical, dict):
             return
+        directional_signal = self._overlay_direction(overlay_regime)
         group_weights = technical.get("group_weights")
         if isinstance(group_weights, dict):
-            self._adjust_weight(group_weights, "trend", signal_score, strength, coefficient=0.35)
-            self._adjust_weight(group_weights, "momentum", signal_score, strength, coefficient=0.30)
-            self._adjust_weight(group_weights, "volume_confirmation", signal_score, strength, coefficient=0.20)
-            self._adjust_weight(group_weights, "volatility_risk", signal_score, strength, coefficient=-0.40)
+            self._adjust_weight(group_weights, "trend", directional_signal, strength, coefficient=0.35)
+            self._adjust_weight(group_weights, "momentum", directional_signal, strength, coefficient=0.30)
+            self._adjust_weight(group_weights, "volume_confirmation", directional_signal, strength, coefficient=0.20)
+            self._adjust_weight(group_weights, "volatility_risk", directional_signal, strength, coefficient=-0.40)
         dimension_weights = technical.get("dimension_weights")
         if isinstance(dimension_weights, dict):
             for key in ("trend_direction", "ma_alignment", "ma_slope", "price_vs_ma20", "macd_level", "macd_hist_slope"):
-                self._adjust_weight(dimension_weights, key, signal_score, strength, coefficient=0.22)
+                self._adjust_weight(dimension_weights, key, directional_signal, strength, coefficient=0.22)
             for key in ("rsi_zone", "kdj_cross", "volume_ratio", "obv_trend"):
-                self._adjust_weight(dimension_weights, key, signal_score, strength, coefficient=0.16)
+                self._adjust_weight(dimension_weights, key, directional_signal, strength, coefficient=0.16)
             for key in ("atr_risk", "boll_position"):
-                self._adjust_weight(dimension_weights, key, signal_score, strength, coefficient=-0.28)
+                self._adjust_weight(dimension_weights, key, directional_signal, strength, coefficient=-0.28)
 
-    def _adjust_context(self, profile_payload: dict[str, Any], *, signal_score: float, strength: float) -> None:
+    def _adjust_context(self, profile_payload: dict[str, Any], *, overlay_regime: str, strength: float) -> None:
         context = profile_payload.get("context")
         if not isinstance(context, dict):
             return
+        directional_signal = self._overlay_direction(overlay_regime)
         group_weights = context.get("group_weights")
         if isinstance(group_weights, dict):
-            self._adjust_weight(group_weights, "market_structure", signal_score, strength, coefficient=0.30)
-            self._adjust_weight(group_weights, "risk_account", signal_score, strength, coefficient=-0.38)
-            self._adjust_weight(group_weights, "tradability_timing", signal_score, strength, coefficient=0.12)
-            self._adjust_weight(group_weights, "source_execution", signal_score, strength, coefficient=0.10)
+            self._adjust_weight(group_weights, "market_structure", directional_signal, strength, coefficient=0.30)
+            self._adjust_weight(group_weights, "risk_account", directional_signal, strength, coefficient=-0.38)
+            self._adjust_weight(group_weights, "tradability_timing", directional_signal, strength, coefficient=0.12)
+            self._adjust_weight(group_weights, "source_execution", directional_signal, strength, coefficient=0.10)
         dimension_weights = context.get("dimension_weights")
         if isinstance(dimension_weights, dict):
             for key in ("trend_regime", "price_structure", "momentum", "source_prior"):
-                self._adjust_weight(dimension_weights, key, signal_score, strength, coefficient=0.18)
+                self._adjust_weight(dimension_weights, key, directional_signal, strength, coefficient=0.18)
             for key in ("risk_balance", "account_posture"):
-                self._adjust_weight(dimension_weights, key, signal_score, strength, coefficient=-0.32)
+                self._adjust_weight(dimension_weights, key, directional_signal, strength, coefficient=-0.32)
             for key in ("liquidity", "session", "execution_feedback"):
-                self._adjust_weight(dimension_weights, key, signal_score, strength, coefficient=0.08)
+                self._adjust_weight(dimension_weights, key, directional_signal, strength, coefficient=0.08)
 
-    def _adjust_dual_track(self, profile_payload: dict[str, Any], *, signal_score: float, strength: float) -> None:
+    def _adjust_base_dual_track(self, base_payload: dict[str, Any], *, overlay_regime: str, strength: float) -> None:
+        dual_track = base_payload.get("dual_track")
+        if not isinstance(dual_track, dict):
+            return
+        directional_signal = self._overlay_direction(overlay_regime)
+        track_weights = dual_track.get("track_weights")
+        if isinstance(track_weights, dict):
+            self._adjust_weight(track_weights, "tech", directional_signal, strength, coefficient=0.22)
+            self._adjust_weight(track_weights, "context", directional_signal, strength, coefficient=-0.22)
+
+    def _adjust_profile_dual_track(self, profile_payload: dict[str, Any], *, overlay_regime: str, strength: float) -> None:
         dual_track = profile_payload.get("dual_track")
         if not isinstance(dual_track, dict):
             return
-        adjust = signal_score * strength
-        track_weights = dual_track.get("track_weights")
-        if isinstance(track_weights, dict):
-            self._adjust_weight(track_weights, "tech", signal_score, strength, coefficient=0.22)
-            self._adjust_weight(track_weights, "context", signal_score, strength, coefficient=-0.22)
-        buy_threshold = _safe_float(dual_track.get("fusion_buy_threshold"), 0.76) - (0.10 * adjust)
-        sell_threshold = _safe_float(dual_track.get("fusion_sell_threshold"), -0.17) - (0.08 * adjust)
+        scale = self._overlay_scale(strength)
+        buy_threshold = _safe_float(dual_track.get("fusion_buy_threshold"), 0.76)
+        min_confidence = _safe_float(dual_track.get("min_fusion_confidence"), 0.5)
+        if overlay_regime == OVERLAY_RISK_ON:
+            buy_threshold -= 0.04 * scale
+            min_confidence -= 0.02 * scale
+        elif overlay_regime == OVERLAY_RISK_OFF:
+            buy_threshold += 0.03 * scale
+            min_confidence += 0.03 * scale
         dual_track["fusion_buy_threshold"] = round(_clamp(buy_threshold, 0.35, 1.35), 4)
-        dual_track["fusion_sell_threshold"] = round(_clamp(sell_threshold, -1.35, -0.02), 4)
-        min_confidence = _safe_float(dual_track.get("min_fusion_confidence"), 0.5) + (abs(adjust) * 0.05)
         dual_track["min_fusion_confidence"] = round(_clamp(min_confidence, 0.3, 0.95), 4)
 
-        threshold_mode = str(dual_track.get("threshold_mode") or "static")
-        sell_vol_k = _safe_float(dual_track.get("sell_vol_k"), 0.0)
-        gate_raw = _safe_float(dual_track.get("sell_precedence_gate"), -0.5) - (0.08 * adjust)
-        max_allowed_gate = _safe_float(dual_track.get("fusion_sell_threshold"), -0.17)
-        if threshold_mode == "volatility_adjusted":
-            max_allowed_gate -= sell_vol_k
-        dual_track["sell_precedence_gate"] = round(min(gate_raw, max_allowed_gate), 4)
+    def _select_overlay_regime(self, *, signal_score: float, signal_confidence: float, strength: float) -> str:
+        threshold = self._soft_switch_score_threshold(strength)
+        confidence_threshold = self._soft_switch_confidence_threshold(strength)
+        if signal_confidence < confidence_threshold:
+            return OVERLAY_NEUTRAL
+        if signal_score >= threshold:
+            return OVERLAY_RISK_ON
+        if signal_score <= -threshold:
+            return OVERLAY_RISK_OFF
+        return OVERLAY_NEUTRAL
+
+    @staticmethod
+    def _overlay_direction(overlay_regime: str) -> float:
+        if overlay_regime == OVERLAY_RISK_ON:
+            return 1.0
+        if overlay_regime == OVERLAY_RISK_OFF:
+            return -1.0
+        return 0.0
+
+    @staticmethod
+    def _overlay_scale(strength: float) -> float:
+        if DEFAULT_AI_DYNAMIC_STRENGTH <= 0:
+            return 1.0
+        return _clamp(strength / DEFAULT_AI_DYNAMIC_STRENGTH, 0.0, 2.0)
 
     @staticmethod
     def _adjust_weight(

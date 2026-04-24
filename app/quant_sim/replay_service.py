@@ -633,7 +633,10 @@ class QuantSimReplayService:
                         level="warning",
                     )
                     break
-                replay_signals.extend(checkpoint_summary.get("signals") or [])
+                checkpoint_signals = checkpoint_summary.get("signals") or []
+                replay_signals.extend(checkpoint_signals)
+                if checkpoint_signals:
+                    self.db.upsert_sim_run_signals(run_id, checkpoint_signals)
                 self.db.add_sim_run_checkpoint(
                     run_id,
                     checkpoint_at=checkpoint_text,
