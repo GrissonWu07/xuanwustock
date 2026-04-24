@@ -477,6 +477,10 @@ def test_replace_sim_run_runtime_results_preserves_incremental_signals(tmp_path)
     assert len(trades) == 1
     assert trades[0]["signal_id"] == signals[0]["id"]
     assert len(snapshots) == 1
+    assert db.get_sim_run(run_id)["trade_count"] == 1
+    assert db.count_sim_run_signals(run_id, actions=["BUY"]) == 1
+    assert db.count_sim_run_signals(run_id, actions=["SELL"]) == 0
+    assert db.get_sim_run_signals(run_id, actions=["BUY"])[0]["stock_code"] == "300390"
 
 
 def test_upsert_sim_run_signals_updates_existing_checkpoint_signal(tmp_path):

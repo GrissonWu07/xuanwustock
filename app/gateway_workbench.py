@@ -72,6 +72,10 @@ def _table(columns: list[str], rows: list[dict[str, Any]], empty_label: str) -> 
     return {"columns": columns, "rows": rows, "emptyLabel": empty_label}
 
 
+def _query_value(table_query: dict[str, Any] | None, key: str, default: Any = None) -> Any:
+    return table_query.get(key, default) if isinstance(table_query, dict) else default
+
+
 def _payload_dict(payload: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
@@ -104,9 +108,28 @@ def _normalize_codes(payload: Any) -> list[str]:
     return [code] if code else []
 
 
-def watchlist_rows(context: Any) -> list[dict[str, Any]]:
+def _table_page_query(table_query: dict[str, Any] | None, *, default_page_size: int = 50) -> tuple[str, int, int]:
+    search = _txt(_query_value(table_query, "search"))
+    try:
+        page_size = max(1, min(int(_query_value(table_query, "pageSize", default_page_size)), 100))
+    except (TypeError, ValueError):
+        page_size = default_page_size
+    try:
+        page = max(1, int(_query_value(table_query, "page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    return search, page, page_size
+
+
+def _pagination(page: int, page_size: int, total: int) -> dict[str, int]:
+    total_pages = max(1, (max(0, int(total)) + page_size - 1) // page_size)
+    safe_page = min(max(1, page), total_pages)
+    return {"page": safe_page, "pageSize": page_size, "totalRows": max(0, int(total)), "totalPages": total_pages}
+
+
+def watchlist_rows_from_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for item in context.watchlist().list_watches():
+    for item in items:
         code = normalize_stock_code(item.get("stock_code"))
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         sector = _txt(metadata.get("industry") or metadata.get("sector"), "-")
@@ -137,16 +160,30 @@ def watchlist_rows(context: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def watchlist_rows(context: Any) -> list[dict[str, Any]]:
+    return watchlist_rows_from_items(context.watchlist().list_watches())
+
+
 def build_workbench_snapshot(
     context: Any,
     *,
     analysis: dict[str, Any] | None = None,
     analysis_job: dict[str, Any] | None = None,
     activity: list[dict[str, str]] | None = None,
+    table_query: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = context.portfolio().get_account_summary()
-    watchlist = watchlist_rows(context)
-    quant_count = sum(1 for row in watchlist if row["cells"][5] == t("In quant pool"))
+    search, requested_page, page_size = _table_page_query(table_query)
+    total_watchlist = context.watchlist().count_watches()
+    filtered_total = context.watchlist().count_watches(search=search)
+    watchlist_pagination = _pagination(requested_page, page_size, filtered_total)
+    page_items = context.watchlist().list_watches_page(
+        search=search,
+        limit=page_size,
+        offset=(watchlist_pagination["page"] - 1) * page_size,
+    )
+    watchlist = watchlist_rows_from_items(page_items)
+    quant_count = context.watchlist().count_watches(in_quant_pool=True)
 
     def _analysis_from_record(latest_record: dict[str, Any], fallback_symbol: str = "") -> dict[str, Any]:
         resolved_symbol = normalize_stock_code(_txt(latest_record.get("symbol"), fallback_symbol))
@@ -183,7 +220,7 @@ def build_workbench_snapshot(
     if not cached_analysis:
         latest_record = context.stock_analysis_db().get_latest_record_by_symbol(active_symbol) if active_symbol else None
         if not latest_record:
-            records = context.stock_analysis_db().get_all_records()
+            records = context.stock_analysis_db().get_records_page(limit=1)
             latest_id = _int(records[0].get("id")) if records else None
             latest_record = context.stock_analysis_db().get_record_by_id(latest_id) if latest_id else None
         if latest_record:
@@ -227,16 +264,19 @@ def build_workbench_snapshot(
     return {
         "updatedAt": _now(),
         "metrics": [
-            _metric(t("My watchlist"), len(watchlist)),
+            _metric(t("My watchlist"), total_watchlist),
             _metric(t("My positions"), summary.get("position_count", 0)),
             _metric(t("Quant candidates"), quant_count),
             _metric(t("Quant jobs"), len(context.quant_db().get_sim_runs(limit=1000))),
         ],
-        "watchlist": _table(
-            [t("Code"), t("Name"), t("Price"), t("Sector"), t("Status"), t("Quant status")],
-            watchlist,
-            t("Watchlist is empty."),
-        ),
+        "watchlist": {
+            **_table(
+                [t("Code"), t("Name"), t("Price"), t("Sector"), t("Status"), t("Quant status")],
+                watchlist,
+                t("Watchlist is empty."),
+            ),
+            "pagination": watchlist_pagination,
+        },
         "watchlistMeta": {
             "selectedCount": 0,
             "quantCount": quant_count,
@@ -256,8 +296,8 @@ def build_workbench_snapshot(
     }
 
 
-def snapshot_workbench(context: Any) -> dict[str, Any]:
-    return build_workbench_snapshot(context)
+def snapshot_workbench(context: Any, *, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
+    return build_workbench_snapshot(context, table_query=table_query)
 
 
 def _submit_workbench_analysis_task(

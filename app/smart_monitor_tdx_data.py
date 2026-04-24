@@ -16,6 +16,7 @@ import pandas as pd
 from pytdx.config.hosts import hq_hosts
 from pytdx.hq import TdxHq_API
 
+from app.local_market_data_clients import TdxLocalClient
 from app.pytdx_host_config import load_pytdx_hosts
 
 
@@ -78,6 +79,7 @@ class SmartMonitorTDXDataFetcher:
         self._deprioritized_host_keys, self._deprioritized_host_only, self._deprioritized_name_keywords = self._load_deprioritized_hosts()
         self.hosts = self._build_hosts(effective_host, port, effective_fallback_hosts, effective_hosts_file)
         self._name_cache: Dict[Tuple[int, str], str] = {}
+        self.local_client = TdxLocalClient()
 
         host_summary = ", ".join(f"{name}:{ip}:{host_port}" for name, ip, host_port in self.hosts[:3])
         self.logger.info(f"TDX数据源初始化成功，使用pytdx直连: {host_summary}")
@@ -95,7 +97,7 @@ class SmartMonitorTDXDataFetcher:
         clean_code = self._normalize_stock_code(stock_code)
         market = self._get_market(clean_code)
 
-        try:
+        def remote_fetcher() -> Optional[Dict]:
             quote_data = self._fetch_quote_data(market, clean_code)
             if not quote_data:
                 self.logger.warning(f"TDX未返回股票 {clean_code} 的行情数据")
@@ -127,6 +129,14 @@ class SmartMonitorTDXDataFetcher:
                 "update_time": self._format_update_time(quote_data.get("servertime")),
                 "data_source": "tdx",
             }
+
+        try:
+            quote = self.local_client.get_realtime_quote(clean_code, remote_fetcher=remote_fetcher)
+            if quote and preferred_name:
+                quote["name"] = preferred_name
+            if quote:
+                self.logger.info(f"✅ TDX成功获取 {clean_code} ({quote.get('name')}) 实时行情")
+            return quote
         except Exception as exc:
             self.logger.error(f"TDX获取行情失败 {clean_code}: {type(exc).__name__}: {exc}")
             return None
@@ -149,21 +159,53 @@ class SmartMonitorTDXDataFetcher:
             return self._name_cache[cache_key]
 
         try:
-            def operation(api: TdxHq_API):
-                total = api.get_security_count(market)
-                for start in range(0, total, SECURITY_LIST_PAGE_SIZE):
-                    for item in api.get_security_list(market, start):
-                        if item.get("code") == clean_code:
-                            return item.get("name", "N/A")
-                return None
+            def remote_fetcher():
+                def operation(api: TdxHq_API):
+                    total = api.get_security_count(market)
+                    for start in range(0, total, SECURITY_LIST_PAGE_SIZE):
+                        for item in api.get_security_list(market, start):
+                            if item.get("code") == clean_code:
+                                return item.get("name", "N/A")
+                    return None
 
-            stock_name = self._call_with_failover(operation)
+                return self._call_with_failover(operation)
+
+            stock_name = self.local_client.get_security_name(clean_code, market=market, remote_fetcher=remote_fetcher)
             stock_name = stock_name or "N/A"
             self._name_cache[cache_key] = stock_name
             return stock_name
         except Exception as exc:
             self.logger.warning(f"获取股票名称失败 {clean_code}: {exc}")
             return "N/A"
+
+    def _bars_to_kline_frame(self, bars: list[dict], *, limit: int | None = None) -> Optional[pd.DataFrame]:
+        if not bars:
+            return None
+        df = pd.DataFrame(bars)
+        if df.empty:
+            return None
+
+        df = df.rename(
+            columns={
+                "datetime": "日期",
+                "open": "开盘",
+                "close": "收盘",
+                "high": "最高",
+                "low": "最低",
+                "vol": "成交量",
+                "amount": "成交额",
+            }
+        )
+        df["日期"] = pd.to_datetime(df["日期"])
+        df = df.sort_values("日期").reset_index(drop=True)
+
+        if limit is not None and len(df) > limit:
+            df = df.tail(limit).reset_index(drop=True)
+
+        return df[["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额"]]
+
+    def _fetch_kline_frame(self, market: int, clean_code: str, category: int, start: int, count: int, *, limit: int | None = None) -> Optional[pd.DataFrame]:
+        return self._bars_to_kline_frame(self._fetch_kline_data(market, clean_code, category, start, count), limit=limit)
 
     def get_kline_data(self, stock_code: str, kline_type: str = "day", limit: int = 200) -> Optional[pd.DataFrame]:
         """
@@ -182,34 +224,16 @@ class SmartMonitorTDXDataFetcher:
         category = KLINE_TYPE_MAP.get(kline_type, KLINE_TYPE_MAP["day"])
 
         try:
-            bars = self._fetch_kline_data(market, clean_code, category, 0, limit)
-            if not bars:
+            df = self.local_client.get_kline_data(
+                clean_code,
+                kline_type=kline_type,
+                limit=limit,
+                remote_fetcher=lambda: self._fetch_kline_frame(market, clean_code, category, 0, limit, limit=limit),
+            )
+            if df is None or df.empty:
                 self.logger.warning(f"TDX未返回股票 {clean_code} 的K线数据")
                 return None
-
-            df = pd.DataFrame(bars)
-            if df.empty:
-                return None
-
-            df = df.rename(
-                columns={
-                    "datetime": "日期",
-                    "open": "开盘",
-                    "close": "收盘",
-                    "high": "最高",
-                    "low": "最低",
-                    "vol": "成交量",
-                    "amount": "成交额",
-                }
-            )
-            df["日期"] = pd.to_datetime(df["日期"])
-            df = df.sort_values("日期").reset_index(drop=True)
-
-            if len(df) > limit:
-                df = df.tail(limit).reset_index(drop=True)
-
             df = df[["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额"]]
-
             self.logger.info(f"✅ TDX成功获取 {clean_code} K线数据，共{len(df)}条")
             return df
         except Exception as exc:
@@ -233,7 +257,7 @@ class SmartMonitorTDXDataFetcher:
         normalized_start = pd.to_datetime(start_datetime) if start_datetime is not None else None
         normalized_end = pd.to_datetime(end_datetime) if end_datetime is not None else None
 
-        try:
+        def remote_fetcher() -> Optional[pd.DataFrame]:
             chunk_size = 800
             rows: list[dict] = []
             start_offset = 0
@@ -250,35 +274,19 @@ class SmartMonitorTDXDataFetcher:
             if not rows:
                 return None
 
-            df = pd.DataFrame(rows)
-            if df.empty:
-                return None
+            return self._bars_to_kline_frame(rows)
 
-            df = df.rename(
-                columns={
-                    "datetime": "日期",
-                    "open": "开盘",
-                    "close": "收盘",
-                    "high": "最高",
-                    "low": "最低",
-                    "vol": "成交量",
-                    "amount": "成交额",
-                }
+        try:
+            df = self.local_client.get_kline_data_range(
+                clean_code,
+                kline_type=kline_type,
+                start_datetime=normalized_start,
+                end_datetime=normalized_end,
+                remote_fetcher=remote_fetcher,
             )
-            df["日期"] = pd.to_datetime(df["日期"])
-            df = (
-                df[["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额"]]
-                .sort_values("日期")
-                .drop_duplicates(subset=["日期"], keep="last")
-                .reset_index(drop=True)
-            )
-
-            if normalized_start is not None:
-                df = df[df["日期"] >= normalized_start]
-            if normalized_end is not None:
-                df = df[df["日期"] <= normalized_end]
-
-            return df.reset_index(drop=True)
+            if df is None or df.empty:
+                return df
+            return df[["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额"]]
         except Exception as exc:
             self.logger.error(f"TDX获取历史区间K线失败 {clean_code}: {type(exc).__name__}: {exc}")
             return None

@@ -111,6 +111,14 @@ class PortfolioManager:
     def get_all_stocks(self, auto_monitor_only: bool = False) -> List[Dict]:
         """获取所有持仓股票列表"""
         return self.db.get_all_stocks(auto_monitor_only)
+
+    def get_latest_analysis_page(self, *, search: str = "", limit: int = 50, offset: int = 0) -> List[Dict]:
+        """获取持仓最新分析分页。"""
+        return self.db.get_latest_analysis_page(search=search, limit=limit, offset=offset)
+
+    def count_latest_analysis(self, *, search: str = "") -> int:
+        """统计持仓最新分析列表。"""
+        return self.db.count_latest_analysis(search=search)
     
     def search_stocks(self, keyword: str) -> List[Dict]:
         """搜索持仓股票"""

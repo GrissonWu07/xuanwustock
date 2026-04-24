@@ -6,7 +6,7 @@
 """
 
 import pandas as pd
-from app.akshare_client import ak
+from app.local_market_data_clients import AkshareLocalClient
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
@@ -41,6 +41,7 @@ class ValueStockStrategy:
         # 当日交易计数
         self.daily_buy_count = 0
         self.current_date = None
+        self.akshare_client = AkshareLocalClient()
 
     def reset_daily_counter(self, date):
         """重置当日计数器"""
@@ -147,12 +148,13 @@ class ValueStockStrategy:
         """
         try:
             # 获取近60天日线数据
-            df = ak.stock_zh_a_hist(
-                symbol=stock_code,
+            df = self.akshare_client.get_stock_hist_data(
+                stock_code,
                 period="daily",
                 start_date=(datetime.now() - timedelta(days=90)).strftime("%Y%m%d"),
                 end_date=datetime.now().strftime("%Y%m%d"),
-                adjust="qfq"
+                adjust="qfq",
+                output="akshare",
             )
 
             if df is None or len(df) < self.rsi_period + 1:

@@ -146,9 +146,12 @@ def _candidate_rows(
     status: str | None = None,
     *,
     include_actions: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
+    search: str | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for item in context.candidate_pool().list_candidates(status=status):
+    for item in context.candidate_pool().list_candidates(status=status, limit=limit, offset=offset, search=search):
         code = normalize_stock_code(item.get("stock_code"))
         actions = []
         if include_actions:
@@ -943,7 +946,7 @@ def _workbench_analysis_needs_refresh(payload: dict[str, Any]) -> bool:
     return len(curve) == 0
 
 
-def _snapshot_workbench(context: UIApiContext) -> dict[str, Any]:
+def _snapshot_workbench(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     analysis = context.get_workbench_analysis()
     analysis_job = context.get_workbench_analysis_job()
     if analysis and _workbench_analysis_needs_refresh(analysis):
@@ -968,8 +971,8 @@ def _snapshot_workbench(context: UIApiContext) -> dict[str, Any]:
         context.set_workbench_analysis_job(normalized_job)
         analysis_job = normalized_job
     if isinstance(analysis, dict) or isinstance(analysis_job, dict):
-        return _gateway_build_workbench_snapshot(context, analysis=analysis, analysis_job=analysis_job)
-    return _gateway_snapshot_workbench(context)
+        return _gateway_build_workbench_snapshot(context, analysis=analysis, analysis_job=analysis_job, table_query=table_query)
+    return _gateway_snapshot_workbench(context, table_query=table_query)
 
 
 
@@ -980,18 +983,49 @@ def _snapshot_portfolio(
     selected_symbol: str | None = None,
     indicator_overrides: dict[str, dict[str, Any]] | None = None,
     analysis_job: dict[str, Any] | None = None,
+    table_query: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     manager = context.portfolio_manager()
     latest_rows = manager.get_all_latest_analysis()
+    page_size = _normalize_replay_table_page_size((table_query or {}).get("pageSize"), default=50)
+    page = _normalize_replay_table_page((table_query or {}).get("page"))
+    search = _txt((table_query or {}).get("search"))
+    if hasattr(manager, "count_latest_analysis") and hasattr(manager, "get_latest_analysis_page"):
+        page_total = manager.count_latest_analysis(search=search)
+        page_pagination = _replay_table_pagination(page, page_size, page_total)
+        page_latest_rows = manager.get_latest_analysis_page(
+            search=search,
+            limit=page_size,
+            offset=(page_pagination["page"] - 1) * page_size,
+        )
+    else:
+        search_lower = search.lower()
+        fallback_rows = latest_rows
+        if search_lower:
+            fallback_rows = [
+                item
+                for item in latest_rows
+                if search_lower
+                in " ".join(
+                    [
+                        _txt(item.get("code") or item.get("symbol")),
+                        _txt(item.get("name") or item.get("stock_name")),
+                        _txt(item.get("sector") or item.get("industry")),
+                        _txt(item.get("rating")),
+                    ]
+                ).lower()
+            ]
+        page_pagination = _replay_table_pagination(page, page_size, len(fallback_rows))
+        page_latest_rows = fallback_rows[(page_pagination["page"] - 1) * page_size : page_pagination["page"] * page_size]
     summary = context.portfolio().get_account_summary()
     runtime_entries = load_stock_runtime_entries(base_dir=context.selector_result_dir)
 
-    rows: list[dict[str, Any]] = []
     latest_by_symbol: dict[str, dict[str, Any]] = {}
-    for item in latest_rows:
+
+    def enrich_latest_item(item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         code = normalize_stock_code(item.get("code") or item.get("symbol"))
         if not code:
-            continue
+            return "", {}
         runtime = runtime_entries.get(code) if isinstance(runtime_entries, dict) else None
         item_payload = dict(item)
         runtime_name = _txt(runtime.get("stock_name")) if isinstance(runtime, dict) else ""
@@ -1006,7 +1040,18 @@ def _snapshot_portfolio(
         if runtime_price is not None:
             item_payload["current_price"] = runtime_price
 
-        latest_by_symbol[code] = item_payload
+        return code, item_payload
+
+    for item in latest_rows:
+        code, item_payload = enrich_latest_item(item)
+        if code:
+            latest_by_symbol[code] = item_payload
+
+    rows: list[dict[str, Any]] = []
+    for item in page_latest_rows:
+        code, item_payload = enrich_latest_item(item)
+        if not code:
+            continue
         name = _txt(item_payload.get("name") or item_payload.get("stock_name"), code)
         sector = _txt(item_payload.get("sector") or item_payload.get("industry") or item_payload.get("board") or item_payload.get("所属行业"), "-")
         quantity = _int(item_payload.get("quantity"), 0) or 0
@@ -1101,7 +1146,10 @@ def _snapshot_portfolio(
             _metric("最大回撤", _pct(summary.get("max_drawdown_pct"))),
             _metric("可用现金", _num(summary.get("available_cash"))),
         ],
-        "holdings": _table(["代码", "名称", "板块", "持仓数量", "成本", "止盈价", "止损价", "现价", "浮盈亏", "分数"], rows, "暂无持仓"),
+        "holdings": {
+            **_table(["代码", "名称", "板块", "持仓数量", "成本", "止盈价", "止损价", "现价", "浮盈亏", "分数"], rows, "暂无持仓"),
+            "pagination": page_pagination,
+        },
         "selectedSymbol": selected,
         "detail": detail,
         "attribution": [],
@@ -1117,10 +1165,25 @@ def _snapshot_portfolio(
     }
 
 
-def _snapshot_live_sim(context: UIApiContext) -> dict[str, Any]:
+def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     db = context.quant_db()
     scheduler = context.scheduler().get_status()
     account = db.get_account_summary()
+    page_size = _normalize_replay_table_page_size((table_query or {}).get("pageSize"), default=20)
+    page = _normalize_replay_table_page((table_query or {}).get("page"))
+    search = _txt((table_query or {}).get("search"))
+    candidate_total = context.candidate_pool().count_candidates(status="active", search=search)
+    candidate_pagination = _replay_table_pagination(page, page_size, candidate_total)
+    candidate_page_rows = _candidate_rows(
+        context,
+        status="active",
+        include_actions=True,
+        limit=page_size,
+        offset=(candidate_pagination["page"] - 1) * page_size,
+        search=search,
+    )
+    candidate_table = _table(["股票代码", "股票名称", "来源", "最新价格"], candidate_page_rows, "暂无候选股票")
+    candidate_table["pagination"] = candidate_pagination
     strategy_profiles = [
         {
             "id": _txt(item.get("id")),
@@ -1151,7 +1214,7 @@ def _snapshot_live_sim(context: UIApiContext) -> dict[str, Any]:
             "running": "运行中" if scheduler.get("running") else "已停止",
             "lastRun": _txt(scheduler.get("last_run_at"), "--"),
             "nextRun": _txt(scheduler.get("next_run"), "--"),
-            "candidateCount": _txt(len(context.candidate_pool().list_candidates(status="active")), "0"),
+            "candidateCount": _txt(context.candidate_pool().count_candidates(status="active"), "0"),
         },
         "metrics": [
             _metric("账户结果", account.get("total_equity", 0)),
@@ -1159,11 +1222,7 @@ def _snapshot_live_sim(context: UIApiContext) -> dict[str, Any]:
             _metric("总收益率", _pct(account.get("total_return_pct"))),
             _metric("可用现金", account.get("available_cash")),
         ],
-        "candidatePool": _table(
-            ["股票代码", "股票名称", "来源", "最新价格"],
-            _candidate_rows(context, status="active", include_actions=True),
-            "暂无候选股票",
-        ),
+        "candidatePool": candidate_table,
         "pendingSignals": [
             _insight(
                 _txt(item.get("stock_name") or item.get("stock_code") or "待执行信号"),
@@ -1198,26 +1257,7 @@ def _snapshot_live_sim(context: UIApiContext) -> dict[str, Any]:
             ],
             "暂无持仓",
         ),
-        "trades": _table(
-            ["时间", "代码", "动作", "数量", "价格", "备注"],
-            [
-                {
-                    "id": _txt(item.get("id"), str(i)),
-                    "cells": [
-                        _txt(item.get("executed_at") or item.get("created_at"), "--"),
-                        _txt(item.get("stock_code")),
-                        _txt(item.get("action")),
-                        _txt(item.get("quantity"), "0"),
-                        _num(item.get("price")),
-                        _txt(item.get("note") or "自动执行"),
-                    ],
-                    "code": _txt(item.get("stock_code")),
-                    "name": _txt(item.get("stock_name")),
-                }
-                for i, item in enumerate(db.get_trade_history(limit=50))
-            ],
-            "暂无交易记录",
-        ),
+        "trades": _live_trade_table(context, table_query),
         "curve": [
             {"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
             for i, item in enumerate(db.get_account_snapshots(limit=20))
@@ -1234,6 +1274,22 @@ def _build_his_replay_task_items(
     task_items: list[dict[str, Any]] = []
     for item in runs[:10]:
         run_id = int(item.get("id") or 0)
+        trade_count = db.count_sim_run_trades(run_id) if run_id else int(_float(item.get("trade_count"), 0.0) or 0.0)
+        latest_snapshot = db.get_latest_sim_run_snapshot(run_id) if run_id else None
+        trade_quality = db.get_sim_run_trade_quality(run_id) if run_id else {}
+        buy_trade_count = int(_float(trade_quality.get("buy_count"), 0.0) or 0.0)
+        sell_trade_count = int(_float(trade_quality.get("sell_count"), 0.0) or 0.0)
+        winning_sell_count = int(_float(trade_quality.get("winning_sell_count"), 0.0) or 0.0)
+        losing_sell_count = int(_float(trade_quality.get("losing_sell_count"), 0.0) or 0.0)
+        winning_sell_pnl = _float(trade_quality.get("winning_sell_pnl"), 0.0) or 0.0
+        losing_sell_pnl = _float(trade_quality.get("losing_sell_pnl"), 0.0) or 0.0
+        avg_win = winning_sell_pnl / winning_sell_count if winning_sell_count > 0 else None
+        avg_loss = losing_sell_pnl / losing_sell_count if losing_sell_count > 0 else None
+        sell_win_rate = (winning_sell_count / sell_trade_count * 100) if sell_trade_count > 0 else None
+        payoff_ratio = abs(avg_win / avg_loss) if avg_win is not None and avg_loss is not None and avg_loss < 0 else None
+        final_equity = _first_non_empty(latest_snapshot or {}, ["total_equity"]) if latest_snapshot else None
+        if final_equity is None:
+            final_equity = item.get("final_equity")
         status_text = _txt(item.get("status"), "completed")
         progress_total = int(_float(item.get("progress_total"), 0.0) or 0.0)
         progress_current = int(_float(item.get("progress_current"), 0.0) or 0.0)
@@ -1262,9 +1318,21 @@ def _build_his_replay_task_items(
             "market": _txt(item.get("market"), "CN"),
             "strategyMode": _txt(item.get("selected_strategy_mode") or item.get("strategy_mode"), "auto"),
             "returnPct": _pct(item.get("total_return_pct")),
-            "finalEquity": _num(item.get("final_equity"), 0),
-            "tradeCount": _txt(item.get("trade_count"), "0"),
+            "finalEquity": _num(final_equity, 0),
+            "cashValue": _num((latest_snapshot or {}).get("available_cash"), 0, default="--"),
+            "marketValue": _num((latest_snapshot or {}).get("market_value"), 0, default="--"),
+            "realizedPnl": _num((latest_snapshot or {}).get("realized_pnl"), 0, default="--"),
+            "unrealizedPnl": _num((latest_snapshot or {}).get("unrealized_pnl"), 0, default="--"),
+            "tradeCount": _txt(trade_count, "0"),
             "winRate": _pct(item.get("win_rate")),
+            "sellWinRate": _pct(sell_win_rate, default="--"),
+            "buyTradeCount": buy_trade_count,
+            "sellTradeCount": sell_trade_count,
+            "winningSellCount": winning_sell_count,
+            "losingSellCount": losing_sell_count,
+            "avgWin": _num(avg_win, 0, default="--"),
+            "avgLoss": _num(avg_loss, 0, default="--"),
+            "payoffRatio": _num(payoff_ratio, 2, default="--"),
             "strategyProfileId": _txt(item.get("selected_strategy_profile_id")),
             "strategyProfileName": _txt(item.get("selected_strategy_profile_name")),
             "strategyProfileVersionId": _txt(item.get("selected_strategy_profile_version_id")),
@@ -1299,8 +1367,15 @@ def _build_his_replay_task_items(
     return task_items
 
 
-def _build_his_replay_trade_rows(db: QuantSimDB, run_id: int) -> list[dict[str, Any]]:
-    return [
+def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
+    query = table_query or {}
+    page_size = _normalize_replay_table_page_size(query.get("page_size"))
+    page = _normalize_replay_table_page(query.get("trade_page"))
+    actions = _replay_actions_for_filter(query.get("trade_action"))
+    stock_keyword = _txt(query.get("trade_stock"))
+    total = db.count_sim_run_trades(run_id, actions=actions, stock_keyword=stock_keyword)
+    pagination = _replay_table_pagination(page, page_size, total)
+    rows = [
         {
             "id": _txt(item.get("id"), str(i)),
             "cells": [
@@ -1314,13 +1389,40 @@ def _build_his_replay_trade_rows(db: QuantSimDB, run_id: int) -> list[dict[str, 
             "code": _txt(item.get("stock_code")),
             "name": _txt(item.get("stock_name")),
         }
-        for i, item in enumerate(db.get_sim_run_trades(run_id, limit=REPLAY_TABLE_PAGE_SIZE))
+        for i, item in enumerate(
+            db.get_sim_run_trades(
+                run_id,
+                limit=page_size,
+                offset=(pagination["page"] - 1) * page_size,
+                actions=actions,
+                stock_keyword=stock_keyword,
+            )
+        )
     ]
+    table = _table(["时间", "信号ID", "代码", "动作", "数量", "价格"], rows, "暂无交易记录")
+    table["pagination"] = pagination
+    return table
 
 
-def _build_his_replay_signal_rows(db: QuantSimDB, run_id: int) -> list[dict[str, Any]]:
+def _build_his_replay_signal_table(db: QuantSimDB, run_id: int, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
+    query = table_query or {}
+    page_size = _normalize_replay_table_page_size(query.get("page_size"))
+    page = _normalize_replay_table_page(query.get("signal_page"))
+    actions = _replay_actions_for_filter(query.get("signal_action"))
+    stock_keyword = _txt(query.get("signal_stock"))
+    total = db.count_sim_run_signals(run_id, actions=actions, stock_keyword=stock_keyword)
+    pagination = _replay_table_pagination(page, page_size, total)
     signal_rows: list[dict[str, Any]] = []
-    for i, item in enumerate(db.get_sim_run_signals(run_id, limit=REPLAY_TABLE_PAGE_SIZE, include_strategy_profile=False)):
+    for i, item in enumerate(
+        db.get_sim_run_signals(
+            run_id,
+            limit=page_size,
+            offset=(pagination["page"] - 1) * page_size,
+            actions=actions,
+            stock_keyword=stock_keyword,
+            include_strategy_profile=False,
+        )
+    ):
         signal_id = _txt(item.get("id"), str(i))
         checkpoint_at = _txt(item.get("checkpoint_at") or item.get("created_at"), "--")
         action_text = _txt(item.get("action"), "HOLD").upper()
@@ -1348,7 +1450,9 @@ def _build_his_replay_signal_rows(db: QuantSimDB, run_id: int) -> list[dict[str,
                 "name": _txt(item.get("stock_name")),
             }
         )
-    return signal_rows
+    table = _table(["信号ID", "时间", "代码", "动作", "策略", "执行结果"], signal_rows, "暂无信号")
+    table["pagination"] = pagination
+    return table
 
 
 def _build_his_replay_holdings_rows(db: QuantSimDB, run_id: int) -> list[dict[str, Any]]:
@@ -1440,7 +1544,7 @@ def _reconcile_stale_his_replay_runs(db: QuantSimDB) -> None:
         db.append_sim_run_event(run_id, "回放任务已完成，已自动修正任务终态。", level="success")
 
 
-def _snapshot_his_replay_progress(context: UIApiContext) -> dict[str, Any]:
+def _snapshot_his_replay_progress(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     db = context.quant_db()
     _reconcile_stale_his_replay_runs(db)
     runs = db.get_sim_runs(limit=20)
@@ -1453,14 +1557,14 @@ def _snapshot_his_replay_progress(context: UIApiContext) -> dict[str, Any]:
         payload.update(
             {
                 "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], _build_his_replay_holdings_rows(db, run_id), "暂无持仓"),
-                "trades": _table(["时间", "信号ID", "代码", "动作", "数量", "价格"], _build_his_replay_trade_rows(db, run_id), "暂无交易记录"),
-                "signals": _table(["信号ID", "时间", "代码", "动作", "策略", "执行结果"], _build_his_replay_signal_rows(db, run_id), "暂无信号"),
+                "trades": _build_his_replay_trade_table(db, run_id, table_query),
+                "signals": _build_his_replay_signal_table(db, run_id, table_query),
             }
         )
     return payload
 
 
-def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
+def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     db = context.quant_db()
     _reconcile_stale_his_replay_runs(db)
     scheduler_status = context.scheduler().get_status()
@@ -1475,6 +1579,11 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
     ]
     runs = db.get_sim_runs(limit=20)
     run = runs[0] if runs else None
+    candidate_page_size = _normalize_replay_table_page_size((table_query or {}).get("candidate_page_size") or (table_query or {}).get("pageSize"), default=20)
+    candidate_page = _normalize_replay_table_page((table_query or {}).get("candidate_page") or (table_query or {}).get("page"))
+    candidate_search = _txt((table_query or {}).get("candidate_search") or (table_query or {}).get("search"))
+    candidate_total = context.candidate_pool().count_candidates(status="active", search=candidate_search)
+    candidate_pagination = _replay_table_pagination(candidate_page, candidate_page_size, candidate_total)
     candidate_rows = [
         {
             "id": _txt(item.get("stock_code"), str(i)),
@@ -1487,8 +1596,17 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
             "name": _txt(item.get("stock_name")),
             "latestPrice": _num(item.get("latest_price")),
         }
-        for i, item in enumerate(context.candidate_pool().list_candidates(status="active"))
+        for i, item in enumerate(
+            context.candidate_pool().list_candidates(
+                status="active",
+                limit=candidate_page_size,
+                offset=(candidate_pagination["page"] - 1) * candidate_page_size,
+                search=candidate_search,
+            )
+        )
     ]
+    candidate_pool_table = _table(["股票代码", "股票名称", "最新价格"], candidate_rows, "暂无候选股票")
+    candidate_pool_table["pagination"] = candidate_pagination
 
     if not run:
         return {
@@ -1513,7 +1631,7 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
                 _metric("交易笔数", "0"),
                 _metric("胜率", "--"),
             ],
-            "candidatePool": _table(["股票代码", "股票名称", "最新价格"], candidate_rows, "暂无候选股票"),
+            "candidatePool": candidate_pool_table,
             "tasks": [],
             "tradingAnalysis": {"title": "交易分析", "body": "暂无回放记录。", "chips": []},
             "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], [], "暂无持仓"),
@@ -1524,8 +1642,9 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
 
     rid = int(run["id"])
 
-    signal_rows = _build_his_replay_signal_rows(db, rid)
-    trade_rows = _build_his_replay_trade_rows(db, rid)
+    signal_table = _build_his_replay_signal_table(db, rid, table_query)
+    trade_table = _build_his_replay_trade_table(db, rid, table_query)
+    trade_count = db.count_sim_run_trades(rid)
 
     task_items = _build_his_replay_task_items(db, runs, include_positions=True)
 
@@ -1570,10 +1689,10 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
         "metrics": [
             _metric("回放结果", _pct(run.get("total_return_pct"))),
             _metric("最终总权益", _num(run.get("final_equity"), 0)),
-            _metric("交易笔数", _txt(run.get("trade_count"), "0")),
+            _metric("交易笔数", _txt(trade_count, "0")),
             _metric("胜率", _pct(run.get("win_rate"))),
         ],
-        "candidatePool": _table(["股票代码", "股票名称", "最新价格"], candidate_rows, "暂无候选股票"),
+        "candidatePool": candidate_pool_table,
         "tasks": task_items,
         "tradingAnalysis": {
             "title": "交易分析",
@@ -1600,8 +1719,8 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
             ],
             "暂无持仓",
         ),
-        "trades": _table(["时间", "信号ID", "代码", "动作", "数量", "价格"], trade_rows, "暂无交易记录"),
-        "signals": _table(["信号ID", "时间", "代码", "动作", "策略", "执行结果"], signal_rows, "暂无信号"),
+        "trades": trade_table,
+        "signals": signal_table,
         "curve": [
             {"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
             for i, item in enumerate(db.get_sim_run_snapshots(rid))
@@ -3300,11 +3419,28 @@ def _find_signal_detail(
     raise HTTPException(status_code=404, detail=f"Signal not found: {signal_id}")
 
 
-def _live_signal_table(context: UIApiContext, limit: int = 200) -> dict[str, Any]:
+def _live_signal_table(
+    context: UIApiContext,
+    *,
+    page: int = 1,
+    page_size: int = REPLAY_TABLE_PAGE_SIZE,
+    action: str = "ALL",
+    stock: str = "",
+) -> dict[str, Any]:
     db = context.quant_db()
-    safe_limit = max(1, min(limit, 500))
+    safe_page_size = _normalize_replay_table_page_size(page_size)
+    actions = _replay_actions_for_filter(action)
+    total = db.count_signals(actions=actions, stock_keyword=stock)
+    pagination = _replay_table_pagination(page, safe_page_size, total)
     rows: list[dict[str, Any]] = []
-    for i, item in enumerate(db.get_signals(limit=safe_limit)):
+    for i, item in enumerate(
+        db.get_signals(
+            limit=safe_page_size,
+            offset=(pagination["page"] - 1) * safe_page_size,
+            actions=actions,
+            stock_keyword=stock,
+        )
+    ):
         signal_id = _txt(item.get("id"), str(i))
         rows.append(
             {
@@ -3324,17 +3460,69 @@ def _live_signal_table(context: UIApiContext, limit: int = 200) -> dict[str, Any
         )
     return {
         "updatedAt": _now(),
-        "table": _table(["信号ID", "时间", "代码", "动作", "策略", "状态"], rows, "暂无信号"),
+        "table": {
+            **_table(["信号ID", "时间", "代码", "动作", "策略", "状态"], rows, "暂无信号"),
+            "pagination": pagination,
+        },
     }
 
 
-def _snapshot_ai_monitor(context: UIApiContext) -> dict[str, Any]:
+def _live_trade_table(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
+    db = context.quant_db()
+    query = table_query or {}
+    page_size = _normalize_replay_table_page_size(query.get("page_size") or query.get("pageSize"))
+    page = _normalize_replay_table_page(query.get("trade_page") or query.get("page"))
+    actions = _replay_actions_for_filter(query.get("trade_action") or query.get("action"))
+    stock_keyword = _txt(query.get("trade_stock") or query.get("stock"))
+    total = db.count_trade_history(actions=actions, stock_keyword=stock_keyword)
+    pagination = _replay_table_pagination(page, page_size, total)
+    rows = [
+        {
+            "id": _txt(item.get("id"), str(i)),
+            "cells": [
+                _txt(item.get("executed_at") or item.get("created_at"), "--"),
+                _txt(item.get("stock_code")),
+                _txt(item.get("action")),
+                _txt(item.get("quantity"), "0"),
+                _num(item.get("price")),
+                _txt(item.get("note") or "自动执行"),
+            ],
+            "code": _txt(item.get("stock_code")),
+            "name": _txt(item.get("stock_name")),
+        }
+        for i, item in enumerate(
+            db.get_trade_history(
+                limit=page_size,
+                offset=(pagination["page"] - 1) * page_size,
+                actions=actions,
+                stock_keyword=stock_keyword,
+            )
+        )
+    ]
+    table = _table(["时间", "代码", "动作", "数量", "价格", "备注"], rows, "暂无交易记录")
+    table["pagination"] = pagination
+    return table
+
+
+def _snapshot_ai_monitor(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     db = context.smart_monitor_db()
-    tasks = db.get_monitor_tasks(enabled_only=False)
+    page_size = _normalize_replay_table_page_size((table_query or {}).get("pageSize"), default=50)
+    page = _normalize_replay_table_page((table_query or {}).get("page"))
+    search = _txt((table_query or {}).get("search"))
+    task_total = db.count_monitor_tasks(enabled_only=False, search=search)
+    task_pagination = _replay_table_pagination(page, page_size, task_total)
+    tasks = db.get_monitor_tasks(
+        enabled_only=False,
+        search=search,
+        limit=page_size,
+        offset=(task_pagination["page"] - 1) * page_size,
+    )
     decisions = db.get_ai_decisions(limit=20)
     trades = db.get_trade_records(limit=20)
     positions = db.get_positions()
-    return {"updatedAt": _now(), "metrics": [_metric("盯盘队列", len(tasks)), _metric("最新信号", len(decisions)), _metric("观察中", len(positions)), _metric("通知状态", "在线")], "queue": _table(["代码", "名称", "启用", "间隔", "自动交易"], [{"id": _txt(item.get("stock_code"), str(i)), "cells": [_txt(item.get("stock_code")), _txt(item.get("stock_name") or item.get("task_name")), _txt(item.get("enabled"), "0"), _txt(item.get("check_interval"), "0"), "是" if item.get("auto_trade") else "否"], "code": _txt(item.get("stock_code")), "name": _txt(item.get("stock_name") or item.get("task_name"))} for i, item in enumerate(tasks)], "暂无监控任务"), "signals": [{"title": _txt(item.get("stock_name") or item.get("stock_code") or "AI 决策"), "body": _txt(item.get("reasoning") or "暂无说明"), "tags": [_txt(item.get("action") or "HOLD"), _txt(item.get("trading_session") or "session")]} for item in decisions[:10]], "timeline": [_timeline(_txt(item.get("trade_time"), "--"), _txt(item.get("stock_code"), "交易记录"), _txt(item.get("trade_type") or item.get("order_status") or "已记录")) for item in trades[:10]] or [_timeline(_now(), "AI 盯盘", "当前没有交易记录，监控任务稍后会在这里写入时间线。")], "actions": ["启动", "停止", "分析", "删除"]}
+    queue_table = _table(["代码", "名称", "启用", "间隔", "自动交易"], [{"id": _txt(item.get("stock_code"), str(i)), "cells": [_txt(item.get("stock_code")), _txt(item.get("stock_name") or item.get("task_name")), _txt(item.get("enabled"), "0"), _txt(item.get("check_interval"), "0"), "是" if item.get("auto_trade") else "否"], "code": _txt(item.get("stock_code")), "name": _txt(item.get("stock_name") or item.get("task_name"))} for i, item in enumerate(tasks)], "暂无监控任务")
+    queue_table["pagination"] = task_pagination
+    return {"updatedAt": _now(), "metrics": [_metric("盯盘队列", task_total), _metric("最新信号", len(decisions)), _metric("观察中", len(positions)), _metric("通知状态", "在线")], "queue": queue_table, "signals": [{"title": _txt(item.get("stock_name") or item.get("stock_code") or "AI 决策"), "body": _txt(item.get("reasoning") or "暂无说明"), "tags": [_txt(item.get("action") or "HOLD"), _txt(item.get("trading_session") or "session")]} for item in decisions[:10]], "timeline": [_timeline(_txt(item.get("trade_time"), "--"), _txt(item.get("stock_code"), "交易记录"), _txt(item.get("trade_type") or item.get("order_status") or "已记录")) for item in trades[:10]] or [_timeline(_now(), "AI 盯盘", "当前没有交易记录，监控任务稍后会在这里写入时间线。")], "actions": ["启动", "停止", "分析", "删除"]}
 
 
 def _snapshot_real_monitor(context: UIApiContext) -> dict[str, Any]:
@@ -3345,15 +3533,29 @@ def _snapshot_real_monitor(context: UIApiContext) -> dict[str, Any]:
     return {"updatedAt": _now(), "metrics": [_metric("监控规则", len(stocks)), _metric("触发记录", len(recent)), _metric("通知通道", len({item.get("type") for item in recent if item.get("type")})), _metric("连接状态", "在线")], "rules": [_insight(_txt(item.get("name") or item.get("symbol") or "监控规则"), f"{_txt(item.get('symbol'))} 的监控阈值和通知设置由数据库中已保存的规则驱动。") for item in stocks[:3]] or [_insight("价格突破提醒", "监控上破 / 下破关键位，并把触发结果推到通知链路。", "accent"), _insight("量价异动提醒", "监控量比、涨跌幅和短时波动，供实时决策参考。", "warning")], "triggers": [_timeline(_txt(item.get("triggered_at"), "--"), _txt(item.get("symbol") or item.get("name") or "触发记录"), _txt(item.get("message") or "通知已生成")) for item in pending[:10]] or [_timeline(_now(), "实时监控", "当前没有待发送提醒。")], "notificationStatus": ["已生成提醒" if pending else "暂无待发送提醒", "最近通知" if recent else "暂无历史通知"], "actions": ["启动", "停止", "刷新", "更新规则", "删除规则"]}
 
 
-def _snapshot_history(context: UIApiContext) -> dict[str, Any]:
-    records = context.stock_analysis_db().get_all_records()
+def _snapshot_history(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
+    db = context.stock_analysis_db()
+    page_size = _normalize_replay_table_page_size((table_query or {}).get("pageSize"), default=50)
+    page = _normalize_replay_table_page((table_query or {}).get("page"))
+    search = _txt((table_query or {}).get("search"))
+    total_records = db.count_records()
+    filtered_total = db.count_records(search=search)
+    pagination = _replay_table_pagination(page, page_size, filtered_total)
+    records = db.get_records_page(
+        search=search,
+        limit=page_size,
+        offset=(pagination["page"] - 1) * page_size,
+    )
+    timeline_records = db.get_records_page(limit=10)
     runs = context.quant_db().get_sim_runs(limit=20)
     latest = runs[0] if runs else None
     snapshots = context.quant_db().get_sim_run_snapshots(int(latest.get("id") or 0)) if latest else []
     recent_replay = {"title": "暂无最近回放", "body": "当前还没有可展示的回放记录。", "tags": []}
     if latest:
         recent_replay = {"title": f"#{latest.get('id')} {_txt(latest.get('mode'), '历史回放')}", "body": _txt(latest.get("status_message") or "最近一次回放已完成。"), "tags": [_txt(latest.get("checkpoint_count"), "0") + " 检查点", _txt(latest.get("trade_count"), "0") + " 笔成交", _pct(latest.get("total_return_pct"))]}
-    return {"updatedAt": _now(), "metrics": [_metric("分析记录", len(records)), _metric("最近回放", "完成" if latest else "无"), _metric("操作轨迹", len(records[:10])), _metric("活跃任务", len(runs))], "records": _table(["时间", "股票", "模式", "结论"], [{"id": _txt(item.get("id"), str(i)), "cells": [_txt(item.get("created_at") or item.get("analysis_date"), "--"), _txt(item.get("stock_name") or item.get("symbol")), _txt(item.get("period") or "analysis"), _txt(item.get("rating") or "--")], "code": normalize_stock_code(item.get("symbol")), "name": _txt(item.get("stock_name") or item.get("symbol"))} for i, item in enumerate(records[:50])], "暂无分析记录"), "recentReplay": recent_replay, "curve": [{"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)} for i, item in enumerate(snapshots[:20])], "timeline": [_timeline(_txt(item.get("created_at") or item.get("analysis_date"), "--"), _txt(item.get("stock_name") or item.get("symbol"), "历史记录"), _txt(item.get("rating") or item.get("analysis_mode") or "已记录")) for item in records[:10]]}
+    records_table = _table(["时间", "股票", "模式", "结论"], [{"id": _txt(item.get("id"), str(i)), "cells": [_txt(item.get("created_at") or item.get("analysis_date"), "--"), _txt(item.get("stock_name") or item.get("symbol")), _txt(item.get("period") or "analysis"), _txt(item.get("rating") or "--")], "code": normalize_stock_code(item.get("symbol")), "name": _txt(item.get("stock_name") or item.get("symbol"))} for i, item in enumerate(records)], "暂无分析记录")
+    records_table["pagination"] = pagination
+    return {"updatedAt": _now(), "metrics": [_metric("分析记录", total_records), _metric("最近回放", "完成" if latest else "无"), _metric("操作轨迹", min(total_records, 10)), _metric("活跃任务", len(runs))], "records": records_table, "recentReplay": recent_replay, "curve": [{"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)} for i, item in enumerate(snapshots[:20])], "timeline": [_timeline(_txt(item.get("created_at") or item.get("analysis_date"), "--"), _txt(item.get("stock_name") or item.get("symbol"), "历史记录"), _txt(item.get("rating") or item.get("analysis_mode") or "已记录")) for item in timeline_records]}
 
 
 def _snapshot_settings(context: UIApiContext) -> dict[str, Any]:
@@ -4245,8 +4447,22 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
         )
 
     @app.get("/api/v1/quant/live-sim/signals")
-    def get_live_sim_signals(limit: int = 200) -> dict[str, Any]:
-        return _live_signal_table(api_context, limit=limit)
+    def get_live_sim_signals(
+        page: int = 1,
+        pageSize: int = REPLAY_TABLE_PAGE_SIZE,
+        action: str = "ALL",
+        stock: str = "",
+    ) -> dict[str, Any]:
+        return _live_signal_table(api_context, page=page, page_size=pageSize, action=action, stock=stock)
+
+    @app.get("/api/v1/quant/live-sim/trades")
+    def get_live_sim_trades(
+        page: int = 1,
+        pageSize: int = REPLAY_TABLE_PAGE_SIZE,
+        action: str = "ALL",
+        stock: str = "",
+    ) -> dict[str, Any]:
+        return {"updatedAt": _now(), "table": _live_trade_table(api_context, {"page": page, "pageSize": pageSize, "action": action, "stock": stock})}
 
     @app.get("/api/v1/portfolio_v2/positions/{symbol}")
     def get_portfolio_position(symbol: str) -> dict[str, Any]:
@@ -4397,21 +4613,48 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get("/api/v1/workbench")
+    def get_workbench_snapshot(request: Request) -> dict[str, Any]:
+        return _snapshot_workbench(api_context, table_query=_replay_table_query_from_request(request))
+
+    @app.get("/api/v1/discover")
+    def get_discover_snapshot(request: Request) -> dict[str, Any]:
+        return _snapshot_discover(api_context, table_query=_replay_table_query_from_request(request))
+
+    @app.get("/api/v1/research")
+    def get_research_snapshot(request: Request) -> dict[str, Any]:
+        return _snapshot_research(api_context, table_query=_replay_table_query_from_request(request))
+
+    @app.get("/api/v1/portfolio")
+    def get_portfolio_snapshot(request: Request) -> dict[str, Any]:
+        return _snapshot_portfolio(api_context, table_query=_replay_table_query_from_request(request))
+
+    @app.get("/api/v1/portfolio_v2")
+    def get_portfolio_v2_snapshot(request: Request) -> dict[str, Any]:
+        return _snapshot_portfolio(api_context, table_query=_replay_table_query_from_request(request))
+
+    @app.get("/api/v1/quant/live-sim")
+    def get_live_sim_snapshot(request: Request) -> dict[str, Any]:
+        return _snapshot_live_sim(api_context, table_query=_replay_table_query_from_request(request))
+
+    @app.get("/api/v1/quant/his-replay")
+    def get_his_replay_snapshot(request: Request) -> dict[str, Any]:
+        return _snapshot_his_replay(api_context, _replay_table_query_from_request(request))
+
     @app.get("/api/v1/quant/his-replay/progress")
-    def get_his_replay_progress() -> dict[str, Any]:
-        return _snapshot_his_replay_progress(api_context)
+    def get_his_replay_progress(request: Request) -> dict[str, Any]:
+        return _snapshot_his_replay_progress(api_context, _replay_table_query_from_request(request))
+
+    @app.get("/api/v1/history")
+    def get_history_snapshot(request: Request) -> dict[str, Any]:
+        return _snapshot_history(api_context, table_query=_replay_table_query_from_request(request))
+
+    @app.get("/api/v1/monitor/ai")
+    def get_ai_monitor_snapshot(request: Request) -> dict[str, Any]:
+        return _snapshot_ai_monitor(api_context, table_query=_replay_table_query_from_request(request))
 
     for path, page in {
-        "/api/v1/workbench": "workbench",
-        "/api/v1/discover": "discover",
-        "/api/v1/research": "research",
-        "/api/v1/portfolio": "portfolio",
-        "/api/v1/portfolio_v2": "portfolio",
-        "/api/v1/quant/live-sim": "live-sim",
-        "/api/v1/quant/his-replay": "his-replay",
-        "/api/v1/monitor/ai": "ai-monitor",
         "/api/v1/monitor/real": "real-monitor",
-        "/api/v1/history": "history",
         "/api/v1/settings": "settings",
     }.items():
 
@@ -4512,3 +4755,53 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
 
 __all__ = ["UIApiContext", "create_app"]
 
+def _normalize_replay_table_page(value: Any, default: int = 1) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, parsed)
+
+
+def _normalize_replay_table_page_size(value: Any, default: int = REPLAY_TABLE_PAGE_SIZE) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(parsed, 100))
+
+
+def _replay_actions_for_filter(value: Any) -> list[str] | None:
+    normalized = str(value or "").strip().upper()
+    if not normalized or normalized == "ALL":
+        return None
+    if normalized == "TRADE":
+        return ["BUY", "SELL"]
+    if normalized in {"BUY", "SELL", "HOLD"}:
+        return [normalized]
+    return None
+
+
+def _replay_table_pagination(page: int, page_size: int, total: int) -> dict[str, int]:
+    pages = max(1, (max(0, total) + page_size - 1) // page_size)
+    current_page = min(max(1, page), pages)
+    return {"page": current_page, "pageSize": page_size, "totalRows": max(0, total), "totalPages": pages}
+
+
+def _replay_table_query_from_request(request: Request | None) -> dict[str, Any]:
+    if request is None:
+        return {}
+    params = request.query_params
+    page_size = _normalize_replay_table_page_size(params.get("pageSize") or params.get("page_size"))
+    return {
+        "search": params.get("search") or "",
+        "page": _normalize_replay_table_page(params.get("page")),
+        "pageSize": page_size,
+        "page_size": page_size,
+        "trade_page": _normalize_replay_table_page(params.get("tradePage") or params.get("trade_page")),
+        "trade_action": params.get("tradeAction") or params.get("trade_action") or "ALL",
+        "trade_stock": params.get("tradeStock") or params.get("trade_stock") or "",
+        "signal_page": _normalize_replay_table_page(params.get("signalPage") or params.get("signal_page")),
+        "signal_action": params.get("signalAction") or params.get("signal_action") or "ALL",
+        "signal_stock": params.get("signalStock") or params.get("signal_stock") or "",
+    }

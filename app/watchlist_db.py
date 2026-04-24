@@ -138,6 +138,55 @@ class WatchlistDB:
             rows = cursor.fetchall()
         return [self._row_to_watch(row) for row in rows]
 
+    def _build_watchlist_filters(self, search: str | None = None) -> tuple[str, list[str]]:
+        keyword = str(search or "").strip()
+        if not keyword:
+            return "", []
+        like_keyword = f"%{keyword}%"
+        return (
+            """
+            WHERE stock_code LIKE ?
+               OR stock_name LIKE ?
+               OR source_summary LIKE ?
+               OR notes LIKE ?
+               OR metadata_json LIKE ?
+            """,
+            [like_keyword, like_keyword, like_keyword, like_keyword, like_keyword],
+        )
+
+    def list_watches_page(self, search: str | None = None, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        where_sql, params = self._build_watchlist_filters(search)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT * FROM watchlist
+                {where_sql}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, max(0, int(limit)), max(0, int(offset))),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_watch(row) for row in rows]
+
+    def count_watches(self, search: str | None = None, *, in_quant_pool: bool | None = None) -> int:
+        where_sql, params = self._build_watchlist_filters(search)
+        extra = []
+        if in_quant_pool is not None:
+            extra.append("in_quant_pool = ?")
+            params.append("1" if in_quant_pool else "0")
+        if extra:
+            if where_sql:
+                where_sql = f"{where_sql} AND {' AND '.join(extra)}"
+            else:
+                where_sql = f"WHERE {' AND '.join(extra)}"
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) FROM watchlist {where_sql}", tuple(params))
+            row = cursor.fetchone()
+        return int(row[0] or 0) if row else 0
+
     def get_watch(self, stock_code: str) -> dict[str, Any] | None:
         normalized_code = str(stock_code).strip().upper()
         with self._connect() as conn:

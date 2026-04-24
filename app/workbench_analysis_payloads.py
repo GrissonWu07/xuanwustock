@@ -198,7 +198,7 @@ def build_workbench_analysis_payload(
     analyst_views: list[dict[str, Any]] = []
     insights: list[dict[str, Any]] = []
     decision_rating = _txt(
-        _first_non_empty(final_decision, ["decision", "rating", "verdict"]),
+        _first_non_empty(final_decision, ["decision", "rating", "verdict", "decision_text"]),
         t("No clear conclusion"),
     )
     operation_advice = _txt(_dict_value(final_decision, "operation_advice"))

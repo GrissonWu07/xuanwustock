@@ -131,6 +131,15 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const [signalStockFilter, setSignalStockFilter] = useState("");
   const [signalActionFilter, setSignalActionFilter] = useState("TRADE");
   const [signalPage, setSignalPage] = useState(1);
+  const [tradeTable, setTradeTable] = useState<TableSection>({
+    columns: ["时间", "代码", "动作", "数量", "价格", "备注"],
+    rows: [],
+    emptyLabel: "暂无交易记录",
+  });
+  const [tradeLoading, setTradeLoading] = useState(false);
+  const [tradeStockFilter, setTradeStockFilter] = useState("");
+  const [tradeActionFilter, setTradeActionFilter] = useState("ALL");
+  const [tradePage, setTradePage] = useState(1);
 
   useEffect(() => {
     if (!snapshot) {
@@ -155,7 +164,13 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     async function loadSignals() {
       setSignalLoading(true);
       try {
-        const response = await fetch("/api/v1/quant/live-sim/signals?limit=200", {
+        const params = new URLSearchParams({
+          page: String(signalPage),
+          pageSize: String(SIGNAL_PAGE_SIZE),
+          action: signalActionFilter,
+          stock: signalStockFilter.trim(),
+        });
+        const response = await fetch(`/api/v1/quant/live-sim/signals?${params.toString()}`, {
           headers: { Accept: "application/json" },
         });
         if (!response.ok) {
@@ -184,11 +199,57 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     return () => {
       mounted = false;
     };
-  }, [snapshotVersion]);
+  }, [snapshotVersion, signalPage, signalActionFilter, signalStockFilter]);
 
   useEffect(() => {
     setSignalPage(1);
   }, [signalStockFilter, signalActionFilter, snapshotVersion]);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadTrades() {
+      setTradeLoading(true);
+      try {
+        const params = new URLSearchParams({
+          page: String(tradePage),
+          pageSize: String(SIGNAL_PAGE_SIZE),
+          action: tradeActionFilter,
+          stock: tradeStockFilter.trim(),
+        });
+        const response = await fetch(`/api/v1/quant/live-sim/trades?${params.toString()}`, {
+          headers: { Accept: "application/json" },
+        });
+        if (!response.ok) {
+          throw new Error(`Request failed: ${response.status}`);
+        }
+        const payload = (await response.json()) as { table?: TableSection };
+        if (mounted && payload.table) {
+          setTradeTable(removeStrategyColumn(payload.table));
+        }
+      } catch {
+        if (mounted) {
+          setTradeTable({
+            columns: ["时间", "代码", "动作", "数量", "价格", "备注"],
+            rows: [],
+            emptyLabel: "暂无交易记录",
+            emptyMessage: "成交记录加载失败，请稍后重试。",
+          });
+        }
+      } finally {
+        if (mounted) {
+          setTradeLoading(false);
+        }
+      }
+    }
+    void loadTrades();
+    return () => {
+      mounted = false;
+    };
+  }, [snapshotVersion, tradePage, tradeActionFilter, tradeStockFilter]);
+
+  useEffect(() => {
+    setTradePage(1);
+  }, [tradeStockFilter, tradeActionFilter, snapshotVersion]);
 
   if (resource.status === "loading" && !resource.data) {
     return <PageLoadingState title="实时模拟加载中" description="正在读取定时任务配置、候选池和账户结果。" />;
@@ -215,25 +276,17 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const runningNormalized = String(snapshot.status.running ?? "").trim().toLowerCase();
   const isRunning = runningNormalized.includes("运行中") || runningNormalized.includes("running");
   const signalActionOptions = Array.from(new Set(signalTable.rows.map((row) => normalizeSignalAction(String(row.cells[3] ?? ""))).filter(Boolean)));
-  const filteredSignalRows = signalTable.rows.filter((row) => {
-    const keyword = signalStockFilter.trim().toLowerCase();
-    const code = String(row.code ?? row.cells[2] ?? "").toLowerCase();
-    const name = String(row.name ?? "").toLowerCase();
-    const codeCell = String(row.cells[2] ?? "").toLowerCase();
-    const action = normalizeSignalAction(String(row.cells[3] ?? ""));
-    const stockMatched = !keyword || code.includes(keyword) || name.includes(keyword) || codeCell.includes(keyword);
-    const actionMatched =
-      signalActionFilter === "ALL"
-      || (signalActionFilter === "TRADE" && (action === "BUY" || action === "BUG" || action === "SELL"))
-      || action === signalActionFilter;
-    return stockMatched && actionMatched;
-  });
-  const signalPages = Math.max(1, Math.ceil(filteredSignalRows.length / SIGNAL_PAGE_SIZE));
-  const currentSignalPage = Math.min(signalPage, signalPages);
+  const tradeActionOptions = Array.from(new Set(tradeTable.rows.map((row) => normalizeSignalAction(String(row.cells[2] ?? ""))).filter(Boolean)));
+  const signalPages = Math.max(1, Number(signalTable.pagination?.totalPages ?? 1));
+  const currentSignalPage = Math.min(Number(signalTable.pagination?.page ?? signalPage), signalPages);
+  const signalTotalRows = Number(signalTable.pagination?.totalRows ?? signalTable.rows.length);
   const pagedSignalTable: TableSection = {
     ...signalTable,
-    rows: filteredSignalRows.slice((currentSignalPage - 1) * SIGNAL_PAGE_SIZE, currentSignalPage * SIGNAL_PAGE_SIZE),
+    rows: signalTable.rows,
   };
+  const tradePages = Math.max(1, Number(tradeTable.pagination?.totalPages ?? 1));
+  const currentTradePage = Math.min(Number(tradeTable.pagination?.page ?? tradePage), tradePages);
+  const tradeTotalRows = Number(tradeTable.pagination?.totalRows ?? tradeTable.rows.length);
   const toolbarControlHeight = "40px";
   const renderSignalPager = () => (
     <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", flexWrap: "nowrap", whiteSpace: "nowrap" }}>
@@ -297,7 +350,59 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
       </select>
       {renderSignalPager()}
       <span className="summary-item__body table-toolbar-compact__count" style={{ margin: 0 }}>
-        {signalLoading ? "加载中..." : `筛选后 ${filteredSignalRows.length} 条`}
+        {signalLoading ? "加载中..." : `DB筛选 ${signalTotalRows} 条`}
+      </span>
+    </div>
+  );
+  const renderTradeToolbar = () => (
+    <div className="table-toolbar-compact" style={{ flexWrap: "nowrap", overflowX: "auto" }}>
+      <input
+        className="input"
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
+        data-size="compact-input"
+        placeholder="按代码/名称过滤"
+        value={tradeStockFilter}
+        onChange={(event) => setTradeStockFilter(event.target.value)}
+      />
+      <select
+        className="input"
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
+        data-size="compact-select"
+        value={tradeActionFilter}
+        onChange={(event) => setTradeActionFilter(event.target.value)}
+      >
+        <option value="ALL">全部动作</option>
+        {tradeActionOptions.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+      <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", flexWrap: "nowrap", whiteSpace: "nowrap" }}>
+        <button
+          className="button button--secondary button--small"
+          type="button"
+          style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 18px" }}
+          disabled={currentTradePage <= 1}
+          onClick={() => setTradePage((page) => Math.max(1, page - 1))}
+        >
+          ←
+        </button>
+        <span className="badge badge--neutral" style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}>
+          {`第 ${currentTradePage} / ${tradePages} 页`}
+        </span>
+        <button
+          className="button button--secondary button--small"
+          type="button"
+          style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 18px" }}
+          disabled={currentTradePage >= tradePages}
+          onClick={() => setTradePage((page) => Math.min(tradePages, page + 1))}
+        >
+          →
+        </button>
+      </div>
+      <span className="summary-item__body table-toolbar-compact__count" style={{ margin: 0 }}>
+        {tradeLoading ? "加载中..." : `DB筛选 ${tradeTotalRows} 条`}
       </span>
     </div>
   );
@@ -576,10 +681,11 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           />
           <QuantTableSectionCard
             title="成交记录"
-            table={snapshot.trades}
-            emptyTitle={snapshot.trades.emptyLabel ?? "成交记录暂无数据"}
-            emptyDescription={snapshot.trades.emptyMessage ?? "如果调度还没有生成新的成交，这里会先保持为空。"}
+            table={tradeTable}
+            emptyTitle={tradeTable.emptyLabel ?? "成交记录暂无数据"}
+            emptyDescription={tradeTable.emptyMessage ?? "如果调度还没有生成新的成交，这里会先保持为空。"}
             compactConfig={{ coreColumnIndexes: [0, 2, 3, 5], detailColumnIndexes: [1, 4, 6] }}
+            toolbar={renderTradeToolbar()}
           />
 
           <WorkbenchCard>

@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import type { ApiClient } from "../../lib/api-client";
+import { apiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
 import { Sparkline } from "../../components/ui/sparkline";
 import { SectionEmptyState } from "../../components/ui/section-empty";
@@ -12,6 +14,24 @@ type HistoryPageProps = {
 
 export function HistoryPage({ client }: HistoryPageProps) {
   const resource = usePageData("history", client);
+  const activeClient = client ?? apiClient;
+  const [tableSnapshot, setTableSnapshot] = useState<typeof resource.data | null>(null);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
+  const snapshot = tableSnapshot ?? resource.data;
+
+  useEffect(() => {
+    setTableSnapshot(resource.data ?? null);
+  }, [resource.data]);
+
+  useEffect(() => {
+    if (!resource.data) return;
+    void activeClient
+      .getPageSnapshot("history", { search: search.trim(), page, pageSize })
+      .then((next) => setTableSnapshot(next as typeof resource.data))
+      .catch(() => undefined);
+  }, [activeClient, page, pageSize, resource.data, search]);
 
   if (resource.status === "loading" && !resource.data) {
     return <PageLoadingState title="历史记录加载中" description="正在读取分析记录、回放结果和操作轨迹。" />;
@@ -28,13 +48,15 @@ export function HistoryPage({ client }: HistoryPageProps) {
     );
   }
 
-  const snapshot = resource.data;
   if (!snapshot) {
     return <PageEmptyState title="历史记录暂无数据" description="后台尚未返回历史记录快照。" actionLabel="刷新" onAction={resource.refresh} />;
   }
 
   const curve = snapshot.curve ?? [];
   const hasRecords = snapshot.records.rows.length > 0;
+  const totalRows = Number(snapshot.records.pagination?.totalRows ?? snapshot.records.rows.length);
+  const totalPages = Math.max(1, Number(snapshot.records.pagination?.totalPages ?? 1));
+  const currentPage = Math.min(Number(snapshot.records.pagination?.page ?? page), totalPages);
 
   return (
     <div>
@@ -80,6 +102,16 @@ export function HistoryPage({ client }: HistoryPageProps) {
                 </p>
               </div>
               <span className="toolbar__spacer" />
+              <input
+                className="input input--compact"
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setPage(1);
+                }}
+                placeholder="按代码/名称/模式/结论搜索"
+                style={{ maxWidth: 260 }}
+              />
               <button className="button button--secondary" type="button" onClick={() => resource.runAction("rerun")}>
                 重新整理
               </button>
@@ -116,6 +148,16 @@ export function HistoryPage({ client }: HistoryPageProps) {
                   )}
                 </tbody>
               </table>
+            </div>
+            <div className="toolbar toolbar--compact" style={{ marginTop: 12 }}>
+              <span className="toolbar__status">DB筛选 {totalRows} 条 · 第 {currentPage} / {totalPages} 页</span>
+              <span className="toolbar__spacer" />
+              <button className="button button--secondary" type="button" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+                上一页
+              </button>
+              <button className="button button--secondary" type="button" disabled={currentPage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>
+                下一页
+              </button>
             </div>
           </WorkbenchCard>
 

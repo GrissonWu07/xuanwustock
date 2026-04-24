@@ -10,6 +10,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from dotenv import load_dotenv
+from app.local_market_data_clients import AkshareLocalClient, TushareLocalClient
 
 # 加载环境变量
 load_dotenv()
@@ -76,6 +77,9 @@ class DataSourceManager:
                 self.tushare_available = False
         else:
             _safe_print("ℹ️ 未配置Tushare Token，将仅使用Akshare数据源")
+
+        self.akshare_client = AkshareLocalClient()
+        self.tushare_client = TushareLocalClient(tushare_api=self.tushare_api)
     
     def get_stock_hist_data(self, symbol, start_date=None, end_date=None, adjust='qfq'):
         """
@@ -98,35 +102,17 @@ class DataSourceManager:
         else:
             end_date = datetime.now().strftime('%Y%m%d')
         
-        # 优先使用akshare
+        # 优先使用本地AKShare缓存；缺失时由客户端回源AKShare并写回本地。
         try:
-            from app.akshare_client import ak
             _safe_print(f"[Akshare] 正在获取 {symbol} 的历史数据...")
-            
             with _without_proxy_env():
-                df = ak.stock_zh_a_hist(
+                df = self.akshare_client.get_stock_hist_data(
                     symbol=symbol,
-                    period="daily",
                     start_date=start_date,
                     end_date=end_date,
-                    adjust=adjust
+                    adjust=adjust,
                 )
-            
             if df is not None and not df.empty:
-                # 标准化列名
-                df = df.rename(columns={
-                    '日期': 'date',
-                    '开盘': 'open',
-                    '收盘': 'close',
-                    '最高': 'high',
-                    '最低': 'low',
-                    '成交量': 'volume',
-                    '成交额': 'amount',
-                    '振幅': 'amplitude',
-                    '涨跌幅': 'pct_change',
-                    '涨跌额': 'change',
-                    '换手率': 'turnover'
-                })
                 df['date'] = pd.to_datetime(df['date'])
                 _safe_print(f"[Akshare] ✅ 成功获取 {len(df)} 条数据")
                 return df
@@ -137,41 +123,15 @@ class DataSourceManager:
         if self.tushare_available:
             try:
                 _safe_print(f"[Tushare] 正在获取 {symbol} 的历史数据（备用数据源）...")
-                
-                # 转换股票代码格式（添加市场后缀）
-                ts_code = self._convert_to_ts_code(symbol)
-                
-                # 转换复权类型
-                adj_dict = {'qfq': 'qfq', 'hfq': 'hfq', '': None}
-                adj = adj_dict.get(adjust, 'qfq')
-                
-                # 格式化日期
-                start = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}" if start_date else None
-                end = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}" if end_date else None
-                
-                # 获取数据
-                df = self.tushare_api.daily(
-                    ts_code=ts_code,
+                df = self.tushare_client.get_stock_hist_data(
+                    symbol,
                     start_date=start_date,
                     end_date=end_date,
-                    adj=adj
+                    adjust=adjust,
                 )
-                
                 if df is not None and not df.empty:
-                    # 标准化列名和数据格式
-                    df = df.rename(columns={
-                        'trade_date': 'date',
-                        'vol': 'volume',
-                        'amount': 'amount'
-                    })
                     df['date'] = pd.to_datetime(df['date'])
                     df = df.sort_values('date')
-                    
-                    # 转换成交量单位（tushare单位是手，转换为股）
-                    df['volume'] = df['volume'] * 100
-                    # 转换成交额单位（tushare单位是千元，转换为元）
-                    df['amount'] = df['amount'] * 1000
-                    
                     _safe_print(f"[Tushare] ✅ 成功获取 {len(df)} 条数据")
                     return df
             except Exception as e:
@@ -198,28 +158,13 @@ class DataSourceManager:
             "market": "未知"
         }
         
-        # 优先使用akshare
+        # 优先使用本地AKShare缓存；缺失时回源AKShare。
         try:
-            from app.akshare_client import ak
             _safe_print(f"[Akshare] 正在获取 {symbol} 的基本信息...")
-            
-            stock_info = ak.stock_individual_info_em(symbol=symbol)
-            if stock_info is not None and not stock_info.empty:
-                for _, row in stock_info.iterrows():
-                    key = row['item']
-                    value = row['value']
-                    
-                    if key == '股票简称':
-                        info['name'] = value
-                    elif key == '所处行业':
-                        info['industry'] = value
-                    elif key == '上市时间':
-                        info['list_date'] = value
-                    elif key == '总市值':
-                        info['market_cap'] = value
-                    elif key == '流通市值':
-                        info['circulating_market_cap'] = value
-                
+            with _without_proxy_env():
+                stock_info = self.akshare_client.get_stock_basic_info(symbol)
+            if stock_info:
+                info.update({key: value for key, value in stock_info.items() if value not in (None, "")})
                 _safe_print(f"[Akshare] ✅ 成功获取基本信息")
                 return info
         except Exception as e:
@@ -229,19 +174,9 @@ class DataSourceManager:
         if self.tushare_available:
             try:
                 _safe_print(f"[Tushare] 正在获取 {symbol} 的基本信息（备用数据源）...")
-                
-                ts_code = self._convert_to_ts_code(symbol)
-                df = self.tushare_api.stock_basic(
-                    ts_code=ts_code,
-                    fields='ts_code,name,area,industry,market,list_date'
-                )
-                
-                if df is not None and not df.empty:
-                    info['name'] = df.iloc[0]['name']
-                    info['industry'] = df.iloc[0]['industry']
-                    info['market'] = df.iloc[0]['market']
-                    info['list_date'] = df.iloc[0]['list_date']
-                    
+                stock_info = self.tushare_client.get_stock_basic_info(symbol)
+                if stock_info:
+                    info.update({key: value for key, value in stock_info.items() if value not in (None, "")})
                     _safe_print(f"[Tushare] ✅ 成功获取基本信息")
                     return info
             except Exception as e:
@@ -261,29 +196,16 @@ class DataSourceManager:
         """
         quotes = {}
         
-        # 优先使用akshare
+        # 优先使用本地AKShare缓存；缺失或过期时回源AKShare。
         try:
-            from app.akshare_client import ak
             _safe_print(f"[Akshare] 正在获取 {symbol} 的实时行情...")
-            
-            df = ak.stock_zh_a_spot_em()
-            stock_df = df[df['代码'] == symbol]
-            
-            if not stock_df.empty:
-                row = stock_df.iloc[0]
-                quotes = {
-                    'symbol': symbol,
-                    'name': row['名称'],
-                    'price': row['最新价'],
-                    'change_percent': row['涨跌幅'],
-                    'change': row['涨跌额'],
-                    'volume': row['成交量'],
-                    'amount': row['成交额'],
-                    'high': row['最高'],
-                    'low': row['最低'],
-                    'open': row['今开'],
-                    'pre_close': row['昨收']
-                }
+            with _without_proxy_env():
+                quotes = self.akshare_client.get_realtime_quote(symbol) or {}
+            if quotes:
+                quotes.setdefault('symbol', symbol)
+                quotes.setdefault('price', quotes.get('current_price'))
+                quotes.setdefault('change_percent', quotes.get('change_pct'))
+                quotes.setdefault('change', quotes.get('change_amount'))
                 _safe_print(f"[Akshare] ✅ 成功获取实时行情")
                 return quotes
         except Exception as e:
@@ -293,27 +215,11 @@ class DataSourceManager:
         if self.tushare_available:
             try:
                 _safe_print(f"[Tushare] 正在获取 {symbol} 的实时行情（备用数据源）...")
-                
-                ts_code = self._convert_to_ts_code(symbol)
-                df = self.tushare_api.daily(
-                    ts_code=ts_code,
-                    start_date=datetime.now().strftime('%Y%m%d'),
-                    end_date=datetime.now().strftime('%Y%m%d')
-                )
-                
-                if df is not None and not df.empty:
-                    row = df.iloc[0]
-                    quotes = {
-                        'symbol': symbol,
-                        'price': row['close'],
-                        'change_percent': row['pct_chg'],
-                        'volume': row['vol'] * 100,
-                        'amount': row['amount'] * 1000,
-                        'high': row['high'],
-                        'low': row['low'],
-                        'open': row['open'],
-                        'pre_close': row['pre_close']
-                    }
+                quotes = self.tushare_client.get_realtime_quote(symbol) or {}
+                if quotes:
+                    quotes.setdefault('symbol', symbol)
+                    quotes.setdefault('price', quotes.get('current_price'))
+                    quotes.setdefault('change_percent', quotes.get('change_pct'))
                     _safe_print(f"[Tushare] ✅ 成功获取实时行情")
                     return quotes
             except Exception as e:
@@ -332,20 +238,11 @@ class DataSourceManager:
         Returns:
             DataFrame: 财务数据
         """
-        # 优先使用akshare
+        # 优先使用本地AKShare缓存；缺失时回源AKShare。
         try:
-            from app.akshare_client import ak
             _safe_print(f"[Akshare] 正在获取 {symbol} 的财务数据...")
-            
-            if report_type == 'income':
-                df = ak.stock_financial_report_sina(stock=symbol, symbol="利润表")
-            elif report_type == 'balance':
-                df = ak.stock_financial_report_sina(stock=symbol, symbol="资产负债表")
-            elif report_type == 'cashflow':
-                df = ak.stock_financial_report_sina(stock=symbol, symbol="现金流量表")
-            else:
-                df = None
-            
+            with _without_proxy_env():
+                df = self.akshare_client.get_financial_data(symbol, report_type=report_type)
             if df is not None and not df.empty:
                 _safe_print(f"[Akshare] ✅ 成功获取财务数据")
                 return df
@@ -356,18 +253,7 @@ class DataSourceManager:
         if self.tushare_available:
             try:
                 _safe_print(f"[Tushare] 正在获取 {symbol} 的财务数据（备用数据源）...")
-                
-                ts_code = self._convert_to_ts_code(symbol)
-                
-                if report_type == 'income':
-                    df = self.tushare_api.income(ts_code=ts_code)
-                elif report_type == 'balance':
-                    df = self.tushare_api.balancesheet(ts_code=ts_code)
-                elif report_type == 'cashflow':
-                    df = self.tushare_api.cashflow(ts_code=ts_code)
-                else:
-                    df = None
-                
+                df = self.tushare_client.get_financial_data(symbol, report_type=report_type)
                 if df is not None and not df.empty:
                     _safe_print(f"[Tushare] ✅ 成功获取财务数据")
                     return df

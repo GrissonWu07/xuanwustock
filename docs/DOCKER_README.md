@@ -96,8 +96,12 @@ Docker镜像已内置Node.js 18.x环境，支持pywencai等需要Node.js的Pytho
 - `stock_analysis.db` - 分析历史数据库
 - `stock_monitor.db` - 监测数据库
 - `data/` - 临时数据目录
+- `data/local_sources/` - AKShare、Tushare、TDX 本地 parquet 行情缓存
 
 即使删除容器，数据也不会丢失。
+
+### 本地行情缓存
+默认启用 `MARKET_DATA_CACHE_ENABLED=true`，缓存目录为 `/app/data/local_sources`。技术指标和 K 线读取会先查本地 parquet，缺失时才访问对应远端源，并写回本地缓存。
 
 ### 健康检查
 容器会自动监控应用健康状态，异常时自动重启。

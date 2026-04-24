@@ -6,7 +6,7 @@
 from app.console_utils import safe_print as print
 import sqlite3
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 import json
 from pathlib import Path
@@ -232,21 +232,57 @@ class SmartMonitorDB:
         self.logger.info(f"添加监控任务: {task_data.get('stock_code')} - {task_data.get('task_name')} {position_info}")
         return task_id
     
-    def get_monitor_tasks(self, enabled_only: bool = True) -> List[Dict]:
+    def get_monitor_tasks(
+        self,
+        enabled_only: bool = True,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        search: str | None = None,
+    ) -> List[Dict]:
         """获取监控任务列表"""
         conn = sqlite3.connect(self.db_file)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+        clauses = []
+        params: list[Any] = []
         if enabled_only:
-            cursor.execute('SELECT * FROM monitor_tasks WHERE enabled = 1 ORDER BY id DESC')
-        else:
-            cursor.execute('SELECT * FROM monitor_tasks ORDER BY id DESC')
+            clauses.append("enabled = 1")
+        keyword = str(search or "").strip()
+        if keyword:
+            like_keyword = f"%{keyword}%"
+            clauses.append("(stock_code LIKE ? OR stock_name LIKE ? OR task_name LIKE ?)")
+            params.extend([like_keyword, like_keyword, like_keyword])
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT * FROM monitor_tasks {where_sql} ORDER BY id DESC"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([max(0, int(limit)), max(0, int(offset))])
+        cursor.execute(sql, tuple(params))
         
         rows = cursor.fetchall()
         conn.close()
         
         return [dict(row) for row in rows]
+
+    def count_monitor_tasks(self, enabled_only: bool = True, *, search: str | None = None) -> int:
+        conn = sqlite3.connect(self.db_file)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        clauses = []
+        params: list[Any] = []
+        if enabled_only:
+            clauses.append("enabled = 1")
+        keyword = str(search or "").strip()
+        if keyword:
+            like_keyword = f"%{keyword}%"
+            clauses.append("(stock_code LIKE ? OR stock_name LIKE ? OR task_name LIKE ?)")
+            params.extend([like_keyword, like_keyword, like_keyword])
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor.execute(f"SELECT COUNT(*) AS total FROM monitor_tasks {where_sql}", tuple(params))
+        row = cursor.fetchone()
+        conn.close()
+        return int(row["total"] or 0) if row else 0
     
     def update_monitor_task(self, task_id: int, updates: Dict):
         """更新监控任务"""

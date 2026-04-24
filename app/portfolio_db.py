@@ -593,6 +593,96 @@ class PortfolioDB:
         finally:
             conn.close()
 
+    def get_latest_analysis_page(self, *, search: str = "", limit: int = 50, offset: int = 0) -> List[Dict]:
+        """获取持仓最新分析分页，搜索和分页在数据库层完成。"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        where_sql = ""
+        params: list = []
+        keyword = str(search or "").strip()
+        if keyword:
+            like_keyword = f"%{keyword}%"
+            where_sql = """
+                WHERE s.code LIKE ?
+                   OR s.name LIKE ?
+                   OR s.sector LIKE ?
+                   OR COALESCE(h.rating, '') LIKE ?
+            """
+            params.extend([like_keyword, like_keyword, like_keyword, like_keyword])
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT
+                    s.*,
+                    h.rating, h.confidence, h.current_price, h.target_price,
+                    h.entry_min, h.entry_max, h.take_profit AS analysis_take_profit, h.stop_loss AS analysis_stop_loss,
+                    h.analysis_time
+                FROM portfolio_stocks s
+                LEFT JOIN (
+                    SELECT h1.*
+                    FROM portfolio_analysis_history h1
+                    INNER JOIN (
+                        SELECT portfolio_stock_id, MAX(analysis_time) as max_time
+                        FROM portfolio_analysis_history
+                        GROUP BY portfolio_stock_id
+                    ) h2
+                    ON h1.portfolio_stock_id = h2.portfolio_stock_id
+                    AND h1.analysis_time = h2.max_time
+                ) h ON s.id = h.portfolio_stock_id
+                {where_sql}
+                ORDER BY s.created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, max(0, int(limit)), max(0, int(offset))),
+            )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def count_latest_analysis(self, *, search: str = "") -> int:
+        """统计持仓最新分析列表，搜索条件在数据库层完成。"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        where_sql = ""
+        params: list = []
+        keyword = str(search or "").strip()
+        if keyword:
+            like_keyword = f"%{keyword}%"
+            where_sql = """
+                WHERE s.code LIKE ?
+                   OR s.name LIKE ?
+                   OR s.sector LIKE ?
+                   OR COALESCE(h.rating, '') LIKE ?
+            """
+            params.extend([like_keyword, like_keyword, like_keyword, like_keyword])
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM portfolio_stocks s
+                LEFT JOIN (
+                    SELECT h1.*
+                    FROM portfolio_analysis_history h1
+                    INNER JOIN (
+                        SELECT portfolio_stock_id, MAX(analysis_time) as max_time
+                        FROM portfolio_analysis_history
+                        GROUP BY portfolio_stock_id
+                    ) h2
+                    ON h1.portfolio_stock_id = h2.portfolio_stock_id
+                    AND h1.analysis_time = h2.max_time
+                ) h ON s.id = h.portfolio_stock_id
+                {where_sql}
+                """,
+                tuple(params),
+            )
+            row = cursor.fetchone()
+            return int(row["total"] or 0) if row else 0
+        finally:
+            conn.close()
+
 
 # 创建全局数据库实例
 portfolio_db = PortfolioDB()

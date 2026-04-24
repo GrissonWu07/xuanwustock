@@ -269,9 +269,18 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     }
 
     let cancelled = false;
+    const replayQuery = {
+      pageSize: PAGE_SIZE,
+      tradePage,
+      tradeAction: tradeActionFilter,
+      tradeStock: tradeStockFilter.trim(),
+      signalPage,
+      signalAction: signalActionFilter,
+      signalStock: signalStockFilter.trim(),
+    };
     const refreshProgress = async () => {
       try {
-        const next = await activeClient.getReplayProgress<ReplayProgressSnapshot>();
+        const next = await activeClient.getReplayProgress<ReplayProgressSnapshot>(replayQuery);
         if (!cancelled) {
           setProgressSnapshot(next);
         }
@@ -280,13 +289,24 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
       }
     };
 
+    void refreshProgress();
     const timer = window.setInterval(refreshProgress, REPLAY_PROGRESS_REFRESH_MS);
 
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeClient, snapshotVersion, rawSnapshot]);
+  }, [
+    activeClient,
+    snapshotVersion,
+    rawSnapshot,
+    tradePage,
+    tradeActionFilter,
+    tradeStockFilter,
+    signalPage,
+    signalActionFilter,
+    signalStockFilter,
+  ]);
 
   useEffect(() => {
     setTradePage(1);
@@ -341,6 +361,23 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const selectedTaskProgressText =
     selectedTaskProgressTotal > 0 ? `${selectedTaskProgressCurrent}/${selectedTaskProgressTotal}` : "--";
   const selectedTaskLatestCheckpointAt = selectedTask?.latestCheckpointAt || "--";
+  const selectedTaskTradeLabel = selectedTask
+    ? `${selectedTask.tradeCount || "0"} · 买${selectedTask.buyTradeCount ?? "--"} 卖${selectedTask.sellTradeCount ?? "--"}`
+    : "--";
+  const selectedTaskMetrics = selectedTask
+    ? [
+        { label: "收益率", value: selectedTask.returnPct || "--" },
+        { label: "总权益", value: selectedTask.finalEquity || "--" },
+        { label: "现金", value: selectedTask.cashValue || "--" },
+        { label: "持仓市值", value: selectedTask.marketValue || "--" },
+        { label: "已实现", value: selectedTask.realizedPnl || "--" },
+        { label: "浮动盈亏", value: selectedTask.unrealizedPnl || "--" },
+        { label: "成交", value: selectedTaskTradeLabel },
+        { label: "SELL胜率", value: selectedTask.sellWinRate || selectedTask.winRate || "--" },
+        { label: "均盈/均亏", value: `${selectedTask.avgWin || "--"} / ${selectedTask.avgLoss || "--"}` },
+        { label: "盈亏比", value: selectedTask.payoffRatio || "--" },
+      ]
+    : [];
   const selectedTaskHoldings: TableSection = {
     columns: ["代码", "名称", "数量", "成本", "现价", "浮盈亏(元)", "浮盈亏(%)"],
     rows: selectedTask?.holdings ?? [],
@@ -364,38 +401,19 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         .filter(Boolean),
     ),
   );
-  const filteredTradeRows = tradeRows.filter((row) => {
-    const stockKeyword = tradeStockFilter.trim().toLowerCase();
-    const code = String(row.code ?? "").toLowerCase();
-    const name = String(row.name ?? "").toLowerCase();
-    const codeCell = String(row.cells[2] ?? "").toLowerCase();
-    const action = normalizeAction(String(row.cells[3] ?? ""));
-    const stockMatched = !stockKeyword || code.includes(stockKeyword) || name.includes(stockKeyword) || codeCell.includes(stockKeyword);
-    const actionMatched = tradeActionFilter === "ALL" || action === tradeActionFilter;
-    return stockMatched && actionMatched;
-  });
-  const filteredSignalRows = signalRows.filter((row) => {
-    const stockKeyword = signalStockFilter.trim().toLowerCase();
-    const code = String(row.code ?? "").toLowerCase();
-    const name = String(row.name ?? "").toLowerCase();
-    const codeCell = String(row.cells[2] ?? "").toLowerCase();
-    const action = normalizeAction(String(row.cells[3] ?? ""));
-    const stockMatched = !stockKeyword || code.includes(stockKeyword) || name.includes(stockKeyword) || codeCell.includes(stockKeyword);
-    const actionMatched =
-      signalActionFilter === "ALL"
-      || (signalActionFilter === "TRADE" && (action === "BUY" || action === "BUG" || action === "SELL"))
-      || action === signalActionFilter;
-    return stockMatched && actionMatched;
-  });
-  const tradePages = Math.max(1, Math.ceil(filteredTradeRows.length / PAGE_SIZE));
-  const signalPages = Math.max(1, Math.ceil(filteredSignalRows.length / PAGE_SIZE));
+  const tradePages = Math.max(1, Number(snapshot.trades.pagination?.totalPages ?? 1));
+  const signalPages = Math.max(1, Number(snapshot.signals.pagination?.totalPages ?? 1));
+  const effectiveTradePage = Math.max(1, Number(snapshot.trades.pagination?.page ?? tradePage));
+  const effectiveSignalPage = Math.max(1, Number(snapshot.signals.pagination?.page ?? signalPage));
+  const tradeTotalRows = Number(snapshot.trades.pagination?.totalRows ?? tradeRows.length);
+  const signalTotalRows = Number(snapshot.signals.pagination?.totalRows ?? signalRows.length);
   const pagedTrades = {
     ...snapshot.trades,
-    rows: filteredTradeRows.slice((tradePage - 1) * PAGE_SIZE, tradePage * PAGE_SIZE),
+    rows: tradeRows,
   };
   const pagedSignals = {
     ...signalTable,
-    rows: filteredSignalRows.slice((signalPage - 1) * PAGE_SIZE, signalPage * PAGE_SIZE),
+    rows: signalRows,
   };
   const toolbarControlHeight = "40px";
   const renderPager = (page: number, pages: number, setPage: (value: number) => void) => (
@@ -772,31 +790,13 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                         </div>
                       </div>
                     </div>
-                    <div className="mini-metric-grid replay-task-metrics-grid" style={{ gap: "8px" }}>
-                      <div className="mini-metric">
-                        <div className="mini-metric__label">最终盈亏比例</div>
-                        <div className="mini-metric__value">{selectedTask.returnPct || "--"}</div>
-                      </div>
-                      <div className="mini-metric">
-                        <div className="mini-metric__label">最终现金价值</div>
-                        <div className="mini-metric__value">{selectedTask.finalEquity || "--"}</div>
-                      </div>
-                      <div className="mini-metric">
-                        <div className="mini-metric__label">交易笔数</div>
-                        <div className="mini-metric__value">{selectedTask.tradeCount || "0"}</div>
-                      </div>
-                      <div className="mini-metric">
-                        <div className="mini-metric__label">胜率</div>
-                        <div className="mini-metric__value">{selectedTask.winRate || "--"}</div>
-                      </div>
-                      <div className="mini-metric">
-                        <div className="mini-metric__label">回放节点数</div>
-                        <div className="mini-metric__value">{selectedTaskProgressTotal > 0 ? selectedTaskProgressTotal : selectedTaskCheckpointCount}</div>
-                      </div>
-                      <div className="mini-metric">
-                        <div className="mini-metric__label">当前进度</div>
-                        <div className="mini-metric__value">{selectedTaskProgressText}</div>
-                      </div>
+                    <div className="mini-metric-grid replay-task-metrics-grid">
+                      {selectedTaskMetrics.map((metric) => (
+                        <div className="mini-metric replay-task-metric" key={metric.label}>
+                          <div className="mini-metric__label">{metric.label}</div>
+                          <div className="mini-metric__value" title={String(metric.value)}>{metric.value}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ) : null}
@@ -831,10 +831,10 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               tradeActionFilter,
               setTradeActionFilter,
               tradeActionOptions,
-              tradePage,
+              effectiveTradePage,
               tradePages,
               setTradePage,
-              `筛选后 ${filteredTradeRows.length} 条`,
+              `DB筛选 ${tradeTotalRows} 条`,
               false,
             )}
           />
@@ -859,10 +859,10 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               signalActionFilter,
               setSignalActionFilter,
               signalActionOptions,
-              signalPage,
+              effectiveSignalPage,
               signalPages,
               setSignalPage,
-              `筛选后 ${filteredSignalRows.length} 条`,
+              `DB筛选 ${signalTotalRows} 条`,
               true,
             )}
             onRowAction={handleSignalRowAction}

@@ -51,8 +51,20 @@ const initialSnapshot = {
       strategyMode: "auto",
       returnPct: "8.2%",
       finalEquity: "108200.00",
+      cashValue: "68200",
+      marketValue: "40000",
+      realizedPnl: "7600",
+      unrealizedPnl: "600",
       tradeCount: "14",
       winRate: "57.1%",
+      sellWinRate: "57.1%",
+      buyTradeCount: 7,
+      sellTradeCount: 7,
+      winningSellCount: 4,
+      losingSellCount: 3,
+      avgWin: "1800",
+      avgLoss: "-950",
+      payoffRatio: "1.89",
       strategyProfileId: "aggressive_v23",
       strategyProfileName: "积极",
       strategyProfileVersionId: "3",
@@ -183,8 +195,9 @@ describe("HisReplayPage", () => {
     expect(within(updatedTaskDetails).getByText("检查点进度：1/24 · 4%")).toBeInTheDocument();
     expect(within(updatedTaskDetails).getByText("已写入检查点：1")).toBeInTheDocument();
     expect(within(updatedTaskDetails).getByText("最近检查点：2026-04-02 10:00:00")).toBeInTheDocument();
-    expect(within(updatedTaskDetails).getByText("回放节点数")).toBeInTheDocument();
-    expect(within(updatedTaskDetails).getByText("1/24")).toBeInTheDocument();
+    expect(within(updatedTaskDetails).getByText("回放节点：24")).toBeInTheDocument();
+    expect(within(updatedTaskDetails).getByText("总权益")).toBeInTheDocument();
+    expect(within(updatedTaskDetails).getByText("SELL胜率")).toBeInTheDocument();
   });
 
   it("polls lightweight replay progress and updates the selected task without reloading the full snapshot", async () => {
@@ -211,8 +224,17 @@ describe("HisReplayPage", () => {
     renderHisReplayPage(client);
 
     const taskDetails = await screen.findByLabelText("已选回放任务详情");
-    expect(within(taskDetails).getByText("检查点进度：1/24 · 4%")).toBeInTheDocument();
     expect(intervalCallbacks).toHaveLength(1);
+    expect(await within(taskDetails).findByText("检查点进度：1497/1992 · 75%")).toBeInTheDocument();
+    expect(client.getReplayProgress).toHaveBeenCalledWith({
+      pageSize: 20,
+      tradePage: 1,
+      tradeAction: "ALL",
+      tradeStock: "",
+      signalPage: 1,
+      signalAction: "ALL",
+      signalStock: "",
+    });
 
     await act(async () => {
       await intervalCallbacks[0]();
@@ -224,7 +246,7 @@ describe("HisReplayPage", () => {
     expect(within(updatedTaskDetails).getByText("分析候选股 1/9 002463")).toBeInTheDocument();
     expect(screen.getByText("分析候选股 1/9 002463").closest(".replay-task-stage")).toBeTruthy();
     expect(screen.getByText("002463 沪电股份")).toBeInTheDocument();
-    expect(client.getReplayProgress).toHaveBeenCalledTimes(1);
+    expect(client.getReplayProgress).toHaveBeenCalledTimes(2);
     expect(client.getPageSnapshot).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import type { ApiClient } from "../../lib/api-client";
+import { useCallback, useEffect, useState } from "react";
+import { apiClient, type ApiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
@@ -18,8 +18,10 @@ const DEFAULT_ANALYSTS = ["technical", "fundamental", "fund_flow", "risk"];
 
 export function WorkbenchPage({ client }: WorkbenchPageProps) {
   const isCompactLayout = useCompactLayout();
-  const resource = usePageData("workbench", client);
-  const snapshot = resource.data;
+  const activeClient = client ?? apiClient;
+  const resource = usePageData("workbench", activeClient);
+  const [tableSnapshot, setTableSnapshot] = useState<typeof resource.data | null>(null);
+  const snapshot = tableSnapshot ?? resource.data;
   const analysisJob = snapshot?.analysisJob ?? null;
   const [localAnalysisPending, setLocalAnalysisPending] = useState(false);
   const [analysisInputSeed, setAnalysisInputSeed] = useState("");
@@ -71,6 +73,13 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
     }, 5 * 60 * 1000);
     return () => window.clearInterval(timer);
   }, [resource.refresh]);
+
+  const handleWatchlistTableQuery = useCallback(
+    (query: { search: string; page: number; pageSize: number }) => {
+      void activeClient.getPageSnapshot("workbench", query).then((next) => setTableSnapshot(next as typeof resource.data)).catch(() => undefined);
+    },
+    [activeClient],
+  );
 
   if (resource.status === "loading" && !resource.data) {
     return <PageLoadingState title={t("Workbench loading...")} description={t("Loading watchlist, stock analysis, and next-step entries.")} />;
@@ -207,6 +216,7 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
             onRemoveWatchlist={(code) => {
               void resource.runAction("delete-watchlist", { code });
             }}
+            onTableQueryChange={handleWatchlistTableQuery}
           />
           <StockAnalysisPanel
             analysis={snapshot.analysis}

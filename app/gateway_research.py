@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import HTTPException
@@ -26,6 +27,7 @@ from app.research_watchlist_integration import add_research_stock_to_watchlist, 
 from app.sector_strategy_engine import SectorStrategyEngine
 from app.selector_result_store import delete_latest_result, load_latest_result, save_latest_result
 from app.stock_refresh_scheduler import load_stock_runtime_entries
+from app.ui_table_cache_db import UITableCacheDB
 from app.watchlist_selector_integration import normalize_stock_code
 
 SectorStrategyDataFetcher = None
@@ -618,9 +620,44 @@ class ResearchTaskManager(AsyncTaskManagerBase):
 research_task_manager = ResearchTaskManager()
 
 
+def _query_value(table_query: dict[str, Any] | None, key: str, default: Any = None) -> Any:
+    return table_query.get(key, default) if isinstance(table_query, dict) else default
 
 
-def _snapshot_research(context: Any, *, task_job: dict[str, Any] | None = None) -> dict[str, Any]:
+def _table_cache(context: Any) -> UITableCacheDB:
+    data_dir = getattr(context, "data_dir", None)
+    return UITableCacheDB(Path(data_dir) / "ui_table_cache.db") if data_dir else UITableCacheDB()
+
+
+def _db_page_table_rows(
+    context: Any,
+    table_key: str,
+    rows: list[dict[str, Any]],
+    table_query: dict[str, Any] | None,
+    *,
+    default_page_size: int = 20,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    search = _txt(_query_value(table_query, "search"))
+    try:
+        page_size = max(1, min(int(_query_value(table_query, "pageSize", default_page_size)), 100))
+    except (TypeError, ValueError):
+        page_size = default_page_size
+    try:
+        page = max(1, int(_query_value(table_query, "page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    cache = _table_cache(context)
+    cache.replace_rows(table_key, rows)
+    total = cache.count_rows(table_key, search=search)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    safe_page = min(page, total_pages)
+    page_rows = cache.get_rows_page(table_key, search=search, limit=page_size, offset=(safe_page - 1) * page_size)
+    return page_rows, {"page": safe_page, "pageSize": page_size, "totalRows": total, "totalPages": total_pages}
+
+
+
+
+def _snapshot_research(context: Any, *, task_job: dict[str, Any] | None = None, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = load_latest_result(context.research_result_key, base_dir=context.selector_result_dir) or {}
     modules = payload.get("modules") if isinstance(payload.get("modules"), list) else [
         {"name": t("Sector strategy"), "note": t("Hot direction and sector rotation judgment"), "output": t("Market view")},
@@ -638,7 +675,9 @@ def _snapshot_research(context: Any, *, task_job: dict[str, Any] | None = None) 
         "body": t("Research defaults to market judgment first; watchlist actions appear only when modules output explicit stocks."),
     }
     latest_task = task_job or research_task_manager.latest_task()
-    return {
+    output_rows = _research_rows(context)
+    page_rows, pagination = _db_page_table_rows(context, "research.outputs", output_rows, table_query)
+    payload = {
         "updatedAt": _now(),
         "modules": [
             {
@@ -650,10 +689,12 @@ def _snapshot_research(context: Any, *, task_job: dict[str, Any] | None = None) 
             if isinstance(item, dict)
         ],
         "marketView": market_view,
-        "outputTable": _table([t("Code"), t("Name"), t("Source module"), t("Next action")], _research_rows(context), t("No stock output")),
+        "outputTable": _table([t("Code"), t("Name"), t("Source module"), t("Next action")], page_rows, t("No stock output")),
         "summary": {"title": _txt(summary.get("title") or t("Research")), "body": _txt(summary.get("body") or t("Research defaults to market judgment first."))},
         "taskJob": research_task_manager.job_view(latest_task, txt=_txt, int_fn=_int),
     }
+    payload["outputTable"]["pagination"] = pagination
+    return payload
 
 
 def _action_research_item(context: Any, payload: dict[str, Any]) -> dict[str, Any]:

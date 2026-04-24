@@ -106,58 +106,18 @@ class StockDataFetcher:
             basic_info = self.data_source_manager.get_stock_basic_info(symbol)
             if basic_info:
                 info.update(basic_info)
-            
-            # 方法1: 尝试获取个股详细信息（akshare）
-            try:
-                stock_info = ak.stock_individual_info_em(symbol=symbol)
-                if stock_info is not None and not stock_info.empty:
-                    for _, row in stock_info.iterrows():
-                        key = row['item']
-                        value = row['value']
-                        
-                        if key == '股票简称':
-                            info['name'] = value
-                        elif key == '总市值':
-                            try:
-                                if value and value != '-':
-                                    info['market_cap'] = float(value)
-                            except:
-                                pass
-                        elif key == '市盈率-动态':
-                            try:
-                                if value and value != '-':
-                                    pe_value = float(value)
-                                    if 0 < pe_value <= 1000:
-                                        info['pe_ratio'] = pe_value
-                            except:
-                                pass
-                        elif key == '市净率':
-                            try:
-                                if value and value != '-':
-                                    pb_value = float(value)
-                                    if 0 < pb_value <= 100:
-                                        info['pb_ratio'] = pb_value
-                            except:
-                                pass
-            except Exception as e:
-                print(f"[Akshare] 获取个股详细信息失败: {e}")
-                # 如果akshare失败，尝试从tushare获取
-                if self.data_source_manager.tushare_available and info['name'] == '未知':
-                    print(f"[Tushare] 尝试获取基本信息（tushare）...")
-                    try:
-                        ts_code = self.data_source_manager._convert_to_ts_code(symbol)
-                        df = self.data_source_manager.tushare_api.daily_basic(
-                            ts_code=ts_code,
-                            trade_date=datetime.now().strftime('%Y%m%d')
-                        )
-                        if df is not None and not df.empty:
-                            row = df.iloc[0]
-                            info['pe_ratio'] = row.get('pe', 'N/A')
-                            info['pb_ratio'] = row.get('pb', 'N/A')
-                            info['market_cap'] = row.get('total_mv', 'N/A')
-                            print(f"[Tushare] ✅ 成功获取部分信息")
-                    except Exception as te:
-                        print(f"[Tushare] ❌ 获取失败: {te}")
+            if info.get('pe_ratio') not in ('N/A', None, ''):
+                try:
+                    pe_value = float(info['pe_ratio'])
+                    info['pe_ratio'] = pe_value if 0 < pe_value <= 1000 else 'N/A'
+                except Exception:
+                    info['pe_ratio'] = 'N/A'
+            if info.get('pb_ratio') not in ('N/A', None, ''):
+                try:
+                    pb_value = float(info['pb_ratio'])
+                    info['pb_ratio'] = pb_value if 0 < pb_value <= 100 else 'N/A'
+                except Exception:
+                    info['pb_ratio'] = 'N/A'
             
             # 方法2: 尝试获取历史价格和涨跌幅（如果网络允许）
             # try:

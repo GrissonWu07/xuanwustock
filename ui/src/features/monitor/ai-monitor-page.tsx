@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ApiClient } from "../../lib/api-client";
+import { apiClient } from "../../lib/api-client";
 import { IconButton } from "../../components/ui/icon-button";
 import { PageHeader } from "../../components/ui/page-header";
 import { SectionEmptyState } from "../../components/ui/section-empty";
@@ -14,10 +15,29 @@ type AiMonitorPageProps = {
 
 export function AiMonitorPage({ client }: AiMonitorPageProps) {
   const resource = usePageData("ai-monitor", client);
-  const snapshot = resource.data;
+  const activeClient = client ?? apiClient;
+  const [tableSnapshot, setTableSnapshot] = useState<AiMonitorSnapshot | null>(null);
+  const [queueSearch, setQueueSearch] = useState("");
+  const [queuePage, setQueuePage] = useState(1);
+  const queuePageSize = 50;
+  const snapshot = tableSnapshot ?? resource.data;
   const [queueRows, setQueueRows] = useState<TableRow[] | null>(null);
   const [visibleSignals, setVisibleSignals] = useState<AiMonitorSnapshot["signals"] | null>(null);
   const [visibleTimeline, setVisibleTimeline] = useState<TimelineItem[] | null>(null);
+
+  useEffect(() => {
+    setTableSnapshot(resource.data ?? null);
+  }, [resource.data]);
+
+  useEffect(() => {
+    if (!resource.data) {
+      return;
+    }
+    void activeClient
+      .getPageSnapshot("ai-monitor", { search: queueSearch.trim(), page: queuePage, pageSize: queuePageSize })
+      .then((next) => setTableSnapshot(next as AiMonitorSnapshot))
+      .catch(() => undefined);
+  }, [activeClient, queuePage, queuePageSize, queueSearch, resource.data]);
 
   useEffect(() => {
     if (!snapshot) {
@@ -89,6 +109,9 @@ export function AiMonitorPage({ client }: AiMonitorPageProps) {
   const renderQueueRows = queueRows ?? snapshot?.queue.rows ?? [];
   const renderSignals = visibleSignals ?? snapshot?.signals ?? [];
   const renderTimeline = visibleTimeline ?? snapshot?.timeline ?? [];
+  const queueTotalRows = Number(snapshot?.queue.pagination?.totalRows ?? renderQueueRows.length);
+  const queuePages = Math.max(1, Number(snapshot?.queue.pagination?.totalPages ?? 1));
+  const currentQueuePage = Math.min(Number(snapshot?.queue.pagination?.page ?? queuePage), queuePages);
 
   if (resource.status === "loading" && !resource.data) {
     return <PageLoadingState title="AI盯盘加载中" description="正在读取盯盘队列、策略信号和事件时间线。" />;
@@ -186,6 +209,26 @@ export function AiMonitorPage({ client }: AiMonitorPageProps) {
         <div className="section-grid">
           <WorkbenchCard>
             <h2 className="section-card__title">盯盘队列</h2>
+            <div className="toolbar toolbar--compact" style={{ marginBottom: 12 }}>
+              <input
+                className="input input--compact"
+                value={queueSearch}
+                onChange={(event) => {
+                  setQueueSearch(event.target.value);
+                  setQueuePage(1);
+                }}
+                placeholder="按代码/名称搜索"
+                style={{ maxWidth: 220 }}
+              />
+              <span className="toolbar__spacer" />
+              <span className="toolbar__status">DB筛选 {queueTotalRows} 条 · 第 {currentQueuePage} / {queuePages} 页</span>
+              <button className="button button--secondary" type="button" disabled={currentQueuePage <= 1} onClick={() => setQueuePage((value) => Math.max(1, value - 1))}>
+                上一页
+              </button>
+              <button className="button button--secondary" type="button" disabled={currentQueuePage >= queuePages} onClick={() => setQueuePage((value) => Math.min(queuePages, value + 1))}>
+                下一页
+              </button>
+            </div>
             <div className="table-shell">
               <table className="table">
                 <thead>

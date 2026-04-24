@@ -105,26 +105,41 @@ class StockAnalysisDatabase:
         
         return cursor.lastrowid
     
-    def get_all_records(self):
-        """获取所有分析记录"""
+    def _build_record_filters(self, search: str | None = None) -> tuple[str, list[str]]:
+        keyword = str(search or "").strip()
+        if not keyword:
+            return "", []
+        like_keyword = f"%{keyword}%"
+        return (
+            "WHERE symbol LIKE ? OR stock_name LIKE ? OR period LIKE ? OR final_decision LIKE ?",
+            [like_keyword, like_keyword, like_keyword, like_keyword],
+        )
+
+    def _analysis_summary_rows(self, where_sql: str = "", params: list[str] | None = None, *, limit: int | None = None, offset: int = 0):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
-        cursor.execute('''
+        sql = f"""
             SELECT id, symbol, stock_name, analysis_date, period, final_decision, created_at
-            FROM analysis_records 
+            FROM analysis_records
+            {where_sql}
             ORDER BY created_at DESC
-        ''')
-        
+        """
+        query_params: list[object] = list(params or [])
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            query_params.extend([max(0, int(limit)), max(0, int(offset))])
+
+        cursor.execute(sql, tuple(query_params))
         records = cursor.fetchall()
         conn.close()
-        
+        return records
+
+    def _summary_rows_to_records(self, records):
         result = []
         for record in records:
-            # 解析final_decision获取评级
             final_decision = json.loads(record[5]) if record[5] else {}
             rating = final_decision.get('rating', '未知') if isinstance(final_decision, dict) else '未知'
-            
+
             result.append({
                 'id': record[0],
                 'symbol': record[1],
@@ -134,8 +149,29 @@ class StockAnalysisDatabase:
                 'rating': rating,
                 'created_at': record[6]
             })
-        
+
         return result
+
+    def get_all_records(self):
+        """获取所有分析记录"""
+        return self._summary_rows_to_records(self._analysis_summary_rows())
+
+    def get_records_page(self, search: str | None = None, limit: int = 50, offset: int = 0):
+        """按页获取分析记录，供 UI 表格分页/搜索使用。"""
+        where_sql, params = self._build_record_filters(search)
+        return self._summary_rows_to_records(
+            self._analysis_summary_rows(where_sql, params, limit=limit, offset=offset)
+        )
+
+    def count_records(self, search: str | None = None) -> int:
+        """统计分析记录数量，支持与分页查询相同的搜索条件。"""
+        where_sql, params = self._build_record_filters(search)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM analysis_records {where_sql}", tuple(params))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return int(count or 0)
     
     def get_record_count(self):
         """获取记录总数"""

@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
 
+from app.local_market_data_clients import AkshareLocalClient, TushareLocalClient
+
 
 class SmartMonitorKline:
     """智能盯盘K线图"""
@@ -18,6 +20,7 @@ class SmartMonitorKline:
     def __init__(self):
         """初始化K线图"""
         self.logger = logging.getLogger(__name__)
+        self.akshare_client = AkshareLocalClient()
     
     def create_kline_with_decisions(
         self,
@@ -342,15 +345,15 @@ class SmartMonitorKline:
             end_date = datetime.now().strftime('%Y%m%d')
             start_date = (datetime.now() - timedelta(days=days + 30)).strftime('%Y%m%d')  # 多取30天以确保足够数据
             
-            # 方法2: 尝试使用AKShare获取（只尝试1次，避免IP封禁）
+            # 方法2: 尝试使用AKShare本地优先获取（只在缺口时触发远端）
             try:
-                from app.akshare_client import ak
-                df = ak.stock_zh_a_hist(
+                df = self.akshare_client.get_stock_hist_data(
                     symbol=stock_code,
-                    period='daily',
                     start_date=start_date,
                     end_date=end_date,
-                    adjust='qfq'
+                    adjust='qfq',
+                    period='daily',
+                    output='akshare',
                 )
                 
                 if df is not None and not df.empty:
@@ -363,7 +366,7 @@ class SmartMonitorKline:
             except Exception as e:
                 self.logger.warning(f"AKShare获取K线数据失败 {stock_code}: {type(e).__name__}, 尝试降级到Tushare")
             
-            # 方法3: 降级到Tushare
+            # 方法3: 降级到Tushare本地优先源
             if data_fetcher and data_fetcher.ts_pro:
                 self.logger.info(f"降级使用Tushare获取K线数据 {stock_code}")
                 df = self._get_kline_from_tushare(stock_code, days, data_fetcher.ts_pro)
@@ -393,51 +396,22 @@ class SmartMonitorKline:
             K线数据DataFrame
         """
         try:
-            # 转换股票代码格式
-            if stock_code.startswith('6'):
-                ts_code = f"{stock_code}.SH"
-            elif stock_code.startswith(('0', '3')):
-                ts_code = f"{stock_code}.SZ"
-            else:
-                ts_code = stock_code
-            
             # 计算日期范围（多取一些确保足够）
             end_date = datetime.now().strftime('%Y%m%d')
             start_date = (datetime.now() - timedelta(days=days + 60)).strftime('%Y%m%d')
             
-            # 获取日K线数据（前复权）
-            df = ts_pro.daily(
-                ts_code=ts_code,
+            df = TushareLocalClient(tushare_api=ts_pro).get_stock_hist_data(
+                stock_code,
                 start_date=start_date,
                 end_date=end_date,
-                adj='qfq'
+                adjust='qfq',
+                output='akshare',
             )
             
             if df is None or df.empty:
                 self.logger.error(f"Tushare未返回K线数据 {stock_code}")
                 return None
-            
-            # Tushare数据是从新到旧，需要反转
-            df = df.sort_values('trade_date', ascending=True).reset_index(drop=True)
-            
-            # 统一列名为AKShare格式
-            df = df.rename(columns={
-                'trade_date': '日期',
-                'open': '开盘',
-                'high': '最高',
-                'low': '最低',
-                'close': '收盘',
-                'vol': '成交量',
-                'amount': '成交额'
-            })
-            
-            # 转换日期格式（Tushare: 20240115 -> 2024-01-15）
-            df['日期'] = pd.to_datetime(df['日期'])
-            
-            # 只保留最近days天的数据
-            df = df.tail(days)
-            
-            return df
+            return df.tail(days)
             
         except Exception as e:
             self.logger.error(f"Tushare获取K线数据失败 {stock_code}: {type(e).__name__}: {str(e)}")

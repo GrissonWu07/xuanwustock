@@ -33,6 +33,7 @@ ui/dist/
 
 # 数据库文件（如果需要持久化，应该使用volumes）
 *.db
+data/local_sources/
 
 # 环境变量文件（应该在运行时挂载）
 .env

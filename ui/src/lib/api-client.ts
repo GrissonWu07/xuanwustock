@@ -97,6 +97,19 @@ type RequestOptions = {
   signal?: AbortSignal;
 };
 
+type QueryValue = string | number | boolean | null | undefined;
+
+const withQuery = (path: string, query?: Record<string, QueryValue>) => {
+  if (!query) return path;
+  const params = new URLSearchParams();
+  Object.entries(query).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    params.set(key, String(value));
+  });
+  const suffix = params.toString();
+  return suffix ? `${path}?${suffix}` : path;
+};
+
 const DEFAULT_BASE_URL = import.meta.env.VITE_API_BASE ?? "";
 const DEFAULT_MODE = (import.meta.env.VITE_UI_API_MODE as ApiMode | undefined) ?? "live";
 
@@ -156,9 +169,9 @@ export function createApiClient(options: ApiClientOptions = {}) {
     return await parseResponseJson<T>(response, path);
   };
 
-  const requestPage = async <T,>(page: PageKey): Promise<T> => {
+  const requestPage = async <T,>(page: PageKey, query?: Record<string, QueryValue>): Promise<T> => {
     try {
-      return await requestLive<T>(PAGE_ENDPOINTS[page]);
+      return await requestLive<T>(withQuery(PAGE_ENDPOINTS[page], query));
     } catch (error) {
       if (mode === "hybrid") {
         throw error;
@@ -189,8 +202,8 @@ export function createApiClient(options: ApiClientOptions = {}) {
     return await requestLive<T>(`/api/v1/tasks/${taskId}`);
   };
 
-  const getReplayProgress = async <T,>(): Promise<T> =>
-    requestLive<T>("/api/v1/quant/his-replay/progress");
+  const getReplayProgress = async <T,>(query?: Record<string, QueryValue>): Promise<T> =>
+    requestLive<T>(withQuery("/api/v1/quant/his-replay/progress", query));
 
   const requestPortfolioPosition = async <T,>(symbol: string): Promise<T> => {
     if (!symbol.trim()) {

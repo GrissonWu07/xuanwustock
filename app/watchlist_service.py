@@ -85,6 +85,12 @@ class WatchlistService:
     def list_watches(self) -> list[dict[str, Any]]:
         return self.db.list_watches()
 
+    def list_watches_page(self, search: str | None = None, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        return self.db.list_watches_page(search=search, limit=limit, offset=offset)
+
+    def count_watches(self, search: str | None = None, *, in_quant_pool: bool | None = None) -> int:
+        return self.db.count_watches(search=search, in_quant_pool=in_quant_pool)
+
     def get_watch(self, stock_code: str) -> dict[str, Any] | None:
         return self.db.get_watch(stock_code)
 

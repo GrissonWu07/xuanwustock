@@ -1321,6 +1321,158 @@ def test_his_replay_snapshot_returns_only_first_page_for_heavy_tables(tmp_path):
     assert snapshot["signals"]["rows"][-1]["code"] == "300005"
 
 
+def test_his_replay_task_metrics_explain_low_win_rate_profitability(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2025-12-01 09:30:00",
+        end_datetime="2026-01-06 15:00:00",
+        initial_cash=100000,
+        status="completed",
+        metadata={"selected_strategy_mode": "auto"},
+    )
+    trades = [
+        {
+            "signal_id": 1,
+            "stock_code": "300001",
+            "stock_name": "盈利A",
+            "action": "SELL",
+            "price": 12,
+            "quantity": 100,
+            "amount": 1200,
+            "realized_pnl": 2000,
+            "executed_at": "2026-01-06 10:00:00",
+            "created_at": "2026-01-06 10:00:00",
+        },
+        {
+            "signal_id": 2,
+            "stock_code": "300002",
+            "stock_name": "亏损B",
+            "action": "SELL",
+            "price": 9,
+            "quantity": 100,
+            "amount": 900,
+            "realized_pnl": -500,
+            "executed_at": "2026-01-06 10:30:00",
+            "created_at": "2026-01-06 10:30:00",
+        },
+        {
+            "signal_id": 3,
+            "stock_code": "300003",
+            "stock_name": "买入C",
+            "action": "BUY",
+            "price": 10,
+            "quantity": 100,
+            "amount": 1000,
+            "realized_pnl": 0,
+            "executed_at": "2026-01-06 11:00:00",
+            "created_at": "2026-01-06 11:00:00",
+        },
+    ]
+    snapshots = [
+        {
+            "checkpoint_at": "2026-01-06 15:00:00",
+            "available_cash": 70000,
+            "market_value": 50000,
+            "total_equity": 120000,
+            "realized_pnl": 15000,
+            "unrealized_pnl": 5000,
+            "created_at": "2026-01-06 15:00:00",
+        }
+    ]
+    db.replace_sim_run_results(run_id, trades=trades, snapshots=snapshots, positions=[], signals=[])
+    db.finalize_sim_run(
+        run_id,
+        status="completed",
+        final_equity=120000,
+        total_return_pct=20,
+        max_drawdown_pct=0,
+        win_rate=50,
+        trade_count=3,
+        status_message="完成",
+    )
+
+    client = TestClient(create_app(context=context))
+    task = client.get("/api/v1/quant/his-replay").json()["tasks"][0]
+
+    assert task["finalEquity"] == "120000"
+    assert task["cashValue"] == "70000"
+    assert task["marketValue"] == "50000"
+    assert task["realizedPnl"] == "15000"
+    assert task["unrealizedPnl"] == "5000"
+    assert task["sellWinRate"] == "50.00%"
+    assert task["winningSellCount"] == 1
+    assert task["losingSellCount"] == 1
+    assert task["avgWin"] == "2000"
+    assert task["avgLoss"] == "-500"
+    assert task["payoffRatio"] == "4.00"
+
+
+def test_his_replay_signal_filters_are_applied_by_database(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2025-12-01 09:30:00",
+        end_datetime="2026-01-06 15:00:00",
+        initial_cash=100000,
+        status="running",
+        metadata={"selected_strategy_mode": "auto"},
+    )
+    hold_signals = [
+        {
+            "id": index + 1,
+            "stock_code": f"300{index:03d}",
+            "stock_name": f"测试{index}",
+            "action": "HOLD",
+            "confidence": 50,
+            "reasoning": f"hold {index}",
+            "checkpoint_at": f"2026-01-06 10:{index:02d}:00",
+            "created_at": f"2026-01-06 10:{index:02d}:00",
+        }
+        for index in range(25)
+    ]
+    trade_signals = [
+        {
+            "id": 101,
+            "stock_code": "300684",
+            "stock_name": "中石科技",
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "older buy",
+            "checkpoint_at": "2026-01-05 10:00:00",
+            "created_at": "2026-01-05 10:00:00",
+        },
+        {
+            "id": 102,
+            "stock_code": "301662",
+            "stock_name": "宏工科技",
+            "action": "SELL",
+            "confidence": 80,
+            "reasoning": "older sell",
+            "checkpoint_at": "2026-01-05 09:30:00",
+            "created_at": "2026-01-05 09:30:00",
+        },
+    ]
+    db.replace_sim_run_results(run_id, trades=[], snapshots=[], positions=[], signals=[*hold_signals, *trade_signals])
+
+    client = TestClient(create_app(context=context))
+    unfiltered = client.get("/api/v1/quant/his-replay").json()
+    filtered = client.get("/api/v1/quant/his-replay?signalAction=TRADE").json()
+    buy_only = client.get("/api/v1/quant/his-replay/progress?signalAction=BUY").json()
+
+    assert {row["cells"][3] for row in unfiltered["signals"]["rows"]} == {"HOLD"}
+    assert [row["cells"][3] for row in filtered["signals"]["rows"]] == ["BUY", "SELL"]
+    assert filtered["signals"]["pagination"]["totalRows"] == 2
+    assert [row["code"] for row in buy_only["signals"]["rows"]] == ["300684"]
+    assert buy_only["signals"]["pagination"]["totalRows"] == 1
+
+
 def test_his_replay_snapshot_marks_completed_stale_run_with_missing_trades_as_failed(tmp_path):
     context = _make_context(tmp_path)
     db = context.quant_db()

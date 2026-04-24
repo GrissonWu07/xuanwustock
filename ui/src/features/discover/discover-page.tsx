@@ -114,12 +114,13 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
   const [analysisSnapshot, setAnalysisSnapshot] = useState<WorkbenchSnapshot["analysis"] | null>(null);
   const [analyzingCode, setAnalyzingCode] = useState<string>("");
   const [taskJob, setTaskJob] = useState<DiscoverSnapshot["taskJob"]>(null);
+  const [tableSnapshot, setTableSnapshot] = useState<DiscoverSnapshot | null>(null);
   const [currentPage, setCurrentPage] = useState(0);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const analysisPanelRef = useRef<HTMLElement | null>(null);
   const pageSize = 6;
 
-  const snapshot = resource.data;
+  const snapshot = tableSnapshot ?? resource.data;
   const runStrategyOptions = [
     { value: "all", label: t("All strategies") },
     { value: "main_force", label: t("Main force selection") },
@@ -130,7 +131,6 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
     { value: "ai_scanner", label: t("AI stock selection") },
   ];
   const searchTerm = search.trim();
-  const normalizedSearch = searchTerm.toLowerCase();
   const sourceRows = snapshot?.candidateTable.rows ?? [];
   const strategyBusy = Boolean(taskJob && ["queued", "running"].includes(taskJob.status));
   const candidateColumnsFromBackend = snapshot?.candidateTable.columns ?? [];
@@ -155,25 +155,9 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
     () => (showSelectedAtColumn ? [...candidateColumnsFromBackend, t("Discovered at")] : candidateColumnsFromBackend),
     [candidateColumnsFromBackend, showSelectedAtColumn],
   );
-  const filteredRows = useMemo(
-    () =>
-      sourceRows.filter((row) => {
-        const text = [
-          row.id,
-          row.reason ?? "",
-          ...row.cells,
-          getRowSelectedAt(row),
-          ...(row.badges ?? []),
-        ].join(" ").toLowerCase();
-        return text.includes(normalizedSearch);
-      }),
-    [normalizedSearch, sourceRows],
-  );
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
-  const visibleRows = useMemo(
-    () => filteredRows.slice(currentPage * pageSize, currentPage * pageSize + pageSize),
-    [currentPage, filteredRows],
-  );
+  const totalRows = Number(snapshot?.candidateTable.pagination?.totalRows ?? sourceRows.length);
+  const totalPages = Math.max(1, Number(snapshot?.candidateTable.pagination?.totalPages ?? 1));
+  const visibleRows = sourceRows;
   const rowIds = useMemo(() => visibleRows.map((row) => row.id), [visibleRows]);
   const selection = useSelection(rowIds);
   const selectedRows = visibleRows.filter((row) => selection.isSelected(row.id));
@@ -187,19 +171,34 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
   const selectedPreviewLabel =
     selection.selectedCount > 0
       ? t("{count} stocks selected. You can batch add them below.", { count: selection.selectedCount })
-      : t("No candidate selected. Choose from {count} candidates and batch add.", { count: filteredRows.length });
-  const candidateEmptyLabel = normalizedSearch
+      : t("No candidate selected. Choose from {count} candidates and batch add.", { count: totalRows });
+  const candidateEmptyLabel = searchTerm
     ? t('No candidate matches "{keyword}"', { keyword: searchTerm })
     : snapshot?.candidateTable.emptyLabel
       ? t(snapshot.candidateTable.emptyLabel)
       : t("No candidate stocks");
   const candidateEmptyMessage =
-    normalizedSearch && snapshot
+    searchTerm && snapshot
       ? t("Try searching by code, name, industry, source, or reason.")
       : snapshot?.candidateTable.emptyMessage
         ? t(snapshot.candidateTable.emptyMessage)
         : undefined;
-  const currentPageLabel = t("Page {current}/{total}", { current: Math.min(currentPage + 1, totalPages), total: totalPages });
+  const currentPageLabel = t("Page {current}/{total}", { current: Math.min(Number(snapshot?.candidateTable.pagination?.page ?? currentPage + 1), totalPages), total: totalPages });
+
+  useEffect(() => {
+    if (!resource.data) return;
+    let cancelled = false;
+    void taskClient.getPageSnapshot<DiscoverSnapshot>("discover", {
+      search: searchTerm,
+      page: currentPage + 1,
+      pageSize,
+    }).then((next) => {
+      if (!cancelled) setTableSnapshot(next);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [currentPage, pageSize, resource.data, searchTerm, taskClient]);
 
   const handleBatchWatchlist = async () => {
     if (!canBatchWatchlist || batching) return;
@@ -334,7 +333,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
 
   useEffect(() => {
     setCurrentPage(0);
-  }, [normalizedSearch]);
+  }, [searchTerm]);
 
   useEffect(() => {
     setCurrentPage((current) => Math.min(current, totalPages - 1));
@@ -472,7 +471,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
               />
             </div>
             <span className="badge badge--neutral discover-candidate-toolbar__summary">
-              {t("Selected / candidate {selected} / {total}", { selected: selection.selectedCount, total: filteredRows.length })}
+              {t("Selected / candidate {selected} / {total}", { selected: selection.selectedCount, total: totalRows })}
             </span>
             <div className="discover-candidate-toolbar__actions">
               <IconButton icon="↻" label={t("Refresh discover result")} tone="neutral" onClick={() => void handleRunStrategy()} disabled={runningStrategy || strategyBusy || resettingList} />
@@ -501,7 +500,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.length === 0 ? (
+                {visibleRows.length === 0 ? (
                   <tr>
                     <td className="table__empty" colSpan={candidateColumns.length + 2}>
                       <div className="summary-item">
@@ -579,13 +578,13 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
           </div>
           <div className="discover-candidate-footer" data-testid="discover-candidate-footer">
             <div className="discover-candidate-footer__left">
-              {filteredRows.length > 0 ? (
+              {totalRows > 0 ? (
                 <>
                   <span className="toolbar__status">
                     {t("Current showing {start}-{end} / {total}", {
                       start: currentPage * pageSize + 1,
-                      end: Math.min(filteredRows.length, currentPage * pageSize + visibleRows.length),
-                      total: filteredRows.length,
+                      end: Math.min(totalRows, currentPage * pageSize + visibleRows.length),
+                      total: totalRows,
                     })}
                   </span>
                 </>

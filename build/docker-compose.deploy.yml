@@ -10,6 +10,8 @@ services:
       - ${XUANWUSTOCK_DATA_DIR:-./data}:/app/data
     environment:
       - TZ=Asia/Shanghai
+      - LOCAL_MARKET_DATA_DIR=/app/data/local_sources
+      - MARKET_DATA_CACHE_ENABLED=true
     restart: unless-stopped
     networks:
       - agentsstock-network

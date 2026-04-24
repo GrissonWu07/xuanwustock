@@ -11,40 +11,42 @@ type PortfolioPageProps = {
 };
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
-const NEWS_PAGE_SIZE = 10;
 
 export function PortfolioPage({ client }: PortfolioPageProps) {
   const activeClient = client ?? apiClient;
   const resource = usePageData("portfolio", activeClient);
-  const snapshot = resource.data;
+  const [tableSnapshot, setTableSnapshot] = useState<typeof resource.data | null>(null);
+  const snapshot = tableSnapshot ?? resource.data;
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [pageSize, setPageSize] = useState(50);
   const [pageIndex, setPageIndex] = useState(0);
-  const [newsPageIndex, setNewsPageIndex] = useState(0);
-  const allRows = snapshot?.holdings.rows ?? [];
-  const filteredRows = allRows.filter((row) => {
-    if (!query.trim()) return true;
-    const text = query.trim().toLowerCase();
-    const haystack = [row.code, row.name, row.industry, ...row.cells].join(" ").toLowerCase();
-    return haystack.includes(text);
-  });
   const safePageSize = PAGE_SIZE_OPTIONS.includes(pageSize) ? pageSize : 50;
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / safePageSize));
-  const safePage = Math.min(pageIndex, totalPages - 1);
-  const pageRows = filteredRows.slice(safePage * safePageSize, safePage * safePageSize + safePageSize);
+  const pageRows = snapshot?.holdings.rows ?? [];
+  const totalRows = Number(snapshot?.holdings.pagination?.totalRows ?? pageRows.length);
+  const totalPages = Math.max(1, Number(snapshot?.holdings.pagination?.totalPages ?? 1));
+  const safePage = Math.min(Number(snapshot?.holdings.pagination?.page ?? pageIndex + 1) - 1, totalPages - 1);
   const currentPageSymbols = useMemo(
     () => pageRows.map((row) => (row.code ?? row.id ?? "").trim()).filter(Boolean),
     [pageRows],
   );
   const job = snapshot?.portfolioAnalysisJob ?? null;
   const marketNews = snapshot?.marketNews ?? [];
-  const newsTotalPages = Math.max(1, Math.ceil(marketNews.length / NEWS_PAGE_SIZE));
-  const safeNewsPage = Math.min(newsPageIndex, newsTotalPages - 1);
-  const pagedMarketNews = marketNews.slice(
-    safeNewsPage * NEWS_PAGE_SIZE,
-    safeNewsPage * NEWS_PAGE_SIZE + NEWS_PAGE_SIZE,
-  );
+
+  useEffect(() => {
+    if (!resource.data) return;
+    let cancelled = false;
+    void activeClient.getPageSnapshot("portfolio", {
+      search: query.trim(),
+      page: pageIndex + 1,
+      pageSize: safePageSize,
+    }).then((next) => {
+      if (!cancelled) setTableSnapshot(next as typeof resource.data);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeClient, pageIndex, query, resource.data, safePageSize]);
 
   useEffect(() => {
     if (!job?.id || !(job.status === "queued" || job.status === "running")) {
@@ -250,7 +252,7 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
           </div>
           <div className="watchlist-pagination" style={{ marginTop: 12 }}>
             <div className="watchlist-pagination__summary">
-              共 {filteredRows.length} 条 · 第 {safePage + 1} / {totalPages} 页
+              共 {totalRows} 条 · 第 {safePage + 1} / {totalPages} 页
             </div>
             <div className="watchlist-pagination__controls">
               <button className="button button--secondary" type="button" disabled={safePage <= 0} onClick={() => setPageIndex((value) => Math.max(0, value - 1))}>
@@ -277,7 +279,7 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
                 <div className="summary-item__body">当前没有可展示的重点新闻。</div>
               </div>
             ) : (
-              pagedMarketNews.map((item, index) => (
+              marketNews.map((item, index) => (
                 <div className="summary-item" key={`${index}-${item.title}`}>
                   <div className="summary-item__title">{item.title}</div>
                   <div className="summary-item__body">{item.body}</div>
@@ -294,31 +296,6 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
               ))
             )}
           </div>
-          {marketNews.length > 0 ? (
-            <div className="watchlist-pagination" style={{ marginTop: 12 }}>
-              <div className="watchlist-pagination__summary">
-                共 {marketNews.length} 条 · 第 {safeNewsPage + 1} / {newsTotalPages} 页
-              </div>
-              <div className="watchlist-pagination__controls">
-                <button
-                  className="button button--secondary"
-                  type="button"
-                  disabled={safeNewsPage <= 0}
-                  onClick={() => setNewsPageIndex((value) => Math.max(0, value - 1))}
-                >
-                  上一页
-                </button>
-                <button
-                  className="button button--secondary"
-                  type="button"
-                  disabled={safeNewsPage >= newsTotalPages - 1}
-                  onClick={() => setNewsPageIndex((value) => Math.min(newsTotalPages - 1, value + 1))}
-                >
-                  下一页
-                </button>
-              </div>
-            </div>
-          ) : null}
         </WorkbenchCard>
       </div>
     </div>

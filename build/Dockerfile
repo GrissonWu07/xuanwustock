@@ -3,6 +3,8 @@ FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12-slim
 
 # 设置时区环境变量
 ENV TZ=Asia/Shanghai
+ENV LOCAL_MARKET_DATA_DIR=/app/data/local_sources
+ENV MARKET_DATA_CACHE_ENABLED=true
 
 # 替换apt-get源为国内源（阿里源）
 RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main" > /etc/apt/sources.list && \
@@ -80,7 +82,7 @@ RUN set -eux; \
 COPY . .
 
 # 创建必要的目录
-RUN mkdir -p /app/data && chmod 777 /app/data
+RUN mkdir -p /app/data/local_sources && chmod -R 777 /app/data
 
 # 暴露 Python API 默认端口
 EXPOSE 8501

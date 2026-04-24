@@ -68,6 +68,8 @@ cp .env.example .env
 ```env
 DEEPSEEK_API_KEY=sk-your-actual-api-key-here
 EMAIL_ENABLED=false
+LOCAL_MARKET_DATA_DIR=/app/data/local_sources
+MARKET_DATA_CACHE_ENABLED=true
 # ... 其他配置
 ```
 
@@ -100,7 +102,7 @@ docker build -f build/Dockerfile -t agentsstock1:latest .
 
 2. **创建数据目录**
 ```bash
-mkdir -p data
+mkdir -p data/local_sources
 ```
 
 3. **运行容器**
@@ -110,12 +112,18 @@ docker run -d \
   -p 8503:8503 \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/.env:/app/.env \
+  -e LOCAL_MARKET_DATA_DIR=/app/data/local_sources \
+  -e MARKET_DATA_CACHE_ENABLED=true \
   -v $(pwd)/stock_analysis.db:/app/stock_analysis.db \
   -v $(pwd)/stock_monitor.db:/app/stock_monitor.db \
   -e TZ=Asia/Shanghai \
   --restart unless-stopped \
   agentsstock1:latest
 ```
+
+### 本地行情数据源
+
+容器默认将 AKShare、Tushare、TDX 的本地 parquet 缓存写入 `/app/data/local_sources`。Docker Compose 已把宿主机 `data/` 挂载到 `/app/data`，因此删除或重建容器不会丢失本地行情缓存。技术指标链路会先读本地源，缺口或过期时再访问对应远端源，并按源隔离写回 `akshare/`、`tushare/`、`tdx/` 目录。
 
 **Windows PowerShell 用户请使用：**
 ```powershell

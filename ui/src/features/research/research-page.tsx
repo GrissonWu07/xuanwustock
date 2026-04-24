@@ -221,21 +221,17 @@ export function ResearchPage({ client }: ResearchPageProps) {
   const [runFeedback, setRunFeedback] = useState("");
   const [taskJob, setTaskJob] = useState<ResearchSnapshot["taskJob"]>(null);
   const [selectedModuleName, setSelectedModuleName] = useState("");
+  const [tableSnapshot, setTableSnapshot] = useState<ResearchSnapshot | null>(null);
+  const [outputPage, setOutputPage] = useState(1);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
 
-  const snapshot = resource.data;
+  const snapshot = tableSnapshot ?? resource.data;
   const searchTerm = search.trim();
-  const normalizedSearch = searchTerm.toLowerCase();
   const sourceRows = snapshot?.outputTable.rows ?? [];
   const researchBusy = Boolean(taskJob && ["queued", "running"].includes(taskJob.status));
-  const filteredRows = useMemo(
-    () =>
-      sourceRows.filter((row) => {
-        const text = [row.id, row.reason ?? "", ...row.cells, ...(row.badges ?? [])].join(" ").toLowerCase();
-        return text.includes(normalizedSearch);
-      }),
-    [normalizedSearch, sourceRows],
-  );
+  const outputTotalRows = Number(snapshot?.outputTable.pagination?.totalRows ?? sourceRows.length);
+  const outputTotalPages = Math.max(1, Number(snapshot?.outputTable.pagination?.totalPages ?? 1));
+  const outputCurrentPage = Math.max(1, Number(snapshot?.outputTable.pagination?.page ?? outputPage));
   const maxOutputCount = useMemo(() => {
     if (!snapshot) return 1;
     const values = snapshot.modules.map((item) => getOutputScore(item.output));
@@ -289,9 +285,9 @@ export function ResearchPage({ client }: ResearchPageProps) {
     const hit = modulesWithInsights.find((module) => module.name === selectedModuleName);
     return hit ?? modulesWithInsights[0];
   }, [modulesWithInsights, selectedModuleName]);
-  const rowIds = useMemo(() => filteredRows.map((row) => row.id), [filteredRows]);
+  const rowIds = useMemo(() => sourceRows.map((row) => row.id), [sourceRows]);
   const selection = useSelection(rowIds);
-  const selectedRows = filteredRows.filter((row) => selection.isSelected(row.id));
+  const selectedRows = sourceRows.filter((row) => selection.isSelected(row.id));
   const selectedCodes = selectedRows.map((row) => row.id);
   const canBatchWatchlist = selectedCodes.length > 0;
   const selectedPreview = selectedRows.slice(0, 3);
@@ -299,23 +295,42 @@ export function ResearchPage({ client }: ResearchPageProps) {
     selection.selectedCount > 0
       ? t("{count} stocks selected. Batch add to watchlist is available.", { count: selection.selectedCount })
       : t("Select stock outputs first, then batch add to watchlist.");
-  const outputEmptyLabel = normalizedSearch
+  const outputEmptyLabel = searchTerm
     ? t('No stock output matches "{keyword}"', { keyword: searchTerm })
     : localizeResearchText(snapshot?.outputTable.emptyLabel) || t("No stock output");
   const outputEmptyMessage =
-    normalizedSearch && snapshot
+    searchTerm && snapshot
       ? t("Try filtering by code, name, source module, or next action.")
       : localizeResearchText(snapshot?.outputTable.emptyMessage);
 
   const derivedMetrics = snapshot
     ? [
         { label: t("Research modules"), value: String(snapshot.modules.length) },
-        { label: t("Stock outputs"), value: String(snapshot.outputTable.rows.length) },
+        { label: t("Stock outputs"), value: String(outputTotalRows) },
         { label: t("Market view"), value: String(snapshot.marketView.length) },
         { label: t("Last update"), value: snapshot.updatedAt || "--" },
       ]
     : [];
   const taskLogs = (taskJob?.logs ?? []).slice().reverse();
+
+  useEffect(() => {
+    if (!resource.data) return;
+    let cancelled = false;
+    void taskClient.getPageSnapshot<ResearchSnapshot>("research", {
+      search: searchTerm,
+      page: outputPage,
+      pageSize: 20,
+    }).then((next) => {
+      if (!cancelled) setTableSnapshot(next);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [outputPage, resource.data, searchTerm, taskClient]);
+
+  useEffect(() => {
+    setOutputPage(1);
+  }, [searchTerm]);
 
   const handleBatchWatchlist = async () => {
     if (!canBatchWatchlist || batching) return;
@@ -648,7 +663,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                 onChange={(event) => setSearch(event.target.value)}
               />
             </label>
-            <span className="badge badge--neutral">{t("Selected output {count}", { count: filteredRows.length })}</span>
+            <span className="badge badge--neutral">{t("Selected output {count}", { count: outputTotalRows })}</span>
             <span className="badge badge--accent">{t("Selected {count} stocks", { count: selection.selectedCount })}</span>
           </div>
           <div className="toolbar" style={{ marginTop: "10px" }}>
@@ -675,6 +690,13 @@ export function ResearchPage({ client }: ResearchPageProps) {
             />
             <IconButton icon="✕" label={t("Clear selection")} tone="neutral" onClick={selection.clear} />
             <span className="toolbar__status">{t("Selected {count} stocks", { count: selection.selectedCount })}</span>
+            <button className="button button--secondary" type="button" disabled={outputCurrentPage <= 1} onClick={() => setOutputPage((page) => Math.max(1, page - 1))}>
+              ←
+            </button>
+            <span className="badge badge--neutral">{`第 ${outputCurrentPage} / ${outputTotalPages} 页`}</span>
+            <button className="button button--secondary" type="button" disabled={outputCurrentPage >= outputTotalPages} onClick={() => setOutputPage((page) => Math.min(outputTotalPages, page + 1))}>
+              →
+            </button>
           </div>
           <div className="table-shell">
             <table className="table">
@@ -696,7 +718,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.length === 0 ? (
+                {sourceRows.length === 0 ? (
                   <tr>
                     <td className="table__empty" colSpan={snapshot.outputTable.columns.length + 2}>
                       <div className="summary-item">
@@ -706,7 +728,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                     </td>
                   </tr>
                 ) : (
-                  filteredRows.map((row, rowIndex) => {
+                  sourceRows.map((row, rowIndex) => {
                     const rowKey = `${row.id}-${String(row.cells[2] ?? row.source ?? "")}-${rowIndex}`;
                     return (
                     <tr

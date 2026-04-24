@@ -58,8 +58,18 @@ class CandidatePoolService:
             }
         )
 
-    def list_candidates(self, status: Optional[str] = None) -> list[dict[str, Any]]:
-        return self.db.get_candidates(status=status)
+    def list_candidates(
+        self,
+        status: Optional[str] = None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        search: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.db.get_candidates(status=status, limit=limit, offset=offset, search=search)
+
+    def count_candidates(self, status: Optional[str] = None, *, search: str | None = None) -> int:
+        return self.db.count_candidates(status=status, search=search)
 
     def delete_candidate(self, stock_code: str) -> None:
         self.db.delete_candidate(stock_code)

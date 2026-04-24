@@ -66,6 +66,12 @@ export type TableSection = {
   rows: TableRow[];
   emptyLabel?: string;
   emptyMessage?: string;
+  pagination?: {
+    page: number;
+    pageSize: number;
+    totalRows: number;
+    totalPages: number;
+  };
 };
 
 export type SelectableOption = {
@@ -343,8 +349,20 @@ export type ReplaySnapshot = {
     note?: string;
     returnPct?: string;
     finalEquity?: string;
+    cashValue?: string;
+    marketValue?: string;
+    realizedPnl?: string;
+    unrealizedPnl?: string;
     tradeCount?: string;
     winRate?: string;
+    sellWinRate?: string;
+    buyTradeCount?: number;
+    sellTradeCount?: number;
+    winningSellCount?: number;
+    losingSellCount?: number;
+    avgWin?: string;
+    avgLoss?: string;
+    payoffRatio?: string;
     strategyProfileId?: string;
     strategyProfileName?: string;
     strategyProfileVersionId?: string;

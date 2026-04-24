@@ -1157,6 +1157,33 @@ a {
   line-height: 1.45;
 }
 
+.replay-task-metrics-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.replay-task-metric {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+.replay-task-metric .mini-metric__label {
+  margin-bottom: 3px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.replay-task-metric .mini-metric__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.98rem;
+  line-height: 1.15;
+}
+
 .table-shell {
   border: 1px solid var(--soft-line);
   border-radius: 18px;

@@ -544,21 +544,66 @@ class QuantSimDB:
         conn.close()
         return candidate_id
 
-    def get_candidates(self, status: Optional[str] = None) -> list[dict[str, Any]]:
+    def _build_candidate_filters(
+        self,
+        *,
+        status: Optional[str] = None,
+        search: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        keyword = str(search or "").strip()
+        if keyword:
+            like_keyword = f"%{keyword}%"
+            clauses.append(
+                """
+                (stock_code LIKE ?
+                 OR stock_name LIKE ?
+                 OR source LIKE ?
+                 OR notes LIKE ?
+                 OR metadata_json LIKE ?)
+                """
+            )
+            params.extend([like_keyword, like_keyword, like_keyword, like_keyword, like_keyword])
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where_sql, params
+
+    def get_candidates(
+        self,
+        status: Optional[str] = None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        search: str | None = None,
+    ) -> list[dict[str, Any]]:
         conn = self._connect()
         cursor = conn.cursor()
-
-        if status:
-            cursor.execute(
-                "SELECT * FROM candidate_pool WHERE status = ? ORDER BY updated_at DESC, id DESC",
-                (status,),
-            )
-        else:
-            cursor.execute("SELECT * FROM candidate_pool ORDER BY updated_at DESC, id DESC")
+        where_sql, params = self._build_candidate_filters(status=status, search=search)
+        sql = f"""
+            SELECT * FROM candidate_pool
+            {where_sql}
+            ORDER BY updated_at DESC, id DESC
+        """
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([max(0, int(limit)), max(0, int(offset))])
+        cursor.execute(sql, tuple(params))
 
         rows = [self._candidate_row_to_dict(cursor, row) for row in cursor.fetchall()]
         conn.close()
         return rows
+
+    def count_candidates(self, status: Optional[str] = None, *, search: str | None = None) -> int:
+        conn = self._connect()
+        cursor = conn.cursor()
+        where_sql, params = self._build_candidate_filters(status=status, search=search)
+        cursor.execute(f"SELECT COUNT(*) AS total FROM candidate_pool {where_sql}", tuple(params))
+        row = cursor.fetchone()
+        conn.close()
+        return int(row["total"] or 0) if row else 0
 
     def get_candidate(self, stock_code: str) -> Optional[dict[str, Any]]:
         conn = self._connect()
@@ -766,24 +811,63 @@ class QuantSimDB:
         conn.close()
         return signal_id
 
-    def get_signals(self, stock_code: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
+    def get_signals(
+        self,
+        stock_code: Optional[str] = None,
+        limit: int = 100,
+        *,
+        offset: int = 0,
+        actions: list[str] | tuple[str, ...] | None = None,
+        stock_keyword: str | None = None,
+    ) -> list[dict[str, Any]]:
         conn = self._connect()
         cursor = conn.cursor()
+        where = []
+        params: list[Any] = []
         if stock_code:
-            cursor.execute(
-                """
-                SELECT * FROM strategy_signals
-                WHERE stock_code = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (stock_code, limit),
-            )
-        else:
-            cursor.execute("SELECT * FROM strategy_signals ORDER BY id DESC LIMIT ?", (limit,))
+            where.append("stock_code = ?")
+            params.append(stock_code)
+        suffix, filter_params = self._build_replay_table_filters(actions=actions, stock_keyword=stock_keyword)
+        if suffix:
+            where.append(suffix.removeprefix(" AND "))
+            params.extend(filter_params)
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        cursor.execute(
+            f"""
+            SELECT * FROM strategy_signals
+            {where_sql}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, max(0, int(limit)), max(0, int(offset))),
+        )
         rows = [self._signal_row_to_dict(row) for row in cursor.fetchall()]
         conn.close()
         return rows
+
+    def count_signals(
+        self,
+        *,
+        stock_code: Optional[str] = None,
+        actions: list[str] | tuple[str, ...] | None = None,
+        stock_keyword: str | None = None,
+    ) -> int:
+        conn = self._connect()
+        cursor = conn.cursor()
+        where = []
+        params: list[Any] = []
+        if stock_code:
+            where.append("stock_code = ?")
+            params.append(stock_code)
+        suffix, filter_params = self._build_replay_table_filters(actions=actions, stock_keyword=stock_keyword)
+        if suffix:
+            where.append(suffix.removeprefix(" AND "))
+            params.extend(filter_params)
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        cursor.execute(f"SELECT COUNT(*) AS total FROM strategy_signals {where_sql}", tuple(params))
+        row = cursor.fetchone()
+        conn.close()
+        return int(row["total"] or 0) if row else 0
 
     def get_signal(self, signal_id: int) -> Optional[dict[str, Any]]:
         conn = self._connect()
@@ -899,16 +983,52 @@ class QuantSimDB:
         conn.close()
         return rows
 
-    def get_trade_history(self, limit: int = 100) -> list[dict[str, Any]]:
+    def get_trade_history(
+        self,
+        limit: int = 100,
+        *,
+        offset: int = 0,
+        actions: list[str] | tuple[str, ...] | None = None,
+        stock_keyword: str | None = None,
+    ) -> list[dict[str, Any]]:
         conn = self._connect()
         cursor = conn.cursor()
+        where_suffix, filter_params = self._build_replay_table_filters(actions=actions, stock_keyword=stock_keyword)
         cursor.execute(
-            "SELECT * FROM sim_trades ORDER BY executed_at DESC, id DESC LIMIT ?",
-            (limit,),
+            f"""
+            SELECT * FROM sim_trades
+            WHERE 1 = 1
+            {where_suffix}
+            ORDER BY executed_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*filter_params, max(0, int(limit)), max(0, int(offset))),
         )
         rows = [self._signal_row_to_dict(row) for row in cursor.fetchall()]
         conn.close()
         return rows
+
+    def count_trade_history(
+        self,
+        *,
+        actions: list[str] | tuple[str, ...] | None = None,
+        stock_keyword: str | None = None,
+    ) -> int:
+        conn = self._connect()
+        cursor = conn.cursor()
+        where_suffix, filter_params = self._build_replay_table_filters(actions=actions, stock_keyword=stock_keyword)
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM sim_trades
+            WHERE 1 = 1
+            {where_suffix}
+            """,
+            tuple(filter_params),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return int(row["total"] or 0) if row else 0
 
     def create_sim_run(
         self,
@@ -1435,6 +1555,7 @@ class QuantSimDB:
         self._insert_sim_run_snapshots_with_cursor(cursor, run_id, snapshots)
         self._insert_sim_run_positions_with_cursor(cursor, run_id, positions)
         self._insert_sim_run_trades_with_cursor(cursor, run_id, trades, persisted_signal_ids_by_source_id)
+        cursor.execute("UPDATE sim_runs SET trade_count = ? WHERE id = ?", (len(trades), run_id))
 
         conn.commit()
         conn.close()
@@ -1509,22 +1630,112 @@ class QuantSimDB:
         conn.close()
         return rows
 
-    def get_sim_run_trades(self, run_id: int, *, limit: int | None = None) -> list[dict[str, Any]]:
+    def _build_replay_table_filters(
+        self,
+        *,
+        actions: list[str] | tuple[str, ...] | None = None,
+        stock_keyword: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        normalized_actions = [str(action).strip().upper() for action in actions or [] if str(action).strip()]
+        if normalized_actions:
+            placeholders = ",".join("?" for _ in normalized_actions)
+            clauses.append(f"UPPER(action) IN ({placeholders})")
+            params.extend(normalized_actions)
+        keyword = str(stock_keyword or "").strip()
+        if keyword:
+            like_keyword = f"%{keyword}%"
+            clauses.append("(stock_code LIKE ? OR stock_name LIKE ?)")
+            params.extend([like_keyword, like_keyword])
+        return (" AND " + " AND ".join(clauses)) if clauses else "", params
+
+    def get_sim_run_trades(
+        self,
+        run_id: int,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        actions: list[str] | tuple[str, ...] | None = None,
+        stock_keyword: str | None = None,
+    ) -> list[dict[str, Any]]:
         conn = self._connect()
         cursor = conn.cursor()
+        where_suffix, filter_params = self._build_replay_table_filters(actions=actions, stock_keyword=stock_keyword)
         query = """
             SELECT * FROM sim_run_trades
             WHERE run_id = ?
+            {where_suffix}
             ORDER BY executed_at DESC, id DESC
-            """
-        params: tuple[Any, ...] = (run_id,)
+            """.format(where_suffix=where_suffix)
+        params: list[Any] = [run_id, *filter_params]
         if limit is not None:
-            query += " LIMIT ?"
-            params = (run_id, max(0, int(limit)))
-        cursor.execute(query, params)
+            query += " LIMIT ? OFFSET ?"
+            params.extend([max(0, int(limit)), max(0, int(offset))])
+        cursor.execute(query, tuple(params))
         rows = [self._row_to_dict(row) for row in cursor.fetchall()]
         conn.close()
         return rows
+
+    def count_sim_run_trades(
+        self,
+        run_id: int,
+        *,
+        actions: list[str] | tuple[str, ...] | None = None,
+        stock_keyword: str | None = None,
+    ) -> int:
+        conn = self._connect()
+        cursor = conn.cursor()
+        where_suffix, filter_params = self._build_replay_table_filters(actions=actions, stock_keyword=stock_keyword)
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM sim_run_trades
+            WHERE run_id = ?
+            {where_suffix}
+            """,
+            (run_id, *filter_params),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return int(row["total"] or 0) if row else 0
+
+    def get_sim_run_trade_quality(self, run_id: int) -> dict[str, Any]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'BUY' THEN 1 ELSE 0 END), 0) AS buy_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' THEN 1 ELSE 0 END), 0) AS sell_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' AND COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning_sell_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' AND COALESCE(realized_pnl, 0) <= 0 THEN 1 ELSE 0 END), 0) AS losing_sell_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' AND COALESCE(realized_pnl, 0) > 0 THEN realized_pnl ELSE 0 END), 0) AS winning_sell_pnl,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' AND COALESCE(realized_pnl, 0) <= 0 THEN realized_pnl ELSE 0 END), 0) AS losing_sell_pnl
+            FROM sim_run_trades
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._row_to_dict(row) if row else {}
+
+    def get_latest_sim_run_snapshot(self, run_id: int) -> Optional[dict[str, Any]]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM sim_run_snapshots
+            WHERE run_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._row_to_dict(row) if row else None
 
     def get_sim_run_snapshots(self, run_id: int) -> list[dict[str, Any]]:
         conn = self._connect()
@@ -1561,26 +1772,54 @@ class QuantSimDB:
         run_id: int,
         *,
         limit: int | None = None,
+        offset: int = 0,
+        actions: list[str] | tuple[str, ...] | None = None,
+        stock_keyword: str | None = None,
         include_strategy_profile: bool = True,
     ) -> list[dict[str, Any]]:
         conn = self._connect()
         cursor = conn.cursor()
+        where_suffix, filter_params = self._build_replay_table_filters(actions=actions, stock_keyword=stock_keyword)
         query = """
             SELECT * FROM sim_run_signals
             WHERE run_id = ?
+            {where_suffix}
             ORDER BY COALESCE(checkpoint_at, created_at) DESC, id DESC
-            """
-        params: tuple[Any, ...] = (run_id,)
+            """.format(where_suffix=where_suffix)
+        params: list[Any] = [run_id, *filter_params]
         if limit is not None:
-            query += " LIMIT ?"
-            params = (run_id, max(0, int(limit)))
-        cursor.execute(query, params)
+            query += " LIMIT ? OFFSET ?"
+            params.extend([max(0, int(limit)), max(0, int(offset))])
+        cursor.execute(query, tuple(params))
         rows = [
             self._signal_row_to_dict(row, include_strategy_profile=include_strategy_profile)
             for row in cursor.fetchall()
         ]
         conn.close()
         return rows
+
+    def count_sim_run_signals(
+        self,
+        run_id: int,
+        *,
+        actions: list[str] | tuple[str, ...] | None = None,
+        stock_keyword: str | None = None,
+    ) -> int:
+        conn = self._connect()
+        cursor = conn.cursor()
+        where_suffix, filter_params = self._build_replay_table_filters(actions=actions, stock_keyword=stock_keyword)
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM sim_run_signals
+            WHERE run_id = ?
+            {where_suffix}
+            """,
+            (run_id, *filter_params),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return int(row["total"] or 0) if row else 0
 
     def get_sim_run_signal(self, signal_id: int) -> Optional[dict[str, Any]]:
         conn = self._connect()

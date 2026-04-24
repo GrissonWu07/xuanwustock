@@ -33,6 +33,7 @@ from app.selector_ui_state import (
     save_simple_selector_state,
 )
 from app.stock_refresh_scheduler import load_stock_runtime_entries
+from app.ui_table_cache_db import UITableCacheDB
 from app.watchlist_selector_integration import add_stock_to_watchlist, normalize_stock_code
 
 MainForceStockSelector = None
@@ -80,6 +81,41 @@ def _discover_code(value: Any) -> str:
         except (TypeError, ValueError):
             return code
     return code
+
+
+def _query_value(table_query: dict[str, Any] | None, key: str, default: Any = None) -> Any:
+    return table_query.get(key, default) if isinstance(table_query, dict) else default
+
+
+def _table_cache(context: Any) -> UITableCacheDB:
+    data_dir = getattr(context, "data_dir", None)
+    return UITableCacheDB(Path(data_dir) / "ui_table_cache.db") if data_dir else UITableCacheDB()
+
+
+def _db_page_table_rows(
+    context: Any,
+    table_key: str,
+    rows: list[dict[str, Any]],
+    table_query: dict[str, Any] | None,
+    *,
+    default_page_size: int = 6,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    search = _txt(_query_value(table_query, "search"))
+    try:
+        page_size = max(1, min(int(_query_value(table_query, "pageSize", default_page_size)), 100))
+    except (TypeError, ValueError):
+        page_size = default_page_size
+    try:
+        page = max(1, int(_query_value(table_query, "page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    cache = _table_cache(context)
+    cache.replace_rows(table_key, rows)
+    total = cache.count_rows(table_key, search=search)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    safe_page = min(page, total_pages)
+    page_rows = cache.get_rows_page(table_key, search=search, limit=page_size, offset=(safe_page - 1) * page_size)
+    return page_rows, {"page": safe_page, "pageSize": page_size, "totalRows": total, "totalPages": total_pages}
 
 
 def _parse_selector_timestamp(value: Any) -> datetime | None:
@@ -784,9 +820,10 @@ def _run_discover_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
         )
 
 
-def _snapshot_discover(context: Any, *, task_job: dict[str, Any] | None = None) -> dict[str, Any]:
+def _snapshot_discover(context: Any, *, task_job: dict[str, Any] | None = None, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     snapshots = _discover_strategy_snapshots(context)
     rows = _discover_rows(context)
+    page_rows, pagination = _db_page_table_rows(context, "discover.candidates", rows, table_query)
     latest_snapshot = snapshots[0] if snapshots else {}
     latest_row = rows[0] if rows else {}
     latest_selected_at = _txt(latest_snapshot.get("selected_at") or latest_row.get("selectedAt") or _now())
@@ -830,7 +867,7 @@ def _snapshot_discover(context: Any, *, task_job: dict[str, Any] | None = None) 
         if chip not in recommendation_chips:
             recommendation_chips.append(chip)
     latest_task = task_job or discover_task_manager.latest_task()
-    return {
+    payload = {
         "updatedAt": _now(),
         "metrics": [
             _metric(t("Discovery strategies"), len(strategy_defs)),
@@ -874,7 +911,7 @@ def _snapshot_discover(context: Any, *, task_job: dict[str, Any] | None = None) 
                 t("P/E"),
                 t("P/B"),
             ],
-            rows,
+            page_rows,
             t("No candidate stocks"),
         ),
         "recommendation": {
@@ -884,6 +921,8 @@ def _snapshot_discover(context: Any, *, task_job: dict[str, Any] | None = None) 
         },
         "taskJob": discover_task_manager.job_view(latest_task, txt=_txt, int_fn=_int),
     }
+    payload["candidateTable"]["pagination"] = pagination
+    return payload
 
 
 def _action_discover_item(context: Any, payload: dict[str, Any]) -> dict[str, Any]:

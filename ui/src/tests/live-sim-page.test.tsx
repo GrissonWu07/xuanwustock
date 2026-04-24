@@ -86,23 +86,30 @@ describe("LiveSimPage", () => {
 
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          table: {
-            columns: ["信号ID", "时间", "代码", "动作", "策略", "状态"],
-            rows: [
-              {
-                id: "9001",
-                cells: ["#9001", "2026-04-23 23:20:00", "600000 浦发银行", "BUY", "aggressive_v23", "已落库"],
-                code: "600000",
-                name: "浦发银行",
-                actions: [{ label: "详情", action: "show-signal-detail", icon: "→", tone: "accent" }],
-              },
-            ],
-          },
+      vi.fn().mockImplementation((url: string) =>
+        Promise.resolve({
+          ok: true,
+          json: async () => ({
+            table: String(url).includes("/trades")
+              ? {
+                  columns: ["时间", "代码", "动作", "数量", "价格", "备注"],
+                  rows: [],
+                }
+              : {
+                  columns: ["信号ID", "时间", "代码", "动作", "策略", "状态"],
+                  rows: [
+                    {
+                      id: "9001",
+                      cells: ["#9001", "2026-04-23 23:20:00", "600000 浦发银行", "BUY", "aggressive_v23", "已落库"],
+                      code: "600000",
+                      name: "浦发银行",
+                      actions: [{ label: "详情", action: "show-signal-detail", icon: "→", tone: "accent" }],
+                    },
+                  ],
+                },
+          }),
         }),
-      }),
+      ),
     );
 
     renderLiveSimPage(client);

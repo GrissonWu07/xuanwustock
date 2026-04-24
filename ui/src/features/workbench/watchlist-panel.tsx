@@ -17,6 +17,7 @@ type WatchlistPanelProps = {
   analysisBusyMessage?: string;
   onClearSelection: () => void;
   onRemoveWatchlist: (code: string) => void;
+  onTableQueryChange?: (query: { search: string; page: number; pageSize: number }) => void;
 };
 
 const panelStyle: React.CSSProperties = {
@@ -37,6 +38,7 @@ export function WatchlistPanel({
   analysisBusyMessage = "",
   onClearSelection,
   onRemoveWatchlist,
+  onTableQueryChange,
 }: WatchlistPanelProps) {
   const isCompactLayout = useCompactLayout();
   const [search, setSearch] = useState("");
@@ -51,23 +53,11 @@ export function WatchlistPanel({
   const [portfolioSaving, setPortfolioSaving] = useState(false);
   const [expandedRows, setExpandedRows] = useState<string[]>([]);
   const [openMenuRowId, setOpenMenuRowId] = useState<string | null>(null);
-  const normalizedSearch = search.trim().toLowerCase();
-  const filteredRows = useMemo(() => {
-    if (!normalizedSearch) return watchlist.rows;
-    return watchlist.rows.filter((row) =>
-      row.cells.some((cell) => String(cell).toLowerCase().includes(normalizedSearch)) ||
-      row.id.toLowerCase().includes(normalizedSearch) ||
-      (row.code ?? "").toLowerCase().includes(normalizedSearch) ||
-      (row.name ?? "").toLowerCase().includes(normalizedSearch) ||
-      (row.source ?? "").toLowerCase().includes(normalizedSearch),
-    );
-  }, [normalizedSearch, watchlist.rows]);
-  const pageCount = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
-  const currentPage = Math.min(page, pageCount);
-  const pageRows = useMemo(
-    () => filteredRows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
-    [currentPage, filteredRows],
-  );
+  const normalizedSearch = search.trim();
+  const pageCount = Math.max(1, Number(watchlist.pagination?.totalPages ?? 1));
+  const currentPage = Math.min(Number(watchlist.pagination?.page ?? page), pageCount);
+  const totalRows = Number(watchlist.pagination?.totalRows ?? watchlist.rows.length);
+  const pageRows = watchlist.rows;
   const rowIds = useMemo(() => pageRows.map((row) => row.id), [pageRows]);
   const selection = useSelection(rowIds);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
@@ -85,6 +75,10 @@ export function WatchlistPanel({
   useEffect(() => {
     setPage((current) => Math.min(current, pageCount));
   }, [pageCount]);
+
+  useEffect(() => {
+    onTableQueryChange?.({ search: normalizedSearch, page, pageSize: PAGE_SIZE });
+  }, [normalizedSearch, onTableQueryChange, page]);
 
   useEffect(() => {
     if (!isCompactLayout || !openMenuRowId) return undefined;
@@ -412,7 +406,7 @@ export function WatchlistPanel({
                 {pageRows.length === 0 ? (
                 <tr>
                   <td className="table__empty" colSpan={(isCompactLayout ? 6 : watchlist.columns.length + 2)}>
-                    {filteredRows.length === 0
+                    {pageRows.length === 0
                       ? (watchlist.emptyLabel ? t(watchlist.emptyLabel) : t("My watchlist is empty"))
                       : t("Current page has no stocks. Switch page or adjust search.")}
                   </td>
@@ -577,7 +571,7 @@ export function WatchlistPanel({
         <div className="watchlist-pagination" data-testid="watchlist-pagination">
           <div className="watchlist-pagination__summary">
             <span className="watchlist-pagination__count">
-              {t("Total {count}, page {current}/{total}", { count: filteredRows.length, current: currentPage, total: pageCount })}
+              {t("Total {count}, page {current}/{total}", { count: totalRows, current: currentPage, total: pageCount })}
             </span>
           </div>
           <div className="watchlist-pagination__controls">

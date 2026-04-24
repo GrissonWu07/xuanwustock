@@ -11,7 +11,9 @@ logs/*.log
 test_stress_output/
 stockpolicy/
 data/selector_results/
+data/local_sources/
 data/*.db
+data/*.db-journal
 data/*.db.bak-*
 data/stocks/
 /.codex-runtime/

@@ -13,6 +13,7 @@ from app.akshare_client import ak
 import pandas as pd
 from typing import Dict, Optional
 from datetime import datetime, timedelta
+from app.local_market_data_clients import AkshareLocalClient, TushareLocalClient
 
 
 class SmartMonitorDataFetcher:
@@ -86,6 +87,8 @@ class SmartMonitorDataFetcher:
                 self.logger.warning(f"Tushare初始化失败: {e}")
         else:
             self.logger.info("未配置Tushare Token，仅使用AKShare数据源")
+        self.akshare_client = AkshareLocalClient()
+        self.tushare_client = TushareLocalClient(tushare_api=self.ts_pro)
 
     @classmethod
     def _is_tdx_circuit_open(cls) -> bool:
@@ -141,75 +144,33 @@ class SmartMonitorDataFetcher:
         # 方法2: 组合使用AKShare分钟行情 + 基本信息
         for attempt in range(retry):
             try:
-                # 1.1 获取股票基本信息（名称）
-                info_df = ak.stock_individual_info_em(symbol=stock_code)
-                stock_name = 'N/A'
-                if not info_df.empty:
-                    info_dict = dict(zip(info_df['item'], info_df['value']))
-                    stock_name = info_dict.get('股票简称', 'N/A')
-                
-                # 1.2 获取分钟级实时行情
-                min_df = ak.stock_zh_a_hist_min_em(symbol=stock_code, period='1', adjust='')
-                
-                if min_df.empty:
-                    self.logger.warning(f"AKShare未找到股票 {stock_code} 的分钟行情数据")
+                quote = self.akshare_client.get_realtime_quote(stock_code)
+                if not quote:
+                    self.logger.warning(f"AKShare未找到股票 {stock_code} 的实时行情数据")
                     if attempt < retry - 1:
                         time.sleep(2)
                         continue
                     break
-                
-                # 1.3 获取历史数据（计算昨收）
-                hist_df = ak.stock_zh_a_hist(symbol=stock_code, period='daily', adjust='')
-                
-                # 提取最新分钟数据
-                latest = min_df.iloc[-1]
-                current_price = float(latest['收盘'])
-                
-                # 计算昨收和涨跌幅
-                if len(hist_df) >= 2:
-                    pre_close = float(hist_df.iloc[-2]['收盘'])
-                else:
-                    pre_close = current_price
-                
-                change_amount = current_price - pre_close
-                change_pct = (change_amount / pre_close * 100) if pre_close > 0 else 0
-                
-                # 从历史数据获取今天的统计数据
-                if len(hist_df) >= 1:
-                    today_data = hist_df.iloc[-1]
-                    daily_volume = float(today_data.get('成交量', 0))
-                    daily_amount = float(today_data.get('成交额', 0))
-                    daily_high = float(today_data.get('最高', 0))
-                    daily_low = float(today_data.get('最低', 0))
-                    daily_open = float(today_data.get('开盘', 0))
-                    turnover_rate = float(today_data.get('换手率', 0))
-                else:
-                    # 使用分钟数据
-                    daily_volume = min_df['成交量'].sum()
-                    daily_amount = min_df['成交额'].sum()
-                    daily_high = min_df['最高'].max()
-                    daily_low = min_df['最低'].min()
-                    daily_open = float(min_df.iloc[0]['开盘'])
-                    turnover_rate = 0.0
-                
-                self.logger.info(f"✅ AKShare成功获取 {stock_code} ({stock_name}) 实时行情")
-                
+
+                self.logger.info(f"✅ AKShare成功获取 {stock_code} ({quote.get('name', 'N/A')}) 实时行情")
                 return {
                     'code': stock_code,
-                    'name': stock_name,
-                    'current_price': current_price,
-                    'change_pct': change_pct,
-                    'change_amount': change_amount,
-                    'volume': daily_volume,  # 手
-                    'amount': daily_amount,  # 元
-                    'high': daily_high,
-                    'low': daily_low,
-                    'open': daily_open,
-                    'pre_close': pre_close,
-                    'turnover_rate': turnover_rate,
-                    'volume_ratio': 1.0,
-                    'update_time': str(latest['时间']),
-                    'data_source': 'akshare'
+                    'name': quote.get('name', 'N/A'),
+                    'current_price': float(quote.get('current_price') or quote.get('price') or 0),
+                    'change_pct': float(quote.get('change_pct') or quote.get('change_percent') or 0),
+                    'change_amount': float(quote.get('change_amount') or quote.get('change') or 0),
+                    'volume': float(quote.get('volume') or 0),
+                    'amount': float(quote.get('amount') or 0),
+                    'high': float(quote.get('high') or 0),
+                    'low': float(quote.get('low') or 0),
+                    'open': float(quote.get('open') or 0),
+                    'pre_close': float(quote.get('pre_close') or 0),
+                    'turnover_rate': float(quote.get('turnover_rate') or 0),
+                    'volume_ratio': float(quote.get('volume_ratio') or 1.0),
+                    'update_time': str(quote.get('update_time') or quote.get('quote_time') or datetime.now()),
+                    'data_source': 'akshare',
+                    'cache_source': quote.get('cache_source'),
+                    'cache_status': quote.get('cache_status'),
                 }
                 
             except Exception as e:
@@ -265,13 +226,13 @@ class SmartMonitorDataFetcher:
                 end_date = datetime.now().strftime('%Y%m%d')
                 start_date = (datetime.now() - timedelta(days=300)).strftime('%Y%m%d')
                 
-                # 获取历史数据
-                df = ak.stock_zh_a_hist(
-                    symbol=stock_code,
+                df = self.akshare_client.get_stock_hist_data(
+                    stock_code,
                     period=period,
                     start_date=start_date,
                     end_date=end_date,
-                    adjust="qfq"  # 前复权
+                    adjust="qfq",
+                    output="akshare",
                 )
                 
                 if df.empty or len(df) < 60:
@@ -397,7 +358,7 @@ class SmartMonitorDataFetcher:
     
     def _get_technical_indicators_from_tushare(self, stock_code: str, period: str = 'daily') -> Optional[Dict]:
         """
-        使用Tushare获取历史数据并计算技术指标
+        使用Tushare本地优先源获取历史数据并计算技术指标
         
         Args:
             stock_code: 股票代码（6位）
@@ -407,74 +368,19 @@ class SmartMonitorDataFetcher:
             技术指标数据
         """
         try:
-            # 转换股票代码格式（Tushare格式：600519.SH, 000001.SZ）
-            if stock_code.startswith('6'):
-                ts_code = f"{stock_code}.SH"
-            elif stock_code.startswith(('0', '3')):
-                ts_code = f"{stock_code}.SZ"
-            else:
-                ts_code = stock_code
-            
-            # 计算日期范围
-            end_date = datetime.now().strftime('%Y%m%d')
-            start_date = (datetime.now() - timedelta(days=400)).strftime('%Y%m%d')
-            
-            # 获取历史数据
-            df = self.ts_pro.daily(
-                ts_code=ts_code,
-                start_date=start_date,
-                end_date=end_date
+            df = self.tushare_client.get_stock_hist_data(
+                stock_code,
+                start_date=(datetime.now() - timedelta(days=400)).strftime('%Y%m%d'),
+                end_date=datetime.now().strftime('%Y%m%d'),
+                output="akshare",
             )
-            
             if df is None or df.empty:
                 self.logger.error(f"Tushare未返回 {stock_code} 的历史数据")
                 return None
-            
-            # Tushare数据是从新到旧，需要反转
-            df = df.sort_values('trade_date', ascending=True).reset_index(drop=True)
-            
             if len(df) < 60:
                 self.logger.warning(f"Tushare历史数据不足 {stock_code}（仅{len(df)}条）")
                 return None
-            
-            # 统一列名为AKShare格式（完整映射）
-            df = df.rename(columns={
-                'open': '开盘',
-                'high': '最高',
-                'low': '最低',
-                'close': '收盘',
-                'vol': '成交量',
-                'amount': '成交额',
-                'trade_date': '日期'
-            })
-            
-            # 如果没有关键列，尝试使用其他可能的列名
-            column_mapping = {
-                '开盘': ['open', 'Open', 'OPEN'],
-                '最高': ['high', 'High', 'HIGH'],
-                '最低': ['low', 'Low', 'LOW'],
-                '收盘': ['close', 'Close', 'CLOSE'],
-                '成交量': ['vol', 'volume', 'Volume', 'VOLUME'],
-                '成交额': ['amount', 'Amount', 'AMOUNT']
-            }
-            
-            for target_col, possible_cols in column_mapping.items():
-                if target_col not in df.columns:
-                    for col in possible_cols:
-                        if col in df.columns:
-                            df[target_col] = df[col]
-                            break
-            
-            # 确认必需的列存在
-            required_cols = ['开盘', '最高', '最低', '收盘', '成交量']
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            if missing_cols:
-                self.logger.error(f"Tushare数据缺少列 {stock_code}: {missing_cols}")
-                return None
-            
-            self.logger.info(f"✅ Tushare成功获取 {stock_code} 历史数据，共{len(df)}条")
-            
-            # 使用统一的计算方法
+            self.logger.info(f"✅ Tushare本地优先获取 {stock_code} 历史数据，共{len(df)}条")
             return self._calculate_all_indicators(df, stock_code)
             
         except Exception as e:
@@ -655,106 +561,29 @@ class SmartMonitorDataFetcher:
             实时行情数据
         """
         try:
-            # 转换股票代码格式（Tushare格式：600519.SH）
-            if stock_code.startswith('6'):
-                ts_code = f"{stock_code}.SH"
-            elif stock_code.startswith(('0', '3')):
-                ts_code = f"{stock_code}.SZ"
-            else:
-                self.logger.warning(f"无法识别股票代码市场: {stock_code}")
+            quote = self.tushare_client.get_realtime_quote(stock_code)
+            if not quote:
+                self.logger.error(f"Tushare本地优先源未返回 {stock_code} 实时行情")
                 return None
-            
-            # 方法1: 尝试使用daily_basic（基础日线，无需积分）
-            try:
-                df = self.ts_pro.daily_basic(ts_code=ts_code, 
-                                             trade_date=datetime.now().strftime('%Y%m%d'),
-                                             fields='ts_code,trade_date,close,turnover_rate,volume_ratio,pe,pb')
-                
-                if df.empty:
-                    # 获取最近交易日
-                    end_date = datetime.now().strftime('%Y%m%d')
-                    df = self.ts_pro.daily_basic(ts_code=ts_code, 
-                                                 end_date=end_date,
-                                                 fields='ts_code,trade_date,close,turnover_rate,volume_ratio,pe,pb')
-                    df = df.head(1)
-                
-                if not df.empty:
-                    row = df.iloc[0]
-                    
-                    # 获取日线数据补充价格信息
-                    df_daily = self.ts_pro.daily(ts_code=ts_code, 
-                                                 trade_date=row['trade_date'],
-                                                 fields='open,high,low,pre_close,change,pct_chg,vol,amount')
-                    
-                    if not df_daily.empty:
-                        daily_row = df_daily.iloc[0]
-                        
-                        # 获取股票名称
-                        stock_basic = self.ts_pro.stock_basic(ts_code=ts_code, fields='name')
-                        stock_name = stock_basic.iloc[0]['name'] if not stock_basic.empty else 'N/A'
-                        
-                        self.logger.info(f"✅ Tushare降级成功（基础接口），获取到 {stock_code} 数据")
-                        
-                        return {
-                            'code': stock_code,
-                            'name': stock_name,
-                            'current_price': float(row['close']),
-                            'change_pct': float(daily_row.get('pct_chg', 0)),
-                            'change_amount': float(daily_row.get('change', 0)),
-                            'volume': float(daily_row.get('vol', 0)) * 100,
-                            'amount': float(daily_row.get('amount', 0)) * 1000,
-                            'high': float(daily_row.get('high', 0)),
-                            'low': float(daily_row.get('low', 0)),
-                            'open': float(daily_row.get('open', 0)),
-                            'pre_close': float(daily_row.get('pre_close', 0)),
-                            'turnover_rate': float(row.get('turnover_rate', 0)),
-                            'volume_ratio': float(row.get('volume_ratio', 1.0)),
-                            'update_time': row['trade_date'],
-                            'data_source': 'tushare'
-                        }
-            except Exception as e:
-                self.logger.warning(f"Tushare基础接口失败: {str(e)[:100]}")
-            
-            # 方法2: 降级使用更基础的stock_basic+pro_bar
-            try:
-                # 获取股票名称
-                stock_basic = self.ts_pro.stock_basic(ts_code=ts_code, fields='name')
-                stock_name = stock_basic.iloc[0]['name'] if not stock_basic.empty else 'N/A'
-                
-                # 使用pro_bar获取行情（社区版免费）
-                import tushare as ts
-                df = ts.pro_bar(ts_code=ts_code, adj='qfq', ma=[5, 20])
-                
-                if df is not None and not df.empty:
-                    row = df.iloc[0]
-                    
-                    self.logger.info(f"✅ Tushare降级成功（pro_bar接口），获取到 {stock_code} 数据")
-                    
-                    return {
-                        'code': stock_code,
-                        'name': stock_name,
-                        'current_price': float(row['close']),
-                        'change_pct': float(row.get('pct_chg', 0)),
-                        'change_amount': float(row.get('change', 0)),
-                        'volume': float(row.get('vol', 0)) * 100,
-                        'amount': float(row.get('amount', 0)) * 1000,
-                        'high': float(row.get('high', 0)),
-                        'low': float(row.get('low', 0)),
-                        'open': float(row.get('open', 0)),
-                        'pre_close': float(row.get('pre_close', 0)),
-                        'turnover_rate': float(row.get('turnover_rate', 0)),
-                        'volume_ratio': 1.0,
-                        'update_time': row['trade_date'],
-                        'data_source': 'tushare'
-                    }
-            except Exception as e:
-                self.logger.warning(f"Tushare pro_bar接口失败: {str(e)[:100]}")
-            
-            # 所有方法都失败
-            self.logger.error(f"Tushare所有接口都失败 {stock_code}，可能是积分不足或网络问题")
-            self.logger.info("💡 提示：访问 https://tushare.pro/user/token 查看积分和权限")
-            return None
-            
+            return {
+                'code': stock_code,
+                'name': quote.get('name', 'N/A'),
+                'current_price': float(quote.get('current_price') or quote.get('price') or 0),
+                'change_pct': float(quote.get('change_pct') or quote.get('change_percent') or 0),
+                'change_amount': float(quote.get('change_amount') or quote.get('change') or 0),
+                'volume': float(quote.get('volume') or 0),
+                'amount': float(quote.get('amount') or 0),
+                'high': float(quote.get('high') or 0),
+                'low': float(quote.get('low') or 0),
+                'open': float(quote.get('open') or 0),
+                'pre_close': float(quote.get('pre_close') or 0),
+                'turnover_rate': float(quote.get('turnover_rate') or 0),
+                'volume_ratio': float(quote.get('volume_ratio') or 1.0),
+                'update_time': str(quote.get('update_time') or quote.get('quote_time') or datetime.now()),
+                'data_source': 'tushare',
+                'cache_source': quote.get('cache_source'),
+                'cache_status': quote.get('cache_status'),
+            }
         except Exception as e:
             error_msg = str(e)
             if "权限" in error_msg or "积分" in error_msg:
