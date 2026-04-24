@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
@@ -1156,7 +1157,7 @@ class KernelStrategyRuntime:
         if isinstance(strategy_profile_binding, dict):
             config_payload = strategy_profile_binding.get("config")
             if isinstance(config_payload, dict):
-                schema_version = str(config_payload.get("schema_version") or "quant_explain/v2.3")
+                schema_version = str(config_payload.get("schema_version") or "quant_explain")
                 base = config_payload.get("base")
                 profiles = config_payload.get("profiles")
                 if isinstance(base, dict) and isinstance(profiles, dict):
@@ -1195,6 +1196,9 @@ class KernelStrategyRuntime:
                 "version_id": strategy_profile_binding.get("version_id"),
                 "version": strategy_profile_binding.get("version"),
             }
+            dynamic_strategy = strategy_profile_binding.get("dynamic_strategy")
+            if isinstance(dynamic_strategy, dict):
+                profile["dynamic_strategy"] = json.loads(json.dumps(dynamic_strategy, ensure_ascii=False))
         profile["explainability"] = {
             "tech_votes": tech_votes,
             "context_votes": self._build_context_votes(contextual_score),
@@ -1208,7 +1212,7 @@ class KernelStrategyRuntime:
                 "final_action": resolved.action,
                 "final_reason": resolved.reason,
             },
-            "explain_schema_version": "quant_explain/v2.3",
+            "explain_schema_version": "quant_explain",
             "profile_kind": profile_kind,
             "technical_breakdown": technical_breakdown,
             "context_breakdown": context_breakdown,

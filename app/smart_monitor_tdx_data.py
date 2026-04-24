@@ -331,10 +331,14 @@ class SmartMonitorTDXDataFetcher:
             df["ma5"] = df["收盘"].rolling(window=5).mean()
             df["ma20"] = df["收盘"].rolling(window=20).mean()
             df["ma60"] = df["收盘"].rolling(window=60).mean()
+            ma20_prev = df["ma20"].shift(1)
+            df["ma20_slope"] = ((df["ma20"] - ma20_prev) / ma20_prev.where(ma20_prev != 0)).fillna(0.0)
 
             df = self._calculate_macd(df)
             df = self._calculate_rsi(df, periods=[6, 12, 24])
             df = self._calculate_kdj(df)
+            df = self._calculate_obv(df)
+            df = self._calculate_atr(df)
             df = self._calculate_bollinger(df)
 
             df["vol_ma5"] = df["成交量"].rolling(window=5).mean()
@@ -372,15 +376,26 @@ class SmartMonitorTDXDataFetcher:
                 "ma20": ma20,
                 "ma60": ma60,
                 "trend": trend,
+                "ma20_slope": float(latest["ma20_slope"]),
                 "macd_dif": float(latest["dif"]),
                 "macd_dea": float(latest["dea"]),
                 "macd": float(latest["macd"]),
+                "dif": float(latest["dif"]),
+                "dea": float(latest["dea"]),
+                "hist": float(latest["dif"] - latest["dea"]),
+                "hist_prev": float(df.iloc[-2]["dif"] - df.iloc[-2]["dea"]) if len(df) >= 2 else 0.0,
                 "rsi6": float(latest["rsi6"]),
                 "rsi12": float(latest["rsi12"]),
                 "rsi24": float(latest["rsi24"]),
                 "kdj_k": float(latest["kdj_k"]),
                 "kdj_d": float(latest["kdj_d"]),
                 "kdj_j": float(latest["kdj_j"]),
+                "k": float(latest["kdj_k"]),
+                "d": float(latest["kdj_d"]),
+                "j": float(latest["kdj_j"]),
+                "obv": float(latest["obv"]),
+                "obv_prev": float(df.iloc[-2]["obv"]) if len(df) >= 2 else float(latest["obv"]),
+                "atr": float(latest["atr"]) if pd.notna(latest["atr"]) else 0.0,
                 "boll_upper": boll_upper,
                 "boll_mid": boll_mid,
                 "boll_lower": boll_lower,
@@ -712,6 +727,24 @@ class SmartMonitorTDXDataFetcher:
         df["kdj_k"] = rsv.ewm(com=m1 - 1, adjust=False).mean()
         df["kdj_d"] = df["kdj_k"].ewm(com=m2 - 1, adjust=False).mean()
         df["kdj_j"] = 3 * df["kdj_k"] - 2 * df["kdj_d"]
+        return df
+
+    def _calculate_obv(self, df: pd.DataFrame) -> pd.DataFrame:
+        """计算 OBV 累积能量线"""
+        delta = df["收盘"].diff().fillna(0.0)
+        positive = df["成交量"].where(delta > 0, 0.0)
+        negative = df["成交量"].where(delta < 0, 0.0)
+        df["obv"] = (positive - negative).cumsum()
+        return df
+
+    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+        """计算 ATR 波动率"""
+        prev_close = df["收盘"].shift(1)
+        high_low = df["最高"] - df["最低"]
+        high_close = (df["最高"] - prev_close).abs()
+        low_close = (df["最低"] - prev_close).abs()
+        df["tr"] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df["atr"] = df["tr"].rolling(window=period, min_periods=period).mean()
         return df
 
     def _calculate_bollinger(self, df: pd.DataFrame, period: int = 20, std_num: int = 2) -> pd.DataFrame:

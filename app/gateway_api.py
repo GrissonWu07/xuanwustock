@@ -1472,9 +1472,17 @@ def _snapshot_his_replay(context: UIApiContext) -> dict[str, Any]:
                 "status": status_text,
                 "stage": _txt(item.get("status_message") or f"{item.get('checkpoint_count', 0)} 个检查点"),
                 "progress": progress_pct,
+                "progressCurrent": progress_current,
+                "progressTotal": progress_total,
+                "checkpointCount": int(_float(item.get("checkpoint_count"), 0.0) or 0.0),
+                "latestCheckpointAt": _txt(item.get("latest_checkpoint_at"), "--"),
                 "startAt": _txt(item.get("start_datetime"), "--"),
                 "endAt": _txt(item.get("end_datetime"), "--"),
                 "range": f"{_txt(item.get('start_datetime'), '--')} -> {_txt(item.get('end_datetime'), 'now')}",
+                "mode": _txt(item.get("mode"), "historical_range"),
+                "timeframe": _txt(item.get("timeframe"), "30m"),
+                "market": _txt(item.get("market"), "CN"),
+                "strategyMode": _txt(item.get("selected_strategy_mode") or item.get("strategy_mode"), "auto"),
                 "returnPct": _pct(item.get("total_return_pct")),
                 "finalEquity": _num(item.get("final_equity"), 0),
                 "tradeCount": _txt(item.get("trade_count"), "0"),
@@ -1576,6 +1584,42 @@ def _profile_text(value: Any, default: str = "--") -> str:
     if isinstance(value, dict):
         return _txt(value.get("key") or value.get("label") or value.get("name") or value.get("value"), default)
     return _txt(value, default)
+
+
+def _profile_summary_text(value: Any, default: str = "--") -> str:
+    if not isinstance(value, dict):
+        return _txt(value, default)
+    label = _txt(
+        value.get("label")
+        or value.get("标签")
+        or value.get("tag")
+        or value.get("name")
+        or value.get("key")
+        or value.get("value")
+    )
+    score = _txt(value.get("score") or value.get("信号分"))
+    reason = _txt(value.get("reason") or value.get("说明") or value.get("detail"))
+    segments: list[str] = []
+    if label:
+        segments.append(label)
+    if score:
+        segments.append(f"score={score}")
+    if reason:
+        segments.append(reason)
+    if not segments:
+        return default
+    return " | ".join(segments)
+
+
+def _normalize_profile_label(profile_id: str, profile_name: str) -> str:
+    name = _txt(profile_name)
+    if name and name != "--":
+        return name
+    pid = _txt(profile_id)
+    if not pid or pid == "--":
+        return "--"
+    pid = re.sub(r"_v\d+(?:\.\d+)?$", "", pid, flags=re.IGNORECASE)
+    return pid
 
 
 def _to_vote_row(item: Any, default_signal: str = "") -> dict[str, str]:
@@ -1817,6 +1861,33 @@ def _humanize_signal(signal: Any) -> str:
     return mapping.get(normalized, _txt(signal, "--"))
 
 
+def _track_direction_label(signal: Any) -> str:
+    normalized = _txt(signal, "--").upper()
+    mapping = {
+        "BUY": "偏多",
+        "SELL": "偏空",
+        "HOLD": "中性",
+        "CONTEXT": "环境信号",
+    }
+    return mapping.get(normalized, _txt(signal, "--"))
+
+
+def _position_metric_label(action: Any) -> str:
+    action_upper = _txt(action, "--").upper()
+    if action_upper == "BUY":
+        return "目标买入仓位(%)"
+    if action_upper == "SELL":
+        return "建议卖出比例(%)"
+    return "仓位建议"
+
+
+def _position_metric_value(action: Any, position_size_pct: Any) -> str:
+    action_upper = _txt(action, "--").upper()
+    if action_upper == "HOLD":
+        return "不变"
+    return _txt(position_size_pct, "--")
+
+
 def _derive_keep_position_pct(action: Any, position_size_pct: Any) -> str:
     ratio = _float(position_size_pct)
     action_upper = _txt(action, "--").upper()
@@ -1892,212 +1963,172 @@ def _build_explanation_payload(
     explainability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     explain_obj = explainability if isinstance(explainability, dict) else {}
-    if _is_v23_explainability(explain_obj):
-        technical_breakdown = _safe_json_load(explain_obj.get("technical_breakdown"))
-        context_breakdown = _safe_json_load(explain_obj.get("context_breakdown"))
-        fusion_breakdown = _safe_json_load(explain_obj.get("fusion_breakdown"))
-        decision_path = explain_obj.get("decision_path") if isinstance(explain_obj.get("decision_path"), list) else []
-        vetoes = explain_obj.get("vetoes") if isinstance(explain_obj.get("vetoes"), list) else []
+    if not _is_structured_explainability(explain_obj):
+        raise HTTPException(status_code=422, detail="Signal explanation requires structured explainability payload")
 
-        tech_track = _safe_json_load(technical_breakdown.get("track"))
-        context_track = _safe_json_load(context_breakdown.get("track"))
-        tech_groups = technical_breakdown.get("groups") if isinstance(technical_breakdown.get("groups"), list) else []
-        context_groups = context_breakdown.get("groups") if isinstance(context_breakdown.get("groups"), list) else []
-        tech_dims = technical_breakdown.get("dimensions") if isinstance(technical_breakdown.get("dimensions"), list) else []
-        context_dims = context_breakdown.get("dimensions") if isinstance(context_breakdown.get("dimensions"), list) else []
+    technical_breakdown = _safe_json_load(explain_obj.get("technical_breakdown"))
+    context_breakdown = _safe_json_load(explain_obj.get("context_breakdown"))
+    fusion_breakdown = _safe_json_load(explain_obj.get("fusion_breakdown"))
+    decision_path = explain_obj.get("decision_path") if isinstance(explain_obj.get("decision_path"), list) else []
+    vetoes = explain_obj.get("vetoes") if isinstance(explain_obj.get("vetoes"), list) else []
 
-        mode = _txt(fusion_breakdown.get("mode"), _txt(decision.get("strategyMode"), "--"))
-        weighted_threshold_action = _txt(fusion_breakdown.get("weighted_threshold_action"), "--")
-        weighted_action_raw = _txt(fusion_breakdown.get("weighted_action_raw"), "--")
-        core_rule_action = _txt(fusion_breakdown.get("core_rule_action"), "--")
-        final_action = _txt(fusion_breakdown.get("final_action"), _txt(decision.get("finalAction"), "--"))
-        gate_fail_reasons = fusion_breakdown.get("weighted_gate_fail_reasons") if isinstance(
-            fusion_breakdown.get("weighted_gate_fail_reasons"), list
-        ) else []
+    tech_track = _safe_json_load(technical_breakdown.get("track"))
+    context_track = _safe_json_load(context_breakdown.get("track"))
+    tech_groups = technical_breakdown.get("groups") if isinstance(technical_breakdown.get("groups"), list) else []
+    context_groups = context_breakdown.get("groups") if isinstance(context_breakdown.get("groups"), list) else []
+    tech_dims = technical_breakdown.get("dimensions") if isinstance(technical_breakdown.get("dimensions"), list) else []
+    context_dims = context_breakdown.get("dimensions") if isinstance(context_breakdown.get("dimensions"), list) else []
 
-        tech_score = _txt(fusion_breakdown.get("tech_score"), _txt(tech_track.get("score"), _txt(decision.get("techScore"), "0")))
-        context_score = _txt(
-            fusion_breakdown.get("context_score"),
-            _txt(context_track.get("score"), _txt(decision.get("contextScore"), "0")),
-        )
-        fusion_score = _txt(fusion_breakdown.get("fusion_score"), "--")
-        tech_conf = _txt(fusion_breakdown.get("tech_confidence"), _txt(tech_track.get("confidence"), "--"))
-        context_conf = _txt(fusion_breakdown.get("context_confidence"), _txt(context_track.get("confidence"), "--"))
-        fusion_conf = _txt(fusion_breakdown.get("fusion_confidence"), _txt(decision.get("confidence"), "--"))
-        divergence = _txt(fusion_breakdown.get("divergence"), "--")
-        divergence_penalty = _txt(fusion_breakdown.get("divergence_penalty"), "--")
-        sign_conflict = _txt(fusion_breakdown.get("sign_conflict"), "--")
+    mode = _txt(fusion_breakdown.get("mode"), _txt(decision.get("strategyMode"), "--"))
+    weighted_threshold_action = _txt(fusion_breakdown.get("weighted_threshold_action"), "--")
+    weighted_action_raw = _txt(fusion_breakdown.get("weighted_action_raw"), "--")
+    core_rule_action = _txt(fusion_breakdown.get("core_rule_action"), "--")
+    final_action = _txt(fusion_breakdown.get("final_action"), _txt(decision.get("finalAction"), "--"))
+    gate_fail_reasons = fusion_breakdown.get("weighted_gate_fail_reasons") if isinstance(
+        fusion_breakdown.get("weighted_gate_fail_reasons"), list
+    ) else []
 
-        tech_weight_raw = _txt(fusion_breakdown.get("tech_weight_raw"), "--")
-        tech_weight_norm = _txt(fusion_breakdown.get("tech_weight_norm"), "--")
-        context_weight_raw = _txt(fusion_breakdown.get("context_weight_raw"), "--")
-        context_weight_norm = _txt(fusion_breakdown.get("context_weight_norm"), "--")
+    tech_score = _txt(fusion_breakdown.get("tech_score"), _txt(tech_track.get("score"), _txt(decision.get("techScore"), "0")))
+    context_score = _txt(
+        fusion_breakdown.get("context_score"),
+        _txt(context_track.get("score"), _txt(decision.get("contextScore"), "0")),
+    )
+    fusion_score = _txt(fusion_breakdown.get("fusion_score"), "--")
+    tech_conf = _txt(fusion_breakdown.get("tech_confidence"), _txt(tech_track.get("confidence"), "--"))
+    context_conf = _txt(fusion_breakdown.get("context_confidence"), _txt(context_track.get("confidence"), "--"))
+    fusion_conf = _txt(fusion_breakdown.get("fusion_confidence"), _txt(decision.get("confidence"), "--"))
+    divergence = _txt(fusion_breakdown.get("divergence"), "--")
+    divergence_penalty = _txt(fusion_breakdown.get("divergence_penalty"), "--")
+    sign_conflict = _txt(fusion_breakdown.get("sign_conflict"), "--")
 
-        tech_group_lines: list[str] = []
-        for group in tech_groups:
-            if not isinstance(group, dict):
-                continue
-            tech_group_lines.append(
-                "技术组 "
-                + _txt(group.get("id"), "--")
-                + f": score={_txt(group.get('score'), '--')}, coverage={_txt(group.get('coverage'), '--')}, "
-                + f"weight_raw={_txt(group.get('weight_raw'), '--')}, weight_norm={_txt(group.get('weight_norm_in_track'), '--')}, "
-                + f"track_contribution={_txt(group.get('track_contribution'), '--')}"
-            )
+    tech_weight_raw = _txt(fusion_breakdown.get("tech_weight_raw"), "--")
+    tech_weight_norm = _txt(fusion_breakdown.get("tech_weight_norm"), "--")
+    context_weight_raw = _txt(fusion_breakdown.get("context_weight_raw"), "--")
+    context_weight_norm = _txt(fusion_breakdown.get("context_weight_norm"), "--")
 
-        context_group_lines: list[str] = []
-        for group in context_groups:
-            if not isinstance(group, dict):
-                continue
-            context_group_lines.append(
-                "环境组 "
-                + _txt(group.get("id"), "--")
-                + f": score={_txt(group.get('score'), '--')}, coverage={_txt(group.get('coverage'), '--')}, "
-                + f"weight_raw={_txt(group.get('weight_raw'), '--')}, weight_norm={_txt(group.get('weight_norm_in_track'), '--')}, "
-                + f"track_contribution={_txt(group.get('track_contribution'), '--')}"
-            )
-
-        top_tech_dims = sorted(
-            [item for item in tech_dims if isinstance(item, dict)],
-            key=lambda item: abs(_float(item.get("track_contribution"), _float(item.get("group_contribution"), _float(item.get("score"), 0.0))) or 0.0),
-            reverse=True,
-        )[:6]
-        top_context_dims = sorted(
-            [item for item in context_dims if isinstance(item, dict)],
-            key=lambda item: abs(_float(item.get("track_contribution"), _float(item.get("group_contribution"), _float(item.get("score"), 0.0))) or 0.0),
-            reverse=True,
-        )[:6]
-
-        tech_evidence = [
-            "技术维度 "
-            + _txt(item.get("id"), "--")
-            + f"（组={_txt(item.get('group'), '--')}）: score={_txt(item.get('score'), '--')}, "
-            + f"group_contribution={_txt(item.get('group_contribution'), '--')}, track_contribution={_txt(item.get('track_contribution'), '--')} · "
-            + _txt(item.get("reason"), "--")
-            for item in top_tech_dims
-        ]
-        context_evidence = [
-            "环境维度 "
-            + _txt(item.get("id"), "--")
-            + f"（组={_txt(item.get('group'), '--')}）: score={_txt(item.get('score'), '--')}, "
-            + f"group_contribution={_txt(item.get('group_contribution'), '--')}, track_contribution={_txt(item.get('track_contribution'), '--')} · "
-            + _txt(item.get("reason"), "--")
-            for item in top_context_dims
-        ]
-
-        threshold_lines = [f"{_txt(k)}={_txt(v)}" for k, v in effective_thresholds.items() if _txt(k)]
-        decision_path_lines = []
-        for item in decision_path:
-            if not isinstance(item, dict):
-                continue
-            decision_path_lines.append(
-                _txt(item.get("step"), "--")
-                + f": matched={_txt(item.get('matched'), '--')}"
-                + f", detail={_txt(item.get('detail'), '--')}"
-            )
-        veto_lines = []
-        for item in vetoes:
-            if not isinstance(item, dict):
-                continue
-            veto_lines.append(
-                _txt(item.get("id"), "veto")
-                + f": action={_txt(item.get('action'), '--')}, reason={_txt(item.get('reason'), '--')}, priority={_txt(item.get('priority'), '--')}"
-            )
-
-        summary_lines = [
-            f"本次信号采用 v2.3 双轨算法，模式 {mode}。最终动作 {final_action}，融合分 {fusion_score}，融合置信度 {fusion_conf}。",
-            f"技术轨 score/confidence={tech_score}/{tech_conf}；环境轨 score/confidence={context_score}/{context_conf}。",
-            f"动作链路：core_rule={core_rule_action} -> weighted_threshold={weighted_threshold_action} -> weighted_gate={weighted_action_raw} -> final={final_action}。",
-        ]
-        if gate_fail_reasons:
-            summary_lines.append("加权门控未通过原因: " + " | ".join(_txt(item, "--") for item in gate_fail_reasons))
-        if veto_lines:
-            summary_lines.append("否决命中: " + " | ".join(veto_lines))
-
-        basis = [
-            f"决策点: {_txt(decision.get('checkpointAt'), '--')}",
-            f"轨道权重: 技术轨 raw={tech_weight_raw}, norm={tech_weight_norm}; 环境轨 raw={context_weight_raw}, norm={context_weight_norm}",
-            f"融合参数: divergence={divergence}, divergence_penalty={divergence_penalty}, sign_conflict={sign_conflict}",
-            f"阈值: buy={_txt(fusion_breakdown.get('buy_threshold_eff'), '--')} (base={_txt(fusion_breakdown.get('buy_threshold_base'), '--')}), "
-            + f"sell={_txt(fusion_breakdown.get('sell_threshold_eff'), '--')} (base={_txt(fusion_breakdown.get('sell_threshold_base'), '--')}), "
-            + f"sell_precedence_gate={_txt(fusion_breakdown.get('sell_precedence_gate'), '--')}, mode={_txt(fusion_breakdown.get('threshold_mode'), '--')}",
-            *tech_group_lines,
-            *context_group_lines,
-            *decision_path_lines,
-            *veto_lines,
-            f"最终理由: {_txt(decision.get('finalReason') or reasoning_text, '--')}",
-        ]
-
-        context_component_breakdown = [
-            f"{_txt(item.get('id'), '--')}: track_contribution={_txt(item.get('track_contribution'), '--')} · {_txt(item.get('reason'), '--')}"
-            for item in top_context_dims
-        ]
-        context_component_sum = 0.0
-        for group in context_groups:
-            if not isinstance(group, dict):
-                continue
-            context_component_sum += _float(group.get("track_contribution"), 0.0) or 0.0
-
-        return {
-            "summary": "\n".join(summary_lines),
-            "contextScoreExplain": {
-                "formula": "环境轨分值 = Σ(组权重归一化 × 组分值)，组分值=Σ(组内维度归一化权重 × 维度分)，并截断到 [-1, 1]。",
-                "confidenceFormula": "环境轨置信度 = Σ(组权重 × 组覆盖率)/Σ组权重；融合置信度 = base_confidence × (1 - divergence_penalty)。",
-                "componentBreakdown": context_component_breakdown,
-                "componentSum": round(context_component_sum, 6),
-                "finalScore": _txt(context_score, _txt(decision.get("contextScore"), "0")),
-            },
-            "basis": basis,
-            "techEvidence": tech_evidence,
-            "contextEvidence": context_evidence,
-            "thresholdEvidence": threshold_lines,
-            "original": {
-                "analysis": analysis_text,
-                "reasoning": reasoning_text,
-            },
-        }
-
-    top_tech = sorted([item for item in tech_votes_raw if isinstance(item, dict)], key=_vote_sort_key, reverse=True)[:5]
-    top_context = sorted([item for item in context_votes_raw if isinstance(item, dict)], key=_vote_sort_key, reverse=True)[:5]
-    threshold_lines = [f"{_txt(k)}={_txt(v)}" for k, v in effective_thresholds.items() if _txt(k)]
-    context_score_total = 0.0
-    context_breakdown: list[str] = []
-    for item in context_votes_raw:
-        if not isinstance(item, dict):
+    tech_group_lines: list[str] = []
+    for group in tech_groups:
+        if not isinstance(group, dict):
             continue
-        name = _txt(item.get("component") or item.get("factor") or item.get("name"), "component")
-        score_value = _float(item.get("score"), 0.0) or 0.0
-        context_score_total += score_value
-        context_breakdown.append(f"{name}={score_value:+.4f}")
+        tech_group_lines.append(
+            "技术组 "
+            + _txt(group.get("id"), "--")
+            + f": score={_txt(group.get('score'), '--')}, coverage={_txt(group.get('coverage'), '--')}, "
+            + f"weight_raw={_txt(group.get('weight_raw'), '--')}, weight_norm={_txt(group.get('weight_norm_in_track'), '--')}, "
+            + f"track_contribution={_txt(group.get('track_contribution'), '--')}"
+        )
 
-    summary_lines = [
-        f"本次决策为 {decision.get('action', '--')}，决策类型 {decision.get('decisionType', '--')}，状态 {decision.get('status', '--')}。",
-        f"技术信号 {decision.get('techSignal', '--')}，环境信号 {decision.get('contextSignal', '--')}，共振类型 {decision.get('resonanceType', '--')}，规则命中 {decision.get('ruleHit', '--')}。",
-        f"置信度 {decision.get('confidence', '--')}，技术分 {decision.get('techScore', '--')}，环境分 {decision.get('contextScore', '--')}，建议仓位 {decision.get('positionSizePct', '--')}%。",
+    context_group_lines: list[str] = []
+    for group in context_groups:
+        if not isinstance(group, dict):
+            continue
+        context_group_lines.append(
+            "环境组 "
+            + _txt(group.get("id"), "--")
+            + f": score={_txt(group.get('score'), '--')}, coverage={_txt(group.get('coverage'), '--')}, "
+            + f"weight_raw={_txt(group.get('weight_raw'), '--')}, weight_norm={_txt(group.get('weight_norm_in_track'), '--')}, "
+            + f"track_contribution={_txt(group.get('track_contribution'), '--')}"
+        )
+
+    top_tech_dims = sorted(
+        [item for item in tech_dims if isinstance(item, dict)],
+        key=lambda item: abs(_float(item.get("track_contribution"), _float(item.get("group_contribution"), _float(item.get("score"), 0.0))) or 0.0),
+        reverse=True,
+    )[:6]
+    top_context_dims = sorted(
+        [item for item in context_dims if isinstance(item, dict)],
+        key=lambda item: abs(_float(item.get("track_contribution"), _float(item.get("group_contribution"), _float(item.get("score"), 0.0))) or 0.0),
+        reverse=True,
+    )[:6]
+
+    tech_evidence = [
+        "技术维度 "
+        + _txt(item.get("id"), "--")
+        + f"（组={_txt(item.get('group'), '--')}）: score={_txt(item.get('score'), '--')}, "
+        + f"group_contribution={_txt(item.get('group_contribution'), '--')}, track_contribution={_txt(item.get('track_contribution'), '--')} · "
+        + _txt(item.get("reason"), "--")
+        for item in top_tech_dims
+    ]
+    context_evidence = [
+        "环境维度 "
+        + _txt(item.get("id"), "--")
+        + f"（组={_txt(item.get('group'), '--')}）: score={_txt(item.get('score'), '--')}, "
+        + f"group_contribution={_txt(item.get('group_contribution'), '--')}, track_contribution={_txt(item.get('track_contribution'), '--')} · "
+        + _txt(item.get("reason"), "--")
+        for item in top_context_dims
     ]
 
-    if threshold_lines:
-        summary_lines.append("阈值参考: " + " | ".join(threshold_lines[:8]))
+    threshold_lines = [f"{_txt(k)}={_txt(v)}" for k, v in effective_thresholds.items() if _txt(k)]
+    decision_path_lines = []
+    for item in decision_path:
+        if not isinstance(item, dict):
+            continue
+        decision_path_lines.append(
+            _txt(item.get("step"), "--")
+            + f": matched={_txt(item.get('matched'), '--')}"
+            + f", detail={_txt(item.get('detail'), '--')}"
+        )
+    veto_lines = []
+    for item in vetoes:
+        if not isinstance(item, dict):
+            continue
+        veto_lines.append(
+            _txt(item.get("id"), "veto")
+            + f": action={_txt(item.get('action'), '--')}, reason={_txt(item.get('reason'), '--')}, priority={_txt(item.get('priority'), '--')}"
+        )
+
+    summary_lines = [
+        f"本次信号采用结构化双轨算法，双轨融合模式 {mode}。最终动作 {final_action}，融合分 {fusion_score}，融合置信度 {fusion_conf}。",
+        f"策略模板：配置={_txt(decision.get('configuredProfile'), '--')}，应用={_txt(decision.get('appliedProfile'), '--')}，AI动态调整模式={_txt(decision.get('aiDynamicStrategy'), '--')}。"
+        + (
+            "（本次发生模板切换）"
+            if _txt(decision.get("aiProfileSwitched"), "").lower() in {"1", "true", "yes", "是"}
+            else ""
+        ),
+        f"技术轨 score/confidence={tech_score}/{tech_conf}；环境轨 score/confidence={context_score}/{context_conf}。",
+        f"动作链路：core_rule={core_rule_action} -> weighted_threshold={weighted_threshold_action} -> weighted_gate={weighted_action_raw} -> final={final_action}。",
+    ]
+    if gate_fail_reasons:
+        summary_lines.append("加权门控未通过原因: " + " | ".join(_txt(item, "--") for item in gate_fail_reasons))
+    if veto_lines:
+        summary_lines.append("否决命中: " + " | ".join(veto_lines))
+
+    basis = [
+        f"决策点: {_txt(decision.get('checkpointAt'), '--')}",
+        f"轨道权重: 技术轨 raw={tech_weight_raw}, norm={tech_weight_norm}; 环境轨 raw={context_weight_raw}, norm={context_weight_norm}",
+        f"融合参数: divergence={divergence}, divergence_penalty={divergence_penalty}, sign_conflict={sign_conflict}",
+        f"canonical_breakdown: tech_score={tech_score}, context_score={context_score}, tech_confidence={tech_conf}, context_confidence={context_conf}, fusion_score={fusion_score}, fusion_confidence={fusion_conf}",
+        f"阈值: buy={_txt(fusion_breakdown.get('buy_threshold_eff'), '--')} (base={_txt(fusion_breakdown.get('buy_threshold_base'), '--')}), "
+        + f"sell={_txt(fusion_breakdown.get('sell_threshold_eff'), '--')} (base={_txt(fusion_breakdown.get('sell_threshold_base'), '--')}), "
+        + f"sell_precedence_gate={_txt(fusion_breakdown.get('sell_precedence_gate'), '--')}, mode={_txt(fusion_breakdown.get('threshold_mode'), '--')}",
+        *tech_group_lines,
+        *context_group_lines,
+        *decision_path_lines,
+        *veto_lines,
+    ]
+
+    context_component_breakdown = [
+        f"{_txt(item.get('id'), '--')}: track_contribution={_txt(item.get('track_contribution'), '--')} · {_txt(item.get('reason'), '--')}"
+        for item in top_context_dims
+    ]
+    context_component_sum = 0.0
+    for group in context_groups:
+        if not isinstance(group, dict):
+            continue
+        context_component_sum += _float(group.get("track_contribution"), 0.0) or 0.0
 
     return {
         "summary": "\n".join(summary_lines),
         "contextScoreExplain": {
-            "formula": "环境分 = 来源先验 + 趋势 + 价格结构 + 动量 + 风险平衡 + 流动性 + 时段，并截断到 [-1, 1]。",
-            "confidenceFormula": "环境置信度 = clamp(0.56 + abs(趋势+结构+动量+时段)*0.45 + abs(流动性)*0.2, 0.45, 0.92)。",
-            "componentBreakdown": context_breakdown,
-            "componentSum": round(context_score_total, 4),
-            "finalScore": _txt(decision.get("contextScore"), "0"),
+            "formula": "环境轨分值 = Σ(组权重归一化 × 组分值)，组分值=Σ(组内维度归一化权重 × 维度分)，并截断到 [-1, 1]。",
+            "confidenceFormula": "环境轨置信度 = Σ(组权重 × 组覆盖率)/Σ组权重；融合置信度 = base_confidence × (1 - divergence_penalty)。",
+            "componentBreakdown": context_component_breakdown,
+            "componentSum": round(context_component_sum, 6),
+            "finalScore": _txt(context_score, _txt(decision.get("contextScore"), "0")),
         },
-        "basis": [
-            f"决策点: {decision.get('checkpointAt', '--')}",
-            f"时间粒度: {decision.get('analysisTimeframe', '--')}，策略模式: {decision.get('strategyMode', '--')}",
-            f"市场状态: {decision.get('marketRegime', '--')}，基本面质量: {decision.get('fundamentalQuality', '--')}",
-            f"风险风格: {decision.get('riskStyle', '--')}（auto={decision.get('autoInferredRiskStyle', '--')}）",
-            *_dual_track_basis_lines(decision, effective_thresholds),
-            f"最终理由: {decision.get('finalReason', '--')}",
-        ],
-        "techEvidence": [_vote_line(item) for item in top_tech],
-        "contextEvidence": [_vote_line(item) for item in top_context],
+        "basis": basis,
+        "techEvidence": tech_evidence,
+        "contextEvidence": context_evidence,
         "thresholdEvidence": threshold_lines,
         "original": {
             "analysis": analysis_text,
@@ -2187,7 +2218,7 @@ def _build_vote_overview(
     context_clamped = max(-1.0, min(1.0, context_sum))
 
     explain_obj = explainability if isinstance(explainability, dict) else {}
-    if _is_v23_explainability(explain_obj):
+    if _is_structured_explainability(explain_obj):
         technical_breakdown = _safe_json_load(explain_obj.get("technical_breakdown"))
         context_breakdown = _safe_json_load(explain_obj.get("context_breakdown"))
         tech_track = _safe_json_load(technical_breakdown.get("track"))
@@ -2212,7 +2243,7 @@ def _build_vote_overview(
             "voterCount": len(rows),
             "technicalVoterCount": tech_count,
             "contextVoterCount": context_count,
-            "formula": "v2.3 聚合：组内维度归一化 -> 轨内组权重归一化 -> 双轨融合；表格贡献分优先展示 track_contribution。",
+            "formula": "结构化聚合：组内维度归一化 -> 轨内组权重归一化 -> 双轨融合；表格贡献分优先展示 track_contribution。",
             "technicalAggregation": (
                 f"技术轨 score={_txt(tech_track.get('score'), '--')}, confidence={_txt(tech_track.get('confidence'), '--')}"
                 + (f"；组明细: {' | '.join(tech_group_lines)}" if tech_group_lines else "")
@@ -2224,15 +2255,7 @@ def _build_vote_overview(
             "rows": rows,
         }
 
-    return {
-        "voterCount": len(rows),
-        "technicalVoterCount": tech_count,
-        "contextVoterCount": context_count,
-        "formula": "单票贡献 = score x weight；分轨得分 = clamp(Σ单票贡献, -1, 1)。",
-        "technicalAggregation": f"技术轨汇总: Σ贡献={tech_sum:+.4f}，截断后={tech_clamped:+.4f}。",
-        "contextAggregation": f"环境轨汇总: Σ贡献={context_sum:+.4f}，截断后={context_clamped:+.4f}。",
-        "rows": rows,
-    }
+    raise HTTPException(status_code=422, detail="Vote overview requires structured explainability payload")
 
 
 def _extract_vote_list(explainability: dict[str, Any], keys: tuple[str, ...]) -> list[Any]:
@@ -2460,7 +2483,7 @@ def _build_parameter_details(
         }
 
     explain_obj = explainability if isinstance(explainability, dict) else {}
-    if _is_v23_explainability(explain_obj):
+    if _is_structured_explainability(explain_obj):
         technical_breakdown = _safe_json_load(explain_obj.get("technical_breakdown"))
         context_breakdown = _safe_json_load(explain_obj.get("context_breakdown"))
         fusion_breakdown = _safe_json_load(explain_obj.get("fusion_breakdown"))
@@ -2469,15 +2492,17 @@ def _build_parameter_details(
 
         tech_track = _safe_json_load(technical_breakdown.get("track"))
         context_track = _safe_json_load(context_breakdown.get("track"))
+        position_metric_label = _position_metric_label(decision.get("action"))
+        position_metric_value = _position_metric_value(decision.get("action"), decision.get("positionSizePct"))
 
         rows: list[dict[str, str]] = [
-            _item("动作", decision.get("action"), "fusion_breakdown.final_action", "最终动作来自 v2.3 融合层输出（含 veto/门控/规则合并）。"),
+            _item("动作", decision.get("action"), "fusion_breakdown.final_action", "最终动作来自结构化融合层输出（含 veto/门控/规则合并）。"),
             _item("决策类型", decision.get("decisionType"), "signal.decision_type", "决策类型来自信号记录，用于区分融合路径与执行语义。"),
             _item("核心规则动作", fusion_breakdown.get("core_rule_action"), "fusion_breakdown.core_rule_action", "仅规则引擎输出，不含 veto。"),
             _item("加权阈值动作", fusion_breakdown.get("weighted_threshold_action"), "fusion_breakdown.weighted_threshold_action", "仅由融合分与阈值比较得到的动作。"),
             _item("加权门控后动作", fusion_breakdown.get("weighted_action_raw"), "fusion_breakdown.weighted_action_raw", "在阈值动作基础上应用置信度与分轨门控后的动作。"),
-            _item("技术信号", decision.get("techSignal"), "technical_breakdown.track.score", "技术轨信号由技术轨 TrackScore 符号映射：>0 BUY，<0 SELL，=0 HOLD。"),
-            _item("环境信号", decision.get("contextSignal"), "context_breakdown.track.score", "环境轨信号由环境轨 TrackScore 符号映射：>0 BUY，<0 SELL，=0 HOLD。"),
+            _item("技术轨方向", _track_direction_label(decision.get("techSignal")), "technical_breakdown.track.score", "技术轨方向由技术轨 TrackScore 符号映射：>0 偏多，<0 偏空，=0 中性。"),
+            _item("环境轨方向", _track_direction_label(decision.get("contextSignal")), "context_breakdown.track.score", "环境轨方向由环境轨 TrackScore 符号映射：>0 偏多，<0 偏空，=0 中性。"),
             _item("技术分", decision.get("techScore"), "technical_breakdown.track.score", "技术轨分值=Σ(组权重归一化 × 组分值)，组分值=Σ(组内维度归一化权重 × 维度分)。"),
             _item("环境分", decision.get("contextScore"), "context_breakdown.track.score", "环境轨分值=Σ(组权重归一化 × 组分值)，组分值=Σ(组内维度归一化权重 × 维度分)。"),
             _item("技术轨置信度", tech_track.get("confidence"), "technical_breakdown.track.confidence", "技术轨置信度=Σ(组权重 × 组覆盖率)/Σ组权重。"),
@@ -2489,19 +2514,25 @@ def _build_parameter_details(
                 "fusion_breakdown.fusion_confidence",
                 "融合置信度=base_confidence × (1 - divergence_penalty)，用于 BUY 门控和动作稳定性控制。",
             ),
-            _item("仓位建议(%)", decision.get("positionSizePct"), "signal.position_size_pct", "仓位建议由融合动作与风险约束共同决定。"),
+            _item(position_metric_label, position_metric_value, "signal.position_size_pct", "仓位建议由融合动作与风险约束共同决定；HOLD 时显示为不变。"),
             _item(
                 "建议保持仓位",
                 _derive_keep_position_pct(decision.get("action"), decision.get("positionSizePct")),
                 "signal.position_size_pct",
                 "BUY 时等于目标买入仓位；SELL 时 = 100% - 建议卖出比例；HOLD 时保持不变。",
             ),
-            _item("规则命中", decision.get("ruleHit"), "dual_track.rule_hit", "规则命中来自双轨规则融合结果。"),
-            _item("共振类型", decision.get("resonanceType"), "dual_track.resonance_type", "共振类型用于说明双轨是否同向及其强弱。"),
+            _item("规则命中（兼容派生）", decision.get("ruleHit"), "dual_track.rule_hit", "兼容派生字段，来自 legacy dual_track 摘要，仅用于辅助对照，不作为 canonical 决策口径。"),
+            _item("共振类型（兼容派生）", decision.get("resonanceType"), "dual_track.resonance_type", "兼容派生字段，来自 legacy dual_track 摘要，仅用于辅助对照，不作为 canonical 决策口径。"),
             _item("市场", runtime_context.get("market"), "调度配置/回放任务", "实时模式取 scheduler.market；回放模式取 sim_runs.market。"),
+            _item("配置模板", decision.get("configuredProfile"), "sim_scheduler_config.strategy_profile_id", "当前调度配置中的策略模板。"),
+            _item("应用模板", decision.get("appliedProfile"), "strategy_profile.selected_strategy_profile", "该条信号实际使用的策略模板（信号快照）。"),
+            _item("AI动态调整模式", decision.get("aiDynamicStrategy"), "sim_scheduler_config.ai_dynamic_strategy", "AI 动态调整模式，控制是否允许按市场切换模板/权重。"),
+            _item("AI动态强度", decision.get("aiDynamicStrength"), "sim_scheduler_config.ai_dynamic_strength", "AI 动态调整强度（0~1，越大调整越激进）。"),
+            _item("AI回看窗口(小时)", decision.get("aiDynamicLookback"), "sim_scheduler_config.ai_dynamic_lookback", "AI 评估市场状态时使用的回看窗口。"),
+            _item("AI是否切换模板", decision.get("aiProfileSwitched"), "strategy_profile.selected_strategy_profile", "配置模板与应用模板不一致时为“是”，表示本次触发了动态切换。"),
             _item("分析粒度", runtime_context.get("timeframe"), "调度配置/回放任务/策略配置", "实时模式优先策略粒度，其次 scheduler.analysis_timeframe；回放模式取 sim_runs.timeframe。"),
             _item("策略模式", runtime_context.get("strategyMode"), "调度配置/回放任务/策略配置", "实时模式优先策略模式，其次 scheduler.strategy_mode；回放模式取 sim_runs.selected_strategy_mode。"),
-            _item("双轨模式", fusion_breakdown.get("mode"), "fusion_breakdown.mode", "融合模式支持 rule_only / weighted_only / hybrid。"),
+            _item("双轨融合模式", fusion_breakdown.get("mode"), "fusion_breakdown.mode", "双轨融合模式支持 rule_only / weighted_only / hybrid。"),
             _item("技术轨权重(raw)", fusion_breakdown.get("tech_weight_raw"), "fusion_breakdown.tech_weight_raw", "技术轨原始权重，融合前参数。"),
             _item("环境轨权重(raw)", fusion_breakdown.get("context_weight_raw"), "fusion_breakdown.context_weight_raw", "环境轨原始权重，融合前参数。"),
             _item("技术轨权重(norm)", fusion_breakdown.get("tech_weight_norm"), "fusion_breakdown.tech_weight_norm", "技术轨融合归一化权重。"),
@@ -2511,6 +2542,30 @@ def _build_parameter_details(
             _item("方向冲突标记", fusion_breakdown.get("sign_conflict"), "fusion_breakdown.sign_conflict", "技术轨与环境轨符号是否冲突（0/1）。"),
             _item("veto 来源模式", fusion_breakdown.get("veto_source_mode"), "fusion_breakdown.veto_source_mode", "标记 veto 判定来源（如 legacy/new）。"),
         ]
+
+        buy_base = _float(fusion_breakdown.get("buy_threshold_base"))
+        buy_eff = _float(fusion_breakdown.get("buy_threshold_eff"))
+        if buy_base is not None and buy_eff is not None:
+            rows.append(
+                _item(
+                    "BUY阈值调整",
+                    f"{buy_base:.4f} -> {buy_eff:.4f} (Δ{buy_eff - buy_base:+.4f})",
+                    "fusion_breakdown.buy_threshold_base/buy_threshold_eff",
+                    "显示 BUY 阈值从基础值到生效值的变化（含 AI/波动率策略影响）。",
+                )
+            )
+
+        sell_base = _float(fusion_breakdown.get("sell_threshold_base"))
+        sell_eff = _float(fusion_breakdown.get("sell_threshold_eff"))
+        if sell_base is not None and sell_eff is not None:
+            rows.append(
+                _item(
+                    "SELL阈值调整",
+                    f"{sell_base:.4f} -> {sell_eff:.4f} (Δ{sell_eff - sell_base:+.4f})",
+                    "fusion_breakdown.sell_threshold_base/sell_threshold_eff",
+                    "显示 SELL 阈值从基础值到生效值的变化（含 AI/波动率策略影响）。",
+                )
+            )
 
         gate_reasons = fusion_breakdown.get("weighted_gate_fail_reasons")
         if isinstance(gate_reasons, list):
@@ -2886,18 +2941,23 @@ def _build_signal_detail_payload(
     fetch_realtime_snapshot: bool = False,
 ) -> dict[str, Any]:
     strategy_profile = _safe_json_load(signal.get("strategy_profile"))
+    selected_strategy_profile = _safe_json_load(strategy_profile.get("selected_strategy_profile"))
     explainability = _safe_json_load(strategy_profile.get("explainability"))
     technical_breakdown = _safe_json_load(explainability.get("technical_breakdown"))
     context_breakdown = _safe_json_load(explainability.get("context_breakdown"))
     fusion_breakdown = _safe_json_load(explainability.get("fusion_breakdown"))
-    is_v23 = _is_v23_explainability(explainability)
+    is_structured = _is_structured_explainability(explainability)
+    if not is_structured:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Signal detail requires structured explainability schema; "
+                f"signal_id={_txt(signal.get('id'), '--')}"
+            ),
+        )
     dual_track = _safe_json_load(explainability.get("dual_track"))
-    if is_v23:
-        tech_votes_raw = _build_v23_vote_rows(technical_breakdown, track="technical")
-        context_votes_raw = _build_v23_vote_rows(context_breakdown, track="context")
-    else:
-        tech_votes_raw = _extract_vote_list(explainability, ("tech_votes", "technical_votes", "techVotes", "tech"))
-        context_votes_raw = _extract_vote_list(explainability, ("context_votes", "market_votes", "contextVotes", "context"))
+    tech_votes_raw = _build_structured_vote_rows(technical_breakdown, track="technical")
+    context_votes_raw = _build_structured_vote_rows(context_breakdown, track="context")
     tech_votes = [_to_vote_row(item) for item in tech_votes_raw]
     context_votes = [_to_vote_row(item, default_signal="CONTEXT") for item in context_votes_raw]
 
@@ -2911,48 +2971,97 @@ def _build_signal_detail_payload(
     )
     reasoning_text = _txt(signal.get("reasoning"), analysis_text)
 
+    scheduler_cfg = context.quant_db().get_scheduler_config()
+    configured_profile_id = _txt(scheduler_cfg.get("strategy_profile_id"), "--")
+    configured_profile_name = "--"
+    if configured_profile_id and configured_profile_id != "--":
+        configured_profile = context.quant_db().get_strategy_profile(configured_profile_id) or {}
+        configured_profile_name = _txt(configured_profile.get("name"), configured_profile_id)
+
+    applied_profile_id = _txt(selected_strategy_profile.get("id"), "")
+    applied_profile_name = _txt(selected_strategy_profile.get("name"), "")
+    applied_profile_version = _txt(selected_strategy_profile.get("version"), "")
+    if not applied_profile_id:
+        applied_profile_id = configured_profile_id
+    if not applied_profile_name:
+        applied_profile_name = configured_profile_name
+    ai_profile_switched = bool(
+        configured_profile_id
+        and configured_profile_id != "--"
+        and applied_profile_id
+        and applied_profile_id != "--"
+        and applied_profile_id != configured_profile_id
+    )
+    ai_dynamic_strategy = _txt(scheduler_cfg.get("ai_dynamic_strategy"), "off")
+    ai_dynamic_strength = _txt(scheduler_cfg.get("ai_dynamic_strength"), "--")
+    ai_dynamic_lookback = _txt(scheduler_cfg.get("ai_dynamic_lookback"), "--")
+    configured_profile_label = _normalize_profile_label(configured_profile_id, configured_profile_name)
+    applied_profile_label = _normalize_profile_label(applied_profile_id, applied_profile_name)
+    applied_profile_version_text = (
+        f"版本 {applied_profile_version}"
+        if applied_profile_version and applied_profile_version != "--"
+        else ""
+    )
+
     tech_track = _safe_json_load(technical_breakdown.get("track"))
     context_track = _safe_json_load(context_breakdown.get("track"))
-    v23_tech_score = _txt(
+    tech_score_value = _txt(
         fusion_breakdown.get("tech_score"),
         _txt(tech_track.get("score"), _txt(signal.get("tech_score"), "0")),
     )
-    v23_context_score = _txt(
+    context_score_value = _txt(
         fusion_breakdown.get("context_score"),
         _txt(context_track.get("score"), _txt(signal.get("context_score"), "0")),
     )
-    v23_confidence = _txt(fusion_breakdown.get("fusion_confidence"), _txt(signal.get("confidence"), "0"))
-    v23_tech_signal = _score_to_signal(_float(v23_tech_score, 0.0) or 0.0)
-    v23_context_signal = _score_to_signal(_float(v23_context_score, 0.0) or 0.0)
-    v23_final_action = _txt(fusion_breakdown.get("final_action") or dual_track.get("final_action") or signal.get("action"), "HOLD").upper()
+    confidence_value = _txt(fusion_breakdown.get("fusion_confidence"), _txt(signal.get("confidence"), "0"))
+    tech_signal_value = _score_to_signal(_float(tech_score_value, 0.0) or 0.0)
+    context_signal_value = _score_to_signal(_float(context_score_value, 0.0) or 0.0)
+    final_action_value = _txt(fusion_breakdown.get("final_action") or dual_track.get("final_action") or signal.get("action"), "HOLD").upper()
+    final_reason_value = (
+        f"core_rule={_txt(fusion_breakdown.get('core_rule_action'), '--')}; "
+        f"weighted_threshold={_txt(fusion_breakdown.get('weighted_threshold_action'), '--')}; "
+        f"weighted_gate={_txt(fusion_breakdown.get('weighted_action_raw'), '--')}; "
+        f"final={final_action_value}; tech_score={tech_score_value}; context_score={context_score_value}; "
+        f"fusion_score={_txt(fusion_breakdown.get('fusion_score'), '--')}"
+    )
 
     decision = {
         "id": _txt(signal.get("id")),
         "source": source,
         "stockCode": _txt(signal.get("stock_code")),
         "stockName": _txt(signal.get("stock_name")),
-        "action": v23_final_action if is_v23 else _txt(signal.get("action"), "HOLD").upper(),
+        "action": final_action_value,
         "status": _txt(signal.get("signal_status") or signal.get("status") or signal.get("execution_note"), "observed"),
-        "decisionType": _txt(signal.get("decision_type") or dual_track.get("decision_type") or fusion_breakdown.get("mode"), "auto"),
-        "confidence": v23_confidence if is_v23 else _txt(signal.get("confidence"), "0"),
+        "decisionType": _txt(signal.get("decision_type") or fusion_breakdown.get("mode"), "auto"),
+        "confidence": confidence_value,
         "positionSizePct": _txt(signal.get("position_size_pct"), "0"),
-        "techScore": v23_tech_score if is_v23 else _txt(signal.get("tech_score"), "0"),
-        "contextScore": v23_context_score if is_v23 else _txt(signal.get("context_score"), "0"),
+        "techScore": tech_score_value,
+        "contextScore": context_score_value,
         "checkpointAt": _txt(signal.get("checkpoint_at") or signal.get("updated_at") or signal.get("created_at"), "--"),
         "createdAt": _txt(signal.get("created_at"), "--"),
         "analysisTimeframe": _profile_text(strategy_profile.get("analysis_timeframe"), "--"),
         "strategyMode": _profile_text(strategy_profile.get("strategy_mode"), "--"),
-        "marketRegime": _txt(strategy_profile.get("market_regime"), "--"),
-        "fundamentalQuality": _txt(strategy_profile.get("fundamental_quality"), "--"),
-        "riskStyle": _txt(_safe_json_load(strategy_profile.get("risk_style")).get("label") or strategy_profile.get("risk_style"), "--"),
-        "autoInferredRiskStyle": _txt(strategy_profile.get("auto_inferred_risk_style"), "--"),
-        "techSignal": _txt(dual_track.get("tech_signal"), v23_tech_signal if is_v23 else "--"),
-        "contextSignal": _txt(dual_track.get("context_signal"), v23_context_signal if is_v23 else "--"),
+        "marketRegime": _profile_summary_text(strategy_profile.get("market_regime"), "--"),
+        "fundamentalQuality": _profile_summary_text(strategy_profile.get("fundamental_quality"), "--"),
+        "riskStyle": _profile_summary_text(strategy_profile.get("risk_style"), "--"),
+        "autoInferredRiskStyle": _profile_summary_text(strategy_profile.get("auto_inferred_risk_style"), "--"),
+        "techSignal": tech_signal_value,
+        "contextSignal": context_signal_value,
         "resonanceType": _txt(dual_track.get("resonance_type"), "--"),
-        "ruleHit": _txt(dual_track.get("rule_hit"), _txt(fusion_breakdown.get("mode"), "--") if is_v23 else "--"),
-        "finalAction": v23_final_action if is_v23 else _txt(dual_track.get("final_action") or signal.get("action"), "HOLD").upper(),
-        "finalReason": _txt(dual_track.get("final_reason") or reasoning_text, "--"),
+        "ruleHit": _txt(dual_track.get("rule_hit"), _txt(fusion_breakdown.get("mode"), "--")),
+        "finalAction": final_action_value,
+        "finalReason": final_reason_value,
         "positionRatio": _txt(dual_track.get("position_ratio"), _txt(signal.get("position_size_pct"), "0")),
+        "configuredProfile": configured_profile_label,
+        "appliedProfile": (
+            f"{applied_profile_label} {applied_profile_version_text}".strip()
+            if applied_profile_label and applied_profile_label != "--"
+            else "--"
+        ),
+        "aiDynamicStrategy": ai_dynamic_strategy,
+        "aiDynamicStrength": ai_dynamic_strength,
+        "aiDynamicLookback": ai_dynamic_lookback,
+        "aiProfileSwitched": "是" if ai_profile_switched else "否",
     }
 
     technical_indicators = _extract_technical_indicators(
@@ -2961,41 +3070,50 @@ def _build_signal_detail_payload(
         reasoning=reasoning_text,
         analysis_text=analysis_text,
         strategy_profile=strategy_profile,
-        technical_breakdown=technical_breakdown if is_v23 else None,
-        context_breakdown=context_breakdown if is_v23 else None,
+        technical_breakdown=technical_breakdown,
+        context_breakdown=context_breakdown,
     )
     effective_thresholds = _safe_json_load(strategy_profile.get("effective_thresholds"))
-    if is_v23:
-        if _txt(fusion_breakdown.get("buy_threshold_eff")):
-            effective_thresholds["buy_threshold"] = fusion_breakdown.get("buy_threshold_eff")
-        if _txt(fusion_breakdown.get("sell_threshold_eff")):
-            effective_thresholds["sell_threshold"] = fusion_breakdown.get("sell_threshold_eff")
-        for key in (
-            "buy_threshold_base",
-            "buy_threshold_eff",
-            "sell_threshold_base",
-            "sell_threshold_eff",
-            "sell_precedence_gate",
-            "threshold_mode",
-            "volatility_regime_score",
-            "tech_weight_raw",
-            "tech_weight_norm",
-            "context_weight_raw",
-            "context_weight_norm",
-            "fusion_score",
-            "fusion_confidence",
-            "fusion_confidence_base",
-            "divergence",
-            "divergence_penalty",
-            "sign_conflict",
-            "mode",
-            "veto_source_mode",
-        ):
-            if _txt(fusion_breakdown.get(key)):
-                effective_thresholds[key] = fusion_breakdown.get(key)
-        gate_fail_reasons = fusion_breakdown.get("weighted_gate_fail_reasons")
-        if isinstance(gate_fail_reasons, list):
-            effective_thresholds["weighted_gate_fail_reasons"] = " | ".join(_txt(item, "--") for item in gate_fail_reasons) if gate_fail_reasons else "无"
+    dual_track_profile = _safe_json_load(strategy_profile.get("dual_track"))
+    if _txt(fusion_breakdown.get("buy_threshold_eff")):
+        effective_thresholds["buy_threshold"] = fusion_breakdown.get("buy_threshold_eff")
+    if _txt(fusion_breakdown.get("sell_threshold_eff")):
+        effective_thresholds["sell_threshold"] = fusion_breakdown.get("sell_threshold_eff")
+    for key in (
+        "min_fusion_confidence",
+        "min_tech_score_for_buy",
+        "min_context_score_for_buy",
+        "min_tech_confidence_for_buy",
+        "min_context_confidence_for_buy",
+    ):
+        if _txt(dual_track_profile.get(key)):
+            effective_thresholds[key] = dual_track_profile.get(key)
+    for key in (
+        "buy_threshold_base",
+        "buy_threshold_eff",
+        "sell_threshold_base",
+        "sell_threshold_eff",
+        "sell_precedence_gate",
+        "threshold_mode",
+        "volatility_regime_score",
+        "tech_weight_raw",
+        "tech_weight_norm",
+        "context_weight_raw",
+        "context_weight_norm",
+        "fusion_score",
+        "fusion_confidence",
+        "fusion_confidence_base",
+        "divergence",
+        "divergence_penalty",
+        "sign_conflict",
+        "mode",
+        "veto_source_mode",
+    ):
+        if _txt(fusion_breakdown.get(key)):
+            effective_thresholds[key] = fusion_breakdown.get(key)
+    gate_fail_reasons = fusion_breakdown.get("weighted_gate_fail_reasons")
+    if isinstance(gate_fail_reasons, list):
+        effective_thresholds["weighted_gate_fail_reasons"] = " | ".join(_txt(item, "--") for item in gate_fail_reasons) if gate_fail_reasons else "无"
 
     runtime_context = _build_runtime_context(
         context,
@@ -3232,17 +3350,14 @@ def _score_to_signal(score: Any, *, epsilon: float = 1e-6) -> str:
     return "HOLD"
 
 
-def _is_v23_explainability(explainability: dict[str, Any]) -> bool:
-    schema = _txt(explainability.get("explain_schema_version"), "").lower()
-    if "quant_explain/v2.3" in schema:
-        return True
+def _is_structured_explainability(explainability: dict[str, Any]) -> bool:
     technical_breakdown = explainability.get("technical_breakdown")
     context_breakdown = explainability.get("context_breakdown")
     fusion_breakdown = explainability.get("fusion_breakdown")
     return isinstance(technical_breakdown, dict) and isinstance(context_breakdown, dict) and isinstance(fusion_breakdown, dict)
 
 
-def _build_v23_vote_rows(track_breakdown: dict[str, Any], *, track: str) -> list[dict[str, Any]]:
+def _build_structured_vote_rows(track_breakdown: dict[str, Any], *, track: str) -> list[dict[str, Any]]:
     rows = track_breakdown.get("dimensions")
     if not isinstance(rows, list):
         return []
@@ -4272,7 +4387,10 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
             handler = ACTION_BUILDERS.get((page, action))
             if not handler:
                 raise HTTPException(status_code=404, detail=f"Unsupported action: {page}/{action}")
-            return handler(api_context, payload)
+            try:
+                return handler(api_context, payload)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         action_handler.__name__ = f"post_{page.replace('-', '_').replace('/', '_')}_{action.replace('-', '_')}"
         app.post(path)(action_handler)

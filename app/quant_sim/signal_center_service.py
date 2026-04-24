@@ -23,7 +23,13 @@ class SignalCenterService:
         except Exception:
             self.smart_monitor_db = None
 
-    def create_signal(self, candidate: dict[str, Any], decision: dict[str, Any] | Decision) -> dict[str, Any]:
+    def create_signal(
+        self,
+        candidate: dict[str, Any],
+        decision: dict[str, Any] | Decision,
+        *,
+        notify: bool = True,
+    ) -> dict[str, Any]:
         payload = self._normalize_decision_payload(decision)
         payload = self._apply_position_constraints(candidate, payload)
         payload = self._apply_transaction_cost_constraints(candidate, payload)
@@ -56,7 +62,7 @@ class SignalCenterService:
         )
         self._mirror_signal_to_ai_decision(candidate, payload)
         signal = self.db.get_signals(stock_code=candidate["stock_code"], limit=1)[0]
-        if status == "pending" and int(signal_id) not in existing_pending_ids:
+        if notify and status == "pending" and int(signal_id) not in existing_pending_ids:
             self._dispatch_live_signal_notification(candidate, signal, payload)
         return signal
 

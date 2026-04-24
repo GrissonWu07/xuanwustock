@@ -87,26 +87,37 @@ class QuantSimEngine:
         ai_dynamic_lookback: int | None = None,
         exclude_codes: set[str] | None = None,
     ) -> list[dict]:
-        profile_binding = self._resolve_strategy_binding(
-            strategy_profile_id=strategy_profile_id,
-            ai_dynamic_strategy=ai_dynamic_strategy,
-            ai_dynamic_strength=ai_dynamic_strength,
-            ai_dynamic_lookback=ai_dynamic_lookback,
+        dynamic_mode = (
+            str(ai_dynamic_strategy).strip().lower()
+            if ai_dynamic_strategy is not None
+            else DEFAULT_AI_DYNAMIC_STRATEGY
         )
+        profile_binding = None
+        if dynamic_mode == DEFAULT_AI_DYNAMIC_STRATEGY:
+            profile_binding = self._resolve_strategy_binding(
+                strategy_profile_id=strategy_profile_id,
+                ai_dynamic_strategy=ai_dynamic_strategy,
+                ai_dynamic_strength=ai_dynamic_strength,
+                ai_dynamic_lookback=ai_dynamic_lookback,
+            )
         signals = []
         blocked = {str(code).strip() for code in (exclude_codes or set()) if str(code).strip()}
         for candidate in self.candidate_pool.list_candidates(status="active"):
             code = str(candidate.get("stock_code") or "").strip()
             if code and code in blocked:
                 continue
-            signals.append(
-                self.analyze_candidate(
-                    candidate,
-                    analysis_timeframe=analysis_timeframe,
-                    strategy_mode=strategy_mode,
-                    strategy_profile_binding=profile_binding,
-                )
-            )
+            candidate_kwargs = {
+                "analysis_timeframe": analysis_timeframe,
+                "strategy_mode": strategy_mode,
+            }
+            if dynamic_mode == DEFAULT_AI_DYNAMIC_STRATEGY:
+                candidate_kwargs["strategy_profile_binding"] = profile_binding
+            else:
+                candidate_kwargs["strategy_profile_id"] = strategy_profile_id
+                candidate_kwargs["ai_dynamic_strategy"] = ai_dynamic_strategy
+                candidate_kwargs["ai_dynamic_strength"] = ai_dynamic_strength
+                candidate_kwargs["ai_dynamic_lookback"] = ai_dynamic_lookback
+            signals.append(self.analyze_candidate(candidate, **candidate_kwargs))
         return signals
 
     def analyze_positions(
@@ -118,12 +129,19 @@ class QuantSimEngine:
         ai_dynamic_strength: float | None = None,
         ai_dynamic_lookback: int | None = None,
     ) -> list[dict]:
-        profile_binding = self._resolve_strategy_binding(
-            strategy_profile_id=strategy_profile_id,
-            ai_dynamic_strategy=ai_dynamic_strategy,
-            ai_dynamic_strength=ai_dynamic_strength,
-            ai_dynamic_lookback=ai_dynamic_lookback,
+        dynamic_mode = (
+            str(ai_dynamic_strategy).strip().lower()
+            if ai_dynamic_strategy is not None
+            else DEFAULT_AI_DYNAMIC_STRATEGY
         )
+        profile_binding = None
+        if dynamic_mode == DEFAULT_AI_DYNAMIC_STRATEGY:
+            profile_binding = self._resolve_strategy_binding(
+                strategy_profile_id=strategy_profile_id,
+                ai_dynamic_strategy=ai_dynamic_strategy,
+                ai_dynamic_strength=ai_dynamic_strength,
+                ai_dynamic_lookback=ai_dynamic_lookback,
+            )
         signals = []
         for position in self.portfolio.list_positions():
             candidate = self.candidate_pool.db.get_candidate(position["stock_code"]) or {
@@ -132,12 +150,22 @@ class QuantSimEngine:
                 "source": "manual",
                 "sources": ["manual"],
             }
+            effective_binding = profile_binding
+            if dynamic_mode != DEFAULT_AI_DYNAMIC_STRATEGY:
+                effective_binding = self._resolve_strategy_binding(
+                    strategy_profile_id=strategy_profile_id,
+                    ai_dynamic_strategy=ai_dynamic_strategy,
+                    ai_dynamic_strength=ai_dynamic_strength,
+                    ai_dynamic_lookback=ai_dynamic_lookback,
+                    stock_code=str(candidate.get("stock_code") or ""),
+                    stock_name=str(candidate.get("stock_name") or position.get("stock_name") or ""),
+                )
             decision = self._evaluate_position_decision(
                 candidate,
                 position,
                 analysis_timeframe=analysis_timeframe,
                 strategy_mode=strategy_mode,
-                strategy_profile_binding=profile_binding,
+                strategy_profile_binding=effective_binding,
             )
             decision_price = self._extract_decision_price(decision)
             if decision_price > 0:

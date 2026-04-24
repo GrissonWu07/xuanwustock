@@ -207,13 +207,21 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
     try {
       await resource.runAction("batch-watchlist", { codes: selectedCodes });
       selection.clear();
+      setRunFeedback(t("Added to watchlist"));
+    } catch (error) {
+      setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBatching(false);
     }
   };
 
-  const handleSingleWatchlist = (code: string) => {
-    void resource.runAction("item-watchlist", { code });
+  const handleSingleWatchlist = async (code: string) => {
+    try {
+      await resource.runAction("item-watchlist", { code });
+      setRunFeedback(t("Added to watchlist"));
+    } catch (error) {
+      setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
 
   const handleAnalyzeCandidate = async (code: string) => {
@@ -496,8 +504,12 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                   </tr>
                 ) : (
                   visibleRows.map((row) => (
-                    <tr key={row.id} className={selection.isSelected(row.id) ? "table__row--selected" : undefined}>
-                      <td className="table__checkbox-cell">
+                    <tr
+                      key={row.id}
+                      className={selection.isSelected(row.id) ? "table__row--selected" : undefined}
+                      onClick={() => selection.toggle(row.id)}
+                    >
+                      <td className="table__checkbox-cell" onClick={(event) => event.stopPropagation()}>
                         <input
                           type="checkbox"
                           aria-label={t("Select {name}", { name: String(row.cells[1] ?? row.id) })}
@@ -520,13 +532,23 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                           <button
                             className="button button--secondary"
                             type="button"
-                            onClick={() => void handleAnalyzeCandidate(row.id)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void handleAnalyzeCandidate(row.id);
+                            }}
                             disabled={analyzingCode === row.id}
                           >
                             <span aria-hidden="true">🔎</span>
                             <span>{analyzingCode === row.id ? t("Analyze in progress") : t("Analyze")}</span>
                           </button>
-                          <button className="button button--secondary" type="button" onClick={() => handleSingleWatchlist(row.id)}>
+                          <button
+                            className="button button--secondary"
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void handleSingleWatchlist(row.id);
+                            }}
+                          >
                             <span aria-hidden="true">{row.actions?.[0]?.icon ?? "⭐"}</span>
                             <span>{row.actions?.[0]?.label ? t(row.actions[0].label) : t("Add to watchlist")}</span>
                           </button>

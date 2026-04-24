@@ -329,9 +329,17 @@ export type ReplaySnapshot = {
     status: string;
     stage?: string;
     progress?: number;
+    progressCurrent?: number;
+    progressTotal?: number;
+    checkpointCount?: number;
+    latestCheckpointAt?: string;
     startAt?: string;
     endAt?: string;
     range: string;
+    mode?: string;
+    timeframe?: string;
+    market?: string;
+    strategyMode?: string;
     note?: string;
     returnPct?: string;
     finalEquity?: string;

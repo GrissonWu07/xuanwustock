@@ -41,6 +41,11 @@ function parseReplayMode(value: string) {
   return normalized === "continuous_to_live" || normalized.includes("接续") ? "continuous_to_live" : "historical_range";
 }
 
+function localizeReplayMode(value: string) {
+  const normalized = parseReplayMode(value);
+  return REPLAY_MODE_OPTIONS.find((option) => option.value === normalized)?.label ?? value ?? "--";
+}
+
 function normalizeTimeframe(value: string) {
   const normalized = String(value).trim().toLowerCase();
   return TIMEFRAME_OPTIONS.find((option) => option.value === normalized)?.value ?? "30m";
@@ -83,16 +88,27 @@ function parseDynamicLookback(value: string | undefined, fallback: number) {
   return Math.max(6, Math.min(336, Math.round(parsed)));
 }
 
+function pickPreferredReplayTaskId(
+  tasks: Array<{ id: string; status?: string }>,
+  previousId = "",
+) {
+  const activeTask = tasks.find((task) => {
+    const normalized = String(task.status || "").trim().toLowerCase();
+    return normalized === "running" || normalized === "queued";
+  });
+  if (activeTask) {
+    return activeTask.id;
+  }
+  if (previousId && tasks.some((task) => task.id === previousId)) {
+    return previousId;
+  }
+  return tasks[0]?.id ?? "";
+}
+
 type HisReplayPageProps = {
   client?: ApiClient;
 };
 
-const taskBadgeTone: Record<string, "neutral" | "success" | "warning" | "danger"> = {
-  completed: "success",
-  running: "warning",
-  queued: "neutral",
-  cancelled: "danger",
-};
 const PAGE_SIZE = 20;
 
 function localizeTaskStatus(status: string) {
@@ -188,16 +204,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     setReplayUntilNow(false);
     setOverwriteLive(false);
     setAutoStartScheduler(true);
-    setSelectedTaskId((prev) => {
-      if (prev && snapshot.tasks.some((task) => task.id === prev)) {
-        return prev;
-      }
-      const runningTask = snapshot.tasks.find((task) => String(task.status).toLowerCase() === "running");
-      if (runningTask) {
-        return runningTask.id;
-      }
-      return snapshot.tasks[0]?.id ?? "";
-    });
+    setSelectedTaskId((prev) => pickPreferredReplayTaskId(snapshot.tasks, prev));
   }, [snapshotVersion]);
 
   useEffect(() => {
@@ -236,9 +243,13 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   }
 
   const taskSummary = summarizeTaskStatuses(snapshot.tasks);
-  const replayModeLabel = toDisplayText(snapshot.config.mode, "未知");
   const replayTaskLabel = taskSummary.running > 0 ? `进行中 ${taskSummary.running}` : `已完成 ${taskSummary.completed}`;
   const runningTask = snapshot.tasks.find((task) => String(task.status).toLowerCase() === "running") ?? null;
+  const hasActiveReplayTask = snapshot.tasks.some((task) => {
+    const normalized = String(task.status || "").trim().toLowerCase();
+    return normalized === "running" || normalized === "queued";
+  });
+  const replayActionError = resource.status === "error" && resource.data ? resource.error : null;
   const runningProgress = Math.max(0, Math.min(Number(runningTask?.progress ?? 0), 100));
   const selectedTask = snapshot.tasks.find((task) => task.id === selectedTaskId) ?? snapshot.tasks[0] ?? null;
   const selectedTaskRange = selectedTask?.range || snapshot.config.range;
@@ -246,6 +257,16 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const selectedTaskStageLabel = selectedTask?.stage || "--";
   const selectedTaskStartedAt = selectedTask?.startAt || "--";
   const selectedTaskEndedAt = selectedTask?.endAt || "--";
+  const selectedTaskModeLabel = localizeReplayMode(selectedTask?.mode || snapshot.config.mode);
+  const selectedTaskTimeframe = toDisplayText(selectedTask?.timeframe || snapshot.config.timeframe, "--");
+  const selectedTaskMarket = toDisplayText(selectedTask?.market || snapshot.config.market, "--");
+  const selectedTaskCheckpointCount = Number.isFinite(Number(selectedTask?.checkpointCount)) ? String(selectedTask?.checkpointCount ?? 0) : "--";
+  const selectedTaskProgressCurrent = Number.isFinite(Number(selectedTask?.progressCurrent)) ? Number(selectedTask?.progressCurrent ?? 0) : 0;
+  const selectedTaskProgressTotal = Number.isFinite(Number(selectedTask?.progressTotal)) ? Number(selectedTask?.progressTotal ?? 0) : 0;
+  const selectedTaskProgressPct = Math.max(0, Math.min(Number(selectedTask?.progress ?? 0), 100));
+  const selectedTaskProgressText =
+    selectedTaskProgressTotal > 0 ? `${selectedTaskProgressCurrent}/${selectedTaskProgressTotal}` : "--";
+  const selectedTaskLatestCheckpointAt = selectedTask?.latestCheckpointAt || "--";
   const selectedTaskHoldings: TableSection = {
     columns: ["代码", "名称", "数量", "成本", "现价", "浮盈亏(元)", "浮盈亏(%)"],
     rows: selectedTask?.holdings ?? [],
@@ -304,18 +325,20 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   };
   const toolbarControlHeight = "40px";
   const renderPager = (page: number, pages: number, setPage: (value: number) => void) => (
-    <div className="chip-row">
+    <div className="table-toolbar-compact__pager" aria-label="分页控制">
       <button
-        className="button button--secondary button--small"
+        className="icon-button icon-button--neutral table-toolbar-compact__pager-button"
         type="button"
-        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 18px" }}
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, width: toolbarControlHeight, minWidth: toolbarControlHeight }}
+        aria-label="上一页"
+        title="上一页"
         disabled={page <= 1}
         onClick={() => setPage(page - 1)}
       >
-        上一页
+        <span aria-hidden="true">←</span>
       </button>
       <span
-        className="badge badge--neutral"
+        className="badge badge--neutral table-toolbar-compact__pager-status"
         style={{
           height: toolbarControlHeight,
           minHeight: toolbarControlHeight,
@@ -328,13 +351,15 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         {`第 ${page} / ${pages} 页`}
       </span>
       <button
-        className="button button--secondary button--small"
+        className="icon-button icon-button--neutral table-toolbar-compact__pager-button"
         type="button"
-        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 18px" }}
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, width: toolbarControlHeight, minWidth: toolbarControlHeight }}
+        aria-label="下一页"
+        title="下一页"
         disabled={page >= pages}
         onClick={() => setPage(page + 1)}
       >
-        下一页
+        <span aria-hidden="true">→</span>
       </button>
     </div>
   );
@@ -387,6 +412,26 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
       return;
     }
     navigate(`/signal-detail/${encodeURIComponent(row.id)}?source=replay`);
+  };
+  const handleReplayStart = async () => {
+    const nextSnapshot = await resource.runAction(replayMode === "continuous_to_live" ? "continue" : "start", {
+      startDateTime: `${startDate} ${startTime}:00`,
+      endDateTime: replayUntilNow ? null : `${endDate} ${endTime}:00`,
+      timeframe,
+      market,
+      strategyMode: "auto",
+      strategyProfileId,
+      aiDynamicStrategy,
+      aiDynamicStrength,
+      aiDynamicLookback,
+      commissionRatePct,
+      sellTaxRatePct,
+      overwriteLive,
+      autoStartScheduler,
+    });
+    if (nextSnapshot?.tasks?.length) {
+      setSelectedTaskId(pickPreferredReplayTaskId(nextSnapshot.tasks, ""));
+    }
   };
 
   return (
@@ -547,35 +592,41 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               <button
                 className="button button--primary"
                 type="button"
-                disabled={resource.status === "loading"}
-                onClick={() =>
-                  void resource.runAction(replayMode === "continuous_to_live" ? "continue" : "start", {
-                    startDateTime: `${startDate} ${startTime}:00`,
-                    endDateTime: replayUntilNow ? null : `${endDate} ${endTime}:00`,
-                    timeframe,
-                    market,
-                    strategyMode: "auto",
-                    strategyProfileId,
-                    aiDynamicStrategy,
-                    aiDynamicStrength,
-                    aiDynamicLookback,
-                    commissionRatePct,
-                    sellTaxRatePct,
-                    overwriteLive,
-                    autoStartScheduler,
-                  })
-                }
+                disabled={resource.status === "loading" || hasActiveReplayTask}
+                onClick={() => void handleReplayStart()}
               >
                 {replayMode === "continuous_to_live" ? "接续" : "开始回溯"}
               </button>
-              <button className="button button--secondary" type="button" onClick={() => void resource.runAction("cancel")}>
+              <button
+                className="button button--secondary"
+                type="button"
+                disabled={resource.status === "loading"}
+                onClick={() => void resource.runAction("cancel")}
+              >
                 取消
               </button>
               <span className="toolbar__spacer" />
-              <button className="button button--secondary" type="button" onClick={() => void resource.runAction("delete")}>
+              <button
+                className="button button--secondary"
+                type="button"
+                disabled={resource.status === "loading"}
+                onClick={() => void resource.runAction("delete")}
+              >
                 删除
               </button>
             </div>
+            {hasActiveReplayTask ? (
+              <div className="summary-item summary-item--accent" style={{ marginTop: "12px" }}>
+                <div className="summary-item__title">已有回放任务在执行</div>
+                <div className="summary-item__body">当前存在进行中或排队中的回放任务。请先等待完成，或取消后再开始新的回放。</div>
+              </div>
+            ) : null}
+            {replayActionError ? (
+              <div className="summary-item summary-item--danger" style={{ marginTop: "12px" }}>
+                <div className="summary-item__title">操作失败</div>
+                <div className="summary-item__body">{replayActionError}</div>
+              </div>
+            ) : null}
           </WorkbenchCard>
 
           <QuantTableSectionCard
@@ -610,7 +661,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                   </select>
                 </label>
                 {selectedTask ? (
-                  <>
+                  <div className="summary-list" aria-label="已选回放任务详情">
                     <div className="summary-item">
                       <div className="summary-item__title">回放结论</div>
                       <div className="summary-item__body">{`${selectedTask.id} · ${selectedTaskStatusLabel}`}</div>
@@ -618,9 +669,24 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                       <div className="summary-item__body">{`开始时间：${selectedTaskStartedAt}`}</div>
                       <div className="summary-item__body">{`结束时间：${selectedTaskEndedAt}`}</div>
                       <div className="summary-item__body">{`区间：${selectedTaskRange}`}</div>
-                      <div className="summary-item__body">{`模式：${replayModeLabel} · 粒度：${snapshot.config.timeframe}`}</div>
+                      <div className="summary-item__body">{`模式：${selectedTaskModeLabel} · 粒度：${selectedTaskTimeframe} · 市场：${selectedTaskMarket}`}</div>
                       <div className="summary-item__body">
                         {`策略配置：${selectedTask.strategyProfileName || selectedTask.strategyProfileId || strategyProfileId || "--"}${selectedTask.strategyProfileVersionId ? ` · 版本#${selectedTask.strategyProfileVersionId}` : ""}`}
+                      </div>
+                    </div>
+                    <div className="summary-item">
+                      <div className="summary-item__title">回放进度</div>
+                      <div className="summary-item__body">{`检查点进度：${selectedTaskProgressText} · ${selectedTaskProgressPct}%`}</div>
+                      <div className="summary-item__body">{`已写入检查点：${selectedTaskCheckpointCount}`}</div>
+                      <div className="summary-item__body">{`最近检查点：${selectedTaskLatestCheckpointAt}`}</div>
+                      <div className="replay-task-progress" aria-label={`回放进度 ${selectedTaskProgressPct}%`}>
+                        <div className="replay-task-progress__bar">
+                          <div className="replay-task-progress__fill" style={{ width: `${selectedTaskProgressPct}%` }} />
+                        </div>
+                        <div className="replay-task-progress__meta">
+                          <span>{selectedTaskStageLabel}</span>
+                          <span>{`${selectedTaskProgressPct}%`}</span>
+                        </div>
                       </div>
                     </div>
                     <div className="mini-metric-grid replay-task-metrics-grid" style={{ gap: "8px" }}>
@@ -640,8 +706,16 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                         <div className="mini-metric__label">胜率</div>
                         <div className="mini-metric__value">{selectedTask.winRate || "--"}</div>
                       </div>
+                      <div className="mini-metric">
+                        <div className="mini-metric__label">回放节点数</div>
+                        <div className="mini-metric__value">{selectedTaskProgressTotal > 0 ? selectedTaskProgressTotal : selectedTaskCheckpointCount}</div>
+                      </div>
+                      <div className="mini-metric">
+                        <div className="mini-metric__label">当前进度</div>
+                        <div className="mini-metric__value">{selectedTaskProgressText}</div>
+                      </div>
                     </div>
-                  </>
+                  </div>
                 ) : null}
               </div>
             ) : (

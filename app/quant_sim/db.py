@@ -432,6 +432,7 @@ class QuantSimDB:
         self._ensure_column(cursor, "sim_runs", "selected_strategy_profile_version_id", "INTEGER")
         self._ensure_column(cursor, "sim_runs", "strategy_profile_snapshot_json", "TEXT")
         self._ensure_column(cursor, "sim_run_trades", "signal_id", "INTEGER")
+        self._ensure_column(cursor, "sim_run_signals", "source_signal_id", "INTEGER")
 
         self._backfill_candidate_sources(cursor)
         self._backfill_lot_defaults(cursor)
@@ -1221,38 +1222,7 @@ class QuantSimDB:
                 ),
             )
 
-        persisted_signal_ids_by_source_id: dict[int, int] = {}
-        for signal in signals or []:
-            cursor.execute(
-                """
-                INSERT INTO sim_run_signals
-                (
-                    run_id, stock_code, stock_name, action, confidence, reasoning,
-                    position_size_pct, decision_type, tech_score, context_score,
-                    strategy_profile_json, checkpoint_at, signal_status, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    signal.get("stock_code"),
-                    signal.get("stock_name"),
-                    str(signal.get("action") or "HOLD").upper(),
-                    int(signal.get("confidence") or 0),
-                    signal.get("reasoning"),
-                    float(signal.get("position_size_pct") or 0),
-                    signal.get("decision_type"),
-                    float(signal.get("tech_score") or 0),
-                    float(signal.get("context_score") or 0),
-                    self._dumps_metadata(signal.get("strategy_profile")),
-                    signal.get("checkpoint_at") or signal.get("executed_at") or signal.get("updated_at") or signal.get("created_at"),
-                    signal.get("status") or signal.get("signal_status") or "observed",
-                    signal.get("created_at") or self._now(),
-                ),
-            )
-            source_signal_id = signal.get("id")
-            if source_signal_id is not None:
-                persisted_signal_ids_by_source_id[int(source_signal_id)] = int(cursor.lastrowid)
+        persisted_signal_ids_by_source_id = self._upsert_sim_run_signals_with_cursor(cursor, run_id, signals or [])
 
         for trade in trades:
             source_signal_id = trade.get("signal_id")
@@ -1587,6 +1557,104 @@ class QuantSimDB:
             "profile": self.get_strategy_profile(normalized_profile_id),
             "version": version,
         }
+
+    def _upsert_sim_run_signals_with_cursor(
+        self,
+        cursor: sqlite3.Cursor,
+        run_id: int,
+        signals: list[dict[str, Any]],
+    ) -> dict[int, int]:
+        persisted_signal_ids_by_source_id: dict[int, int] = {}
+        for signal in signals:
+            source_signal_id = self._normalize_optional_int(signal.get("source_signal_id"))
+            if source_signal_id is None:
+                source_signal_id = self._normalize_optional_int(signal.get("id"))
+
+            checkpoint_at = signal.get("checkpoint_at") or signal.get("executed_at") or signal.get("updated_at") or signal.get("created_at")
+            created_at = signal.get("created_at") or self._now()
+            payload = (
+                run_id,
+                source_signal_id,
+                signal.get("stock_code"),
+                signal.get("stock_name"),
+                str(signal.get("action") or "HOLD").upper(),
+                int(signal.get("confidence") or 0),
+                signal.get("reasoning"),
+                float(signal.get("position_size_pct") or 0),
+                signal.get("decision_type"),
+                float(signal.get("tech_score") or 0),
+                float(signal.get("context_score") or 0),
+                self._dumps_metadata(signal.get("strategy_profile")),
+                checkpoint_at,
+                signal.get("status") or signal.get("signal_status") or "observed",
+                created_at,
+            )
+
+            existing_id: int | None = None
+            if source_signal_id is not None:
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM sim_run_signals
+                    WHERE run_id = ? AND source_signal_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (run_id, source_signal_id),
+                )
+                row = cursor.fetchone()
+                if row is not None:
+                    existing_id = int(row["id"])
+            if existing_id is None:
+                cursor.execute(
+                    """
+                    INSERT INTO sim_run_signals
+                    (
+                        run_id, source_signal_id, stock_code, stock_name, action, confidence, reasoning,
+                        position_size_pct, decision_type, tech_score, context_score,
+                        strategy_profile_json, checkpoint_at, signal_status, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    payload,
+                )
+                persisted_id = int(cursor.lastrowid)
+            else:
+                cursor.execute(
+                    """
+                    UPDATE sim_run_signals
+                    SET source_signal_id = ?,
+                        stock_code = ?,
+                        stock_name = ?,
+                        action = ?,
+                        confidence = ?,
+                        reasoning = ?,
+                        position_size_pct = ?,
+                        decision_type = ?,
+                        tech_score = ?,
+                        context_score = ?,
+                        strategy_profile_json = ?,
+                        checkpoint_at = ?,
+                        signal_status = ?,
+                        created_at = ?
+                    WHERE id = ?
+                    """,
+                    payload[1:] + (existing_id,),
+                )
+                persisted_id = existing_id
+
+            if source_signal_id is not None:
+                persisted_signal_ids_by_source_id[source_signal_id] = persisted_id
+
+        return persisted_signal_ids_by_source_id
+
+    def upsert_sim_run_signals(self, run_id: int, signals: list[dict[str, Any]]) -> dict[int, int]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        persisted = self._upsert_sim_run_signals_with_cursor(cursor, run_id, signals)
+        conn.commit()
+        conn.close()
+        return persisted
 
     def update_strategy_profile(
         self,
@@ -2791,6 +2859,14 @@ class QuantSimDB:
         }
 
         aggressive_config = self._deep_copy_json(base_config)
+        aggressive_boll_position_scorer = {
+            "algorithm": "piecewise",
+            "params": {
+                "position_bands": [0.1, 0.25, 0.92, 1.0],
+                "position_scores": [-0.6, 0.2, 0.35, -0.2],
+            },
+            "reason_template": "boll_position={boll_position}",
+        }
         aggressive_config["base"]["dual_track"]["mode"] = "hybrid"
         aggressive_config["base"]["dual_track"]["track_weights"] = {"tech": 1.35, "context": 0.65}
         aggressive_config["base"]["dual_track"]["fusion_buy_threshold"] = 0.62
@@ -2805,46 +2881,50 @@ class QuantSimDB:
         aggressive_config["base"]["dual_track"]["lambda_sign_conflict"] = 0.25
         aggressive_config["base"]["dual_track"]["sign_conflict_min_abs_score"] = 0.12
         aggressive_config["profiles"]["candidate"]["technical"]["group_weights"] = {
-            "trend": 1.55,
-            "momentum": 1.45,
-            "volume_confirmation": 0.95,
-            "volatility_risk": 0.55,
+            "trend": 1.60,
+            "momentum": 1.35,
+            "volume_confirmation": 1.15,
+            "volatility_risk": 0.45,
         }
         aggressive_config["profiles"]["candidate"]["technical"]["dimension_weights"] = {
-            "trend_direction": 1.35,
-            "ma_alignment": 1.10,
-            "ma_slope": 1.20,
-            "price_vs_ma20": 1.05,
-            "macd_level": 1.25,
-            "macd_hist_slope": 1.30,
-            "rsi_zone": 0.85,
-            "kdj_cross": 0.75,
-            "volume_ratio": 1.15,
-            "obv_trend": 1.05,
-            "atr_risk": 0.65,
-            "boll_position": 0.55,
+            "trend_direction": 1.40,
+            "ma_alignment": 0.95,
+            "ma_slope": 1.35,
+            "price_vs_ma20": 1.00,
+            "macd_level": 1.15,
+            "macd_hist_slope": 1.20,
+            "rsi_zone": 0.70,
+            "kdj_cross": 0.35,
+            "volume_ratio": 1.05,
+            "obv_trend": 1.35,
+            "atr_risk": 0.70,
+            "boll_position": 0.40,
+        }
+        aggressive_config["profiles"]["candidate"]["technical"]["scorers"] = {
+            "boll_position": self._deep_copy_json(aggressive_boll_position_scorer),
         }
         aggressive_config["profiles"]["candidate"]["context"]["group_weights"] = {
-            "market_structure": 1.35,
-            "risk_account": 0.85,
-            "tradability_timing": 0.70,
-            "source_execution": 0.65,
+            "market_structure": 1.25,
+            "risk_account": 0.55,
+            "tradability_timing": 0.55,
+            "source_execution": 0.35,
         }
         aggressive_config["profiles"]["candidate"]["context"]["dimension_weights"] = {
-            "trend_regime": 1.20,
-            "price_structure": 1.15,
-            "momentum": 1.05,
-            "risk_balance": 0.85,
-            "account_posture": 0.70,
-            "liquidity": 0.95,
-            "session": 0.65,
-            "source_prior": 0.90,
-            "execution_feedback": 0.55,
+            "trend_regime": 1.15,
+            "price_structure": 1.10,
+            "momentum": 0.90,
+            "risk_balance": 0.90,
+            "account_posture": 0.05,
+            "liquidity": 0.85,
+            "session": 0.35,
+            "source_prior": 0.75,
+            "execution_feedback": 0.05,
         }
         aggressive_config["profiles"]["candidate"]["dual_track"] = {
-            "fusion_buy_threshold": 0.64,
-            "sell_precedence_gate": -0.56,
-            "min_fusion_confidence": 0.40,
+            "fusion_buy_threshold": 0.35,
+            "fusion_sell_threshold": -0.30,
+            "sell_precedence_gate": -0.38,
+            "min_fusion_confidence": 0.38,
         }
         aggressive_config["profiles"]["position"]["technical"]["group_weights"] = {
             "trend": 1.35,
@@ -2866,6 +2946,9 @@ class QuantSimDB:
             "atr_risk": 0.85,
             "boll_position": 0.75,
         }
+        aggressive_config["profiles"]["position"]["technical"]["scorers"] = {
+            "boll_position": self._deep_copy_json(aggressive_boll_position_scorer),
+        }
         aggressive_config["profiles"]["position"]["context"]["group_weights"] = {
             "market_structure": 1.20,
             "risk_account": 1.00,
@@ -2884,18 +2967,21 @@ class QuantSimDB:
             "execution_feedback": 0.70,
         }
         aggressive_config["profiles"]["position"]["dual_track"] = {
-            "fusion_buy_threshold": 0.68,
-            "sell_precedence_gate": -0.55,
-            "min_fusion_confidence": 0.45,
+            "fusion_buy_threshold": 0.50,
+            "fusion_sell_threshold": -0.24,
+            "sell_precedence_gate": -0.30,
+            "min_fusion_confidence": 0.42,
         }
 
         stable_config = self._deep_copy_json(base_config)
         stable_config["base"]["dual_track"]["mode"] = "hybrid"
         stable_config["base"]["dual_track"]["track_weights"] = {"tech": 1.0, "context": 1.0}
-        stable_config["base"]["dual_track"]["fusion_buy_threshold"] = 0.76
+        stable_config["base"]["dual_track"]["fusion_buy_threshold"] = 0.72
         stable_config["base"]["dual_track"]["fusion_sell_threshold"] = -0.17
         stable_config["base"]["dual_track"]["sell_precedence_gate"] = -0.50
-        stable_config["base"]["dual_track"]["min_fusion_confidence"] = 0.50
+        stable_config["base"]["dual_track"]["min_fusion_confidence"] = 0.48
+        stable_config["base"]["dual_track"]["min_tech_confidence_for_buy"] = 0.48
+        stable_config["base"]["dual_track"]["min_context_confidence_for_buy"] = 0.48
         stable_config["base"]["dual_track"]["lambda_divergence"] = 0.60
         stable_config["base"]["dual_track"]["lambda_sign_conflict"] = 0.35
         stable_config["profiles"]["candidate"]["technical"]["group_weights"] = {
@@ -2912,10 +2998,10 @@ class QuantSimDB:
             "macd_level": 1.05,
             "macd_hist_slope": 1.10,
             "rsi_zone": 0.85,
-            "kdj_cross": 0.60,
+            "kdj_cross": 0.30,
             "volume_ratio": 1.00,
-            "obv_trend": 1.00,
-            "atr_risk": 0.90,
+            "obv_trend": 1.10,
+            "atr_risk": 1.05,
             "boll_position": 0.80,
         }
         stable_config["profiles"]["candidate"]["context"]["group_weights"] = {
@@ -2929,16 +3015,17 @@ class QuantSimDB:
             "price_structure": 1.05,
             "momentum": 0.90,
             "risk_balance": 1.15,
-            "account_posture": 1.00,
+            "account_posture": 0.10,
             "liquidity": 0.95,
             "session": 0.60,
             "source_prior": 0.85,
-            "execution_feedback": 0.70,
+            "execution_feedback": 0.10,
         }
         stable_config["profiles"]["candidate"]["dual_track"] = {
-            "fusion_buy_threshold": 0.78,
-            "sell_precedence_gate": -0.50,
-            "min_fusion_confidence": 0.50,
+            "fusion_buy_threshold": 0.43,
+            "fusion_sell_threshold": -0.26,
+            "sell_precedence_gate": -0.34,
+            "min_fusion_confidence": 0.46,
         }
         stable_config["profiles"]["position"]["technical"]["group_weights"] = {
             "trend": 1.10,
@@ -2978,22 +3065,23 @@ class QuantSimDB:
             "execution_feedback": 0.90,
         }
         stable_config["profiles"]["position"]["dual_track"] = {
-            "fusion_buy_threshold": 0.74,
-            "sell_precedence_gate": -0.50,
-            "min_fusion_confidence": 0.52,
+            "fusion_buy_threshold": 0.57,
+            "fusion_sell_threshold": -0.20,
+            "sell_precedence_gate": -0.26,
+            "min_fusion_confidence": 0.50,
         }
 
         conservative_config = self._deep_copy_json(base_config)
         conservative_config["base"]["dual_track"]["mode"] = "hybrid"
-        conservative_config["base"]["dual_track"]["track_weights"] = {"tech": 0.75, "context": 1.25}
-        conservative_config["base"]["dual_track"]["fusion_buy_threshold"] = 0.88
+        conservative_config["base"]["dual_track"]["track_weights"] = {"tech": 0.90, "context": 1.10}
+        conservative_config["base"]["dual_track"]["fusion_buy_threshold"] = 0.80
         conservative_config["base"]["dual_track"]["fusion_sell_threshold"] = -0.10
         conservative_config["base"]["dual_track"]["sell_precedence_gate"] = -0.36
-        conservative_config["base"]["dual_track"]["min_fusion_confidence"] = 0.62
-        conservative_config["base"]["dual_track"]["min_tech_score_for_buy"] = 0.08
-        conservative_config["base"]["dual_track"]["min_context_score_for_buy"] = 0.10
-        conservative_config["base"]["dual_track"]["min_tech_confidence_for_buy"] = 0.58
-        conservative_config["base"]["dual_track"]["min_context_confidence_for_buy"] = 0.62
+        conservative_config["base"]["dual_track"]["min_fusion_confidence"] = 0.58
+        conservative_config["base"]["dual_track"]["min_tech_score_for_buy"] = 0.05
+        conservative_config["base"]["dual_track"]["min_context_score_for_buy"] = 0.03
+        conservative_config["base"]["dual_track"]["min_tech_confidence_for_buy"] = 0.54
+        conservative_config["base"]["dual_track"]["min_context_confidence_for_buy"] = 0.56
         conservative_config["base"]["dual_track"]["lambda_divergence"] = 0.75
         conservative_config["base"]["dual_track"]["lambda_sign_conflict"] = 0.50
         conservative_config["base"]["dual_track"]["sign_conflict_min_abs_score"] = 0.15
@@ -3011,10 +3099,10 @@ class QuantSimDB:
             "macd_level": 0.80,
             "macd_hist_slope": 0.85,
             "rsi_zone": 0.75,
-            "kdj_cross": 0.45,
+            "kdj_cross": 0.25,
             "volume_ratio": 0.85,
-            "obv_trend": 0.90,
-            "atr_risk": 1.40,
+            "obv_trend": 1.00,
+            "atr_risk": 1.55,
             "boll_position": 1.25,
         }
         conservative_config["profiles"]["candidate"]["context"]["group_weights"] = {
@@ -3028,16 +3116,17 @@ class QuantSimDB:
             "price_structure": 1.00,
             "momentum": 0.75,
             "risk_balance": 1.50,
-            "account_posture": 1.35,
+            "account_posture": 0.15,
             "liquidity": 0.90,
             "session": 0.55,
             "source_prior": 0.70,
-            "execution_feedback": 1.00,
+            "execution_feedback": 0.12,
         }
         conservative_config["profiles"]["candidate"]["dual_track"] = {
-            "fusion_buy_threshold": 0.86,
-            "sell_precedence_gate": -0.38,
-            "min_fusion_confidence": 0.60,
+            "fusion_buy_threshold": 0.48,
+            "fusion_sell_threshold": -0.22,
+            "sell_precedence_gate": -0.30,
+            "min_fusion_confidence": 0.56,
         }
         conservative_config["profiles"]["position"]["technical"]["group_weights"] = {
             "trend": 0.95,
@@ -3077,9 +3166,10 @@ class QuantSimDB:
             "execution_feedback": 1.10,
         }
         conservative_config["profiles"]["position"]["dual_track"] = {
-            "fusion_buy_threshold": 0.84,
-            "sell_precedence_gate": -0.34,
-            "min_fusion_confidence": 0.65,
+            "fusion_buy_threshold": 0.58,
+            "fusion_sell_threshold": -0.16,
+            "sell_precedence_gate": -0.22,
+            "min_fusion_confidence": 0.60,
         }
 
         return {
@@ -3200,7 +3290,7 @@ class QuantSimDB:
     def _validate_and_normalize_strategy_profile_config(self, config: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(config, dict):
             raise ValueError("strategy profile config must be an object")
-        schema_version = str(config.get("schema_version") or "quant_explain/v2.3").strip() or "quant_explain/v2.3"
+        schema_version = str(config.get("schema_version") or "quant_explain").strip() or "quant_explain"
         base = config.get("base")
         profiles = config.get("profiles")
         if not isinstance(base, dict) or not isinstance(profiles, dict):
@@ -3432,6 +3522,15 @@ class QuantSimDB:
         if not payload:
             return None
         return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _normalize_optional_int(value: Any) -> int | None:
+        try:
+            if value in (None, ""):
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _ensure_column(cursor: sqlite3.Cursor, table_name: str, column_name: str, definition: str) -> None:

@@ -1153,8 +1153,26 @@ def test_his_replay_actions_enqueue_cancel_delete_and_rerun(tmp_path, monkeypatc
         status="completed",
         metadata={"selected_strategy_mode": "auto"},
     )
+    db.update_sim_run_progress(
+        run_id,
+        progress_current=2,
+        progress_total=12,
+        latest_checkpoint_at="2026-04-02 10:00:00",
+        status_message="已完成第 2/12 个检查点",
+    )
 
     client = TestClient(create_app(context=context))
+
+    snapshot_resp = client.get("/api/v1/quant/his-replay")
+    assert snapshot_resp.status_code == 200
+    task = snapshot_resp.json()["tasks"][0]
+    assert task["progressCurrent"] == 2
+    assert task["progressTotal"] == 12
+    assert task["checkpointCount"] == 0
+    assert task["latestCheckpointAt"] == "2026-04-02 10:00:00"
+    assert task["mode"] == "historical_range"
+    assert task["timeframe"] == "30m"
+    assert task["market"] == "CN"
 
     start_resp = client.post("/api/v1/quant/his-replay/actions/start", json={})
     assert start_resp.status_code == 200
@@ -1176,6 +1194,27 @@ def test_his_replay_actions_enqueue_cancel_delete_and_rerun(tmp_path, monkeypatc
     delete_resp = client.post("/api/v1/quant/his-replay/actions/delete", json={"id": run_id})
     assert delete_resp.status_code == 200
     assert all(int(item["id"]) != run_id for item in context.quant_db().get_sim_runs(limit=20))
+
+
+def test_his_replay_start_returns_400_when_active_replay_exists(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-10 15:00:00",
+        initial_cash=100000,
+        status="running",
+        metadata={"selected_strategy_mode": "auto"},
+    )
+
+    client = TestClient(create_app(context=context))
+    response = client.post("/api/v1/quant/his-replay/actions/start", json={})
+
+    assert response.status_code == 400
+    assert "已有回放任务运行中" in response.json()["detail"]
 
 
 def test_portfolio_actions_call_scheduler_and_manager(tmp_path, monkeypatch):

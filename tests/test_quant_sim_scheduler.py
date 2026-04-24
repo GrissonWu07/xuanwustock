@@ -190,10 +190,16 @@ def test_scheduler_run_once_passes_strategy_mode_to_engine(tmp_path):
     scheduler.engine.analyze_active_candidates.assert_called_once_with(
         analysis_timeframe="30m",
         strategy_mode="neutral",
+        ai_dynamic_strategy="off",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
     )
     scheduler.engine.analyze_positions.assert_called_once_with(
         analysis_timeframe="30m",
         strategy_mode="neutral",
+        ai_dynamic_strategy="off",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
     )
 
 

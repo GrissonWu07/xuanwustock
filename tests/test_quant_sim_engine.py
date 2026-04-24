@@ -1,5 +1,7 @@
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.engine import QuantSimEngine
+from app.quant_sim.portfolio_service import PortfolioService
+from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_kernel.models import Decision
 
 
@@ -97,3 +99,120 @@ def test_engine_uses_embedded_stockpolicy_dual_track_decision(tmp_path, monkeypa
     assert signal["context_score"] == 0.31
     assert signal["position_size_pct"] == 60.0
     assert signal["strategy_profile"]["analysis_timeframe"]["key"] == "1d"
+
+
+def test_engine_resolves_dynamic_binding_per_candidate(tmp_path, monkeypatch):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
+    candidate_service.add_manual_candidate("000001", "平安银行", "value_stock")
+
+    engine = QuantSimEngine(db_file=tmp_path / "app.quant_sim.db")
+    captured = []
+
+    def fake_resolve(
+        *,
+        strategy_profile_id,
+        ai_dynamic_strategy=None,
+        ai_dynamic_strength=None,
+        ai_dynamic_lookback=None,
+        stock_code=None,
+        stock_name=None,
+    ):
+        captured.append((stock_code, stock_name, ai_dynamic_strategy, ai_dynamic_strength, ai_dynamic_lookback))
+        return {
+            "profile_id": "aggressive_v23",
+            "profile_name": "积极",
+            "version_id": 1,
+            "version": 1,
+            "config": {},
+        }
+
+    monkeypatch.setattr(engine, "_resolve_strategy_binding", fake_resolve)
+    monkeypatch.setattr(
+        engine.adapter,
+        "analyze_candidate",
+        lambda payload, **kwargs: {  # noqa: ARG005 - test seam
+            "action": "HOLD",
+            "confidence": 61,
+            "reasoning": "等待确认",
+            "position_size_pct": 0,
+        },
+    )
+
+    engine.analyze_active_candidates(
+        ai_dynamic_strategy="hybrid",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
+    )
+
+    assert sorted(captured) == sorted([
+        ("600000", "浦发银行", "hybrid", 0.5, 48),
+        ("000001", "平安银行", "hybrid", 0.5, 48),
+    ])
+
+
+def test_engine_resolves_dynamic_binding_per_position(tmp_path, monkeypatch):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
+    portfolio_service = PortfolioService(db_file=tmp_path / "app.quant_sim.db")
+    candidate_service.add_manual_candidate("300750", "宁德时代", "main_force")
+    candidate = candidate_service.list_candidates()[0]
+    buy_signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 82,
+            "reasoning": "建仓",
+            "position_size_pct": 20,
+        },
+    )
+    portfolio_service.confirm_buy(
+        buy_signal["id"],
+        price=201.5,
+        quantity=100,
+        note="已买入",
+        executed_at="2026-04-07 10:00:00",
+    )
+
+    engine = QuantSimEngine(db_file=tmp_path / "app.quant_sim.db")
+    captured = []
+
+    def fake_resolve(
+        *,
+        strategy_profile_id,
+        ai_dynamic_strategy=None,
+        ai_dynamic_strength=None,
+        ai_dynamic_lookback=None,
+        stock_code=None,
+        stock_name=None,
+    ):
+        captured.append((stock_code, stock_name, ai_dynamic_strategy, ai_dynamic_strength, ai_dynamic_lookback))
+        return {
+            "profile_id": "aggressive_v23",
+            "profile_name": "积极",
+            "version_id": 1,
+            "version": 1,
+            "config": {},
+        }
+
+    monkeypatch.setattr(engine, "_resolve_strategy_binding", fake_resolve)
+    monkeypatch.setattr(
+        engine.adapter,
+        "analyze_position",
+        lambda candidate, position, **kwargs: {  # noqa: ARG001, ARG005 - test seam
+            "action": "HOLD",
+            "confidence": 63,
+            "reasoning": "继续观察",
+            "position_size_pct": 0,
+        },
+    )
+
+    engine.analyze_positions(
+        ai_dynamic_strategy="hybrid",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
+    )
+
+    assert captured == [
+        ("300750", "宁德时代", "hybrid", 0.5, 48),
+    ]

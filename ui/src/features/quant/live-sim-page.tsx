@@ -81,6 +81,26 @@ function normalizeSignalAction(value: string) {
   return String(value ?? "").trim().toUpperCase();
 }
 
+function removeStrategyColumn(table: TableSection): TableSection {
+  const strategyIndexes = table.columns
+    .map((column, index) => ({ normalized: String(column ?? "").trim().toLowerCase(), index }))
+    .filter(({ normalized }) => normalized.includes("策略") || normalized === "strategy")
+    .map(({ index }) => index);
+
+  if (strategyIndexes.length === 0) {
+    return table;
+  }
+
+  return {
+    ...table,
+    columns: table.columns.filter((_, index) => !strategyIndexes.includes(index)),
+    rows: table.rows.map((row) => ({
+      ...row,
+      cells: row.cells.filter((_, index) => !strategyIndexes.includes(index)),
+    })),
+  };
+}
+
 type LiveSimPageProps = {
   client?: ApiClient;
 };
@@ -103,7 +123,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const [sellTaxRatePct, setSellTaxRatePct] = useState(0.1);
   const [actionPending, setActionPending] = useState<"save" | "reset" | "start" | "stop" | null>(null);
   const [signalTable, setSignalTable] = useState<TableSection>({
-    columns: ["信号ID", "时间", "代码", "动作", "策略", "状态"],
+    columns: ["信号ID", "时间", "代码", "动作", "状态"],
     rows: [],
     emptyLabel: "暂无信号",
   });
@@ -143,12 +163,12 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         }
         const payload = (await response.json()) as { table?: TableSection };
         if (mounted && payload.table) {
-          setSignalTable(payload.table);
+          setSignalTable(removeStrategyColumn(payload.table));
         }
       } catch {
         if (mounted) {
           setSignalTable({
-            columns: ["信号ID", "时间", "代码", "动作", "策略", "状态"],
+            columns: ["信号ID", "时间", "代码", "动作", "状态"],
             rows: [],
             emptyLabel: "暂无信号",
             emptyMessage: "信号加载失败，请稍后重试。",
@@ -311,12 +331,6 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
               <div className="mini-metric">
                 <div className="mini-metric__label">分析粒度</div>
                 <div className="mini-metric__value">{snapshot.config.timeframe}</div>
-              </div>
-              <div className="mini-metric">
-                <div className="mini-metric__label">策略配置</div>
-                <div className="mini-metric__value">
-                  {snapshot.config.strategyProfiles?.find((item) => item.id === strategyProfileId)?.name || strategyProfileId || "--"}
-                </div>
               </div>
               <div className="mini-metric">
                 <div className="mini-metric__label">手续费</div>
@@ -604,7 +618,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             actionsHead="操作"
             actionVariant="chip"
             tableLayout="auto"
-            compactConfig={{ coreColumnIndexes: [1, 2, 3, 5], detailColumnIndexes: [0, 4] }}
+            compactConfig={{ coreColumnIndexes: [1, 2, 3, 4], detailColumnIndexes: [0] }}
             toolbar={renderSignalToolbar()}
             onRowAction={(row, action) => {
               const actionKey = String(action.action ?? "").trim().toLowerCase();

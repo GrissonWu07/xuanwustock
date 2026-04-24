@@ -1,6 +1,7 @@
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.signal_center_service import SignalCenterService
+from app.notification_service import notification_service
 
 
 def test_candidate_pool_service_adds_manual_candidate(tmp_path):
@@ -239,3 +240,33 @@ def test_signal_center_persists_strategy_profile(tmp_path):
     assert signal["strategy_profile"]["fundamental_quality"]["label"] == "强基本面"
     assert signal["strategy_profile"]["risk_style"]["label"] == "激进"
     assert signal["strategy_profile"]["analysis_timeframe"]["key"] == "30m"
+
+
+def test_signal_center_can_skip_live_notification(tmp_path, monkeypatch):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
+    sent_notifications: list[dict] = []
+
+    monkeypatch.setattr(notification_service, "send_notification", lambda payload: sent_notifications.append(payload) or True)
+
+    candidate_service.add_manual_candidate(
+        stock_code="002594",
+        stock_name="比亚迪",
+        source="main_force",
+        latest_price=256.3,
+    )
+    candidate = candidate_service.list_candidates()[0]
+
+    signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 88,
+            "reasoning": "强趋势突破",
+            "position_size_pct": 35,
+        },
+        notify=False,
+    )
+
+    assert signal["status"] == "pending"
+    assert sent_notifications == []

@@ -274,6 +274,7 @@ class QuantSimReplayService:
         commission_rate: float | None = None,
         sell_tax_rate: float | None = None,
     ) -> int:
+        self._ensure_no_active_replay()
         context = self._prepare_replay_context(
             start_datetime=start_datetime,
             end_datetime=end_datetime,
@@ -287,7 +288,6 @@ class QuantSimReplayService:
             commission_rate=commission_rate,
             sell_tax_rate=sell_tax_rate,
         )
-        self._ensure_no_active_replay()
         run_id = self._create_replay_run(
             mode="historical_range",
             handoff_to_live=False,
@@ -340,6 +340,7 @@ class QuantSimReplayService:
         overwrite_live: bool = False,
         auto_start_scheduler: bool = True,
     ) -> int:
+        self._ensure_no_active_replay()
         self._validate_live_handoff(overwrite_live=overwrite_live)
         context = self._prepare_replay_context(
             start_datetime=start_datetime,
@@ -354,7 +355,6 @@ class QuantSimReplayService:
             commission_rate=commission_rate,
             sell_tax_rate=sell_tax_rate,
         )
-        self._ensure_no_active_replay()
         run_id = self._create_replay_run(
             mode="continuous_to_live",
             handoff_to_live=True,
@@ -633,7 +633,10 @@ class QuantSimReplayService:
                         level="warning",
                     )
                     break
-                replay_signals.extend(checkpoint_summary.get("signals") or [])
+                checkpoint_signals = checkpoint_summary.get("signals") or []
+                replay_signals.extend(checkpoint_signals)
+                if checkpoint_signals:
+                    self.db.upsert_sim_run_signals(run_id, checkpoint_signals)
                 self.db.add_sim_run_checkpoint(
                     run_id,
                     checkpoint_at=checkpoint_text,
@@ -830,12 +833,19 @@ class QuantSimReplayService:
             if isinstance(strategy_profile_binding, dict)
             else None
         )
-        effective_strategy_profile_binding = engine._resolve_strategy_binding(
-            strategy_profile_id=base_profile_id,
-            ai_dynamic_strategy=ai_dynamic_strategy,
-            ai_dynamic_strength=ai_dynamic_strength,
-            ai_dynamic_lookback=ai_dynamic_lookback,
+        dynamic_mode = (
+            str(ai_dynamic_strategy).strip().lower()
+            if ai_dynamic_strategy is not None
+            else DEFAULT_AI_DYNAMIC_STRATEGY
         )
+        effective_strategy_profile_binding = None
+        if dynamic_mode == DEFAULT_AI_DYNAMIC_STRATEGY:
+            effective_strategy_profile_binding = engine._resolve_strategy_binding(
+                strategy_profile_id=base_profile_id,
+                ai_dynamic_strategy=ai_dynamic_strategy,
+                ai_dynamic_strength=ai_dynamic_strength,
+                ai_dynamic_lookback=ai_dynamic_lookback,
+            )
 
         for candidate_index, candidate in enumerate(candidates, start=1):
             if run_id is not None and self.db.is_sim_run_cancel_requested(run_id):
@@ -865,17 +875,27 @@ class QuantSimReplayService:
             )
             if not snapshot:
                 continue
+            candidate_binding = effective_strategy_profile_binding
+            if dynamic_mode != DEFAULT_AI_DYNAMIC_STRATEGY:
+                candidate_binding = engine._resolve_strategy_binding(
+                    strategy_profile_id=base_profile_id,
+                    ai_dynamic_strategy=ai_dynamic_strategy,
+                    ai_dynamic_strength=ai_dynamic_strength,
+                    ai_dynamic_lookback=ai_dynamic_lookback,
+                    stock_code=str(candidate.get("stock_code") or ""),
+                    stock_name=str(candidate.get("stock_name") or ""),
+                )
             decision = engine._evaluate_candidate_decision(
                 candidate,
                 market_snapshot=snapshot,
                 analysis_timeframe=timeframe,
                 strategy_mode=strategy_mode,
-                strategy_profile_binding=effective_strategy_profile_binding,
+                strategy_profile_binding=candidate_binding,
             )
             decision_price = engine._extract_decision_price(decision)
             if decision_price > 0:
                 engine.candidate_pool.db.update_candidate_latest_price(candidate["stock_code"], decision_price)
-            signal = signal_service.create_signal(candidate, decision)
+            signal = signal_service.create_signal(candidate, decision, notify=False)
             signal["checkpoint_at"] = self._format_datetime(checkpoint)
             checkpoint_signals.append(signal)
             signals_created += 1
@@ -914,19 +934,29 @@ class QuantSimReplayService:
             )
             if not snapshot:
                 continue
+            position_binding = effective_strategy_profile_binding
+            if dynamic_mode != DEFAULT_AI_DYNAMIC_STRATEGY:
+                position_binding = engine._resolve_strategy_binding(
+                    strategy_profile_id=base_profile_id,
+                    ai_dynamic_strategy=ai_dynamic_strategy,
+                    ai_dynamic_strength=ai_dynamic_strength,
+                    ai_dynamic_lookback=ai_dynamic_lookback,
+                    stock_code=str(candidate.get("stock_code") or position.get("stock_code") or ""),
+                    stock_name=str(candidate.get("stock_name") or position.get("stock_name") or ""),
+                )
             decision = engine._evaluate_position_decision(
                 candidate,
                 position,
                 market_snapshot=snapshot,
                 analysis_timeframe=timeframe,
                 strategy_mode=strategy_mode,
-                strategy_profile_binding=effective_strategy_profile_binding,
+                strategy_profile_binding=position_binding,
             )
             decision_price = engine._extract_decision_price(decision)
             if decision_price > 0:
                 portfolio.db.update_position_market_price(position["stock_code"], decision_price)
                 portfolio.db.update_candidate_latest_price(position["stock_code"], decision_price)
-            signal = signal_service.create_signal(candidate, decision)
+            signal = signal_service.create_signal(candidate, decision, notify=False)
             signal["checkpoint_at"] = self._format_datetime(checkpoint)
             checkpoint_signals.append(signal)
             signals_created += 1

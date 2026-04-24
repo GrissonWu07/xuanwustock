@@ -39,3 +39,52 @@ def test_kernel_candidate_decision_exposes_structured_vote_breakdown():
     assert any(vote["component"] == "source_prior" for vote in explainability["context_votes"])
     assert explainability["dual_track"]["tech_signal"] in {"BUY", "SELL", "HOLD"}
     assert "rule_hit" in explainability["dual_track"]
+
+
+def test_kernel_candidate_uses_extended_snapshot_indicators_when_present():
+    runtime = KernelStrategyRuntime()
+
+    decision = runtime.evaluate_candidate(
+        candidate={
+            "stock_code": "300390",
+            "stock_name": "天华新能",
+            "source": "main_force",
+            "sources": ["main_force"],
+        },
+        market_snapshot={
+            "current_price": 24.5,
+            "latest_price": 24.5,
+            "ma5": 24.1,
+            "ma20": 23.2,
+            "ma60": 21.8,
+            "ma20_slope": 0.012,
+            "macd": 0.86,
+            "dif": 0.43,
+            "dea": 0.21,
+            "hist": 0.22,
+            "hist_prev": 0.14,
+            "rsi12": 61.5,
+            "volume_ratio": 1.38,
+            "obv": 182000.0,
+            "obv_prev": 176500.0,
+            "atr": 0.82,
+            "boll_upper": 25.4,
+            "boll_lower": 21.2,
+            "k": 72.0,
+            "d": 66.0,
+            "j": 84.0,
+            "trend": "up",
+        },
+        current_time=datetime(2026, 4, 23, 14, 30),
+        analysis_timeframe="30m",
+        strategy_mode="auto",
+    )
+
+    explainability = (decision.strategy_profile or {}).get("explainability") or {}
+    technical_breakdown = explainability.get("technical_breakdown") or {}
+    dimensions = {item["id"]: item for item in technical_breakdown.get("dimensions") or []}
+
+    assert dimensions["ma_slope"]["available"] is True
+    assert dimensions["obv_trend"]["available"] is True
+    assert dimensions["atr_risk"]["available"] is True
+    assert dimensions["kdj_cross"]["available"] is True

@@ -9,6 +9,7 @@ from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.replay_service import MainProjectHistoricalSnapshotProvider, QuantSimReplayService
 from app.quant_sim.signal_center_service import SignalCenterService
+from app.notification_service import notification_service
 
 
 class FakeSnapshotProvider:
@@ -177,6 +178,41 @@ def test_snapshot_provider_falls_back_to_stock_code_when_name_missing():
     assert snapshot["name"] == "300390"
 
 
+def test_snapshot_provider_populates_extended_indicator_fields_from_history():
+    provider = MainProjectHistoricalSnapshotProvider()
+    dates = pd.date_range("2026-01-01 09:30:00", periods=80, freq="30min")
+    history = pd.DataFrame(
+        {
+            "日期": dates,
+            "开盘": [20 + i * 0.05 for i in range(80)],
+            "收盘": [20 + i * 0.06 + (0.12 if i % 5 == 0 else 0.0) for i in range(80)],
+            "最高": [20.3 + i * 0.06 for i in range(80)],
+            "最低": [19.8 + i * 0.05 for i in range(80)],
+            "成交量": [1000 + i * 25 for i in range(80)],
+            "成交额": [20000 + i * 600 for i in range(80)],
+        }
+    )
+    provider.cache[("300390", "30m")] = history
+
+    snapshot = provider.get_snapshot("300390", dates[-1].to_pydatetime(), "30m", stock_name="天华新能")
+
+    assert snapshot["name"] == "天华新能"
+    assert "ma20_slope" in snapshot
+    assert "dif" in snapshot
+    assert "dea" in snapshot
+    assert "hist" in snapshot
+    assert "hist_prev" in snapshot
+    assert "k" in snapshot
+    assert "d" in snapshot
+    assert "j" in snapshot
+    assert "obv" in snapshot
+    assert "obv_prev" in snapshot
+    assert "atr" in snapshot
+    assert snapshot["ma20_slope"] != 0
+    assert snapshot["obv"] != snapshot["obv_prev"]
+    assert snapshot["atr"] > 0
+
+
 def test_historical_replay_persists_run_artifacts_without_touching_live_account(tmp_path):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
@@ -229,6 +265,37 @@ def test_historical_replay_persists_run_artifacts_without_touching_live_account(
     assert live_account["trade_count"] == 0
     assert live_account["position_count"] == 0
     assert live_account["available_cash"] == 100000.0
+
+
+def test_historical_replay_does_not_send_live_signal_notifications(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=10.0,
+        notes="回放通知隔离测试",
+    )
+
+    sent_notifications: list[dict] = []
+    monkeypatch.setattr(notification_service, "send_notification", lambda payload: sent_notifications.append(payload) or True)
+
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=FakeSnapshotProvider(),
+        adapter=FakeAdapter(),
+    )
+
+    summary = replay_service.run_historical_range(
+        start_datetime=datetime(2026, 1, 5, 0, 0),
+        end_datetime=datetime(2026, 1, 6, 23, 59),
+        timeframe="1d",
+        market="CN",
+    )
+
+    assert summary["status"] == "completed"
+    assert sent_notifications == []
 
 
 def test_historical_replay_allows_open_ended_end_datetime(tmp_path):
@@ -352,6 +419,44 @@ def test_historical_replay_persists_run_strategy_signals(tmp_path):
     assert all(signal["run_id"] == run["id"] for signal in replay_signals)
     assert any(signal["action"] == "BUY" for signal in replay_signals)
     assert replay_signals[0]["strategy_profile"]["analysis_timeframe"]["key"] == "30m"
+
+
+def test_historical_replay_persists_signals_incrementally_per_checkpoint(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=10.0,
+        notes="回放增量信号测试",
+    )
+
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=FakeSnapshotProvider(),
+        adapter=FakeAdapter(),
+    )
+
+    visible_signal_counts: list[int] = []
+    original_add_checkpoint = replay_service.db.add_sim_run_checkpoint
+
+    def recording_add_checkpoint(run_id, *args, **kwargs):
+        visible_signal_counts.append(len(replay_service.db.get_sim_run_signals(run_id)))
+        return original_add_checkpoint(run_id, *args, **kwargs)
+
+    monkeypatch.setattr(replay_service.db, "add_sim_run_checkpoint", recording_add_checkpoint)
+
+    summary = replay_service.run_historical_range(
+        start_datetime=datetime(2026, 1, 5, 0, 0),
+        end_datetime=datetime(2026, 1, 6, 23, 59),
+        timeframe="30m",
+        market="CN",
+    )
+
+    assert summary["status"] == "completed"
+    assert visible_signal_counts
+    assert visible_signal_counts[0] > 0
 
 
 def test_historical_replay_persists_selected_strategy_mode(tmp_path):
@@ -562,3 +667,60 @@ def test_run_checkpoint_updates_run_status_message_for_substeps(tmp_path):
 
     assert summary["cancelled"] is False
     assert "写入账户快照" in str(run["status_message"])
+
+
+def test_run_checkpoint_resolves_dynamic_binding_per_symbol(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=10.0,
+        notes="回放动态策略测试",
+    )
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=FakeSnapshotProvider(),
+        adapter=FakeAdapter(),
+    )
+    engine = QuantSimEngine(db_file=db_file, adapter=replay_service.adapter)
+    portfolio = PortfolioService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    captured = []
+
+    def fake_resolve(
+        *,
+        strategy_profile_id,
+        ai_dynamic_strategy=None,
+        ai_dynamic_strength=None,
+        ai_dynamic_lookback=None,
+        stock_code=None,
+        stock_name=None,
+    ):
+        captured.append((stock_code, stock_name, ai_dynamic_strategy, ai_dynamic_strength, ai_dynamic_lookback))
+        return {
+            "profile_id": "aggressive_v23",
+            "profile_name": "积极",
+            "version_id": 1,
+            "version": 1,
+            "config": {},
+        }
+
+    monkeypatch.setattr(engine, "_resolve_strategy_binding", fake_resolve)
+
+    summary = replay_service._run_checkpoint(  # noqa: SLF001 - targeted dynamic binding coverage
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        timeframe="30m",
+        ai_dynamic_strategy="hybrid",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
+        engine=engine,
+        portfolio=portfolio,
+        signal_service=signal_service,
+    )
+
+    assert summary["cancelled"] is False
+    assert captured == [
+        ("300390", "天华新能", "hybrid", 0.5, 48),
+    ]

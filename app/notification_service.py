@@ -54,8 +54,33 @@ class NotificationService:
             config['webhook_type'] = os.getenv('WEBHOOK_TYPE').lower()
         if os.getenv('WEBHOOK_KEYWORD'):
             config['webhook_keyword'] = os.getenv('WEBHOOK_KEYWORD')
+
+        config['webhook_type'] = self._resolve_webhook_type(
+            configured_type=config['webhook_type'],
+            webhook_url=config['webhook_url'],
+        )
         
         return config
+
+    def _resolve_webhook_type(self, configured_type: str, webhook_url: str) -> str:
+        """根据配置和 URL 解析最终 webhook 类型。"""
+        normalized_type = str(configured_type or "").strip().lower()
+        normalized_url = str(webhook_url or "").strip().lower()
+
+        detected_type = ""
+        if "open.feishu.cn" in normalized_url or "open.larksuite.com" in normalized_url:
+            detected_type = "feishu"
+        elif "oapi.dingtalk.com" in normalized_url or "dingtalk.com/robot/send" in normalized_url:
+            detected_type = "dingtalk"
+
+        if detected_type:
+            if normalized_type and normalized_type != detected_type:
+                print(f"⚠️ WEBHOOK_TYPE={normalized_type} 与 URL 域名不匹配，已按 {detected_type} 处理")
+            return detected_type
+
+        if normalized_type in {"dingtalk", "feishu"}:
+            return normalized_type
+        return "dingtalk"
 
     def reload_runtime_config(self) -> None:
         """Reload notification config from current environment variables."""
