@@ -895,7 +895,7 @@ class QuantSimReplayService:
             decision_price = engine._extract_decision_price(decision)
             if decision_price > 0:
                 engine.candidate_pool.db.update_candidate_latest_price(candidate["stock_code"], decision_price)
-            signal = signal_service.create_signal(candidate, decision, notify=False)
+            signal = signal_service.create_signal(candidate, decision, notify=False, mirror_to_ai=False)
             signal["checkpoint_at"] = self._format_datetime(checkpoint)
             checkpoint_signals.append(signal)
             signals_created += 1
@@ -956,7 +956,7 @@ class QuantSimReplayService:
             if decision_price > 0:
                 portfolio.db.update_position_market_price(position["stock_code"], decision_price)
                 portfolio.db.update_candidate_latest_price(position["stock_code"], decision_price)
-            signal = signal_service.create_signal(candidate, decision, notify=False)
+            signal = signal_service.create_signal(candidate, decision, notify=False, mirror_to_ai=False)
             signal["checkpoint_at"] = self._format_datetime(checkpoint)
             checkpoint_signals.append(signal)
             signals_created += 1

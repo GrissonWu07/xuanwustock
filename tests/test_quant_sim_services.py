@@ -270,3 +270,81 @@ def test_signal_center_can_skip_live_notification(tmp_path, monkeypatch):
 
     assert signal["status"] == "pending"
     assert sent_notifications == []
+
+
+def test_signal_center_temp_db_does_not_emit_external_side_effects(tmp_path, monkeypatch):
+    saved_ai_decisions: list[dict] = []
+    sent_notifications: list[dict] = []
+
+    class FakeSmartMonitorDB:
+        def __init__(self, db_file):
+            self.db_file = db_file
+
+        def save_ai_decision(self, payload):
+            saved_ai_decisions.append(payload)
+
+    monkeypatch.setattr("app.quant_sim.signal_center_service.SmartMonitorDB", FakeSmartMonitorDB)
+    monkeypatch.setattr(notification_service, "send_notification", lambda payload: sent_notifications.append(payload) or True)
+
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
+    candidate_service.add_manual_candidate(
+        stock_code="300750",
+        stock_name="宁德时代",
+        source="main_force",
+        latest_price=201.5,
+    )
+    candidate = candidate_service.list_candidates()[0]
+
+    signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 82,
+            "reasoning": "建仓",
+            "position_size_pct": 20,
+        },
+    )
+
+    assert signal["status"] == "pending"
+    assert saved_ai_decisions == []
+    assert sent_notifications == []
+
+
+def test_signal_center_notify_false_skips_ai_decision_mirror(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    saved_ai_decisions: list[dict] = []
+
+    class FakeSmartMonitorDB:
+        def __init__(self, db_file):
+            self.db_file = db_file
+
+        def save_ai_decision(self, payload):
+            saved_ai_decisions.append(payload)
+
+    monkeypatch.setattr("app.quant_sim.signal_center_service.DEFAULT_DB_FILE", str(db_file))
+    monkeypatch.setattr("app.quant_sim.signal_center_service.SmartMonitorDB", FakeSmartMonitorDB)
+
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    candidate_service.add_manual_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=86.5,
+    )
+    candidate = candidate_service.list_candidates()[0]
+
+    signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 82,
+            "reasoning": "历史回放买入信号",
+            "position_size_pct": 60,
+        },
+        notify=False,
+    )
+
+    assert signal["status"] == "pending"
+    assert saved_ai_decisions == []

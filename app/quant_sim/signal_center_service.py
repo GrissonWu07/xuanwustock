@@ -16,12 +16,15 @@ class SignalCenterService:
     """Normalizes strategy decisions into persisted signals."""
 
     def __init__(self, db_file: str | Path = DEFAULT_DB_FILE):
+        self.db_file = Path(db_file)
+        self.external_side_effects_enabled = self._is_default_db_file(self.db_file)
         self.db = QuantSimDB(db_file)
         self.smart_monitor_db: SmartMonitorDB | None = None
-        try:
-            self.smart_monitor_db = SmartMonitorDB(str(SMART_MONITOR_DB_FILE))
-        except Exception:
-            self.smart_monitor_db = None
+        if self.external_side_effects_enabled:
+            try:
+                self.smart_monitor_db = SmartMonitorDB(str(SMART_MONITOR_DB_FILE))
+            except Exception:
+                self.smart_monitor_db = None
 
     def create_signal(
         self,
@@ -29,7 +32,10 @@ class SignalCenterService:
         decision: dict[str, Any] | Decision,
         *,
         notify: bool = True,
+        mirror_to_ai: bool | None = None,
     ) -> dict[str, Any]:
+        if mirror_to_ai is None:
+            mirror_to_ai = notify
         payload = self._normalize_decision_payload(decision)
         payload = self._apply_position_constraints(candidate, payload)
         payload = self._apply_transaction_cost_constraints(candidate, payload)
@@ -60,11 +66,24 @@ class SignalCenterService:
                 "status": status,
             }
         )
-        self._mirror_signal_to_ai_decision(candidate, payload)
+        if mirror_to_ai and self.external_side_effects_enabled:
+            self._mirror_signal_to_ai_decision(candidate, payload)
         signal = self.db.get_signals(stock_code=candidate["stock_code"], limit=1)[0]
-        if notify and status == "pending" and int(signal_id) not in existing_pending_ids:
+        if (
+            notify
+            and self.external_side_effects_enabled
+            and status == "pending"
+            and int(signal_id) not in existing_pending_ids
+        ):
             self._dispatch_live_signal_notification(candidate, signal, payload)
         return signal
+
+    @staticmethod
+    def _is_default_db_file(db_file: str | Path) -> bool:
+        try:
+            return Path(db_file).expanduser().resolve() == Path(DEFAULT_DB_FILE).expanduser().resolve()
+        except Exception:
+            return str(db_file) == str(DEFAULT_DB_FILE)
 
     def list_pending_signals(self) -> list[dict[str, Any]]:
         self._sanitize_pending_sell_signals_without_position()
