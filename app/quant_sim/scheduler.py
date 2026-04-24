@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import logging
 from datetime import date, datetime
 from pathlib import Path
 
@@ -27,6 +28,7 @@ TRADING_HOURS = {
 TRADING_DAYS = {1, 2, 3, 4, 5}
 _SCHEDULER_INSTANCES: dict[str, "QuantSimScheduler"] = {}
 DEFAULT_WATCHLIST_DB_FILE = str(default_db_path("watchlist.db"))
+logger = logging.getLogger(__name__)
 
 
 class QuantSimScheduler:
@@ -202,6 +204,11 @@ class QuantSimScheduler:
         while self.running and not self.stop_event.is_set():
             try:
                 self.scheduler.run_pending()
+            except Exception as exc:
+                if "database is locked" in str(exc).lower():
+                    logger.warning("quant sim scheduler skipped one cycle because database is locked; next cycle will continue")
+                else:
+                    logger.exception("quant sim scheduler cycle failed; next cycle will continue")
             finally:
                 self.stop_event.wait(self.poll_seconds)
 

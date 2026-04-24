@@ -37,6 +37,32 @@ def test_engine_generates_pending_buy_signal_for_candidate(tmp_path, monkeypatch
     assert captured["analysis_timeframe"] == "1d"
 
 
+def test_engine_injects_account_context_for_candidate_analysis(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
+    candidate = candidate_service.list_candidates()[0]
+    PortfolioService(db_file=db_file).configure_account(100000)
+
+    engine = QuantSimEngine(db_file=db_file)
+    captured = {}
+
+    def fake_analyze_candidate(payload, **kwargs):
+        captured["account_context"] = payload.get("_quant_account_context")
+        return {
+            "action": "HOLD",
+            "confidence": 61,
+            "reasoning": "等待确认",
+            "position_size_pct": 0,
+        }
+
+    monkeypatch.setattr(engine.adapter, "analyze_candidate", fake_analyze_candidate)
+
+    engine.analyze_candidate(candidate)
+
+    assert captured["account_context"]["cash_ratio"] == 1.0
+
+
 def test_engine_records_hold_as_observed_signal(tmp_path, monkeypatch):
     candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
     candidate_service.add_manual_candidate(

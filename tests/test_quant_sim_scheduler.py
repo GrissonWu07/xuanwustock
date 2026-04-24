@@ -1,4 +1,5 @@
 from datetime import date
+import sqlite3
 from unittest.mock import Mock
 
 from app.quant_sim.candidate_pool_service import CandidatePoolService
@@ -222,3 +223,22 @@ def test_scheduler_restores_background_job_from_persisted_config(tmp_path, monke
     assert started["count"] == 1
     assert restored_scheduler.get_status()["enabled"] is True
     assert restored_scheduler.get_status()["running"] is True
+
+
+def test_schedule_loop_survives_transient_database_lock(tmp_path, monkeypatch):
+    scheduler = QuantSimScheduler(db_file=tmp_path / "app.quant_sim.db", poll_seconds=0)
+    calls = {"count": 0}
+
+    def fake_run_pending():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        scheduler.running = False
+        scheduler.stop_event.set()
+
+    monkeypatch.setattr(scheduler.scheduler, "run_pending", fake_run_pending)
+
+    scheduler.running = True
+    scheduler._schedule_loop()
+
+    assert calls["count"] == 2

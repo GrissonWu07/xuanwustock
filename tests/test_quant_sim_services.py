@@ -64,6 +64,40 @@ def test_signal_center_creates_pending_and_observed_signals(tmp_path):
     assert len(history) == 2
 
 
+def test_signal_center_persists_canonical_v23_scores_when_available(tmp_path):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
+    candidate_service.add_manual_candidate("002518", "科士达", "main_force", latest_price=10.0)
+    candidate = candidate_service.list_candidates()[0]
+
+    signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 91,
+            "reasoning": "legacy summary",
+            "position_size_pct": 20,
+            "tech_score": 0.91,
+            "context_score": 0.88,
+            "strategy_profile": {
+                "explainability": {
+                    "fusion_breakdown": {
+                        "tech_score": 0.096633,
+                        "context_score": 0.0728,
+                        "fusion_confidence": 0.925028,
+                    }
+                }
+            },
+        },
+        notify=False,
+        mirror_to_ai=False,
+    )
+
+    assert signal["tech_score"] == 0.096633
+    assert signal["context_score"] == 0.0728
+    assert signal["confidence"] == 93
+
+
 def test_portfolio_service_confirm_buy_and_delay_signal(tmp_path):
     candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
     signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
@@ -348,3 +382,99 @@ def test_signal_center_notify_false_skips_ai_decision_mirror(tmp_path, monkeypat
 
     assert signal["status"] == "pending"
     assert saved_ai_decisions == []
+
+
+def test_signal_center_marks_position_buy_as_add_and_uses_target_delta(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+
+    candidate_service.add_manual_candidate("300390", "天华新能", "main_force", latest_price=52.0)
+    candidate = candidate_service.list_candidates()[0]
+    first_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 82, "reasoning": "先建仓", "position_size_pct": 5},
+    )
+    portfolio_service.confirm_buy(first_signal["id"], price=50.0, quantity=100, note="已有底仓")
+    portfolio_service.db.update_position_market_price("300390", 52.0)
+
+    add_signal = signal_service.create_signal(
+        {**candidate, "latest_price": 52.0},
+        {
+            "action": "BUY",
+            "confidence": 86,
+            "reasoning": "持仓趋势增强",
+            "position_size_pct": 20,
+            "tech_score": 0.32,
+            "strategy_profile": {
+                "effective_thresholds": {
+                    "max_position_ratio": 0.3,
+                    "allow_pyramiding": True,
+                    "add_min_unrealized_pnl_pct": 2.0,
+                    "add_min_tech_score": 0.25,
+                },
+                "explainability": {
+                    "fusion_breakdown": {
+                        "fusion_confidence": 0.74,
+                    }
+                },
+            },
+        },
+        notify=False,
+    )
+
+    gate = add_signal["strategy_profile"]["position_add_gate"]
+
+    assert add_signal["action"] == "BUY"
+    assert add_signal["decision_type"] == "position_add"
+    assert add_signal["position_size_pct"] < 20
+    assert gate["intent"] == "position_add"
+    assert gate["status"] == "passed"
+    assert gate["target_position_pct"] == 20.0
+    assert gate["add_position_delta_pct"] == add_signal["position_size_pct"]
+
+
+def test_signal_center_blocks_position_add_when_gate_fails(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+
+    candidate_service.add_manual_candidate("300390", "天华新能", "main_force", latest_price=49.0)
+    candidate = candidate_service.list_candidates()[0]
+    first_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 82, "reasoning": "先建仓", "position_size_pct": 5},
+    )
+    portfolio_service.confirm_buy(first_signal["id"], price=50.0, quantity=100, note="已有底仓")
+    portfolio_service.db.update_position_market_price("300390", 49.0)
+
+    blocked = signal_service.create_signal(
+        {**candidate, "latest_price": 49.0},
+        {
+            "action": "BUY",
+            "confidence": 86,
+            "reasoning": "持仓尝试加仓",
+            "position_size_pct": 20,
+            "tech_score": 0.1,
+            "strategy_profile": {
+                "effective_thresholds": {
+                    "max_position_ratio": 0.3,
+                    "allow_pyramiding": False,
+                    "add_min_unrealized_pnl_pct": 2.0,
+                    "add_min_tech_score": 0.25,
+                }
+            },
+        },
+        notify=False,
+    )
+
+    gate = blocked["strategy_profile"]["position_add_gate"]
+
+    assert blocked["action"] == "HOLD"
+    assert blocked["status"] == "observed"
+    assert blocked["position_size_pct"] == 0
+    assert blocked["decision_type"] == "position_add_blocked"
+    assert gate["status"] == "blocked"
+    assert "不允许加仓" in "；".join(gate["reasons"])

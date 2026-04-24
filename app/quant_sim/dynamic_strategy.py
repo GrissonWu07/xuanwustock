@@ -56,6 +56,11 @@ def _parse_datetime(value: Any) -> datetime | None:
             return datetime.strptime(text[:19], fmt)
         except ValueError:
             continue
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(text[:10] if fmt == "%Y-%m-%d" else text[:8], fmt)
+        except ValueError:
+            continue
     return None
 
 
@@ -99,10 +104,12 @@ class DynamicStrategyController:
         ai_dynamic_strategy: Any,
         ai_dynamic_strength: Any,
         ai_dynamic_lookback: Any,
+        as_of: datetime | str | None = None,
     ) -> dict[str, Any]:
         mode = self.normalize_strategy(ai_dynamic_strategy)
         strength = self.normalize_strength(ai_dynamic_strength)
         lookback = self.normalize_lookback(ai_dynamic_lookback)
+        as_of_dt = self._normalize_as_of(as_of)
         binding = self._clone_binding(base_binding)
         base_profile_id = str(base_binding.get("profile_id") or "")
         base_template_variant = self._profile_template_variant(base_profile_id)
@@ -112,7 +119,10 @@ class DynamicStrategyController:
                 "enabled": False,
                 "strength": strength,
                 "lookback_hours": lookback,
+                "as_of": self._format_as_of(as_of_dt),
                 "adjustments": [],
+                "components": [],
+                "omitted_components": [],
             }
             return binding
 
@@ -120,6 +130,7 @@ class DynamicStrategyController:
             stock_code=stock_code,
             stock_name=stock_name,
             lookback_hours=lookback,
+            as_of=as_of_dt,
         )
         signal_score = float(signal["score"])
         signal_confidence = float(signal["confidence"])
@@ -180,6 +191,7 @@ class DynamicStrategyController:
             "enabled": True,
             "strength": strength,
             "lookback_hours": lookback,
+            "as_of": self._format_as_of(as_of_dt),
             "score": round(signal_score, 4),
             "confidence": round(signal_confidence, 4),
             "base_profile_id": base_profile_id,
@@ -194,6 +206,7 @@ class DynamicStrategyController:
             "adjustments": adjustments,
             "evidence": switch_plan["evidence"],
             "components": signal.get("components", []),
+            "omitted_components": signal.get("omitted_components", []),
         }
         return binding
 
@@ -213,22 +226,24 @@ class DynamicStrategyController:
         stock_code: str | None,
         stock_name: str | None,
         lookback_hours: int,
+        as_of: datetime | None = None,
     ) -> dict[str, Any]:
         component_rows: list[dict[str, Any]] = []
-        market_component = self._market_component(lookback_hours=lookback_hours)
-        if market_component:
-            component_rows.append(market_component)
-        sector_component = self._sector_component(stock_name=stock_name, lookback_hours=lookback_hours)
-        if sector_component:
-            component_rows.append(sector_component)
-        news_component = self._news_component(lookback_hours=lookback_hours)
-        if news_component:
-            component_rows.append(news_component)
-        ai_component = self._ai_component(stock_code=stock_code, lookback_hours=lookback_hours)
-        if ai_component:
-            component_rows.append(ai_component)
+        omitted_components: list[dict[str, Any]] = []
+
+        for key, factory in (
+            ("market", lambda: self._market_component(lookback_hours=lookback_hours, as_of=as_of)),
+            ("sector", lambda: self._sector_component(stock_name=stock_name, lookback_hours=lookback_hours, as_of=as_of)),
+            ("news", lambda: self._news_component(lookback_hours=lookback_hours, as_of=as_of)),
+            ("ai", lambda: self._ai_component(stock_code=stock_code, lookback_hours=lookback_hours, as_of=as_of)),
+        ):
+            component = factory()
+            if component:
+                component_rows.append(component)
+            elif as_of is not None:
+                omitted_components.append(self._omitted_component(key, as_of, "no_historical_asof_data"))
         if not component_rows:
-            return {"score": 0.0, "confidence": 0.0, "components": []}
+            return {"score": 0.0, "confidence": 0.0, "components": [], "omitted_components": omitted_components}
 
         weighted_score = 0.0
         weighted_confidence = 0.0
@@ -243,21 +258,28 @@ class DynamicStrategyController:
             weighted_score += score * weight
             weighted_confidence += confidence * weight
         if total_weight <= 0:
-            return {"score": 0.0, "confidence": 0.0, "components": []}
+            return {"score": 0.0, "confidence": 0.0, "components": component_rows, "omitted_components": omitted_components}
         return {
             "score": _clamp(weighted_score / total_weight, -1.0, 1.0),
             "confidence": _clamp(weighted_confidence / total_weight, 0.0, 1.0),
             "components": component_rows,
+            "omitted_components": omitted_components,
         }
 
-    def _market_component(self, *, lookback_hours: int) -> dict[str, Any] | None:
+    def _market_component(self, *, lookback_hours: int, as_of: datetime | None = None) -> dict[str, Any] | None:
         try:
-            market = self._sector_db_instance().get_latest_raw_data("market_overview", within_hours=lookback_hours)
+            sector_db = self._sector_db_instance()
+            if as_of is not None and hasattr(sector_db, "get_raw_data_as_of"):
+                market = sector_db.get_raw_data_as_of("market_overview", as_of=as_of, within_hours=lookback_hours)
+            elif as_of is None:
+                market = sector_db.get_latest_raw_data("market_overview", within_hours=lookback_hours)
+            else:
+                market = None
         except Exception as exc:
             self.logger.debug("dynamic strategy market component failed: %s", exc)
             market = None
         overview = market.get("data_content") if isinstance(market, dict) else {}
-        if isinstance(overview, dict) and overview:
+        if isinstance(overview, dict) and overview and self._is_payload_visible(market, lookback_hours, as_of=as_of):
             scores: list[float] = []
             for payload in overview.values():
                 if not isinstance(payload, dict):
@@ -276,8 +298,13 @@ class DynamicStrategyController:
                     "fresh": True,
                     "as_of": self._payload_timestamp(market),
                 }
-        latest_snapshot = news_flow_db.get_latest_snapshot()
-        if isinstance(latest_snapshot, dict) and self._is_payload_recent(latest_snapshot, lookback_hours):
+        if as_of is not None and hasattr(news_flow_db, "get_snapshot_as_of"):
+            latest_snapshot = news_flow_db.get_snapshot_as_of(as_of=as_of, within_hours=lookback_hours)
+        elif as_of is None:
+            latest_snapshot = news_flow_db.get_latest_snapshot()
+        else:
+            latest_snapshot = None
+        if isinstance(latest_snapshot, dict) and self._is_payload_visible(latest_snapshot, lookback_hours, as_of=as_of):
             total_score = _safe_float(latest_snapshot.get("total_score"), 500.0)
             score = _clamp((total_score - 500.0) / 500.0, -1.0, 1.0)
             return {
@@ -292,13 +319,21 @@ class DynamicStrategyController:
             }
         return None
 
-    def _sector_component(self, *, stock_name: str | None, lookback_hours: int) -> dict[str, Any] | None:
+    def _sector_component(self, *, stock_name: str | None, lookback_hours: int, as_of: datetime | None = None) -> dict[str, Any] | None:
         try:
-            news_payload = self._sector_db_instance().get_latest_news_data(within_hours=lookback_hours)
+            sector_db = self._sector_db_instance()
+            if as_of is not None and hasattr(sector_db, "get_news_data_as_of"):
+                news_payload = sector_db.get_news_data_as_of(as_of=as_of, within_hours=lookback_hours)
+            elif as_of is None:
+                news_payload = sector_db.get_latest_news_data(within_hours=lookback_hours)
+            else:
+                news_payload = None
         except Exception as exc:
             self.logger.debug("dynamic strategy sector component failed: %s", exc)
             news_payload = None
         rows = news_payload.get("data_content") if isinstance(news_payload, dict) else []
+        if not self._is_payload_visible(news_payload, lookback_hours, as_of=as_of):
+            return None
         if not isinstance(rows, Iterable):
             return None
         sector_rows = []
@@ -327,12 +362,22 @@ class DynamicStrategyController:
             "as_of": self._payload_timestamp(news_payload),
         }
 
-    def _news_component(self, *, lookback_hours: int) -> dict[str, Any] | None:
-        sentiment = news_flow_db.get_latest_sentiment()
-        ai_analysis = news_flow_db.get_latest_ai_analysis()
-        if isinstance(sentiment, dict) and not self._is_payload_recent(sentiment, lookback_hours):
+    def _news_component(self, *, lookback_hours: int, as_of: datetime | None = None) -> dict[str, Any] | None:
+        if as_of is not None and hasattr(news_flow_db, "get_sentiment_as_of"):
+            sentiment = news_flow_db.get_sentiment_as_of(as_of=as_of, within_hours=lookback_hours)
+        elif as_of is None:
+            sentiment = news_flow_db.get_latest_sentiment()
+        else:
             sentiment = None
-        if isinstance(ai_analysis, dict) and not self._is_payload_recent(ai_analysis, lookback_hours):
+        if as_of is not None and hasattr(news_flow_db, "get_ai_analysis_as_of"):
+            ai_analysis = news_flow_db.get_ai_analysis_as_of(as_of=as_of, within_hours=lookback_hours)
+        elif as_of is None:
+            ai_analysis = news_flow_db.get_latest_ai_analysis()
+        else:
+            ai_analysis = None
+        if isinstance(sentiment, dict) and not self._is_payload_visible(sentiment, lookback_hours, as_of=as_of):
+            sentiment = None
+        if isinstance(ai_analysis, dict) and not self._is_payload_visible(ai_analysis, lookback_hours, as_of=as_of):
             ai_analysis = None
         has_signal = False
         score_parts: list[float] = []
@@ -375,7 +420,7 @@ class DynamicStrategyController:
             "as_of": max(as_of_candidates) if as_of_candidates else None,
         }
 
-    def _ai_component(self, *, stock_code: str | None, lookback_hours: int) -> dict[str, Any] | None:
+    def _ai_component(self, *, stock_code: str | None, lookback_hours: int, as_of: datetime | None = None) -> dict[str, Any] | None:
         try:
             rows = self._smart_db().get_ai_decisions(stock_code=stock_code, limit=min(500, lookback_hours * 8))
         except Exception as exc:
@@ -383,7 +428,8 @@ class DynamicStrategyController:
             return None
         if not rows:
             return None
-        cutoff = datetime.now() - timedelta(hours=lookback_hours)
+        cutoff_end = as_of or datetime.now()
+        cutoff_start = cutoff_end - timedelta(hours=lookback_hours)
         score_sum = 0.0
         weight_sum = 0.0
         used = 0
@@ -392,7 +438,11 @@ class DynamicStrategyController:
             if not isinstance(row, dict):
                 continue
             decision_time = _parse_datetime(row.get("decision_time") or row.get("created_at"))
-            if decision_time is not None and decision_time < cutoff:
+            if as_of is not None and decision_time is None:
+                continue
+            if decision_time is not None and decision_time > cutoff_end:
+                continue
+            if decision_time is not None and decision_time < cutoff_start:
                 continue
             if decision_time is not None and (latest_used_at is None or decision_time > latest_used_at):
                 latest_used_at = decision_time
@@ -450,11 +500,17 @@ class DynamicStrategyController:
             or payload.get("decision_time")
             or payload.get("created_at")
             or payload.get("updated_at")
+            or payload.get("data_date")
+            or payload.get("news_date")
         )
         return timestamp.strftime("%Y-%m-%d %H:%M:%S") if timestamp is not None else None
 
     @staticmethod
     def _is_payload_recent(payload: Any, lookback_hours: int) -> bool:
+        return DynamicStrategyController._is_payload_visible(payload, lookback_hours, as_of=None)
+
+    @staticmethod
+    def _is_payload_visible(payload: Any, lookback_hours: int, *, as_of: datetime | None = None) -> bool:
         if not isinstance(payload, dict):
             return False
         timestamp = _parse_datetime(
@@ -462,10 +518,33 @@ class DynamicStrategyController:
             or payload.get("decision_time")
             or payload.get("created_at")
             or payload.get("updated_at")
+            or payload.get("data_date")
+            or payload.get("news_date")
         )
         if timestamp is None:
-            return True
-        return timestamp >= (datetime.now() - timedelta(hours=lookback_hours))
+            return as_of is None
+        upper_bound = as_of or datetime.now()
+        lower_bound = upper_bound - timedelta(hours=lookback_hours)
+        return lower_bound <= timestamp <= upper_bound
+
+    @staticmethod
+    def _normalize_as_of(value: datetime | str | None) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        return _parse_datetime(value)
+
+    @staticmethod
+    def _format_as_of(value: datetime | None) -> str | None:
+        return value.strftime("%Y-%m-%d %H:%M:%S") if value is not None else None
+
+    @staticmethod
+    def _omitted_component(key: str, as_of: datetime, reason: str) -> dict[str, Any]:
+        return {
+            "key": key,
+            "label": key,
+            "reason": reason,
+            "as_of": as_of.strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
     @staticmethod
     def _soft_switch_score_threshold(strength: float) -> float:

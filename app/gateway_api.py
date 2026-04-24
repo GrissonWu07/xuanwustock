@@ -1797,8 +1797,122 @@ def _extract_technical_indicators(
     technical_breakdown: dict[str, Any] | None = None,
     context_breakdown: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    snapshot_indicator_map: dict[str, dict[str, str]] = {}
+
+    def _add_snapshot_indicator(name: str, value: Any, source: str, note: str = "") -> None:
+        normalized = _txt(name)
+        text = _txt(value)
+        if not normalized or not text or normalized in snapshot_indicator_map:
+            return
+        snapshot_indicator_map[normalized] = {
+            "name": normalized,
+            "value": text,
+            "source": source,
+            "note": _txt(note),
+        }
+
+    def _scan_snapshot_mapping(mapping: Any, source: str, note: str = "") -> None:
+        if not isinstance(mapping, dict):
+            return
+        key_map = [
+            ("当前价", ("current_price", "latest_price", "close", "last_price")),
+            ("涨跌幅", ("change_pct", "pct_chg")),
+            ("开盘价", ("open", "open_price")),
+            ("最高价", ("high", "high_price")),
+            ("最低价", ("low", "low_price")),
+            ("成交量(手)", ("volume", "vol")),
+            ("成交额(万)", ("amount", "turnover")),
+            ("换手率", ("turnover_rate", "turnover_ratio")),
+            ("量比", ("volume_ratio",)),
+            ("趋势", ("trend",)),
+            ("MA5", ("ma5",)),
+            ("MA20", ("ma20",)),
+            ("MA60", ("ma60",)),
+            ("MACD", ("macd", "hist", "macd_hist")),
+            ("DIF", ("dif", "macd_dif")),
+            ("DEA", ("dea", "macd_dea")),
+            ("RSI6", ("rsi6",)),
+            ("RSI12", ("rsi12", "rsi14")),
+            ("RSI24", ("rsi24",)),
+            ("KDJ-K", ("k", "kdj_k")),
+            ("KDJ-D", ("d", "kdj_d")),
+            ("KDJ-J", ("j", "kdj_j")),
+            ("布林上轨", ("boll_upper",)),
+            ("布林中轨", ("boll_mid",)),
+            ("布林下轨", ("boll_lower",)),
+            ("布林位置", ("boll_position",)),
+        ]
+        for label, keys in key_map:
+            for key in keys:
+                value = mapping.get(key)
+                if value in (None, ""):
+                    continue
+                _add_snapshot_indicator(label, value, source, note or key)
+                break
+
+    def _scan_snapshot_text(text: str, source: str, note: str = "") -> None:
+        content = _txt(text)
+        if not content:
+            return
+        number = r"(-?\d+(?:\.\d+)?)"
+        matched = re.search(
+            rf"close\s*/\s*ma20\s*/\s*ma60\s*=\s*{number}\s*/\s*{number}\s*/\s*{number}",
+            content,
+            flags=re.IGNORECASE,
+        )
+        if matched:
+            _add_snapshot_indicator("当前价", matched.group(1), source, note or content)
+            _add_snapshot_indicator("MA20", matched.group(2), source, note or content)
+            _add_snapshot_indicator("MA60", matched.group(3), source, note or content)
+
+        matched = re.search(
+            rf"dif\s*/\s*dea\s*/\s*(?:hist|macd)\s*=\s*{number}\s*/\s*{number}\s*/\s*{number}",
+            content,
+            flags=re.IGNORECASE,
+        )
+        if matched:
+            _add_snapshot_indicator("DIF", matched.group(1), source, note or content)
+            _add_snapshot_indicator("DEA", matched.group(2), source, note or content)
+            _add_snapshot_indicator("MACD", matched.group(3), source, note or content)
+
+        matched = re.search(
+            rf"k\s*/\s*d\s*/\s*j\s*=\s*{number}\s*/\s*{number}\s*/\s*{number}",
+            content,
+            flags=re.IGNORECASE,
+        )
+        if matched:
+            _add_snapshot_indicator("KDJ-K", matched.group(1), source, note or content)
+            _add_snapshot_indicator("KDJ-D", matched.group(2), source, note or content)
+            _add_snapshot_indicator("KDJ-J", matched.group(3), source, note or content)
+
+        for label, pattern in (
+            ("当前价", rf"(?:现价|当前价|最新价)\s*[:：]?\s*{number}"),
+            ("MA5", rf"MA5\s*[:：=]?\s*{number}"),
+            ("MA20", rf"MA20\s*[:：=]?\s*{number}"),
+            ("MA60", rf"MA60\s*[:：=]?\s*{number}"),
+            ("MACD", rf"MACD\s*[:：=]?\s*{number}"),
+            ("量比", rf"(?:volume_ratio|量比)\s*[:：=]?\s*{number}"),
+            ("布林位置", rf"boll_position\s*[:：=]?\s*{number}"),
+        ):
+            matched = re.search(pattern, content, flags=re.IGNORECASE)
+            if matched:
+                _add_snapshot_indicator(label, matched.group(1), source, note or content)
+
+        for matched in re.finditer(rf"\b(RSI6|RSI12|RSI14|RSI24)\s*[:：=]?\s*{number}", content, flags=re.IGNORECASE):
+            metric = matched.group(1).upper()
+            label = "RSI12" if metric == "RSI14" else metric
+            _add_snapshot_indicator(label, matched.group(2), source, note or content)
+
     if isinstance(technical_breakdown, dict):
         indicators: list[dict[str, str]] = []
+        profile = strategy_profile if isinstance(strategy_profile, dict) else {}
+        _scan_snapshot_mapping(profile.get("market_snapshot"), "strategy_profile.market_snapshot")
+        explainability_snapshot = profile.get("explainability") if isinstance(profile.get("explainability"), dict) else {}
+        _scan_snapshot_mapping(explainability_snapshot.get("market_snapshot"), "strategy_profile.explainability.market_snapshot")
+        market_regime = profile.get("market_regime")
+        if isinstance(market_regime, dict):
+            _add_snapshot_indicator("趋势", market_regime.get("label"), "strategy_profile.market_regime", _txt(market_regime.get("reason")))
+            _scan_snapshot_text(_txt(market_regime.get("reason")), "strategy_profile.market_regime")
         track_info = technical_breakdown.get("track") if isinstance(technical_breakdown.get("track"), dict) else {}
         indicators.append(
             {
@@ -1838,6 +1952,8 @@ def _extract_technical_indicators(
                 if not isinstance(item, dict):
                     continue
                 dim_id = _txt(item.get("id"), "dimension")
+                reason = _txt(item.get("reason"))
+                _scan_snapshot_text(reason, "technical_breakdown.dimensions", dim_id)
                 indicators.append(
                     {
                         "name": dim_id,
@@ -1865,7 +1981,18 @@ def _extract_technical_indicators(
                     "note": "环境轨置信度（TrackConfidence）",
                 }
             )
+            context_dimensions = context_breakdown.get("dimensions")
+            if isinstance(context_dimensions, list):
+                for item in context_dimensions:
+                    if isinstance(item, dict):
+                        _scan_snapshot_text(_txt(item.get("reason")), "context_breakdown.dimensions", _txt(item.get("id"), "dimension"))
 
+        _scan_snapshot_text(_txt(reasoning), "reasoning")
+        _scan_snapshot_text(_txt(analysis_text), "analysis")
+        existing_names = {_txt(item.get("name")) for item in indicators if isinstance(item, dict)}
+        indicators.extend(
+            item for item in snapshot_indicator_map.values() if _txt(item.get("name")) not in existing_names
+        )
         return indicators
 
     patterns = [
@@ -2026,9 +2153,23 @@ def _track_direction_label(signal: Any) -> str:
     return mapping.get(normalized, _txt(signal, "--"))
 
 
-def _position_metric_label(action: Any) -> str:
+def _is_position_add_intent(intent: Any) -> bool:
+    return _txt(intent, "").strip().lower() == "position_add"
+
+
+def _execution_intent_label(intent: Any) -> str:
+    if _is_position_add_intent(intent):
+        return "加仓/增持"
+    if _txt(intent, "").strip().lower() == "position_add_blocked":
+        return "加仓门控未通过"
+    return "常规交易"
+
+
+def _position_metric_label(action: Any, execution_intent: Any = None) -> str:
     action_upper = _txt(action, "--").upper()
     if action_upper == "BUY":
+        if _is_position_add_intent(execution_intent):
+            return "建议加仓比例(%)"
         return "目标买入仓位(%)"
     if action_upper == "SELL":
         return "建议卖出比例(%)"
@@ -2089,7 +2230,11 @@ def _dual_track_basis_lines(decision: dict[str, Any], effective_thresholds: dict
         "neutral_hold": "双轨没有形成明确同向信号，系统保持中性观望。",
     }
     merge_reason = merge_reason_map.get(rule_hit) or merge_reason_map.get(decision_type) or "系统先判断双轨是否同向，再按共振/背离规则确定最终动作和仓位。"
-    position_semantics = "目标买入仓位" if _txt(final_action).upper() == "BUY" else ("建议卖出比例" if _txt(final_action).upper() == "SELL" else "建议仓位")
+    position_semantics = (
+        "建议加仓比例"
+        if _txt(final_action).upper() == "BUY" and _is_position_add_intent(decision.get("executionIntent"))
+        else ("目标买入仓位" if _txt(final_action).upper() == "BUY" else ("建议卖出比例" if _txt(final_action).upper() == "SELL" else "建议仓位"))
+    )
     if keep_position_pct == "--":
         keep_segment = ""
     elif keep_position_pct.endswith("%") or "不变" in keep_position_pct:
@@ -2669,12 +2814,18 @@ def _build_parameter_details(
         tech_track = _safe_json_load(technical_breakdown.get("track"))
         context_track = _safe_json_load(context_breakdown.get("track"))
         dynamic_strategy = strategy_profile.get("dynamic_strategy") if isinstance(strategy_profile.get("dynamic_strategy"), dict) else {}
-        position_metric_label = _position_metric_label(decision.get("action"))
+        position_metric_label = _position_metric_label(decision.get("action"), decision.get("executionIntent"))
         position_metric_value = _position_metric_value(decision.get("action"), decision.get("positionSizePct"))
 
         rows: list[dict[str, str]] = [
             _item("动作", decision.get("action"), "fusion_breakdown.final_action", "最终动作来自结构化融合层输出（含 veto/门控/规则合并）。"),
             _item("决策类型", decision.get("decisionType"), "signal.decision_type", "决策类型来自信号记录，用于区分融合路径与执行语义。"),
+            _item(
+                "执行语义",
+                _execution_intent_label(decision.get("executionIntent")),
+                "strategy_profile.position_add_gate.intent",
+                "持仓股票的 BUY 会被解释为加仓/增持；候选股 BUY 才是新开仓。",
+            ),
             _item("核心规则动作", fusion_breakdown.get("core_rule_action"), "fusion_breakdown.core_rule_action", "仅规则引擎输出，不含 veto。"),
             _item("加权阈值动作", fusion_breakdown.get("weighted_threshold_action"), "fusion_breakdown.weighted_threshold_action", "仅由融合分与阈值比较得到的动作。"),
             _item("加权门控后动作", fusion_breakdown.get("weighted_action_raw"), "fusion_breakdown.weighted_action_raw", "在阈值动作基础上应用置信度与分轨门控后的动作。"),
@@ -2720,7 +2871,71 @@ def _build_parameter_details(
             _item("veto 来源模式", fusion_breakdown.get("veto_source_mode"), "fusion_breakdown.veto_source_mode", "标记 veto 判定来源（如 legacy/new）。"),
         ]
 
+        position_add_gate = strategy_profile.get("position_add_gate") if isinstance(strategy_profile.get("position_add_gate"), dict) else {}
+        if position_add_gate:
+            rows.extend(
+                [
+                    _item(
+                        "加仓门控",
+                        "通过" if _txt(position_add_gate.get("status")).lower() == "passed" else "未通过",
+                        "strategy_profile.position_add_gate.status",
+                        "持仓 BUY 必须先通过加仓门控；未通过时降级为 HOLD。",
+                    ),
+                    _item(
+                        "当前持仓比例(%)",
+                        position_add_gate.get("current_position_pct"),
+                        "strategy_profile.position_add_gate.current_position_pct",
+                        "当前持仓市值 / 当前总资产，用于判断是否还有加仓空间。",
+                    ),
+                    _item(
+                        "目标持仓比例(%)",
+                        position_add_gate.get("target_position_pct"),
+                        "strategy_profile.position_add_gate.target_position_pct",
+                        "融合层给出的目标仓位，上限受 max_position_ratio 限制。",
+                    ),
+                    _item(
+                        "建议加仓比例(%)",
+                        position_add_gate.get("add_position_delta_pct"),
+                        "strategy_profile.position_add_gate.add_position_delta_pct",
+                        "实际下单只使用目标仓位与当前仓位的差额，不重复买满目标仓位。",
+                    ),
+                    _item(
+                        "加仓上限比例(%)",
+                        position_add_gate.get("max_position_pct"),
+                        "strategy_profile.position_add_gate.max_position_pct",
+                        "由 max_position_ratio 转换为百分比后的持仓上限。",
+                    ),
+                    _item(
+                        "加仓浮盈门槛(%)",
+                        position_add_gate.get("min_unrealized_pnl_pct"),
+                        "strategy_profile.position_add_gate.min_unrealized_pnl_pct",
+                        "持仓已有浮盈达到该门槛，可以作为加仓放行证据。",
+                    ),
+                    _item(
+                        "加仓趋势门槛",
+                        position_add_gate.get("min_tech_score"),
+                        "strategy_profile.position_add_gate.min_tech_score",
+                        "若浮盈不足，则需要技术分和融合置信度同时达到门槛才能加仓。",
+                    ),
+                    _item(
+                        "加仓门控理由",
+                        "；".join(_txt(item, "--") for item in position_add_gate.get("reasons", []) if _txt(item, "")) or "--",
+                        "strategy_profile.position_add_gate.reasons",
+                        "记录本次加仓门控通过或阻断的具体原因。",
+                    ),
+                ]
+            )
+
         if dynamic_strategy:
+            if _txt(dynamic_strategy.get("as_of")):
+                rows.append(
+                    _item(
+                        "AI动态as_of",
+                        dynamic_strategy.get("as_of"),
+                        "strategy_profile.dynamic_strategy.as_of",
+                        "AI 动态层允许使用的数据截止时间；历史回放中必须等于 checkpoint。",
+                    )
+                )
             rows.append(
                 _item(
                     "AI动态档位",
@@ -2737,6 +2952,38 @@ def _build_parameter_details(
                     "格式为 动态评分 / 动态置信度，用于决定是否进入动态调参档位。",
                 )
             )
+            components = dynamic_strategy.get("components")
+            if isinstance(components, list):
+                for component in components:
+                    if not isinstance(component, dict):
+                        continue
+                    key = _txt(component.get("key"), "unknown")
+                    rows.append(
+                        _item(
+                            f"AI动态使用组件.{key}",
+                            (
+                                f"score={_txt(component.get('score'), '--')} / "
+                                f"confidence={_txt(component.get('confidence'), '--')} / "
+                                f"as_of={_txt(component.get('as_of'), '--')}"
+                            ),
+                            "strategy_profile.dynamic_strategy.components",
+                            _txt(component.get("reason"), "AI 动态层实际使用的 point-in-time 组件。"),
+                        )
+                    )
+            omitted_components = dynamic_strategy.get("omitted_components")
+            if isinstance(omitted_components, list):
+                for component in omitted_components:
+                    if not isinstance(component, dict):
+                        continue
+                    key = _txt(component.get("key"), "unknown")
+                    rows.append(
+                        _item(
+                            f"AI动态省略组件.{key}",
+                            f"{_txt(component.get('reason'), '--')} @ {_txt(component.get('as_of'), '--')}",
+                            "strategy_profile.dynamic_strategy.omitted_components",
+                            "历史回放中缺少可证明在 checkpoint 前可见的数据，因此该组件未参与动态调参。",
+                        )
+                    )
             adjustments = dynamic_strategy.get("adjustments")
             if isinstance(adjustments, list):
                 for item in adjustments:
@@ -2981,6 +3228,59 @@ def _is_empty_market_value(value: Any) -> bool:
     return text.lower() in {"--", "-", "n/a", "na", "none", "null", "nan"}
 
 
+def _enrich_signal_strategy_profile_with_replay_snapshot(
+    *,
+    context: UIApiContext,
+    signal: dict[str, Any],
+    source: str,
+    replay_run: dict[str, Any] | None,
+    strategy_profile: dict[str, Any],
+) -> dict[str, Any]:
+    profile = dict(strategy_profile) if isinstance(strategy_profile, dict) else {}
+    existing_snapshot = _safe_json_load(profile.get("market_snapshot"))
+    required_fields = ("open", "high", "low", "volume", "amount")
+    if all(not _is_empty_market_value(existing_snapshot.get(key)) for key in required_fields):
+        profile["market_snapshot"] = existing_snapshot
+        return profile
+    if _txt(source).lower() != "replay":
+        if existing_snapshot:
+            profile["market_snapshot"] = existing_snapshot
+        return profile
+
+    stock_code = normalize_stock_code(signal.get("stock_code"))
+    checkpoint_dt = _parse_signal_time(signal.get("checkpoint_at") or signal.get("created_at") or signal.get("updated_at"))
+    if not stock_code or checkpoint_dt is None:
+        if existing_snapshot:
+            profile["market_snapshot"] = existing_snapshot
+        return profile
+
+    timeframe = _profile_text(
+        (replay_run or {}).get("timeframe"),
+        _profile_text(profile.get("analysis_timeframe"), "30m"),
+    )
+    try:
+        provider = context.replay_service().snapshot_provider
+        provider.prepare([stock_code], checkpoint_dt, checkpoint_dt, timeframe)
+        snapshot = provider.get_snapshot(
+            stock_code,
+            checkpoint_dt,
+            timeframe,
+            stock_name=_txt(signal.get("stock_name"), stock_code),
+        )
+    except Exception:
+        snapshot = None
+
+    merged_snapshot = dict(existing_snapshot)
+    if isinstance(snapshot, dict):
+        for key, value in snapshot.items():
+            if _is_empty_market_value(value):
+                continue
+            merged_snapshot[key] = value
+    if merged_snapshot:
+        profile["market_snapshot"] = merged_snapshot
+    return profile
+
+
 def _build_signal_ai_monitor_payload(
     *,
     context: UIApiContext,
@@ -3150,6 +3450,13 @@ def _build_signal_detail_payload(
     fetch_realtime_snapshot: bool = False,
 ) -> dict[str, Any]:
     strategy_profile = _safe_json_load(signal.get("strategy_profile"))
+    strategy_profile = _enrich_signal_strategy_profile_with_replay_snapshot(
+        context=context,
+        signal=signal,
+        source=source,
+        replay_run=replay_run,
+        strategy_profile=strategy_profile,
+    )
     selected_strategy_profile = _safe_json_load(strategy_profile.get("selected_strategy_profile"))
     explainability = _safe_json_load(strategy_profile.get("explainability"))
     technical_breakdown = _safe_json_load(explainability.get("technical_breakdown"))
@@ -3233,6 +3540,11 @@ def _build_signal_detail_payload(
         f"final={final_action_value}; tech_score={tech_score_value}; context_score={context_score_value}; "
         f"fusion_score={_txt(fusion_breakdown.get('fusion_score'), '--')}"
     )
+    position_add_gate = strategy_profile.get("position_add_gate") if isinstance(strategy_profile.get("position_add_gate"), dict) else {}
+    execution_intent_value = _txt(
+        position_add_gate.get("intent") if position_add_gate else strategy_profile.get("execution_intent"),
+        "",
+    )
 
     decision = {
         "id": _txt(signal.get("id")),
@@ -3242,6 +3554,7 @@ def _build_signal_detail_payload(
         "action": final_action_value,
         "status": _txt(signal.get("signal_status") or signal.get("status") or signal.get("execution_note"), "observed"),
         "decisionType": _txt(signal.get("decision_type") or fusion_breakdown.get("mode"), "auto"),
+        "executionIntent": execution_intent_value,
         "confidence": confidence_value,
         "positionSizePct": _txt(signal.get("position_size_pct"), "0"),
         "techScore": tech_score_value,

@@ -185,6 +185,7 @@ class QuantSimEngine:
         ai_dynamic_lookback: int | None = None,
         stock_code: str | None = None,
         stock_name: str | None = None,
+        as_of=None,
     ) -> dict[str, Any]:
         base_binding = self.candidate_pool.db.resolve_strategy_profile_binding(strategy_profile_id)
         mode = (
@@ -205,6 +206,7 @@ class QuantSimEngine:
             ai_dynamic_lookback=ai_dynamic_lookback
             if ai_dynamic_lookback is not None
             else DEFAULT_AI_DYNAMIC_LOOKBACK,
+            as_of=as_of,
         )
 
     def _evaluate_candidate_decision(
@@ -216,6 +218,7 @@ class QuantSimEngine:
         strategy_mode: str = "auto",
         strategy_profile_binding: dict | None = None,
     ):
+        candidate_payload = self._with_account_context(candidate)
         attempts = [
             {
                 "market_snapshot": market_snapshot,
@@ -246,7 +249,7 @@ class QuantSimEngine:
         for kwargs in attempts:
             kwargs = {key: value for key, value in kwargs.items() if value is not None}
             try:
-                return self.adapter.analyze_candidate(candidate, **kwargs)
+                return self.adapter.analyze_candidate(candidate_payload, **kwargs)
             except TypeError as exc:
                 message = str(exc)
                 if "unexpected keyword argument" not in message:
@@ -255,7 +258,7 @@ class QuantSimEngine:
                 continue
         if last_error is not None:
             raise last_error
-        return self.adapter.analyze_candidate(candidate)
+        return self.adapter.analyze_candidate(candidate_payload)
 
     def _evaluate_position_decision(
         self,
@@ -267,6 +270,8 @@ class QuantSimEngine:
         strategy_mode: str = "auto",
         strategy_profile_binding: dict | None = None,
     ):
+        candidate_payload = self._with_account_context(candidate)
+        position_payload = self._with_account_context(position)
         attempts = [
             {
                 "market_snapshot": market_snapshot,
@@ -297,7 +302,7 @@ class QuantSimEngine:
         for kwargs in attempts:
             kwargs = {key: value for key, value in kwargs.items() if value is not None}
             try:
-                return self.adapter.analyze_position(candidate, position, **kwargs)
+                return self.adapter.analyze_position(candidate_payload, position_payload, **kwargs)
             except TypeError as exc:
                 message = str(exc)
                 if "unexpected keyword argument" not in message:
@@ -306,7 +311,30 @@ class QuantSimEngine:
                 continue
         if last_error is not None:
             raise last_error
-        return self.adapter.analyze_position(candidate, position)
+        return self.adapter.analyze_position(candidate_payload, position_payload)
+
+    def _with_account_context(self, payload: dict) -> dict:
+        enriched = dict(payload)
+        enriched["_quant_account_context"] = self._build_account_context()
+        return enriched
+
+    def _build_account_context(self) -> dict[str, Any]:
+        try:
+            summary = self.portfolio.get_account_summary()
+        except Exception:
+            return {}
+        try:
+            available_cash = float(summary.get("available_cash") or 0.0)
+            total_equity = float(summary.get("total_equity") or 0.0)
+        except (TypeError, ValueError):
+            return {}
+        cash_ratio = (available_cash / total_equity) if total_equity > 0 else 0.0
+        return {
+            "available_cash": round(available_cash, 4),
+            "total_equity": round(total_equity, 4),
+            "cash_ratio": round(max(0.0, min(1.0, cash_ratio)), 6),
+            "position_count": int(summary.get("position_count") or 0),
+        }
 
     @staticmethod
     def _extract_decision_price(decision: dict | object) -> float:

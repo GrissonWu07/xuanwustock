@@ -672,6 +672,72 @@ def test_run_checkpoint_updates_run_status_message_for_substeps(tmp_path):
     assert "写入账户快照" in str(run["status_message"])
 
 
+def test_run_checkpoint_excludes_held_codes_from_candidate_scan(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=10.0,
+        notes="回放持仓排除测试",
+    )
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=FakeSnapshotProvider(),
+        adapter=FakeAdapter(),
+    )
+    engine = QuantSimEngine(db_file=db_file, adapter=replay_service.adapter)
+    portfolio = PortfolioService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+
+    entry_signal = signal_service.create_signal(
+        {"stock_code": "300390", "stock_name": "天华新能", "source": "main_force", "latest_price": 10.0},
+        Decision(
+            code="300390",
+            action="BUY",
+            confidence=0.9,
+            price=10.0,
+            timestamp=datetime(2026, 1, 5, 9, 30),
+            reason="pre-existing position",
+            tech_score=0.8,
+            context_score=0.3,
+            position_ratio=0.2,
+            decision_type="seed",
+            strategy_profile={},
+        ),
+        notify=False,
+        mirror_to_ai=False,
+    )
+    portfolio.confirm_buy(
+        int(entry_signal["id"]),
+        price=10.0,
+        quantity=100,
+        note="seed position",
+        executed_at=datetime(2026, 1, 5, 9, 30),
+    )
+    conn = replay_service.db._connect()  # noqa: SLF001 - force inconsistent active+holding state
+    try:
+        conn.execute("UPDATE candidate_pool SET status = 'active' WHERE stock_code = '300390'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    summary = replay_service._run_checkpoint(  # noqa: SLF001 - targeted replay parity regression
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        timeframe="30m",
+        engine=engine,
+        portfolio=portfolio,
+        signal_service=signal_service,
+    )
+
+    assert summary["cancelled"] is False
+    assert summary["candidates_scanned"] == 0
+    assert summary["positions_checked"] == 1
+    assert replay_service.adapter.candidate_calls == []
+    assert replay_service.adapter.position_calls == [{"stock_code": "300390", "analysis_timeframe": "30m", "strategy_mode": "auto"}]
+
+
 def test_run_checkpoint_resolves_dynamic_binding_per_symbol(tmp_path, monkeypatch):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
@@ -700,8 +766,9 @@ def test_run_checkpoint_resolves_dynamic_binding_per_symbol(tmp_path, monkeypatc
         ai_dynamic_lookback=None,
         stock_code=None,
         stock_name=None,
+        as_of=None,
     ):
-        captured.append((stock_code, stock_name, ai_dynamic_strategy, ai_dynamic_strength, ai_dynamic_lookback))
+        captured.append((stock_code, stock_name, ai_dynamic_strategy, ai_dynamic_strength, ai_dynamic_lookback, as_of))
         return {
             "profile_id": "aggressive_v23",
             "profile_name": "积极",
@@ -725,5 +792,30 @@ def test_run_checkpoint_resolves_dynamic_binding_per_symbol(tmp_path, monkeypatc
 
     assert summary["cancelled"] is False
     assert captured == [
-        ("300390", "天华新能", "hybrid", 0.5, 48),
+        ("300390", "天华新能", "hybrid", 0.5, 48, datetime(2026, 1, 5, 10, 0)),
     ]
+
+
+def test_historical_snapshot_provider_daily_strict_mode_uses_unadjusted_prices(monkeypatch):
+    from app.quant_sim import replay_service as replay_module
+
+    captured = {}
+
+    def fake_get_stock_hist_data(stock_code, *, start_date=None, end_date=None, adjust="qfq"):
+        captured["stock_code"] = stock_code
+        captured["start_date"] = start_date
+        captured["end_date"] = end_date
+        captured["adjust"] = adjust
+        return []
+
+    monkeypatch.setattr(replay_module.data_source_manager, "get_stock_hist_data", fake_get_stock_hist_data)
+    provider = replay_module.MainProjectHistoricalSnapshotProvider()
+
+    provider._load_history(  # noqa: SLF001 - targeted data source contract coverage
+        "002518",
+        start_datetime=datetime(2025, 8, 1, 9, 30),
+        end_datetime=datetime(2025, 8, 29, 15, 0),
+        timeframe="1d",
+    )
+
+    assert captured["adjust"] == ""

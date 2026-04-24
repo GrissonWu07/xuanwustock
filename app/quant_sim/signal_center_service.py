@@ -38,6 +38,7 @@ class SignalCenterService:
             mirror_to_ai = notify
         payload = self._normalize_decision_payload(decision)
         payload = self._apply_position_constraints(candidate, payload)
+        payload = self._apply_position_add_gate(candidate, payload)
         payload = self._apply_transaction_cost_constraints(candidate, payload)
         action = str(payload.get("action", "HOLD")).upper()
         status = "pending" if action in {"BUY", "SELL"} else "observed"
@@ -96,7 +97,7 @@ class SignalCenterService:
     def _normalize_decision_payload(decision: dict[str, Any] | Decision) -> dict[str, Any]:
         if isinstance(decision, Decision):
             confidence = decision.confidence * 100 if decision.confidence <= 1 else decision.confidence
-            return {
+            payload = {
                 "action": decision.action,
                 "confidence": round(confidence),
                 "reasoning": decision.reason,
@@ -108,11 +109,12 @@ class SignalCenterService:
                 "context_score": decision.context_score,
                 "strategy_profile": decision.strategy_profile,
             }
+            return SignalCenterService._apply_canonical_v23_scores(payload)
 
         position_size = decision.get("position_size_pct")
         if position_size is None and "position_ratio" in decision:
             position_size = float(decision.get("position_ratio", 0)) * 100
-        return {
+        payload = {
             "action": decision.get("action", "HOLD"),
             "confidence": decision.get("confidence", 0),
             "reasoning": decision.get("reasoning", decision.get("reason", "")),
@@ -124,6 +126,30 @@ class SignalCenterService:
             "context_score": decision.get("context_score", 0),
             "strategy_profile": decision.get("strategy_profile"),
         }
+        return SignalCenterService._apply_canonical_v23_scores(payload)
+
+    @staticmethod
+    def _apply_canonical_v23_scores(payload: dict[str, Any]) -> dict[str, Any]:
+        strategy_profile = payload.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            return payload
+        explainability = strategy_profile.get("explainability")
+        if not isinstance(explainability, dict):
+            return payload
+        fusion_breakdown = explainability.get("fusion_breakdown")
+        if not isinstance(fusion_breakdown, dict):
+            return payload
+
+        normalized = dict(payload)
+        for source_key, target_key in (("tech_score", "tech_score"), ("context_score", "context_score")):
+            value = SignalCenterService._safe_float(fusion_breakdown.get(source_key), None)
+            if value is not None:
+                normalized[target_key] = value
+
+        confidence = SignalCenterService._safe_float(fusion_breakdown.get("fusion_confidence"), None)
+        if confidence is not None:
+            normalized["confidence"] = round(confidence * 100 if confidence <= 1 else confidence)
+        return normalized
 
     def _apply_position_constraints(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
@@ -133,6 +159,145 @@ class SignalCenterService:
         if action == "SELL" and stock_code and not self.db.has_open_position(stock_code):
             normalized = self._downgrade_sell_without_position(normalized)
 
+        return normalized
+
+    def _apply_position_add_gate(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        action = str(normalized.get("action") or "HOLD").upper()
+        stock_code = str(candidate.get("stock_code") or "").strip()
+        if action != "BUY" or not stock_code:
+            return normalized
+
+        current_position = self._current_position(stock_code)
+        if not current_position:
+            return normalized
+
+        strategy_profile = normalized.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            strategy_profile = {}
+        normalized["strategy_profile"] = strategy_profile
+
+        thresholds = strategy_profile.get("effective_thresholds")
+        if not isinstance(thresholds, dict):
+            thresholds = {}
+        strategy_profile["effective_thresholds"] = thresholds
+
+        explainability = strategy_profile.get("explainability")
+        if not isinstance(explainability, dict):
+            explainability = {}
+        strategy_profile["explainability"] = explainability
+        fusion_breakdown = explainability.get("fusion_breakdown")
+        if not isinstance(fusion_breakdown, dict):
+            fusion_breakdown = {}
+
+        allow_pyramiding = self._truthy(thresholds.get("allow_pyramiding"))
+        target_position_pct = self._safe_float(normalized.get("position_size_pct"), 0.0) or 0.0
+        max_position_ratio = self._safe_float(thresholds.get("max_position_ratio"), None)
+        max_position_pct = (max_position_ratio * 100.0) if max_position_ratio and max_position_ratio > 0 else 100.0
+        target_position_pct = round(self._clamp(target_position_pct, 0.0, max_position_pct), 2)
+
+        summary = self.db.get_account_summary()
+        total_equity = self._safe_float(summary.get("total_equity"), 0.0) or 0.0
+        market_value = self._safe_float(current_position.get("market_value"), 0.0) or 0.0
+        if market_value <= 0:
+            quantity = self._safe_float(current_position.get("quantity"), 0.0) or 0.0
+            latest_price = (
+                self._safe_float(candidate.get("latest_price"), None)
+                or self._safe_float(current_position.get("latest_price"), None)
+                or self._safe_float(current_position.get("avg_price"), 0.0)
+                or 0.0
+            )
+            market_value = quantity * latest_price
+        current_position_pct = round((market_value / total_equity * 100.0) if total_equity > 0 else 0.0, 2)
+        capacity_delta_pct = round(max(0.0, max_position_pct - current_position_pct), 2)
+        target_delta_pct = round(max(0.0, target_position_pct - current_position_pct), 2)
+        add_position_delta_pct = round(min(target_delta_pct, capacity_delta_pct), 2)
+
+        unrealized_pnl_pct = self._safe_float(current_position.get("unrealized_pnl_pct"), 0.0) or 0.0
+        min_unrealized_pnl_pct = self._safe_float(thresholds.get("add_min_unrealized_pnl_pct"), 2.0) or 2.0
+        min_tech_score = self._safe_float(thresholds.get("add_min_tech_score"), 0.25) or 0.25
+        min_fusion_confidence = self._safe_float(
+            thresholds.get("add_min_fusion_confidence"),
+            self._safe_float(thresholds.get("min_fusion_confidence"), 0.0),
+        )
+        if min_fusion_confidence is None:
+            min_fusion_confidence = 0.0
+        tech_score = self._safe_float(
+            fusion_breakdown.get("tech_score"),
+            self._safe_float(normalized.get("tech_score"), 0.0),
+        )
+        if tech_score is None:
+            tech_score = 0.0
+        fusion_confidence = self._safe_float(
+            fusion_breakdown.get("fusion_confidence"),
+            (self._safe_float(normalized.get("confidence"), 0.0) or 0.0) / 100.0,
+        )
+        if fusion_confidence is None:
+            fusion_confidence = 0.0
+
+        profit_gate_passed = unrealized_pnl_pct >= min_unrealized_pnl_pct
+        trend_gate_passed = tech_score >= min_tech_score and fusion_confidence >= min_fusion_confidence
+        capacity_gate_passed = add_position_delta_pct > 0
+        reasons: list[str] = []
+        if not allow_pyramiding:
+            reasons.append("策略阈值不允许加仓")
+        if not capacity_gate_passed:
+            reasons.append("当前持仓已达到目标或上限")
+        if not (profit_gate_passed or trend_gate_passed):
+            reasons.append(
+                "未满足已有浮盈或强趋势确认："
+                f"浮盈 {unrealized_pnl_pct:.2f}% / 门槛 {min_unrealized_pnl_pct:.2f}%，"
+                f"技术分 {tech_score:.4f} / 门槛 {min_tech_score:.4f}"
+            )
+        if profit_gate_passed:
+            reasons.append(f"已有浮盈 {unrealized_pnl_pct:.2f}% >= {min_unrealized_pnl_pct:.2f}%")
+        if trend_gate_passed:
+            reasons.append(f"趋势确认 技术分 {tech_score:.4f} >= {min_tech_score:.4f}")
+
+        passed = allow_pyramiding and capacity_gate_passed and (profit_gate_passed or trend_gate_passed)
+        gate = {
+            "intent": "position_add",
+            "status": "passed" if passed else "blocked",
+            "allow_pyramiding": allow_pyramiding,
+            "current_position_pct": current_position_pct,
+            "target_position_pct": target_position_pct,
+            "max_position_pct": round(max_position_pct, 2),
+            "capacity_delta_pct": capacity_delta_pct,
+            "add_position_delta_pct": add_position_delta_pct if passed else 0.0,
+            "unrealized_pnl_pct": round(unrealized_pnl_pct, 4),
+            "min_unrealized_pnl_pct": round(min_unrealized_pnl_pct, 4),
+            "tech_score": round(tech_score, 6),
+            "min_tech_score": round(min_tech_score, 6),
+            "fusion_confidence": round(fusion_confidence, 6),
+            "min_fusion_confidence": round(float(min_fusion_confidence), 6),
+            "profit_gate_passed": profit_gate_passed,
+            "trend_gate_passed": trend_gate_passed,
+            "capacity_gate_passed": capacity_gate_passed,
+            "reasons": reasons,
+        }
+        strategy_profile["position_add_gate"] = gate
+        strategy_profile["execution_intent"] = "position_add" if passed else "position_add_blocked"
+        thresholds.setdefault("add_min_unrealized_pnl_pct", round(min_unrealized_pnl_pct, 4))
+        thresholds.setdefault("add_min_tech_score", round(min_tech_score, 6))
+        thresholds.setdefault("add_min_fusion_confidence", round(float(min_fusion_confidence), 6))
+
+        base_reasoning = str(normalized.get("reasoning") or "").strip()
+        if passed:
+            normalized["position_size_pct"] = add_position_delta_pct
+            normalized["decision_type"] = "position_add"
+            normalized["reasoning"] = (
+                f"{base_reasoning} 持仓加仓门控通过：目标 {target_position_pct:.2f}% ，"
+                f"当前 {current_position_pct:.2f}% ，本次按差额加仓 {add_position_delta_pct:.2f}% 。"
+            ).strip()
+            return normalized
+
+        normalized["action"] = "HOLD"
+        normalized["position_size_pct"] = 0.0
+        normalized["decision_type"] = "position_add_blocked"
+        normalized["confidence"] = round(self._clamp((self._safe_float(normalized.get("confidence"), 0.0) or 0.0) * 0.7, 0.0, 100.0))
+        normalized["reasoning"] = (
+            f"{base_reasoning} 持仓加仓门控未通过：{'；'.join(reasons)}，转为HOLD。"
+        ).strip()
         return normalized
 
     def _apply_transaction_cost_constraints(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -212,6 +377,15 @@ class SignalCenterService:
         normalized["reasoning"] = f"{reasoning} 已计入卖出成本：预计单次退出成本约 {sell_side_cost_pct:.3f}% 。".strip()
         return normalized
 
+    def _current_position(self, stock_code: str) -> dict[str, Any] | None:
+        code = str(stock_code or "").strip()
+        if not code:
+            return None
+        for position in self.db.get_positions():
+            if str(position.get("stock_code") or "").strip() == code:
+                return position
+        return None
+
     @staticmethod
     def _safe_float(value: Any, default: float | None = None) -> float | None:
         try:
@@ -229,193 +403,6 @@ class SignalCenterService:
     def _truthy(value: Any) -> bool:
         text = str(value or "").strip().lower()
         return text in {"1", "true", "yes", "y", "on"}
-
-    @staticmethod
-    def _is_failed_execution(value: Any) -> bool:
-        text = str(value or "").lower()
-        return any(token in text for token in ("fail", "失败", "error", "超时", "timeout", "拒绝", "skip", "跳过"))
-
-    def _apply_ai_overlay(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-        normalized = dict(payload)
-        stock_code = str(candidate.get("stock_code") or "").strip()
-        if not stock_code:
-            return normalized
-
-        strategy_profile = normalized.get("strategy_profile")
-        if not isinstance(strategy_profile, dict):
-            strategy_profile = {}
-        normalized["strategy_profile"] = strategy_profile
-
-        thresholds = strategy_profile.get("effective_thresholds")
-        if not isinstance(thresholds, dict):
-            thresholds = {}
-        strategy_profile["effective_thresholds"] = thresholds
-
-        explainability = strategy_profile.get("explainability")
-        if not isinstance(explainability, dict):
-            explainability = {}
-        strategy_profile["explainability"] = explainability
-
-        context_votes = explainability.get("context_votes")
-        if not isinstance(context_votes, list):
-            context_votes = []
-
-        context_score = self._safe_float(normalized.get("context_score"), 0.0) or 0.0
-        confidence = self._safe_float(normalized.get("confidence"), 0.0) or 0.0
-        action = str(normalized.get("action") or "HOLD").upper()
-        position_size_pct = self._safe_float(normalized.get("position_size_pct"), 0.0) or 0.0
-        stop_loss_pct = self._safe_float(normalized.get("stop_loss_pct"), 5.0) or 5.0
-        take_profit_pct = self._safe_float(normalized.get("take_profit_pct"), 12.0) or 12.0
-        allow_pyramiding = self._truthy(thresholds.get("allow_pyramiding"))
-        current_price = self._safe_float(candidate.get("latest_price"), 0.0) or 0.0
-
-        latest_ai_decisions: list[dict[str, Any]] = []
-        latest_ai = None
-        if self.smart_monitor_db is not None:
-            try:
-                latest_ai_decisions = self.smart_monitor_db.get_ai_decisions(stock_code=stock_code, limit=6) or []
-            except Exception:
-                latest_ai_decisions = []
-        if latest_ai_decisions:
-            latest_ai = latest_ai_decisions[0]
-
-        key_levels = latest_ai.get("key_price_levels") if isinstance(latest_ai, dict) and isinstance(latest_ai.get("key_price_levels"), dict) else {}
-        support_price = self._safe_float(key_levels.get("support"))
-        resistance_price = self._safe_float(key_levels.get("resistance"))
-        stop_price = self._safe_float(key_levels.get("stop_loss") if key_levels.get("stop_loss") not in (None, "") else support_price)
-
-        dynamic_stop = None
-        dynamic_take = None
-        if current_price > 0 and stop_price is not None and stop_price > 0 and stop_price < current_price:
-            dynamic_stop = round(self._clamp((current_price - stop_price) / current_price * 100.0, 1.0, 25.0), 2)
-            stop_loss_pct = dynamic_stop
-        if current_price > 0 and resistance_price is not None and resistance_price > current_price:
-            dynamic_take = round(self._clamp((resistance_price - current_price) / current_price * 100.0, 2.0, 45.0), 2)
-            take_profit_pct = dynamic_take
-
-        feedback_delta = 0.0
-        feedback_reason = "无执行反馈"
-        if latest_ai_decisions:
-            sample = latest_ai_decisions[:5]
-            total = len(sample)
-            executed_count = sum(1 for item in sample if int(item.get("executed") or 0) == 1)
-            failed_count = sum(1 for item in sample if self._is_failed_execution(item.get("execution_result")))
-            success_count = max(executed_count - failed_count, 0)
-            success_rate = success_count / total if total else 0.0
-            fail_rate = failed_count / total if total else 0.0
-            feedback_delta = round(self._clamp(success_rate * 0.12 - fail_rate * 0.25, -0.3, 0.12), 4)
-            feedback_reason = f"最近{total}次决策执行反馈：成功{success_count}，失败{failed_count}，反馈分{feedback_delta:+.4f}"
-
-        summary = self.db.get_account_summary()
-        available_cash = self._safe_float(summary.get("available_cash"), 0.0) or 0.0
-        total_equity = self._safe_float(summary.get("total_equity"), 0.0) or 0.0
-        cash_ratio = (available_cash / total_equity) if total_equity > 0 else 0.0
-        has_position = self.db.has_open_position(stock_code)
-
-        account_delta = 0.0
-        account_multiplier = 1.0
-        account_reason_parts = [f"可用资金占比={cash_ratio:.2%}"]
-        if action == "BUY":
-            if cash_ratio < 0.10:
-                account_delta -= 0.18
-                account_multiplier *= 0.35
-                account_reason_parts.append("现金偏紧，显著降仓")
-            elif cash_ratio < 0.20:
-                account_delta -= 0.12
-                account_multiplier *= 0.55
-                account_reason_parts.append("现金较低，降仓")
-            elif cash_ratio < 0.35:
-                account_delta -= 0.06
-                account_multiplier *= 0.78
-                account_reason_parts.append("现金一般，适度降仓")
-            elif cash_ratio > 0.70:
-                account_delta += 0.05
-                account_multiplier *= 1.10
-                account_reason_parts.append("现金充裕，小幅放宽仓位")
-
-            if has_position and not allow_pyramiding:
-                account_delta -= 0.12
-                account_multiplier *= 0.2
-                account_reason_parts.append("已有持仓且不允许加仓")
-
-            suggested_position = position_size_pct * account_multiplier
-            max_ratio = self._safe_float(thresholds.get("max_position_ratio"))
-            if max_ratio is not None and max_ratio > 0:
-                suggested_position = min(suggested_position, max_ratio * 100.0)
-            suggested_position = round(self._clamp(suggested_position, 0.0, 100.0), 2)
-
-            if suggested_position < 1.0:
-                action = "HOLD"
-                suggested_position = 0.0
-                account_reason_parts.append("可执行建议仓位过小，转为观察")
-
-            position_size_pct = suggested_position
-
-        context_score = round(self._clamp(context_score + feedback_delta + account_delta, -1.0, 1.0), 4)
-        confidence = round(self._clamp(confidence * (1 - max(0.0, -feedback_delta) * 0.55) + max(0.0, feedback_delta) * 18.0, 0.0, 100.0))
-
-        normalized["action"] = action
-        normalized["context_score"] = context_score
-        normalized["confidence"] = confidence
-        normalized["position_size_pct"] = position_size_pct
-        normalized["stop_loss_pct"] = round(stop_loss_pct, 2)
-        normalized["take_profit_pct"] = round(take_profit_pct, 2)
-
-        thresholds["dynamic_stop_loss_pct"] = round(stop_loss_pct, 2)
-        thresholds["dynamic_take_profit_pct"] = round(take_profit_pct, 2)
-        thresholds["execution_feedback_delta"] = feedback_delta
-        thresholds["account_posture_delta"] = round(account_delta, 4)
-        thresholds["available_cash_ratio"] = round(cash_ratio, 4)
-        thresholds["position_sizing_multiplier"] = round(account_multiplier, 4)
-        thresholds["suggested_position_pct"] = round(position_size_pct, 2)
-
-        context_votes.append(
-            {
-                "component": "execution_feedback",
-                "score": feedback_delta,
-                "reason": feedback_reason,
-            }
-        )
-        context_votes.append(
-            {
-                "component": "account_posture",
-                "score": round(account_delta, 4),
-                "reason": "；".join(account_reason_parts),
-            }
-        )
-        explainability["context_votes"] = context_votes
-        strategy_profile["explainability"] = explainability
-        strategy_profile["ai_overlay"] = {
-            "enabled": True,
-            "source": "smart_monitor + quant_account",
-            "key_levels": key_levels,
-            "dynamic_risk": {
-                "stop_loss_pct": round(stop_loss_pct, 2),
-                "take_profit_pct": round(take_profit_pct, 2),
-                "stop_from_key_levels": dynamic_stop is not None,
-                "take_from_key_levels": dynamic_take is not None,
-            },
-            "execution_feedback": {
-                "delta": feedback_delta,
-                "reason": feedback_reason,
-            },
-            "account_posture": {
-                "available_cash": round(available_cash, 4),
-                "total_equity": round(total_equity, 4),
-                "cash_ratio": round(cash_ratio, 4),
-                "has_position": has_position,
-                "allow_pyramiding": allow_pyramiding,
-                "multiplier": round(account_multiplier, 4),
-            },
-        }
-
-        base_reasoning = str(normalized.get("reasoning") or "").strip()
-        overlay_reasoning = (
-            f" 风控参数动态化：止损 {stop_loss_pct:.2f}% ，止盈 {take_profit_pct:.2f}%。"
-            f" 执行反馈修正 {feedback_delta:+.4f}，账户态势修正 {account_delta:+.4f}，最终建议仓位 {position_size_pct:.2f}% 。"
-        )
-        normalized["reasoning"] = f"{base_reasoning}{overlay_reasoning}".strip()
-        return normalized
 
     def _sanitize_pending_sell_signals_without_position(self) -> None:
         for signal in self.db.get_pending_signals():

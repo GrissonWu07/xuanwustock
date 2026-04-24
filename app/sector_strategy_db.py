@@ -771,6 +771,111 @@ class SectorStrategyDatabase:
         finally:
             conn.close()
 
+    @staticmethod
+    def _raw_data_type_for_key(key: str):
+        key_map = {
+            'sectors': 'industry',
+            'concepts': 'concept',
+            'fund_flow': 'fund_flow',
+            'market_overview': 'market_overview',
+            'north_flow': 'north_fund'
+        }
+        return key_map.get(key)
+
+    @staticmethod
+    def _format_as_of(as_of) -> str:
+        if isinstance(as_of, datetime):
+            return as_of.strftime('%Y-%m-%d %H:%M:%S')
+        text = str(as_of or '').strip().replace('T', ' ')
+        if not text:
+            return ''
+        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y%m%d'):
+            try:
+                candidate = text[:19] if fmt == '%Y-%m-%d %H:%M:%S' else text[:10 if fmt == '%Y-%m-%d' else 8]
+                return datetime.strptime(candidate, fmt).strftime('%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                continue
+        return ''
+
+    def _build_raw_data_payload(self, key: str, data_date, created_at, raw_df):
+        if key in ['sectors', 'concepts']:
+            result = {}
+            for _, row in raw_df.iterrows():
+                name = str(row.get('sector_name', ''))
+                result[name] = {
+                    'name': name,
+                    'change_pct': float(row.get('change_pct', 0) or 0),
+                    'price': float(row.get('price', 0) or 0),
+                    'volume': float(row.get('volume', 0) or 0),
+                    'turnover': float(row.get('turnover', 0) or 0),
+                    'market_cap': float(row.get('market_cap', 0) or 0),
+                    'pe_ratio': float(row.get('pe_ratio', 0) or 0),
+                    'pb_ratio': float(row.get('pb_ratio', 0) or 0),
+                }
+            return {
+                'data_date': data_date,
+                'created_at': created_at,
+                'data_content': result
+            }
+
+        if key == 'fund_flow':
+            today = []
+            for _, row in raw_df.iterrows():
+                name = str(row.get('sector_name', ''))
+                today.append({
+                    'sector': name,
+                    'main_net_inflow': float(row.get('price', 0) or 0),
+                    'main_net_inflow_pct': float(row.get('change_pct', 0) or 0),
+                    'super_large_net_inflow': float(row.get('volume', 0) or 0),
+                    'super_large_net_inflow_pct': float(row.get('turnover', 0) or 0),
+                    'large_net_inflow': float(row.get('market_cap', 0) or 0),
+                    'large_net_inflow_pct': float(row.get('pe_ratio', 0) or 0),
+                    'medium_net_inflow': 0,
+                    'small_net_inflow': 0
+                })
+            return {
+                'data_date': data_date,
+                'created_at': created_at,
+                'data_content': {
+                    'today': today
+                }
+            }
+
+        if key == 'market_overview':
+            overview = {}
+            for _, row in raw_df.iterrows():
+                name = str(row.get('sector_name', ''))
+                entry = {
+                    'price': float(row.get('price', 0) or 0),
+                    'change_pct': float(row.get('change_pct', 0) or 0),
+                    'turnover': float(row.get('turnover', 0) or 0),
+                    'volume': float(row.get('volume', 0) or 0)
+                }
+                if '上证' in name or '沪指' in name or 'SH' in name:
+                    overview['sh_index'] = entry
+                elif '深证' in name or 'SZ' in name:
+                    overview['sz_index'] = entry
+                elif '创业' in name or 'CYB' in name:
+                    overview['cyb_index'] = entry
+            return {
+                'data_date': data_date,
+                'created_at': created_at,
+                'data_content': overview
+            }
+
+        if key == 'north_flow':
+            total_value = float(raw_df['turnover'].sum()) if not raw_df.empty else 0
+            return {
+                'data_date': data_date,
+                'created_at': created_at,
+                'data_content': {
+                    'north_total_amount': total_value,
+                    'history': []
+                }
+            }
+
+        return None
+
     def get_latest_raw_data(self, key: str, within_hours: int = 24):
         """
         获取最近within_hours小时内的原始数据并组装为分析所需结构
@@ -780,15 +885,7 @@ class SectorStrategyDatabase:
         Returns:
             dict 或 None
         """
-        # 将key映射到内部data_type
-        key_map = {
-            'sectors': 'industry',
-            'concepts': 'concept',
-            'fund_flow': 'fund_flow',
-            'market_overview': 'market_overview',
-            'north_flow': 'north_fund'
-        }
-        data_type = key_map.get(key)
+        data_type = self._raw_data_type_for_key(key)
         if not data_type:
             return None
 
@@ -798,7 +895,7 @@ class SectorStrategyDatabase:
             # 选取最近版本的数据（同一天可能有多版本）
             # 先查最近有效版本记录
             version_df = pd.read_sql_query('''
-                SELECT data_date, version FROM data_versions
+                SELECT data_date, version, created_at FROM data_versions
                 WHERE data_type = ? AND fetch_success = 1 
                 AND datetime(created_at) >= datetime(?)
                 ORDER BY data_date DESC, version DESC LIMIT 1
@@ -809,6 +906,7 @@ class SectorStrategyDatabase:
 
             data_date = version_df.iloc[0]['data_date']
             version = int(version_df.iloc[0]['version'])
+            created_at = version_df.iloc[0].get('created_at')
 
             # 读取具体行
             raw_df = pd.read_sql_query('''
@@ -819,87 +917,78 @@ class SectorStrategyDatabase:
             if raw_df.empty:
                 return None
 
-            # 组装成预期结构
-            if key in ['sectors', 'concepts']:
-                result = {}
-                for _, row in raw_df.iterrows():
-                    name = str(row.get('sector_name', ''))
-                    result[name] = {
-                        'name': name,
-                        'change_pct': float(row.get('change_pct', 0) or 0),
-                        'price': float(row.get('price', 0) or 0),
-                        'volume': float(row.get('volume', 0) or 0),
-                        'turnover': float(row.get('turnover', 0) or 0),
-                        'market_cap': float(row.get('market_cap', 0) or 0),
-                        'pe_ratio': float(row.get('pe_ratio', 0) or 0),
-                        'pb_ratio': float(row.get('pb_ratio', 0) or 0),
-                    }
-                return {
-                    'data_date': data_date,
-                    'data_content': result
-                }
-
-            if key == 'fund_flow':
-                today = []
-                for _, row in raw_df.iterrows():
-                    name = str(row.get('sector_name', ''))
-                    today.append({
-                        'sector': name,
-                        'main_net_inflow': float(row.get('price', 0) or 0),  # 映射自主力净额
-                        'main_net_inflow_pct': float(row.get('change_pct', 0) or 0),
-                        'super_large_net_inflow': float(row.get('volume', 0) or 0),
-                        'super_large_net_inflow_pct': float(row.get('turnover', 0) or 0),
-                        'large_net_inflow': float(row.get('market_cap', 0) or 0),
-                        'large_net_inflow_pct': float(row.get('pe_ratio', 0) or 0),
-                        'medium_net_inflow': 0,
-                        'small_net_inflow': 0
-                    })
-                return {
-                    'data_date': data_date,
-                    'data_content': {
-                        'today': today
-                    }
-                }
-
-            if key == 'market_overview':
-                overview = {}
-                for _, row in raw_df.iterrows():
-                    name = str(row.get('sector_name', ''))
-                    entry = {
-                        'price': float(row.get('price', 0) or 0),
-                        'change_pct': float(row.get('change_pct', 0) or 0),
-                        'turnover': float(row.get('turnover', 0) or 0),
-                        'volume': float(row.get('volume', 0) or 0)
-                    }
-                    # 简单映射：名称包含上证/深证/创业板
-                    if '上证' in name or '沪指' in name or 'SH' in name:
-                        overview['sh_index'] = entry
-                    elif '深证' in name or 'SZ' in name:
-                        overview['sz_index'] = entry
-                    elif '创业' in name or 'CYB' in name:
-                        overview['cyb_index'] = entry
-                return {
-                    'data_date': data_date,
-                    'data_content': overview
-                }
-
-            if key == 'north_flow':
-                # 北向资金结构差异较大，返回最简结构用于提示
-                total_value = float(raw_df['turnover'].sum()) if not raw_df.empty else 0
-                return {
-                    'data_date': data_date,
-                    'data_content': {
-                        'north_total_amount': total_value,
-                        'history': []
-                    }
-                }
-
-            return None
+            return self._build_raw_data_payload(key, data_date, created_at, raw_df)
         except Exception as e:
             self.logger.error(f"[智策板块] 获取最近原始数据失败: {e}")
             return None
         finally:
             conn.close()
+
+    def get_raw_data_as_of(self, key: str, *, as_of, within_hours: int = 24):
+        """
+        获取历史回放可见的原始数据。
+        仅返回 created_at 落在 [as_of - within_hours, as_of] 的本地记录。
+        """
+        data_type = self._raw_data_type_for_key(key)
+        as_of_text = self._format_as_of(as_of)
+        if not data_type or not as_of_text:
+            return None
+
+        conn = self.get_connection()
+        try:
+            cutoff = (pd.Timestamp(as_of_text) - pd.Timedelta(hours=within_hours)).strftime('%Y-%m-%d %H:%M:%S')
+            version_df = pd.read_sql_query('''
+                SELECT data_date, version, created_at FROM data_versions
+                WHERE data_type = ? AND fetch_success = 1
+                AND datetime(created_at) <= datetime(?)
+                AND datetime(created_at) >= datetime(?)
+                ORDER BY datetime(created_at) DESC, data_date DESC, version DESC LIMIT 1
+            ''', conn, params=[data_type, as_of_text, cutoff])
+
+            if version_df.empty:
+                return None
+
+            data_date = version_df.iloc[0]['data_date']
+            version = int(version_df.iloc[0]['version'])
+            created_at = version_df.iloc[0].get('created_at')
+            raw_df = pd.read_sql_query('''
+                SELECT * FROM sector_raw_data
+                WHERE data_type = ? AND data_date = ? AND data_version = ?
+            ''', conn, params=[data_type, data_date, version])
+
+            if raw_df.empty:
+                return None
+            return self._build_raw_data_payload(key, data_date, created_at, raw_df)
+        except Exception as e:
+            self.logger.error(f"[智策板块] 获取as-of原始数据失败: {e}")
+            return None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _build_news_payload(df):
+        news = []
+        for _, row in df.iterrows():
+            try:
+                related = json.loads(row.get('related_sectors', '[]'))
+            except Exception:
+                related = []
+            news.append({
+                'title': row.get('title', ''),
+                'content': row.get('content', ''),
+                'source': row.get('source', ''),
+                'url': row.get('url', ''),
+                'related_sectors': related,
+                'sentiment_score': float(row.get('sentiment_score', 0) or 0),
+                'importance_score': float(row.get('importance_score', 0) or 0),
+                'news_date': row.get('news_date', ''),
+                'created_at': row.get('created_at', ''),
+            })
+        return {
+            'data_date': df.iloc[0]['news_date'] if not df.empty else None,
+            'created_at': str(pd.to_datetime(df['created_at']).max()) if 'created_at' in df.columns else None,
+            'data_content': news
+        }
 
     def get_latest_news_data(self, within_hours: int = 24):
         """获取最近within_hours小时的新闻列表"""
@@ -913,28 +1002,33 @@ class SectorStrategyDatabase:
             ''', conn, params=[cutoff])
             if df.empty:
                 return None
-            news = []
-            for _, row in df.iterrows():
-                try:
-                    related = json.loads(row.get('related_sectors', '[]'))
-                except Exception:
-                    related = []
-                news.append({
-                    'title': row.get('title', ''),
-                    'content': row.get('content', ''),
-                    'source': row.get('source', ''),
-                    'url': row.get('url', ''),
-                    'related_sectors': related,
-                    'sentiment_score': float(row.get('sentiment_score', 0) or 0),
-                    'importance_score': float(row.get('importance_score', 0) or 0),
-                    'news_date': row.get('news_date', '')
-                })
-            return {
-                'data_date': df.iloc[0]['news_date'] if not df.empty else None,
-                'data_content': news
-            }
+            return self._build_news_payload(df)
         except Exception as e:
             self.logger.error(f"[智策板块] 获取最近新闻数据失败: {e}")
+            return None
+        finally:
+            conn.close()
+
+    def get_news_data_as_of(self, *, as_of, within_hours: int = 24):
+        """获取历史回放可见的板块新闻列表。"""
+        as_of_text = self._format_as_of(as_of)
+        if not as_of_text:
+            return None
+
+        conn = self.get_connection()
+        try:
+            cutoff = (pd.Timestamp(as_of_text) - pd.Timedelta(hours=within_hours)).strftime('%Y-%m-%d %H:%M:%S')
+            df = pd.read_sql_query('''
+                SELECT * FROM sector_news_data
+                WHERE datetime(created_at) <= datetime(?)
+                AND datetime(created_at) >= datetime(?)
+                ORDER BY importance_score DESC, created_at DESC
+            ''', conn, params=[as_of_text, cutoff])
+            if df.empty:
+                return None
+            return self._build_news_payload(df)
+        except Exception as e:
+            self.logger.error(f"[智策板块] 获取as-of新闻数据失败: {e}")
             return None
         finally:
             conn.close()

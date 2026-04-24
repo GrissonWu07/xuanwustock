@@ -31,6 +31,38 @@ class NewsFlowDatabase:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @staticmethod
+    def _parse_as_of(as_of) -> Optional[datetime]:
+        if isinstance(as_of, datetime):
+            return as_of
+        text = str(as_of or '').strip()
+        if not text:
+            return None
+        normalized = text.replace('T', ' ')
+        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y%m%d'):
+            try:
+                candidate = normalized[:19] if fmt == '%Y-%m-%d %H:%M:%S' else normalized[:10 if fmt == '%Y-%m-%d' else 8]
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _format_as_of(as_of) -> str:
+        parsed = NewsFlowDatabase._parse_as_of(as_of)
+        if parsed is None:
+            return ''
+        return parsed.strftime('%Y-%m-%d %H:%M:%S')
+
+    @staticmethod
+    def _as_of_bounds(as_of, within_hours: int) -> tuple[str, str] | None:
+        parsed = NewsFlowDatabase._parse_as_of(as_of)
+        if parsed is None:
+            return None
+        as_of_text = parsed.strftime('%Y-%m-%d %H:%M:%S')
+        since = (parsed - timedelta(hours=within_hours)).strftime('%Y-%m-%d %H:%M:%S')
+        return as_of_text, since
     
     def init_database(self):
         """初始化数据库表"""
@@ -427,6 +459,28 @@ class NewsFlowDatabase:
         if row:
             return dict(row)
         return None
+
+    def get_snapshot_as_of(self, *, as_of, within_hours: int = 24) -> Optional[Dict]:
+        """获取历史回放在 as_of 前可见的最新流量快照。"""
+        bounds = self._as_of_bounds(as_of, within_hours)
+        if bounds is None:
+            return None
+        as_of_text, since = bounds
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+        SELECT * FROM flow_snapshots
+        WHERE datetime(COALESCE(NULLIF(fetch_time, ''), created_at)) <= datetime(?)
+        AND datetime(COALESCE(NULLIF(fetch_time, ''), created_at)) >= datetime(?)
+        ORDER BY datetime(COALESCE(NULLIF(fetch_time, ''), created_at)) DESC, created_at DESC
+        LIMIT 1
+        ''', (as_of_text, since))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        return dict(row) if row else None
     
     def get_recent_snapshots(self, limit: int = 10) -> List[Dict]:
         """获取最近的流量快照列表"""
@@ -657,6 +711,30 @@ class NewsFlowDatabase:
         conn.close()
         
         return dict(row) if row else None
+
+    def get_sentiment_as_of(self, *, as_of, within_hours: int = 24) -> Optional[Dict]:
+        """获取历史回放在 as_of 前可见的最新情绪记录。"""
+        bounds = self._as_of_bounds(as_of, within_hours)
+        if bounds is None:
+            return None
+        as_of_text, since = bounds
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+        SELECT sr.*, fs.fetch_time, fs.total_score, fs.flow_level
+        FROM sentiment_records sr
+        LEFT JOIN flow_snapshots fs ON sr.snapshot_id = fs.id
+        WHERE datetime(COALESCE(NULLIF(fs.fetch_time, ''), sr.created_at)) <= datetime(?)
+        AND datetime(COALESCE(NULLIF(fs.fetch_time, ''), sr.created_at)) >= datetime(?)
+        ORDER BY datetime(COALESCE(NULLIF(fs.fetch_time, ''), sr.created_at)) DESC, sr.created_at DESC
+        LIMIT 1
+        ''', (as_of_text, since))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        return dict(row) if row else None
     
     # ==================== 预警相关方法 ====================
     
@@ -797,6 +875,36 @@ class NewsFlowDatabase:
         row = cursor.fetchone()
         conn.close()
         
+        if row:
+            analysis = dict(row)
+            analysis['affected_sectors'] = json.loads(analysis['affected_sectors']) if analysis['affected_sectors'] else []
+            analysis['recommended_stocks'] = json.loads(analysis['recommended_stocks']) if analysis['recommended_stocks'] else []
+            analysis['risk_factors'] = json.loads(analysis['risk_factors']) if analysis['risk_factors'] else []
+            return analysis
+        return None
+
+    def get_ai_analysis_as_of(self, *, as_of, within_hours: int = 24) -> Optional[Dict]:
+        """获取历史回放在 as_of 前可见的最新 AI 分析。"""
+        bounds = self._as_of_bounds(as_of, within_hours)
+        if bounds is None:
+            return None
+        as_of_text, since = bounds
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+        SELECT aa.*, fs.fetch_time, fs.total_score, fs.flow_level
+        FROM ai_analysis aa
+        LEFT JOIN flow_snapshots fs ON aa.snapshot_id = fs.id
+        WHERE datetime(COALESCE(NULLIF(fs.fetch_time, ''), aa.created_at)) <= datetime(?)
+        AND datetime(COALESCE(NULLIF(fs.fetch_time, ''), aa.created_at)) >= datetime(?)
+        ORDER BY datetime(COALESCE(NULLIF(fs.fetch_time, ''), aa.created_at)) DESC, aa.created_at DESC
+        LIMIT 1
+        ''', (as_of_text, since))
+
+        row = cursor.fetchone()
+        conn.close()
+
         if row:
             analysis = dict(row)
             analysis['affected_sectors'] = json.loads(analysis['affected_sectors']) if analysis['affected_sectors'] else []

@@ -81,9 +81,13 @@ def test_kernel_candidate_uses_extended_snapshot_indicators_when_present():
     )
 
     explainability = (decision.strategy_profile or {}).get("explainability") or {}
+    market_snapshot = (decision.strategy_profile or {}).get("market_snapshot") or {}
     technical_breakdown = explainability.get("technical_breakdown") or {}
     dimensions = {item["id"]: item for item in technical_breakdown.get("dimensions") or []}
 
+    assert market_snapshot["current_price"] == 24.5
+    assert market_snapshot["dif"] == 0.43
+    assert market_snapshot["k"] == 72.0
     assert dimensions["ma_slope"]["available"] is True
     assert dimensions["obv_trend"]["available"] is True
     assert dimensions["atr_risk"]["available"] is True

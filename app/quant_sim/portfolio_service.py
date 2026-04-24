@@ -141,7 +141,7 @@ class PortfolioService:
         summary = self.get_account_summary()
         scheduler_config = self.db.get_scheduler_config()
         commission_rate = max(float(scheduler_config.get("commission_rate") or 0), 0.0)
-        position_size_pct = float(signal.get("position_size_pct") or 0)
+        position_size_pct = self._resolve_buy_position_pct(signal)
         if position_size_pct <= 0:
             return 0
         target_cash = min(
@@ -153,6 +153,21 @@ class PortfolioService:
             return 0
         lots = floor(target_cash / lot_cost_with_fee)
         return int(lots * self.A_SHARE_LOT_SIZE)
+
+    @staticmethod
+    def _resolve_buy_position_pct(signal: dict) -> float:
+        strategy_profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+        add_gate = strategy_profile.get("position_add_gate") if isinstance(strategy_profile.get("position_add_gate"), dict) else {}
+        intent = str(add_gate.get("intent") or strategy_profile.get("execution_intent") or "").strip().lower()
+        if intent == "position_add" and str(add_gate.get("status") or "").strip().lower() == "passed":
+            try:
+                return max(float(add_gate.get("add_position_delta_pct") or 0), 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+        try:
+            return max(float(signal.get("position_size_pct") or 0), 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _resolve_signal_price(self, signal: dict, fallback: Optional[dict] = None) -> float:
         stock_code = str(signal.get("stock_code") or "").strip()

@@ -9,6 +9,80 @@ class _MissingMarketSectorDB:
         del key, within_hours
         return None
 
+    def get_latest_news_data(self, within_hours=None):
+        del within_hours
+        return None
+
+
+class _FakeSmartMonitorDB:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def get_ai_decisions(self, stock_code=None, limit=100):
+        del stock_code, limit
+        return list(self.rows)
+
+
+class _AsOfOnlySectorDB:
+    def get_latest_raw_data(self, key, within_hours=None):
+        del key, within_hours
+        raise AssertionError("replay must not use latest sector raw data")
+
+    def get_raw_data_as_of(self, key, *, as_of, within_hours=None):
+        assert key == "market_overview"
+        assert as_of == datetime(2025, 8, 29, 13, 30)
+        assert within_hours == 48
+        return {
+            "data_date": "2025-08-29",
+            "created_at": "2025-08-29 12:30:00",
+            "data_content": {
+                "sh_index": {"change_pct": 1.25},
+                "sz_index": {"change_pct": 0.75},
+            },
+        }
+
+    def get_latest_news_data(self, within_hours=None):
+        del within_hours
+        return None
+
+    def get_news_data_as_of(self, *, as_of, within_hours=None):
+        assert as_of == datetime(2025, 8, 29, 13, 30)
+        assert within_hours == 48
+        return None
+
+
+class _AsOfNewsFlowDB:
+    def get_latest_snapshot(self):
+        raise AssertionError("replay must not use latest flow snapshot")
+
+    def get_snapshot_as_of(self, *, as_of, within_hours=None):
+        assert as_of == datetime(2025, 8, 29, 13, 30)
+        assert within_hours == 48
+        return {"total_score": 650, "fetch_time": "2025-08-29 12:00:00"}
+
+    def get_latest_sentiment(self):
+        raise AssertionError("replay must not use latest sentiment")
+
+    def get_sentiment_as_of(self, *, as_of, within_hours=None):
+        assert as_of == datetime(2025, 8, 29, 13, 30)
+        assert within_hours == 48
+        return {"sentiment_index": 70, "fetch_time": "2025-08-29 12:00:00"}
+
+    def get_latest_ai_analysis(self):
+        raise AssertionError("replay must not use latest AI analysis")
+
+    def get_ai_analysis_as_of(self, *, as_of, within_hours=None):
+        assert as_of == datetime(2025, 8, 29, 13, 30)
+        assert within_hours == 48
+        return {
+            "confidence": 80,
+            "risk_level": "低",
+            "fetch_time": "2025-08-29 12:15:00",
+            "affected_sectors": [],
+            "recommended_stocks": [],
+            "risk_factors": [],
+        }
+
 
 def test_market_component_ignores_stale_flow_snapshot(tmp_path, monkeypatch):
     controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
@@ -26,6 +100,218 @@ def test_market_component_ignores_stale_flow_snapshot(tmp_path, monkeypatch):
     component = controller._market_component(lookback_hours=48)  # noqa: SLF001 - targeted regression coverage
 
     assert component is None
+
+
+def test_resolve_binding_replay_asof_omits_future_ai_decisions(tmp_path, monkeypatch):
+    controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
+    base_binding = controller.db.resolve_strategy_profile_binding("stable_v23")
+    checkpoint = datetime(2025, 8, 29, 13, 30)
+
+    monkeypatch.setattr(controller, "_sector_db_instance", lambda: _MissingMarketSectorDB())
+    monkeypatch.setattr(controller, "_smart_db", lambda: _FakeSmartMonitorDB([
+        {"action": "BUY", "confidence": 95, "decision_time": "2026-04-24 20:26:55"},
+    ]))
+    monkeypatch.setattr("app.quant_sim.dynamic_strategy.news_flow_db.get_latest_snapshot", lambda: None)
+    monkeypatch.setattr("app.quant_sim.dynamic_strategy.news_flow_db.get_latest_sentiment", lambda: None)
+    monkeypatch.setattr("app.quant_sim.dynamic_strategy.news_flow_db.get_latest_ai_analysis", lambda: None)
+
+    binding = controller.resolve_binding(
+        base_binding=base_binding,
+        stock_code="002518",
+        stock_name="科士达",
+        ai_dynamic_strategy="hybrid",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
+        as_of=checkpoint,
+    )
+
+    dynamic = binding["dynamic_strategy"]
+    omitted = {item["key"]: item for item in dynamic["omitted_components"]}
+
+    assert dynamic["as_of"] == "2025-08-29 13:30:00"
+    assert dynamic["components"] == []
+    assert dynamic["score"] == 0.0
+    assert dynamic["confidence"] == 0.0
+    assert omitted["ai"]["reason"] == "no_historical_asof_data"
+
+
+def test_resolve_binding_replay_asof_uses_only_ai_decisions_visible_at_checkpoint(tmp_path, monkeypatch):
+    controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
+    base_binding = controller.db.resolve_strategy_profile_binding("stable_v23")
+    checkpoint = datetime(2025, 8, 29, 13, 30)
+
+    monkeypatch.setattr(controller, "_sector_db_instance", lambda: _MissingMarketSectorDB())
+    monkeypatch.setattr(controller, "_smart_db", lambda: _FakeSmartMonitorDB([
+        {"action": "SELL", "confidence": 99, "decision_time": "2026-04-24 20:26:55"},
+        {"action": "BUY", "confidence": 80, "decision_time": "2025-08-29 12:45:00"},
+    ]))
+    monkeypatch.setattr("app.quant_sim.dynamic_strategy.news_flow_db.get_latest_snapshot", lambda: None)
+    monkeypatch.setattr("app.quant_sim.dynamic_strategy.news_flow_db.get_latest_sentiment", lambda: None)
+    monkeypatch.setattr("app.quant_sim.dynamic_strategy.news_flow_db.get_latest_ai_analysis", lambda: None)
+
+    binding = controller.resolve_binding(
+        base_binding=base_binding,
+        stock_code="002518",
+        stock_name="科士达",
+        ai_dynamic_strategy="hybrid",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
+        as_of=checkpoint,
+    )
+
+    dynamic = binding["dynamic_strategy"]
+    ai_component = next(item for item in dynamic["components"] if item["key"] == "ai")
+
+    assert ai_component["score"] > 0
+    assert ai_component["as_of"] == "2025-08-29 12:45:00"
+    assert "ai" not in {item["key"] for item in dynamic["omitted_components"]}
+
+
+def test_resolve_binding_replay_asof_prefers_historical_sector_query(tmp_path, monkeypatch):
+    controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
+
+    monkeypatch.setattr(controller, "_sector_db_instance", lambda: _AsOfOnlySectorDB())
+    monkeypatch.setattr("app.quant_sim.dynamic_strategy.news_flow_db.get_latest_snapshot", lambda: None)
+    monkeypatch.setattr(controller, "_smart_db", lambda: _FakeSmartMonitorDB([]))
+
+    signal = controller._build_dynamic_signal(  # noqa: SLF001 - targeted as-of contract coverage
+        stock_code="002518",
+        stock_name="科士达",
+        lookback_hours=48,
+        as_of=datetime(2025, 8, 29, 13, 30),
+    )
+
+    market_component = next(item for item in signal["components"] if item["key"] == "market")
+    omitted = {item["key"] for item in signal["omitted_components"]}
+
+    assert market_component["reason"] == "market_overview(2)"
+    assert market_component["as_of"] == "2025-08-29 12:30:00"
+    assert "market" not in omitted
+
+
+def test_resolve_binding_replay_asof_prefers_historical_news_flow_queries(tmp_path, monkeypatch):
+    controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
+
+    monkeypatch.setattr(controller, "_sector_db_instance", lambda: _MissingMarketSectorDB())
+    monkeypatch.setattr("app.quant_sim.dynamic_strategy.news_flow_db", _AsOfNewsFlowDB())
+    monkeypatch.setattr(controller, "_smart_db", lambda: _FakeSmartMonitorDB([]))
+
+    signal = controller._build_dynamic_signal(  # noqa: SLF001 - targeted as-of contract coverage
+        stock_code="002518",
+        stock_name="科士达",
+        lookback_hours=48,
+        as_of=datetime(2025, 8, 29, 13, 30),
+    )
+
+    keys = {item["key"] for item in signal["components"]}
+
+    assert "market" in keys
+    assert "news" in keys
+
+
+def test_sector_strategy_db_raw_data_as_of_ignores_future_versions(tmp_path):
+    from app.sector_strategy_db import SectorStrategyDatabase
+
+    db = SectorStrategyDatabase(tmp_path / "sector_strategy.db")
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO data_versions
+        (data_type, data_date, version, fetch_success, record_count, created_at)
+        VALUES ('market_overview', '2025-08-29', 1, 1, 1, '2025-08-29 12:30:00')
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO data_versions
+        (data_type, data_date, version, fetch_success, record_count, created_at)
+        VALUES ('market_overview', '2026-04-24', 1, 1, 1, '2026-04-24 10:00:00')
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO sector_raw_data
+        (data_date, sector_code, sector_name, price, change_pct, volume, turnover, data_type, data_version, created_at)
+        VALUES ('2025-08-29', 'SH', 'SH指数', 3200, 1.25, 100, 200, 'market_overview', 1, '2025-08-29 12:30:00')
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO sector_raw_data
+        (data_date, sector_code, sector_name, price, change_pct, volume, turnover, data_type, data_version, created_at)
+        VALUES ('2026-04-24', 'SH', 'SH指数', 3300, -3.5, 100, 200, 'market_overview', 1, '2026-04-24 10:00:00')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    payload = db.get_raw_data_as_of(
+        "market_overview",
+        as_of="2025-08-29T13:30:00",
+        within_hours=48,
+    )
+
+    assert payload["created_at"] == "2025-08-29 12:30:00"
+    assert payload["data_content"]["sh_index"]["change_pct"] == 1.25
+
+
+def test_news_flow_db_as_of_queries_ignore_future_records(tmp_path):
+    from app.news_flow_db import NewsFlowDatabase
+
+    db = NewsFlowDatabase(tmp_path / "news_flow.db")
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO flow_snapshots
+        (id, fetch_time, total_platforms, success_count, total_score, flow_level, created_at)
+        VALUES (1, '2025-08-29 12:00:00', 3, 3, 650, 'hot', '2025-08-29 12:00:00')
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO flow_snapshots
+        (id, fetch_time, total_platforms, success_count, total_score, flow_level, created_at)
+        VALUES (2, '2026-04-24 10:00:00', 3, 3, 200, 'cold', '2026-04-24 10:00:00')
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO sentiment_records
+        (snapshot_id, sentiment_index, sentiment_class, flow_stage, created_at)
+        VALUES (1, 70, '偏热', '扩散', '2025-08-29 12:05:00')
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO sentiment_records
+        (snapshot_id, sentiment_index, sentiment_class, flow_stage, created_at)
+        VALUES (2, 10, '冰点', '退潮', '2026-04-24 10:05:00')
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO ai_analysis
+        (snapshot_id, affected_sectors, recommended_stocks, risk_level, risk_factors, advice, confidence, summary, created_at)
+        VALUES (1, '[]', '[]', '低', '[]', '可参与', 80, 'historical', '2025-08-29 12:10:00')
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO ai_analysis
+        (snapshot_id, affected_sectors, recommended_stocks, risk_level, risk_factors, advice, confidence, summary, created_at)
+        VALUES (2, '[]', '[]', '高', '[]', '回避', 95, 'future', '2026-04-24 10:10:00')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    checkpoint = "2025-08-29 13:30:00"
+
+    assert db.get_snapshot_as_of(as_of=checkpoint, within_hours=48)["total_score"] == 650
+    assert db.get_sentiment_as_of(as_of=checkpoint, within_hours=48)["sentiment_index"] == 70
+    assert db.get_ai_analysis_as_of(as_of=checkpoint, within_hours=48)["summary"] == "historical"
 
 
 def test_resolve_binding_keeps_base_template_without_enough_switch_evidence(tmp_path, monkeypatch):

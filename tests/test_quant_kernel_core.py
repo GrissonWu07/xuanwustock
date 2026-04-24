@@ -194,3 +194,4 @@ def test_kernel_runtime_derives_dynamic_strategy_profile():
     assert strategy_profile["fundamental_quality"]["label"] == "强基本面"
     assert strategy_profile["risk_style"]["label"] == "激进"
     assert strategy_profile["analysis_timeframe"]["key"] == "30m"
+    assert strategy_profile["effective_thresholds"]["allow_pyramiding"] is True

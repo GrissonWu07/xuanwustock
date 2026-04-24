@@ -140,9 +140,13 @@ def _seed_structured_signal_for_detail(context: gateway_api.UIApiContext) -> int
                 {"id": "volatility_risk", "score": -0.213443, "coverage": 0.5, "weight_raw": 1.2, "weight_norm_in_track": 0.25, "track_contribution": -0.213443},
             ],
             "dimensions": [
-                {"id": "trend_direction", "group": "trend", "score": 1.0, "track_contribution": 0.0884, "reason": "trend up"},
+                {"id": "trend_direction", "group": "trend", "score": 1.0, "track_contribution": 0.0884, "reason": "close/ma20/ma60=106.62/88.0055/79.915333"},
                 {"id": "price_vs_ma20", "group": "trend", "score": 1.0, "track_contribution": 0.0752, "reason": "price above ma20"},
-                {"id": "boll_position", "group": "volatility_risk", "score": -0.6, "track_contribution": -0.213443, "reason": "boll high"},
+                {"id": "macd_level", "group": "momentum", "score": 0.7, "track_contribution": 0.059, "reason": "dif/dea/hist=3.718454/0/3.718454"},
+                {"id": "rsi_zone", "group": "momentum", "score": -0.2, "track_contribution": -0.0235, "reason": "rsi14=88.013095"},
+                {"id": "kdj_cross", "group": "momentum", "score": 0.0, "track_contribution": 0.0, "reason": "k/d/j=40.665798/54.474382/13.048628"},
+                {"id": "volume_ratio", "group": "volume_confirmation", "score": 0.5, "track_contribution": 0.0428, "reason": "volume_ratio=1.1948"},
+                {"id": "boll_position", "group": "volatility_risk", "score": -0.6, "track_contribution": -0.213443, "reason": "boll_position=0.961796"},
             ],
         },
         "context_breakdown": {
@@ -226,6 +230,7 @@ def _seed_structured_signal_for_detail(context: gateway_api.UIApiContext) -> int
         "dynamic_strategy": {
             "mode": "hybrid",
             "enabled": True,
+            "as_of": "2026-04-24 10:30:00",
             "score": 0.34,
             "confidence": 0.82,
             "overlay_regime": "risk_on",
@@ -260,6 +265,22 @@ def _seed_structured_signal_for_detail(context: gateway_api.UIApiContext) -> int
                     "delta": -0.04,
                     "reason": "risk_on 提高强卖覆盖门槛",
                 },
+            ],
+            "components": [
+                {
+                    "key": "market",
+                    "score": 0.44,
+                    "confidence": 0.8,
+                    "as_of": "2026-04-24 10:00:00",
+                    "reason": "market_overview(3)",
+                }
+            ],
+            "omitted_components": [
+                {
+                    "key": "news",
+                    "reason": "no_historical_asof_data",
+                    "as_of": "2026-04-24 10:30:00",
+                }
             ],
         },
         "explainability": explainability,
@@ -406,6 +427,9 @@ def test_signal_detail_prefers_canonical_breakdown_and_clean_audit_labels(tmp_pa
     assert rows["AI动态调整模式"]["value"] == "hybrid"
     assert rows["AI动态档位"]["value"] == "risk_on"
     assert rows["AI动态评分"]["value"] == "0.34 / 0.82"
+    assert rows["AI动态as_of"]["value"] == "2026-04-24 10:30:00"
+    assert rows["AI动态使用组件.market"]["value"] == "score=0.44 / confidence=0.8 / as_of=2026-04-24 10:00:00"
+    assert rows["AI动态省略组件.news"]["value"] == "no_historical_asof_data @ 2026-04-24 10:30:00"
     assert rows["AI动态调整.fusion_buy_threshold"]["value"] == "0.4300 -> 0.3900 (Δ-0.0400)"
     assert rows["AI动态调整.fusion_sell_threshold"]["value"] == "-0.2600 -> -0.2800 (Δ-0.0200)"
     assert rows["AI动态调整.sell_precedence_gate"]["value"] == "-0.3400 -> -0.3800 (Δ-0.0400)"
@@ -415,6 +439,130 @@ def test_signal_detail_prefers_canonical_breakdown_and_clean_audit_labels(tmp_pa
     assert "兼容派生" in rows["共振类型（兼容派生）"]["name"]
     assert not any("最终理由:" in line for line in basis_lines)
     assert not any("技术评分 0.11" in line for line in basis_lines)
+
+    technical_rows = {row["name"]: row for row in payload["technicalIndicators"]}
+    assert technical_rows["当前价"]["value"] == "106.62"
+    assert technical_rows["DIF"]["value"] == "3.718454"
+    assert technical_rows["DEA"]["value"] == "0"
+    assert technical_rows["RSI12"]["value"] == "88.013095"
+    assert technical_rows["KDJ-K"]["value"] == "40.665798"
+    assert technical_rows["KDJ-D"]["value"] == "54.474382"
+    assert technical_rows["KDJ-J"]["value"] == "13.048628"
+    assert technical_rows["量比"]["value"] == "1.1948"
+
+
+def test_signal_detail_exposes_position_add_gate_and_execution_delta(tmp_path):
+    context = _make_context(tmp_path)
+    _seed_structured_signal_for_detail(context)
+    db = context.quant_db()
+    base_signal = db.get_signals(stock_code="002463", limit=1)[0]
+    strategy_profile = base_signal["strategy_profile"]
+    fusion_breakdown = strategy_profile["explainability"]["fusion_breakdown"]
+    fusion_breakdown.update(
+        {
+            "final_action": "BUY",
+            "core_rule_action": "BUY",
+            "weighted_threshold_action": "BUY",
+            "weighted_action_raw": "BUY",
+        }
+    )
+    strategy_profile["execution_intent"] = "position_add"
+    strategy_profile["position_add_gate"] = {
+        "intent": "position_add",
+        "status": "passed",
+        "current_position_pct": 5.2,
+        "target_position_pct": 20.0,
+        "add_position_delta_pct": 14.8,
+        "max_position_pct": 30.0,
+        "min_unrealized_pnl_pct": 2.0,
+        "min_tech_score": 0.25,
+        "reasons": ["已有浮盈 4.00% >= 2.00%"],
+    }
+    signal_id = db.add_signal(
+        {
+            "stock_code": "002463",
+            "stock_name": "沪电股份",
+            "action": "BUY",
+            "confidence": 86,
+            "reasoning": "持仓加仓门控通过",
+            "status": "pending",
+            "position_size_pct": 14.8,
+            "decision_type": "position_add",
+            "tech_score": 0.32,
+            "context_score": 0.12,
+            "strategy_profile": strategy_profile,
+        }
+    )
+    client = TestClient(gateway_api.create_app(context=context))
+
+    response = client.get(f"/api/v1/quant/signals/{signal_id}?source=live")
+
+    assert response.status_code == 200
+    payload = response.json()
+    rows = {row["name"]: row for row in payload["parameterDetails"]}
+
+    assert payload["decision"]["executionIntent"] == "position_add"
+    assert rows["执行语义"]["value"] == "加仓/增持"
+    assert rows["加仓门控"]["value"] == "通过"
+    assert rows["当前持仓比例(%)"]["value"] == "5.2"
+    assert rows["目标持仓比例(%)"]["value"] == "20.0"
+    assert rows["建议加仓比例(%)"]["value"] == "14.8"
+    assert rows["加仓门控理由"]["value"] == "已有浮盈 4.00% >= 2.00%"
+
+
+def test_replay_signal_detail_enriches_missing_market_snapshot_from_checkpoint_provider():
+    class FakeProvider:
+        def __init__(self):
+            self.prepared = None
+
+        def prepare(self, stock_codes, start_datetime, end_datetime, timeframe):
+            self.prepared = (stock_codes, start_datetime, end_datetime, timeframe)
+
+        def get_snapshot(self, stock_code, checkpoint, timeframe, *, stock_name=None):
+            return {
+                "current_price": 36.63,
+                "open": 36.1,
+                "high": 37.2,
+                "low": 35.8,
+                "volume": 123456,
+                "amount": 4567.8,
+                "turnover_rate": 2.34,
+                "dif": 0.49,
+                "dea": 0.52,
+                "k": 40.6,
+                "d": 54.4,
+                "j": 13.0,
+            }
+
+    class FakeReplayService:
+        def __init__(self):
+            self.snapshot_provider = FakeProvider()
+
+    class FakeContext:
+        def __init__(self):
+            self.service = FakeReplayService()
+
+        def replay_service(self):
+            return self.service
+
+    context = FakeContext()
+    profile = gateway_api._enrich_signal_strategy_profile_with_replay_snapshot(
+        context=context,
+        signal={"stock_code": "002518", "stock_name": "科士达", "checkpoint_at": "2025-08-29 13:30:00"},
+        source="replay",
+        replay_run={"timeframe": "30m"},
+        strategy_profile={"analysis_timeframe": "30m", "market_snapshot": {"current_price": 36.63}},
+    )
+
+    snapshot = profile["market_snapshot"]
+    assert context.service.snapshot_provider.prepared[0] == ["002518"]
+    assert context.service.snapshot_provider.prepared[3] == "30m"
+    assert snapshot["current_price"] == 36.63
+    assert snapshot["open"] == 36.1
+    assert snapshot["high"] == 37.2
+    assert snapshot["low"] == 35.8
+    assert snapshot["volume"] == 123456
+    assert snapshot["turnover_rate"] == 2.34
 
 
 def test_discover_snapshot_aggregates_multiple_selector_results(tmp_path, monkeypatch):

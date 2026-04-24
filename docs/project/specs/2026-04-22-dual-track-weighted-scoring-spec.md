@@ -296,7 +296,7 @@ Compatibility note:
 
 ### 8.2 Overlay ownership
 - `execution_feedback` and `account_posture` are formal context dimensions.
-- `_apply_ai_overlay` must become feature extraction only.
+- Post-decision `_apply_ai_overlay` is not part of the production chain. Feature extraction must happen before track scoring, via market/context payload fields such as `execution_feedback_score`, `feedback_sample_count`, and `cash_ratio`.
 - No post-fusion or post-track score mutation is allowed.
 - `execution_feedback` must use long-decay smoothing and sparse-activation guard:
   - decay policy: exponential decay by `feedback_decay_half_life`

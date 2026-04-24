@@ -98,6 +98,33 @@ def test_stockpolicy_adapter_delegates_candidate_analysis_to_kernel_runtime():
     assert adapter.market_data_provider.data_fetcher.calls[0]["preferred_name"] == "天华新能"
 
 
+def test_stockpolicy_adapter_merges_account_context_into_snapshot():
+    snapshot = {
+        "current_price": 61.99,
+        "ma5": 58.7,
+        "ma20": 55.5,
+        "ma60": 51.37,
+        "macd": 0.534,
+        "rsi12": 70.6,
+        "volume_ratio": 2.26,
+        "trend": "up",
+    }
+    runtime = FakeRuntime()
+    adapter = StockPolicyAdapter(data_fetcher=FakeFetcher(snapshot), runtime=runtime)
+
+    adapter.analyze_candidate(
+        {
+            "stock_code": "300390",
+            "stock_name": "天华新能",
+            "source": "main_force",
+            "sources": ["main_force"],
+            "_quant_account_context": {"cash_ratio": 0.73},
+        }
+    )
+
+    assert runtime.candidate_calls[0]["market_snapshot"]["cash_ratio"] == 0.73
+
+
 def test_stockpolicy_adapter_passes_requested_timeframe_to_kernel_runtime():
     snapshot = {
         "current_price": 61.99,

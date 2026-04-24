@@ -217,3 +217,50 @@ def test_scheduler_auto_execute_buy_signal_records_skip_reason_when_under_one_lo
     assert pending[0]["action"] == "BUY"
     assert pending[0]["status"] == "pending"
     assert "不足买入一手" in str(pending[0].get("execution_note") or "")
+
+
+def test_auto_execute_position_add_uses_add_delta_not_full_target(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+    portfolio_service.configure_account(100000.0)
+
+    candidate_service.add_manual_candidate("300390", "天华新能", "main_force", latest_price=52.0)
+    candidate = candidate_service.list_candidates()[0]
+    first_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 82, "reasoning": "先建仓", "position_size_pct": 5},
+    )
+    portfolio_service.confirm_buy(first_signal["id"], price=50.0, quantity=100, note="已有底仓")
+    portfolio_service.db.update_position_market_price("300390", 52.0)
+
+    add_signal = signal_service.create_signal(
+        {**candidate, "latest_price": 52.0},
+        {
+            "action": "BUY",
+            "confidence": 86,
+            "reasoning": "持仓趋势增强",
+            "position_size_pct": 20,
+            "tech_score": 0.32,
+            "strategy_profile": {
+                "effective_thresholds": {
+                    "max_position_ratio": 0.3,
+                    "allow_pyramiding": True,
+                    "add_min_unrealized_pnl_pct": 2.0,
+                    "add_min_tech_score": 0.25,
+                },
+                "explainability": {"fusion_breakdown": {"fusion_confidence": 0.74}},
+            },
+        },
+    )
+
+    executed = portfolio_service.auto_execute_signal(add_signal, note="自动加仓")
+    position = portfolio_service.list_positions()[0]
+    trades = portfolio_service.get_trade_history(limit=5)
+
+    assert executed is True
+    assert add_signal["decision_type"] == "position_add"
+    assert position["quantity"] == 300
+    assert trades[0]["action"] == "buy"
+    assert trades[0]["quantity"] == 200

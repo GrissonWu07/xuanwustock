@@ -80,6 +80,7 @@ class StockPolicyAdapter:
             candidate["stock_code"],
             preferred_name=preferred_name,
         )
+        snapshot = self._merge_account_context(snapshot, candidate)
         return self._call_with_signature_fallback(
             self.runtime.evaluate_candidate,
             {
@@ -106,6 +107,7 @@ class StockPolicyAdapter:
             position["stock_code"],
             preferred_name=preferred_name,
         )
+        snapshot = self._merge_account_context(snapshot, position, candidate)
         return self._call_with_signature_fallback(
             self.runtime.evaluate_position,
             {
@@ -118,3 +120,22 @@ class StockPolicyAdapter:
                 "strategy_profile_binding": strategy_profile_binding,
             },
         )
+
+    @staticmethod
+    def _merge_account_context(snapshot: Optional[dict[str, Any]], *payloads: dict[str, Any]) -> Optional[dict[str, Any]]:
+        if snapshot is None:
+            return None
+        account_context: dict[str, Any] = {}
+        for payload in payloads:
+            context = payload.get("_quant_account_context") if isinstance(payload, dict) else None
+            if isinstance(context, dict) and context:
+                account_context = context
+                break
+        if not account_context:
+            return snapshot
+
+        merged = dict(snapshot)
+        for key in ("available_cash", "total_equity", "cash_ratio", "position_count"):
+            if key in account_context and key not in merged:
+                merged[key] = account_context[key]
+        return merged

@@ -430,6 +430,7 @@ class KernelStrategyRuntime:
                 resolved.decision_type = "dual_track_weighted_hold"
         resolved.strategy_profile = self._attach_explainability(
             strategy_profile=strategy_profile,
+            market_snapshot=market_snapshot,
             tech_votes=tech_votes,
             contextual_score=contextual_score,
             resolved=resolved,
@@ -1173,6 +1174,7 @@ class KernelStrategyRuntime:
         self,
         *,
         strategy_profile: dict[str, Any],
+        market_snapshot: dict[str, Any] | None,
         tech_votes: list[dict[str, Any]],
         contextual_score: ContextualScore,
         resolved: Decision,
@@ -1185,6 +1187,8 @@ class KernelStrategyRuntime:
         strategy_profile_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         profile = dict(strategy_profile)
+        if isinstance(market_snapshot, dict):
+            profile["market_snapshot"] = json.loads(json.dumps(market_snapshot, ensure_ascii=False, default=str))
         fusion_view = dict(fusion_breakdown)
         fusion_view["core_rule_action"] = str((resolved.dual_track_details or {}).get("tech_signal") or resolved.action)
         fusion_view["final_action"] = str(v23_action.get("final_action") or resolved.action)
@@ -1613,7 +1617,7 @@ class KernelStrategyRuntime:
             "buy_threshold": round(buy_threshold, 4),
             "sell_threshold": round(sell_threshold, 4),
             "max_position_ratio": round(max_position_ratio, 4),
-            "allow_pyramiding": bool(risk_style["allow_pyramiding"] and timeframe_profile["allow_pyramiding"]),
+            "allow_pyramiding": bool(risk_style["allow_pyramiding"]),
             "confirmation": timeframe_profile["confirmation"],
         }
 

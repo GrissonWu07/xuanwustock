@@ -177,6 +177,15 @@ type ExplainabilityPayload = {
 
 type StrategyProfileSnapshot = {
   explainability?: ExplainabilityPayload;
+  position_add_gate?: {
+    intent?: string;
+    status?: string;
+    current_position_pct?: number | string;
+    target_position_pct?: number | string;
+    add_position_delta_pct?: number | string;
+    max_position_pct?: number | string;
+    reasons?: string[];
+  };
 };
 
 type SignalDetailPayload = {
@@ -209,6 +218,7 @@ type SignalDetailPayload = {
     action: string;
     status: string;
     decisionType: string;
+    executionIntent?: string;
     confidence: string;
     positionSizePct: string;
     techScore: string;
@@ -298,6 +308,7 @@ const emptyDetail: SignalDetailPayload = {
     action: "HOLD",
     status: "observed",
     decisionType: "auto",
+    executionIntent: "",
     confidence: "0",
     positionSizePct: "0",
     techScore: "0",
@@ -603,13 +614,9 @@ const THRESHOLD_KEY_MAP: Record<string, string> = {
   min_context_score_for_buy: "BUY环境轨最小分值",
   min_tech_confidence_for_buy: "BUY技术轨最小置信度",
   min_context_confidence_for_buy: "BUY环境轨最小置信度",
-  dynamic_stop_loss_pct: "动态止损(%)",
-  dynamic_take_profit_pct: "动态止盈(%)",
-  execution_feedback_delta: "执行反馈修正分",
-  account_posture_delta: "账户态势修正分",
-  available_cash_ratio: "可用资金占比",
-  position_sizing_multiplier: "仓位缩放系数",
-  suggested_position_pct: "建议仓位(%)",
+  add_min_unrealized_pnl_pct: "加仓最小浮盈(%)",
+  add_min_tech_score: "加仓最小技术分",
+  add_min_fusion_confidence: "加仓最小融合置信度",
 };
 
 function _localizeEnvComponentName(name: string): string {
@@ -824,6 +831,28 @@ function _gateStatusClass(status: boolean | null): string {
     return "signal-detail-chip signal-detail-chip--fail";
   }
   return "signal-detail-chip signal-detail-chip--neutral";
+}
+
+function _actionChipClass(action: string): string {
+  const normalized = String(action || "").trim().toUpperCase();
+  if (normalized === "BUY") {
+    return "signal-detail-chip signal-detail-chip--action-buy";
+  }
+  if (normalized === "SELL") {
+    return "signal-detail-chip signal-detail-chip--action-sell";
+  }
+  return "signal-detail-chip signal-detail-chip--action-hold";
+}
+
+function _isPositionAddIntent(intent?: string): boolean {
+  return String(intent || "").trim().toLowerCase() === "position_add";
+}
+
+function _displayActionLabel(action: string, executionIntent?: string): string {
+  if (String(action || "").trim().toUpperCase() === "BUY" && _isPositionAddIntent(executionIntent)) {
+    return "增持";
+  }
+  return localizeDecisionCode(action);
 }
 
 function _gateStatusTone(status: boolean | null): "pass" | "fail" | "neutral" {
@@ -1097,6 +1126,9 @@ export function SignalDetailPage() {
     "max_position_ratio",
     "allow_pyramiding",
     "confirmation",
+    "add_min_unrealized_pnl_pct",
+    "add_min_tech_score",
+    "add_min_fusion_confidence",
   ]);
   const buyGateThresholdKeys = new Set([
     "min_fusion_confidence",
@@ -1242,12 +1274,13 @@ export function SignalDetailPage() {
   });
   const positionMetricLabel =
     String(decision.action || "").toUpperCase() === "BUY"
-      ? "目标买入仓位(%)"
+      ? _isPositionAddIntent(decision.executionIntent) ? "建议加仓比例(%)" : "目标买入仓位(%)"
       : String(decision.action || "").toUpperCase() === "SELL"
       ? "建议卖出比例(%)"
       : "仓位建议";
   const positionMetricValue = String(decision.action || "").toUpperCase() === "HOLD" ? "不变" : decision.positionSizePct;
   const strategyExplainability = detail.strategyProfile?.explainability ?? {};
+  const positionAddGate = detail.strategyProfile?.position_add_gate;
   const technicalBreakdown = strategyExplainability.technical_breakdown ?? {};
   const contextBreakdown = strategyExplainability.context_breakdown ?? {};
   const fusionBreakdown = strategyExplainability.fusion_breakdown ?? {};
@@ -1421,12 +1454,22 @@ export function SignalDetailPage() {
           : `当前环境轨方向 ${_localizeTrackBias(decision.contextSignal)}。`
     },
   ];
+  const normalizedFinalAction = String(finalActionForChain || decision.finalAction || decision.action || "").toUpperCase();
+  const normalizedCoreRuleAction = String(coreRuleAction || "").toUpperCase();
+  const normalizedWeightedThresholdAction = String(weightedThresholdAction || "").toUpperCase();
+  const normalizedWeightedGateAction = String(weightedGateAction || "").toUpperCase();
   const decisionSummaryLine =
-    fusionScoreValue !== null && buyThresholdValue !== null && sellThresholdValue !== null
-      ? fusionScoreValue < buyThresholdValue
+    normalizedFinalAction === "SELL"
+      ? fusionScoreValue !== null && sellThresholdValue !== null && fusionScoreValue <= sellThresholdValue
+        ? `卖出：融合分 ${fusionScoreValue.toFixed(4)} <= 卖出阈值 ${sellThresholdValue.toFixed(4)}`
+        : normalizedCoreRuleAction === "SELL"
+        ? `卖出：核心规则触发；融合分 ${fusionScoreValue === null ? "--" : fusionScoreValue.toFixed(4)} 未低于卖出阈值${sellThresholdValue === null ? "" : ` ${sellThresholdValue.toFixed(4)}`}`
+        : "卖出：最终动作由卖出规则放行"
+      : fusionScoreValue !== null && buyThresholdValue !== null && sellThresholdValue !== null
+      ? normalizedFinalAction === "BUY"
+        ? `买入：融合分 ${fusionScoreValue.toFixed(4)} >= 买入阈值 ${buyThresholdValue.toFixed(4)}`
+        : fusionScoreValue < buyThresholdValue
         ? `未买入：融合分 ${fusionScoreValue.toFixed(4)} < 买入阈值 ${buyThresholdValue.toFixed(4)}`
-        : fusionScoreValue <= sellThresholdValue
-        ? `已触发卖出：融合分 ${fusionScoreValue.toFixed(4)} <= 卖出阈值 ${sellThresholdValue.toFixed(4)}`
         : `保持观望：融合分 ${fusionScoreValue.toFixed(4)} 位于阈值区间内`
       : "当前快照缺少融合阈值，无法生成一句话门控结论";
   const buyGapValue =
@@ -1434,7 +1477,11 @@ export function SignalDetailPage() {
   const sellGapValue =
     fusionScoreValue !== null && sellThresholdValue !== null ? fusionScoreValue - sellThresholdValue : null;
   const gateDeltaLine =
-    fusionScoreValue !== null && buyThresholdValue !== null && fusionScoreValue < buyThresholdValue
+    normalizedFinalAction === "SELL" && fusionScoreValue !== null && sellThresholdValue !== null
+      ? fusionScoreValue <= sellThresholdValue
+        ? `已低于卖出线 ${Math.abs(sellGapValue ?? 0).toFixed(4)}`
+        : `核心规则卖出；融合分距卖出线 ${sellGapValue?.toFixed(4)}，加权阈值仍为 ${localizeDecisionCode(weightedThresholdAction)}`
+      : fusionScoreValue !== null && buyThresholdValue !== null && fusionScoreValue < buyThresholdValue
       ? `离买入线还差 ${buyGapValue?.toFixed(4)}`
       : fusionScoreValue !== null && sellThresholdValue !== null && fusionScoreValue <= sellThresholdValue
       ? `已低于卖出线 ${Math.abs(sellGapValue ?? 0).toFixed(4)}`
@@ -1444,6 +1491,8 @@ export function SignalDetailPage() {
   const chainBlockingStage =
     vetoes.length > 0
       ? "Veto 否决层"
+      : normalizedFinalAction === "SELL" && normalizedCoreRuleAction === "SELL"
+      ? "核心卖出规则"
       : finalActionForChain === "BUY"
       ? "全部门控通过"
       : weightedThresholdAction === "SELL" && finalActionForChain !== "SELL"
@@ -1454,7 +1503,11 @@ export function SignalDetailPage() {
       ? "融合阈值层"
       : "规则融合层";
   const driverSummaryLine =
-    fusionScoreValue !== null && buyThresholdValue !== null && sellThresholdValue !== null
+    normalizedFinalAction === "SELL"
+      ? normalizedCoreRuleAction === "SELL"
+        ? `卖出由核心规则触发；加权阈值为 ${localizeDecisionCode(weightedThresholdAction)}、加权门控为 ${localizeDecisionCode(weightedGateAction)}，但 hybrid 模式下核心卖出优先。`
+        : `卖出由 ${chainBlockingStage} 触发，需结合卖出线和持仓风险查看。`
+      : fusionScoreValue !== null && buyThresholdValue !== null && sellThresholdValue !== null
       ? fusionScoreValue < buyThresholdValue && fusionScoreValue > sellThresholdValue
         ? `本次不是被单一维度直接否决，而是技术轨与环境轨先完成组聚合，再形成融合分 ${fusionScoreValue.toFixed(4)}。该分值仍落在买卖阈值之间，最终停在 ${chainBlockingStage}，所以动作仍是 ${localizeDecisionCode(finalActionForChain)}。`
         : fusionScoreValue >= buyThresholdValue
@@ -1466,6 +1519,15 @@ export function SignalDetailPage() {
       ? `双轨融合按 技术轨 ${_formatSigned(techTrackScoreValue)} × ${(Number(fusionBreakdown.tech_weight_norm ?? 0) * 100).toFixed(1)}% 与 环境轨 ${_formatSigned(contextTrackScoreValue)} × ${(Number(fusionBreakdown.context_weight_norm ?? 0) * 100).toFixed(1)}% 计算，得到融合分 ${fusionScoreValue.toFixed(4)}。`
       : "当前快照缺少融合分，无法展开双轨合成说明。";
   const finalDecisionChainLine = `动作链路：Veto ${vetoes.length > 0 ? "命中" : "未命中"} -> 核心规则 ${localizeDecisionCode(coreRuleAction)} -> 加权阈值 ${localizeDecisionCode(weightedThresholdAction)} -> 加权门控 ${localizeDecisionCode(weightedGateAction)} -> 最终 ${localizeDecisionCode(finalActionForChain)}。`;
+  const keyDecisionLines = [
+    `策略：${_localizeDynamicText(decision.appliedProfile)} · ${localizeStrategyMode(decision.strategyMode)} · ${decision.aiProfileSwitched === "是" ? "模板已切换" : "模板未切换"}`,
+    `市场：${_localizeDynamicText(decision.marketRegime)} · 风格 ${_localizeDynamicText(decision.riskStyle)} · 基本面 ${_localizeDynamicText(decision.fundamentalQuality)}`,
+    `双轨：技术${_localizeTrackBias(decision.techSignal)}(${_formatSigned(techTrackScoreValue)}) · 环境${_localizeTrackBias(decision.contextSignal)}(${_formatSigned(contextTrackScoreValue)}) · 置信度 ${fusionConfidenceValue === null ? "--" : fusionConfidenceValue.toFixed(4)}`,
+    _isPositionAddIntent(decision.executionIntent) && positionAddGate
+      ? `加仓：当前 ${_safeValue(String(positionAddGate.current_position_pct ?? ""))}% -> 目标 ${_safeValue(String(positionAddGate.target_position_pct ?? ""))}%，本次差额 ${_safeValue(String(positionAddGate.add_position_delta_pct ?? ""))}%`
+      : "",
+    `链路：核心 ${localizeDecisionCode(coreRuleAction)} -> 加权 ${localizeDecisionCode(weightedThresholdAction)} -> 门控 ${localizeDecisionCode(weightedGateAction)} -> 最终 ${localizeDecisionCode(finalActionForChain)}`,
+  ].filter(Boolean);
   const filteredVoteRows = voteRows.filter((item) => {
     if (voteTrackFilter !== "all" && item.track !== voteTrackFilter) {
       return false;
@@ -1498,7 +1560,7 @@ export function SignalDetailPage() {
       <PageHeader
         eyebrow="信号"
         title={`信号详情 #${decision.id}`}
-        description={`${decision.stockCode} ${decision.stockName || ""} · ${localizeDecisionCode(decision.action)} · ${_localizeStatus(decision.status)}`}
+        description={`${decision.stockCode} ${decision.stockName || ""} · ${_displayActionLabel(decision.action, decision.executionIntent)} · ${_localizeStatus(decision.status)}`}
         actions={
           <div className="chip-row">
             <button className="button button--secondary" type="button" onClick={() => navigate(-1)}>
@@ -1539,30 +1601,22 @@ export function SignalDetailPage() {
                         {`${decision.stockCode} ${decision.stockName || ""}`.trim()}
                       </h2>
                     </div>
-                    <span className={_gateStatusClass(decision.finalAction === "BUY" ? true : decision.finalAction === "SELL" ? false : null)}>
-                      {localizeDecisionCode(decision.finalAction)}
+                    <span className={_actionChipClass(decision.finalAction)} data-testid="final-action-chip">
+                      {_displayActionLabel(decision.finalAction, decision.executionIntent)}
                     </span>
                   </div>
                   <div className="signal-detail-focus-panel__headline">{decisionSummaryLine}</div>
                   <div className="signal-detail-focus-panel__supporting">
                     <div>{`决策点 ${decision.checkpointAt} · ${localizeDecisionCode(decision.status)} · ${localizeStrategyMode(decision.strategyMode)}`}</div>
-                    <div>{`规则层：技术轨${_localizeTrackBias(decision.techSignal)} + 环境轨${_localizeTrackBias(decision.contextSignal)}。`}</div>
-                    <div>
-                      {`动作链路：核心规则 ${localizeDecisionCode(coreRuleAction)} -> 加权阈值 ${localizeDecisionCode(weightedThresholdAction)} -> 加权门控 ${localizeDecisionCode(weightedGateAction)} -> 最终 ${localizeDecisionCode(finalActionForChain)}。`}
-                    </div>
-                    <div>
-                      {`模板：配置 ${_localizeDynamicText(decision.configuredProfile)}，实际 ${_localizeDynamicText(decision.appliedProfile)}。`}
-                      {decision.aiProfileSwitched === "是" ? " 已触发模板切换。" : " 未触发模板切换。"}
-                    </div>
-                    <div className="markdown-body" style={{ whiteSpace: "pre-wrap" }}>
-                      {_localizeDynamicText(explanation.summary || "暂无结构化结论")}
-                    </div>
+                    {keyDecisionLines.map((line) => (
+                      <div key={line}>{line}</div>
+                    ))}
                   </div>
                 </div>
                   <div className="signal-detail-summary-grid" data-testid="decision-summary-grid">
                   <div className="signal-detail-summary-stat signal-detail-summary-stat--emphasis">
                     <span className="signal-detail-summary-stat__label">动作</span>
-                    <strong className="signal-detail-summary-stat__value">{localizeDecisionCode(decision.action)}</strong>
+                    <strong className="signal-detail-summary-stat__value">{_displayActionLabel(decision.action, decision.executionIntent)}</strong>
                   </div>
                   <div className="signal-detail-summary-stat signal-detail-summary-stat--emphasis">
                     <span className="signal-detail-summary-stat__label">核心规则</span>
@@ -1673,7 +1727,7 @@ export function SignalDetailPage() {
                       <div className="signal-detail-focus-panel__eyebrow">阻断链路</div>
                       <h2 className="section-card__title" style={{ marginBottom: 0 }}>真实决策链路</h2>
                     </div>
-                    <span className={_gateStatusClass(finalActionForChain === "BUY" ? true : false)}>
+                    <span className={_actionChipClass(finalActionForChain)} data-testid="chain-stage-chip">
                       {chainBlockingStage}
                     </span>
                   </div>

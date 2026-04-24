@@ -94,7 +94,7 @@ class MainProjectHistoricalSnapshotProvider:
         if normalized in {"1d", "day", "daily"}:
             start_date = (start_datetime - timedelta(days=self.DAILY_LOOKBACK_DAYS)).strftime("%Y%m%d")
             end_date = end_datetime.strftime("%Y%m%d")
-            df = data_source_manager.get_stock_hist_data(stock_code, start_date=start_date, end_date=end_date, adjust="qfq")
+            df = data_source_manager.get_stock_hist_data(stock_code, start_date=start_date, end_date=end_date, adjust="")
             return self._normalize_daily_history(df)
 
         if normalized in {"30m", "30min", "minute30"}:
@@ -834,8 +834,17 @@ class QuantSimReplayService:
         portfolio: PortfolioService,
         signal_service: SignalCenterService,
     ) -> dict:
-        candidates = engine.candidate_pool.list_candidates(status="active")
         positions = portfolio.list_positions()
+        held_codes = {
+            str(item.get("stock_code") or "").strip()
+            for item in positions
+            if str(item.get("stock_code") or "").strip()
+        }
+        candidates = [
+            item
+            for item in engine.candidate_pool.list_candidates(status="active")
+            if str(item.get("stock_code") or "").strip() not in held_codes
+        ]
         signals_created = 0
         candidates_scanned = 0
         positions_checked = 0
@@ -899,6 +908,7 @@ class QuantSimReplayService:
                     ai_dynamic_lookback=ai_dynamic_lookback,
                     stock_code=str(candidate.get("stock_code") or ""),
                     stock_name=str(candidate.get("stock_name") or ""),
+                    as_of=checkpoint,
                 )
             decision = engine._evaluate_candidate_decision(
                 candidate,
@@ -958,6 +968,7 @@ class QuantSimReplayService:
                     ai_dynamic_lookback=ai_dynamic_lookback,
                     stock_code=str(candidate.get("stock_code") or position.get("stock_code") or ""),
                     stock_name=str(candidate.get("stock_name") or position.get("stock_name") or ""),
+                    as_of=checkpoint,
                 )
             decision = engine._evaluate_position_decision(
                 candidate,

@@ -347,8 +347,10 @@ describe("SignalDetailPage", () => {
     expect(screen.getByText("投票明细")).toBeInTheDocument();
     expect(screen.getByText("审计模式")).toBeInTheDocument();
     expect(screen.getAllByText(/未买入：融合分/).length).toBeGreaterThan(0);
-    expect(screen.getByText("规则层：技术轨偏空 + 环境轨偏多。")).toBeInTheDocument();
-    expect(screen.getAllByText("动作链路：核心规则 Hold -> 加权阈值 Hold -> 加权门控 Hold -> 最终 Hold。")).toHaveLength(1);
+    expect(screen.getByText("策略：保守 (conservative_v23) v2 · Auto · 模板已切换")).toBeInTheDocument();
+    expect(screen.getByText("市场：牛市 · 风格 稳重 · 基本面 中性")).toBeInTheDocument();
+    expect(screen.getByText("双轨：技术偏空(-0.0088) · 环境偏多(+0.0338) · 置信度 0.6587")).toBeInTheDocument();
+    expect(screen.getByText("链路：核心 Hold -> 加权 Hold -> 门控 Hold -> 最终 Hold")).toBeInTheDocument();
     expect(screen.queryByText("0.0")).not.toBeInTheDocument();
     expect(screen.queryByText("建议保持仓位")).not.toBeInTheDocument();
   });
@@ -414,5 +416,77 @@ describe("SignalDetailPage", () => {
     expect(screen.getByText("最终门控")).toBeInTheDocument();
     expect(screen.queryByText("Top 3 正贡献")).not.toBeInTheDocument();
     expect(screen.queryByText("Top 3 负贡献")).not.toBeInTheDocument();
+  });
+
+  it("renders SELL final action with the sell action color instead of gate failure color", async () => {
+    const sellPayload = JSON.parse(JSON.stringify(mockPayload));
+    sellPayload.decision.action = "SELL";
+    sellPayload.decision.finalAction = "SELL";
+    sellPayload.strategyProfile.explainability.fusion_breakdown.final_action = "SELL";
+    sellPayload.strategyProfile.explainability.fusion_breakdown.core_rule_action = "SELL";
+    sellPayload.strategyProfile.explainability.fusion_breakdown.weighted_threshold_action = "SELL";
+    sellPayload.strategyProfile.explainability.fusion_breakdown.weighted_action_raw = "SELL";
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: async () => sellPayload,
+    } as Response);
+
+    renderSignalDetailPage();
+
+    expect(await screen.findByTestId("final-action-chip")).toHaveClass("signal-detail-chip--action-sell");
+    expect(screen.getByTestId("final-action-chip")).not.toHaveClass("signal-detail-chip--fail");
+    expect(screen.getByTestId("chain-stage-chip")).toHaveClass("signal-detail-chip--action-sell");
+    expect(screen.getAllByText(/卖出：核心规则触发/).length).toBeGreaterThan(0);
+    expect(screen.getByText("链路：核心 Sell -> 加权 Sell -> 门控 Sell -> 最终 Sell")).toBeInTheDocument();
+    expect(screen.queryByText(/未买入：融合分/)).not.toBeInTheDocument();
+  });
+
+  it("labels held-stock BUY intent as position add and shows add gate details", async () => {
+    const addPayload = JSON.parse(JSON.stringify(mockPayload));
+    addPayload.decision.action = "BUY";
+    addPayload.decision.finalAction = "BUY";
+    addPayload.decision.executionIntent = "position_add";
+    addPayload.decision.positionSizePct = "14.8";
+    addPayload.strategyProfile.position_add_gate = {
+      intent: "position_add",
+      status: "passed",
+      current_position_pct: 5.2,
+      target_position_pct: 20,
+      add_position_delta_pct: 14.8,
+      max_position_pct: 30,
+      reasons: ["已有浮盈 4.00% >= 2.00%"],
+    };
+    addPayload.parameterDetails.push(
+      {
+        name: "执行语义",
+        value: "加仓/增持",
+        source: "strategy_profile.position_add_gate.intent",
+        derivation: "持仓 BUY 显示为加仓/增持。",
+      },
+      {
+        name: "加仓门控",
+        value: "通过",
+        source: "strategy_profile.position_add_gate.status",
+        derivation: "加仓门控通过后才允许持仓 BUY 执行。",
+      },
+    );
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: async () => addPayload,
+    } as Response);
+
+    renderSignalDetailPage();
+
+    expect((await screen.findAllByText("增持")).length).toBeGreaterThan(0);
+    expect(screen.getByText("建议加仓比例(%)")).toBeInTheDocument();
+    expect(screen.getAllByText("14.8").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "展开审计模式" }));
+
+    expect(await screen.findByText("执行语义")).toBeInTheDocument();
+    expect(screen.getByText("加仓门控")).toBeInTheDocument();
+    expect(screen.getByText("加仓/增持")).toBeInTheDocument();
   });
 });
