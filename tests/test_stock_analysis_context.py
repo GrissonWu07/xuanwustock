@@ -105,6 +105,20 @@ def test_stock_analysis_policy_is_resolved_from_strategy_profile(tmp_path) -> No
     assert context["policy"]["ttl_hours"] == 12.0
 
 
+def test_default_stock_analysis_policy_keeps_context_for_one_day(tmp_path) -> None:
+    from app.quant_sim.engine import QuantSimEngine
+
+    engine = QuantSimEngine(
+        db_file=tmp_path / "sim.db",
+        stock_analysis_db_file=tmp_path / "analysis.db",
+        stock_analysis_refresh_enabled=False,
+    )
+
+    policy = engine._default_stock_analysis_policy()
+
+    assert policy["ttl_hours"] == 24.0
+
+
 def test_missing_stock_analysis_does_not_reduce_context_confidence() -> None:
     from app.quant_kernel.config import CONTEXT_DIMENSIONS, StrategyScoringConfig
     from app.quant_kernel.scoring_v23 import score_track

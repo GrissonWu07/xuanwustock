@@ -1,6 +1,6 @@
 import sqlite3
 import json
-from datetime import datetime
+from datetime import date, datetime
 import os
 from pathlib import Path
 
@@ -78,6 +78,7 @@ class StockAnalysisDatabase:
         analysis_context_json=None,
         formula_profile=None,
         indicator_version=None,
+        replace_same_day=False,
     ):
         """保存分析记录到数据库"""
         conn = sqlite3.connect(self.db_path)
@@ -96,6 +97,9 @@ class StockAnalysisDatabase:
         historical_data_json = json.dumps(historical_data or [], ensure_ascii=False, default=str)
         if analysis_context_json is None:
             analysis_context_json = json.dumps(analysis_context or {}, ensure_ascii=False, default=str)
+
+        if replace_same_day:
+            self._delete_symbol_day_records(cursor, symbol, created_at)
         
         cursor.execute('''
             INSERT INTO analysis_records 
@@ -125,6 +129,56 @@ class StockAnalysisDatabase:
         conn.close()
         
         return cursor.lastrowid
+
+    @staticmethod
+    def _day_text(value=None) -> str:
+        if value is None:
+            return datetime.now().date().isoformat()
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        text = str(value).strip()
+        return text[:10]
+
+    @staticmethod
+    def _delete_symbol_day_records(cursor: sqlite3.Cursor, symbol: str, day_value=None) -> int:
+        day_text = StockAnalysisDatabase._day_text(day_value)
+        cursor.execute(
+            """
+            DELETE FROM analysis_records
+            WHERE symbol = ?
+              AND date(COALESCE(created_at, analysis_date)) = date(?)
+            """,
+            (symbol, day_text),
+        )
+        return int(cursor.rowcount or 0)
+
+    def delete_records_for_symbol_on_date(self, symbol: str, day_value=None) -> int:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        deleted = self._delete_symbol_day_records(cursor, symbol, day_value)
+        conn.commit()
+        conn.close()
+        return deleted
+
+    def has_analysis_for_symbol_on_date(self, symbol: str, day_value=None) -> bool:
+        day_text = self._day_text(day_value)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT 1
+            FROM analysis_records
+            WHERE symbol = ?
+              AND date(COALESCE(created_at, analysis_date)) = date(?)
+            LIMIT 1
+            """,
+            (symbol, day_text),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row is not None
     
     def _build_record_filters(self, search: str | None = None) -> tuple[str, list[str]]:
         keyword = str(search or "").strip()

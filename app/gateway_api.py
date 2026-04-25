@@ -83,6 +83,7 @@ from app.stock_refresh_scheduler import (
     get_unified_stock_refresh_scheduler,
     load_stock_runtime_entries,
 )
+from app.stock_analysis_daily_scheduler import get_stock_analysis_daily_scheduler
 from app.watchlist_selector_integration import normalize_stock_code
 from app.monitor_db import StockMonitorDatabase
 from app.watchlist_service import WatchlistService
@@ -4764,9 +4765,18 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
         except Exception:
             app.state.unified_stock_refresh_scheduler = None
         try:
+            stock_analysis_daily_scheduler = get_stock_analysis_daily_scheduler(api_context)
+            stock_analysis_daily_scheduler.start()
+            app.state.stock_analysis_daily_scheduler = stock_analysis_daily_scheduler
+        except Exception:
+            app.state.stock_analysis_daily_scheduler = None
+        try:
             yield
         finally:
             akshare_client.request_shutdown()
+            analysis_scheduler = getattr(app.state, "stock_analysis_daily_scheduler", None)
+            if analysis_scheduler:
+                analysis_scheduler.stop()
             scheduler = getattr(app.state, "unified_stock_refresh_scheduler", None)
             if scheduler:
                 scheduler.stop()

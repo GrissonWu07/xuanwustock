@@ -13,6 +13,8 @@ type ResearchPageProps = {
   client?: ApiClient;
 };
 
+const RESEARCH_AUTO_REFRESH_MS = 3 * 60 * 1000;
+
 type ResearchModuleWithInsights = {
   name: string;
   note: string;
@@ -438,10 +440,14 @@ export function ResearchPage({ client }: ResearchPageProps) {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void resource.refresh();
-    }, 5 * 60 * 1000);
+      void taskClient.getPageSnapshot<ResearchSnapshot>("research", {
+        search: searchTerm,
+        page: outputPage,
+        pageSize: 20,
+      }).then((next) => setTableSnapshot(next)).catch(() => undefined);
+    }, RESEARCH_AUTO_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [resource.refresh]);
+  }, [outputPage, searchTerm, taskClient]);
 
   if (resource.status === "loading" && !snapshot) {
     return <PageLoadingState title={t("Research loading...")} description={t("Loading sector, dragon-tiger list, news, and macro view.")} />;
@@ -729,7 +735,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                   </tr>
                 ) : (
                   sourceRows.map((row, rowIndex) => {
-                    const rowKey = `${row.id}-${String(row.cells[2] ?? row.source ?? "")}-${rowIndex}`;
+                    const rowKey = `${row.id}-${String(row.source ?? row.cells[3] ?? "")}-${rowIndex}`;
                     return (
                     <tr
                       key={rowKey}
@@ -800,7 +806,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                 <div className="chip-row" style={{ marginTop: "10px" }}>
                   {selectedPreview.map((row, previewIndex) => (
                     <span className="badge badge--neutral" key={`${row.id}-${previewIndex}`}>
-                      {localizeResearchText(String(row.cells[1] ?? row.id))} · {localizeResearchText(String(row.cells[2] ?? row.source ?? t("Source not marked")))}
+                      {localizeResearchText(String(row.cells[1] ?? row.id))} · {localizeResearchText(String(row.source ?? row.cells[3] ?? t("Source not marked")))}
                     </span>
                   ))}
                 </div>

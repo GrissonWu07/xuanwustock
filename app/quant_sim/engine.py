@@ -382,7 +382,7 @@ class QuantSimEngine:
         code = str(payload.get("stock_code") or payload.get("symbol") or "").strip()
         if not code:
             return None
-        ttl_hours = self._safe_float(resolved_policy.get("ttl_hours"), 48.0)
+        ttl_hours = self._safe_float(resolved_policy.get("ttl_hours"), 24.0)
         min_confidence = self._safe_float(resolved_policy.get("min_confidence"), 0.45)
         context = self.stock_analysis_context.get_latest_valid(
             code,
@@ -424,7 +424,7 @@ class QuantSimEngine:
     def _default_stock_analysis_policy() -> dict[str, Any]:
         return {
             "enabled": True,
-            "ttl_hours": 48.0,
+            "ttl_hours": 24.0,
             "min_confidence": 0.45,
             "max_positive_contribution": 0.08,
             "max_negative_contribution": -0.08,

@@ -63,21 +63,29 @@ def _research_rows(context: Any) -> list[dict[str, Any]]:
         code = normalize_stock_code(item.get("code") or item.get("stock_code") or item.get("id"))
         if not code:
             continue
+        name = _txt(item.get("name") or item.get("stock_name") or code)
+        source = _txt(item.get("source") or item.get("source_module") or item.get("来源模块") or t("Research"))
+        industry = _txt(item.get("industry") or item.get("sector") or item.get("所属行业") or item.get("板块") or "")
+        latest_price = _num(item.get("latestPrice") or item.get("latest_price") or item.get("最新价"))
+        reason = _txt(item.get("reason") or item.get("body") or item.get("后续动作") or "")
         rows.append(
             {
                 "id": code,
                 "cells": [
                     code,
-                    _txt(item.get("name") or item.get("stock_name") or code),
-                    _txt(item.get("source") or item.get("source_module") or item.get("来源模块") or t("Research")),
-                    _txt(item.get("reason") or item.get("body") or item.get("后续动作") or ""),
+                    name,
+                    industry,
+                    source,
+                    latest_price,
+                    reason,
                 ],
                 "actions": [{"label": t("Add to watchlist"), "icon": "⭐", "tone": "accent", "action": "item-watchlist"}],
                 "code": code,
-                "name": _txt(item.get("name") or item.get("stock_name") or code),
-                "source": _txt(item.get("source") or item.get("source_module") or item.get("来源模块") or t("Research")),
-                "latestPrice": _num(item.get("latestPrice") or item.get("latest_price") or item.get("最新价")),
-                "reason": _txt(item.get("reason") or item.get("body") or item.get("后续动作") or ""),
+                "name": name,
+                "industry": industry,
+                "source": source,
+                "latestPrice": latest_price,
+                "reason": reason,
             }
         )
     existing = {row["code"] for row in rows}
@@ -91,16 +99,19 @@ def _research_rows(context: Any) -> list[dict[str, Any]]:
         if not code or code in existing:
             continue
         name = context.stock_name_resolver(code) if context.stock_name_resolver else code
+        source = _txt(item.get("name") or t("Research module"))
+        reason = _txt(item.get("note") or item.get("output") or "")
         rows.append(
             {
                 "id": code,
-                "cells": [code, name, _txt(item.get("name") or t("Research module")), _txt(item.get("note") or item.get("output") or "")],
+                "cells": [code, name, "", source, "0.00", reason],
                 "actions": [{"label": t("Add to watchlist"), "icon": "⭐", "tone": "accent", "action": "item-watchlist"}],
                 "code": code,
                 "name": name,
-                "source": _txt(item.get("name") or t("Research module")),
+                "industry": "",
+                "source": source,
                 "latestPrice": "0.00",
-                "reason": _txt(item.get("note") or item.get("output") or ""),
+                "reason": reason,
             }
         )
     runtime_entries = load_stock_runtime_entries(base_dir=context.selector_result_dir)
@@ -118,8 +129,12 @@ def _research_rows(context: Any) -> list[dict[str, Any]]:
                     row["cells"][1] = runtime_name
             if runtime_price not in (None, ""):
                 row["latestPrice"] = _num(runtime_price)
+                if len(row.get("cells", [])) > 4:
+                    row["cells"][4] = row["latestPrice"]
             if runtime_sector:
                 row["industry"] = runtime_sector
+                if len(row.get("cells", [])) > 2:
+                    row["cells"][2] = runtime_sector
     return rows
 
 
@@ -164,12 +179,14 @@ def _research_stock_row(stock: dict[str, Any], source: str, context: Any) -> dic
         or stock.get("price")
         or stock.get("现价")
     )
+    industry = _txt(stock.get("industry") or stock.get("sector") or stock.get("所属行业") or stock.get("板块") or "")
     return {
         "id": code,
-        "cells": [code, name, source, reason],
+        "cells": [code, name, industry, source, latest_price, reason],
         "actions": [{"label": t("Add to watchlist"), "icon": "⭐", "tone": "accent", "action": "item-watchlist"}],
         "code": code,
         "name": name,
+        "industry": industry,
         "source": source,
         "latestPrice": latest_price,
         "reason": reason,
@@ -503,7 +520,7 @@ def _run_research_modules(
         "updatedAt": _now(),
         "modules": module_results,
         "marketView": market_view,
-        "outputTable": _table([t("Code"), t("Name"), t("Source module"), t("Next action")], stock_rows, t("No stock output")),
+        "outputTable": _table([t("Code"), t("Name"), t("Industry"), t("Source module"), t("Latest price"), t("Next action")], stock_rows, t("No stock output")),
         "summary": {"title": summary_title, "body": summary_body},
     }
     save_latest_result(context.research_result_key, payload_result, base_dir=context.selector_result_dir)
@@ -689,7 +706,7 @@ def _snapshot_research(context: Any, *, task_job: dict[str, Any] | None = None, 
             if isinstance(item, dict)
         ],
         "marketView": market_view,
-        "outputTable": _table([t("Code"), t("Name"), t("Source module"), t("Next action")], page_rows, t("No stock output")),
+        "outputTable": _table([t("Code"), t("Name"), t("Industry"), t("Source module"), t("Latest price"), t("Next action")], page_rows, t("No stock output")),
         "summary": {"title": _txt(summary.get("title") or t("Research")), "body": _txt(summary.get("body") or t("Research defaults to market judgment first."))},
         "taskJob": research_task_manager.job_view(latest_task, txt=_txt, int_fn=_int),
     }

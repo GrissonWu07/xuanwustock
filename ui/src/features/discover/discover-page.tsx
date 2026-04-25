@@ -13,6 +13,8 @@ type DiscoverPageProps = {
   client?: ApiClient;
 };
 
+const DISCOVER_AUTO_REFRESH_MS = 3 * 60 * 1000;
+
 const DECISION_FIELD_LABELS = [
   "Investment rating",
   "Target price",
@@ -345,10 +347,14 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void resource.refresh();
-    }, 5 * 60 * 1000);
+      void taskClient.getPageSnapshot<DiscoverSnapshot>("discover", {
+        search: searchTerm,
+        page: currentPage + 1,
+        pageSize,
+      }).then((next) => setTableSnapshot(next)).catch(() => undefined);
+    }, DISCOVER_AUTO_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [resource.refresh]);
+  }, [currentPage, pageSize, searchTerm, taskClient]);
 
   if (resource.status === "loading" && !snapshot) {
     return <PageLoadingState title={t("Discover loading...")} description={t("Loading strategies, candidate stocks, and recent recommendations.")} />;

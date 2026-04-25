@@ -253,7 +253,7 @@ def _default_strategy_profile_payload() -> dict[str, Any]:
                 },
                 "stock_analysis_policy": {
                     "enabled": True,
-                    "ttl_hours": 48.0,
+                    "ttl_hours": 24.0,
                     "min_confidence": 0.45,
                     "max_positive_contribution": 0.08,
                     "max_negative_contribution": -0.08,

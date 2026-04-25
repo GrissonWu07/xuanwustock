@@ -9,15 +9,17 @@ const researchSnapshot = {
   modules: [{ name: "Sector strategy", note: "module note", output: "Bullish 1 / Bearish 0" }],
   marketView: [],
   outputTable: {
-    columns: ["Code", "Name", "Source module", "Next action"],
+    columns: ["Code", "Name", "Industry", "Source module", "Latest price", "Next action"],
     rows: [
       {
         id: "000001",
-        cells: ["000001", "平安银行", "Sector strategy", "Add to watchlist"],
+        cells: ["000001", "平安银行", "银行", "Sector strategy", "12.30", "Add to watchlist"],
         actions: [{ label: "Add to watchlist", icon: "⭐", tone: "accent", action: "item-watchlist" }],
         code: "000001",
         name: "平安银行",
+        industry: "银行",
         source: "Sector strategy",
+        latestPrice: "12.30",
       },
     ],
     emptyLabel: "No stock output",

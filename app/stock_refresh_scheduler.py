@@ -127,6 +127,8 @@ def save_stock_runtime_entries(
             "stock_name": _valid_name(item.get("stock_name")) or code,
             "latest_price": _price(item.get("latest_price")),
             "sector": _valid_sector(item.get("sector")),
+            "price_as_of": _txt(item.get("price_as_of")),
+            "data_source": _txt(item.get("data_source")),
             "updated_at": _txt(item.get("updated_at"), updated_at or _now()),
         }
     save_latest_result(
@@ -203,6 +205,9 @@ class UnifiedStockRefreshScheduler:
         if ctx is None:
             return {"reason": run_reason, "updated": 0, "failed": 0, "totalCodes": 0, "updatedAt": _now()}
 
+        market = self._resolve_market(ctx)
+        market_is_trading = self._is_trading_time(market)
+        prefer_last_trading_snapshot = not market_is_trading
         codes = sorted(self._collect_codes(ctx))
         existing_entries = load_stock_runtime_entries(base_dir=ctx.selector_result_dir)
         if not codes:
@@ -211,6 +216,8 @@ class UnifiedStockRefreshScheduler:
                 "updated": 0,
                 "failed": 0,
                 "totalCodes": 0,
+                "market": market,
+                "marketState": "trading" if market_is_trading else "last_trading_snapshot",
                 "updatedAt": _now(),
             }
             self.last_run_at = summary["updatedAt"]
@@ -244,6 +251,7 @@ class UnifiedStockRefreshScheduler:
                     watchlist_service=watchlist_service,
                     stock_code=code,
                     existing=existing_entries.get(code),
+                    prefer_last_trading_snapshot=prefer_last_trading_snapshot,
                 ): code
                 for code in codes
             }
@@ -305,6 +313,8 @@ class UnifiedStockRefreshScheduler:
             "updated": updated,
             "failed": len(failures),
             "totalCodes": len(codes),
+            "market": market,
+            "marketState": "trading" if market_is_trading else "last_trading_snapshot",
             "updatedAt": _now(),
         }
         self.last_run_at = summary["updatedAt"]
@@ -330,14 +340,14 @@ class UnifiedStockRefreshScheduler:
         context = self._context_provider()
         if context is None:
             return
-        market = "CN"
-        try:
-            market = _txt(context.scheduler().get_status().get("market"), "CN")
-        except Exception:
-            market = "CN"
-        if not self._is_trading_time(market):
-            return
         self.run_once(context=context, run_reason="scheduled")
+
+    @staticmethod
+    def _resolve_market(context: Any) -> str:
+        try:
+            return _txt(context.scheduler().get_status().get("market"), "CN")
+        except Exception:
+            return "CN"
 
     @staticmethod
     def _is_trading_time(market: str) -> bool:
@@ -365,6 +375,7 @@ class UnifiedStockRefreshScheduler:
         watchlist_service: Any,
         stock_code: str,
         existing: dict[str, Any] | None,
+        prefer_last_trading_snapshot: bool = False,
     ) -> dict[str, Any]:
         existing_entry = existing if isinstance(existing, dict) else {}
         existing_name = _valid_name(existing_entry.get("stock_name"))
@@ -372,6 +383,14 @@ class UnifiedStockRefreshScheduler:
             existing_name = ""
         existing_sector = _valid_sector(existing_entry.get("sector"))
         existing_price = _price(existing_entry.get("latest_price"))
+        existing_price_as_of = _txt(existing_entry.get("price_as_of"))
+
+        last_trading_snapshot: dict[str, Any] = {}
+        if prefer_last_trading_snapshot:
+            last_trading_snapshot = UnifiedStockRefreshScheduler._latest_trading_snapshot(
+                stock_code,
+                preferred_name=existing_name or None,
+            )
 
         quote: dict[str, Any] = {}
         try:
@@ -397,10 +416,14 @@ class UnifiedStockRefreshScheduler:
         info_name = _valid_name(basic_info.get("name"))
         if info_name.upper() == stock_code.upper():
             info_name = ""
+        snapshot_name = _valid_name(last_trading_snapshot.get("name"))
+        if snapshot_name.upper() == stock_code.upper():
+            snapshot_name = ""
 
         stock_name = (
             quote_name
             or info_name
+            or snapshot_name
             or existing_name
             or stock_code
         )
@@ -411,10 +434,22 @@ class UnifiedStockRefreshScheduler:
             or existing_sector
         )
         latest_price = (
-            _price(quote.get("current_price"))
+            _price(last_trading_snapshot.get("current_price"))
+            or _price(last_trading_snapshot.get("price"))
+            or _price(quote.get("current_price"))
             or _price(quote.get("price"))
             or _price(basic_info.get("current_price"))
             or existing_price
+        )
+        price_as_of = (
+            _txt(last_trading_snapshot.get("update_time"))
+            or _txt(quote.get("update_time"))
+            or existing_price_as_of
+        )
+        data_source = (
+            _txt(last_trading_snapshot.get("data_source"))
+            or _txt(quote.get("data_source"))
+            or _txt(existing_entry.get("data_source"))
         )
 
         return {
@@ -422,8 +457,60 @@ class UnifiedStockRefreshScheduler:
             "stock_name": stock_name,
             "latest_price": latest_price,
             "sector": sector,
+            "price_as_of": price_as_of,
+            "data_source": data_source,
             "updated_at": _now(),
         }
+
+    @staticmethod
+    def _latest_trading_snapshot(stock_code: str, preferred_name: str | None = None) -> dict[str, Any]:
+        try:
+            from app.smart_monitor_tdx_data import SmartMonitorTDXDataFetcher
+
+            fetcher = SmartMonitorTDXDataFetcher()
+            frame = fetcher.get_kline_data(stock_code, kline_type="day", limit=2)
+            if frame is None or getattr(frame, "empty", True):
+                return {}
+
+            latest = frame.iloc[-1]
+            previous = frame.iloc[-2] if len(frame) >= 2 else None
+            latest_close = _price(latest.get("收盘"))
+            if latest_close is None:
+                return {}
+
+            previous_close = _price(previous.get("收盘")) if previous is not None else _price(latest.get("开盘"))
+            stock_name = preferred_name or ""
+            if not stock_name:
+                try:
+                    stock_name = fetcher._get_stock_name(stock_code)
+                except Exception:
+                    stock_name = ""
+
+            return {
+                "code": normalize_stock_code(stock_code),
+                "name": _valid_name(stock_name) or normalize_stock_code(stock_code),
+                "current_price": latest_close,
+                "price": latest_close,
+                "pre_close": previous_close,
+                "update_time": UnifiedStockRefreshScheduler._format_snapshot_time(latest.get("日期")),
+                "data_source": "tdx_daily_latest",
+            }
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _format_snapshot_time(value: Any) -> str:
+        if value is None:
+            return ""
+        try:
+            if hasattr(value, "to_pydatetime"):
+                value = value.to_pydatetime()
+            if isinstance(value, datetime):
+                return value.replace(microsecond=0).isoformat(sep=" ")
+        except Exception:
+            pass
+        text = _txt(value)
+        return text[:19] if len(text) > 19 else text
 
     @staticmethod
     def _collect_codes(context: Any) -> set[str]:

@@ -15,12 +15,14 @@ type WorkbenchPageProps = {
 };
 
 const DEFAULT_ANALYSTS = ["technical", "fundamental", "fund_flow", "risk"];
+const WORKBENCH_AUTO_REFRESH_MS = 3 * 60 * 1000;
 
 export function WorkbenchPage({ client }: WorkbenchPageProps) {
   const isCompactLayout = useCompactLayout();
   const activeClient = client ?? apiClient;
   const resource = usePageData("workbench", activeClient);
   const [tableSnapshot, setTableSnapshot] = useState<typeof resource.data | null>(null);
+  const [watchlistQuery, setWatchlistQuery] = useState({ search: "", page: 1, pageSize: 20 });
   const snapshot =
     resource.data && tableSnapshot
       ? {
@@ -76,13 +78,14 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void resource.refresh();
-    }, 5 * 60 * 1000);
+      void activeClient.getPageSnapshot("workbench", watchlistQuery).then((next) => setTableSnapshot(next as typeof resource.data)).catch(() => undefined);
+    }, WORKBENCH_AUTO_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [resource.refresh]);
+  }, [activeClient, watchlistQuery]);
 
   const handleWatchlistTableQuery = useCallback(
     (query: { search: string; page: number; pageSize: number }) => {
+      setWatchlistQuery(query);
       void activeClient.getPageSnapshot("workbench", query).then((next) => setTableSnapshot(next as typeof resource.data)).catch(() => undefined);
     },
     [activeClient],

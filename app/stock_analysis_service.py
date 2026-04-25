@@ -205,6 +205,8 @@ def analyze_single_stock_for_batch(
     progress_callback: Callable[[str, str, int | None], None] | None = None,
     analysis_db: StockAnalysisDatabase | None = None,
     stock_analysis_db_path: str | None = None,
+    valid_hours: float = 24.0,
+    replace_same_day: bool = True,
 ) -> dict[str, Any]:
     """Run the full multi-agent stock analysis without any UI dependency."""
     try:
@@ -333,7 +335,11 @@ def analyze_single_stock_for_batch(
         generated_dt = datetime.now()
         generated_at = _format_dt(generated_dt)
         data_as_of_dt, data_as_of_quality = _infer_stock_data_as_of(stock_data, generated_dt)
-        valid_until_dt = generated_dt + timedelta(hours=48)
+        try:
+            resolved_valid_hours = max(float(valid_hours), 0.01)
+        except (TypeError, ValueError):
+            resolved_valid_hours = 24.0
+        valid_until_dt = generated_dt + timedelta(hours=resolved_valid_hours)
         analysis_context = StockAnalysisContextNormalizer().normalize(
             final_decision=final_decision,
             agents_results=agents_results,
@@ -362,6 +368,7 @@ def analyze_single_stock_for_batch(
                 analysis_context=analysis_context,
                 formula_profile=str((indicators or {}).get("formula_profile") or FORMULA_PROFILE_CN_TDX_V1),
                 indicator_version=str((indicators or {}).get("indicator_version") or INDICATOR_VERSION),
+                replace_same_day=replace_same_day,
             )
             saved_to_db = True
         except Exception as exc:
