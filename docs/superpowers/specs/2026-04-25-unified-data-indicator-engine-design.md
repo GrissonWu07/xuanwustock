@@ -1,7 +1,7 @@
 # Unified Data And Indicator Engine Design
 
 **Date:** 2026-04-25  
-**Status:** ready for implementation planning  
+**Status:** implemented in this branch
 **Scope:** unify local-first market-data access and technical indicator calculation across stock analysis, realtime simulation, and historical replay.
 
 ## 1. Goal
@@ -35,6 +35,8 @@ Existing foundations that should be reused:
 - `tests/test_local_market_data_clients.py`
 
 The new work reorganizes the long-term production API under `app/data/` while preserving backward-compatible wrappers for existing imports.
+
+Migration rule: there must be only one active implementation of local storage and provider wrappers at any time. During the migration, `app/data/*` may wrap or re-export the existing `LocalMarketDataStore` and local clients. After migration, the old modules must become compatibility wrappers around `app/data/*`. Do not create a second independent Parquet store, lock registry, or provider-cache path.
 
 ## 4. Target Package Layout
 
@@ -97,6 +99,8 @@ Store classes own persistence and normalization.
 
 The store must not import AKShare, TDX, Tushare, quant simulation, or stock analysis.
 
+The store may backfill provider-neutral metadata such as `provider`, `source`, and `fetched_at`. Provider-specific request metadata such as `dataset`, `timeframe`, `adjust`, and `cache_source` must be supplied by the source layer or the normalizer before the frame reaches the indicator engine.
+
 ### `app/data/indicators`
 
 Indicator modules own formulas only.
@@ -142,6 +146,17 @@ Every K-line frame entering the indicator engine must have:
 - `fetched_at`
 
 Provider-specific original columns may remain with `raw_` prefixes, but indicator code must ignore them.
+
+Metadata ownership:
+
+- `provider/source`: set by the provider source or store fallback.
+- `dataset`: set by the source method, for example `hist_daily`, `kline`, or `spot_quote`.
+- `timeframe`: normalized to values such as `1d`, `30m`, `1w`, `1mo`.
+- `adjust`: normalized to `none`, `qfq`, or `hfq`; replay should prefer `none` unless an as-of adjustment profile exists.
+- `cache_source`: set to `local_*`, `remote_*`, `partial_*`, or `stale_*` at the source boundary.
+- `fetched_at`: set when data is written or read from cache.
+
+Frames missing required canonical OHLCV fields must fail fast before indicator calculation. Frames missing optional metadata may be normalized only at source boundaries, not inside formula modules.
 
 ## 7. Canonical Indicator Schema
 
@@ -204,6 +219,15 @@ Rules:
 
 Future profiles can be added, but production must store `formula_profile` so signals remain auditable.
 
+Compatibility note: in `cn_tdx_v1`, `macd` means `2 * (dif - dea)`. Legacy stock-analysis UI fields that previously used `MACD` from the `ta` library must be mapped deliberately:
+
+- canonical `dif` may be exposed as `dif` or `macd_dif`.
+- canonical `dea` may be exposed as `dea`, `macd_signal`, or `macd_dea`.
+- canonical `hist` may be exposed as `hist` or `macd_histogram`.
+- canonical `macd` must be labelled as the TDX-style MACD bar value, not as DIF.
+
+Any UI, LLM prompt, or signal audit text that references MACD must use the canonical label so old and new values are not compared as if they were the same field.
+
 ## 9. Migration Requirements
 
 ### Stock Analysis
@@ -232,7 +256,9 @@ It must not fetch remote data or use latest bars.
 
 ### Other Consumers
 
-Any existing direct indicator calculations in `smart_monitor_data.py`, `value_stock_strategy.py`, or strategy helpers must be replaced or explicitly wrapped through the unified engine.
+Any existing direct indicator calculations in `stock_data.py`, `smart_monitor_tdx_data.py`, `smart_monitor_data.py`, `low_price_bull_service.py`, `value_stock_strategy.py`, or strategy helpers must be replaced or explicitly wrapped through the unified engine.
+
+This applies to direct `ta.*`, `rolling(...)`, `ewm(...)`, and hand-written MA/MACD/RSI/BOLL/KDJ/OBV/ATR/volume-ratio formulas in business modules. Business modules may still define which indicators they use and how they score them.
 
 ## 10. Backward Compatibility
 
@@ -246,6 +272,15 @@ Existing imports can remain temporarily:
 But new code should import from `app/data/`.
 
 Wrappers must preserve existing return shapes while internally using canonical data and the unified engine.
+
+Implementation order:
+
+1. Add `app/data/*` modules as thin wrappers around the existing local store and local clients.
+2. Move canonical normalization and indicator formulas into `app/data/*`.
+3. Point existing wrappers to the new canonical modules.
+4. Only then consider physically moving the old implementation files.
+
+The same tests must pass before and after each step. A migration that changes file paths but leaves two working implementations is not acceptable.
 
 ## 11. Testing Requirements
 
@@ -270,6 +305,8 @@ Audit tests:
 - `StockDataFetcher.calculate_technical_indicators()` does not contain formula logic.
 - `SmartMonitorTDXDataFetcher.get_technical_indicators()` does not contain formula logic.
 - Grep audit for direct `ta.` usage outside indicator engine and tests.
+- Grep audit for direct business-module `rolling(...)` or `ewm(...)` indicator formulas outside indicator engine and tests.
+- Explicit coverage for `low_price_bull_service.py` and `value_stock_strategy.py` so legacy strategy helpers do not keep private indicator math.
 
 ## 12. Acceptance Criteria
 
@@ -279,6 +316,7 @@ Audit tests:
 - Remote success always persists to local Parquet.
 - Historical replay remains point-in-time safe.
 - Signal detail can expose `indicator_version` and `formula_profile`.
+- No business module contains authoritative indicator formula logic outside `app/data/indicators/`.
 
 ## 13. Out Of Scope
 

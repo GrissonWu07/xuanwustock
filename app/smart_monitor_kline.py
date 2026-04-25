@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
 
+from app.data.indicators import TechnicalIndicatorEngine
 from app.local_market_data_clients import AkshareLocalClient, TushareLocalClient
 
 
@@ -134,17 +135,26 @@ class SmartMonitorKline:
     def _add_moving_averages(self, fig, kline_data: pd.DataFrame, row: int, col: int):
         """添加均线"""
         try:
-            # 计算均线
             ma_periods = [5, 10, 20, 60]
             ma_colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A']
+            indicators = TechnicalIndicatorEngine().calculate(
+                kline_data,
+                source="smart_monitor_kline",
+                dataset="kline",
+                timeframe="1d",
+                provider="chart",
+                strict=False,
+            )
+            if indicators.empty:
+                return
             
             for period, color in zip(ma_periods, ma_colors):
-                if len(kline_data) >= period:
-                    ma = kline_data['收盘'].rolling(window=period).mean()
+                ma_column = f"ma{period}"
+                if len(indicators) >= period and ma_column in indicators.columns:
                     fig.add_trace(
                         go.Scatter(
                             x=kline_data['日期'],
-                            y=ma,
+                            y=indicators[ma_column],
                             name=f'MA{period}',
                             line=dict(color=color, width=1),
                             opacity=0.7

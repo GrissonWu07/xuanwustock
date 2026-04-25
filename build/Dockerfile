@@ -5,6 +5,7 @@ FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12-slim
 ENV TZ=Asia/Shanghai
 ENV LOCAL_MARKET_DATA_DIR=/app/data/local_sources
 ENV MARKET_DATA_CACHE_ENABLED=true
+ENV STOCK_ANALYSIS_ASYNC_REFRESH_ENABLED=false
 
 # 替换apt-get源为国内源（阿里源）
 RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main" > /etc/apt/sources.list && \

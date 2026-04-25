@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 import queue
 import threading
+import time
 from typing import Any, Callable
 
 import app.config as config
 from app.ai_agents import StockAnalysisAgents
-from app.database import db
+from app.data.analysis_context import StockAnalysisContextNormalizer
+from app.data.indicators.profiles import FORMULA_PROFILE_CN_TDX_V1, INDICATOR_VERSION
+from app.database import StockAnalysisDatabase, db
 from app.stock_data import StockDataFetcher
 
 
@@ -33,6 +36,27 @@ def _indicator_value(indicators: dict[str, Any] | None, *aliases: str) -> Any:
         if lowered_alias in lowered:
             return lowered[lowered_alias]
     return None
+
+
+def _format_dt(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _infer_stock_data_as_of(stock_data: Any, fallback: datetime) -> tuple[datetime, str]:
+    try:
+        if stock_data is not None and len(stock_data) > 0:
+            index = getattr(stock_data, "index", None)
+            if index is not None and len(index) > 0:
+                maybe_dt = index[-1]
+                if hasattr(maybe_dt, "to_pydatetime"):
+                    return maybe_dt.to_pydatetime().replace(tzinfo=None), "exact"
+                parsed = datetime.fromisoformat(str(maybe_dt).replace("T", " ")[:19])
+                return parsed, "exact"
+    except Exception:
+        pass
+    return fallback, "generated_at_fallback"
 
 
 @lru_cache(maxsize=128)
@@ -130,7 +154,7 @@ def _run_parallel_enrichment_tasks(
     *,
     timeout_seconds: float,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """Run enrichment fetches in parallel and cap each task's blocking time."""
+    """Run enrichment fetches in parallel and cap the total blocking time."""
     if not tasks:
         return {}, {}
 
@@ -156,11 +180,13 @@ def _run_parallel_enrichment_tasks(
         worker.start()
         handles.append((name, worker, result_box, error_box))
 
-    per_task_timeout = max(float(timeout_seconds), 0.01)
+    total_timeout = max(float(timeout_seconds), 0.01)
+    deadline = time.monotonic() + total_timeout
     for name, worker, result_box, error_box in handles:
-        worker.join(timeout=per_task_timeout)
+        remaining = max(deadline - time.monotonic(), 0.0)
+        worker.join(timeout=remaining)
         if worker.is_alive():
-            errors[name] = f"{name} timeout after {per_task_timeout:.2f}s"
+            errors[name] = f"{name} timeout after {total_timeout:.2f}s"
             continue
         if not error_box.empty():
             errors[name] = str(error_box.get())
@@ -177,6 +203,8 @@ def analyze_single_stock_for_batch(
     enabled_analysts_config: dict[str, bool] | None = None,
     selected_model: str | None = None,
     progress_callback: Callable[[str, str, int | None], None] | None = None,
+    analysis_db: StockAnalysisDatabase | None = None,
+    stock_analysis_db_path: str | None = None,
 ) -> dict[str, Any]:
     """Run the full multi-agent stock analysis without any UI dependency."""
     try:
@@ -302,10 +330,23 @@ def analyze_single_stock_for_batch(
 
         saved_to_db = False
         db_error = None
-        generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        generated_dt = datetime.now()
+        generated_at = _format_dt(generated_dt)
+        data_as_of_dt, data_as_of_quality = _infer_stock_data_as_of(stock_data, generated_dt)
+        valid_until_dt = generated_dt + timedelta(hours=48)
+        analysis_context = StockAnalysisContextNormalizer().normalize(
+            final_decision=final_decision,
+            agents_results=agents_results,
+            discussion_result=discussion_result,
+            indicators=indicators,
+        )
+        analysis_context["data_as_of"] = _format_dt(data_as_of_dt)
+        analysis_context["data_as_of_quality"] = data_as_of_quality
+        analysis_context["valid_until"] = _format_dt(valid_until_dt)
         try:
             report("persist", "正在保存分析结果", 96)
-            db.save_analysis(
+            target_db = analysis_db or (StockAnalysisDatabase(stock_analysis_db_path) if stock_analysis_db_path else db)
+            target_db.save_analysis(
                 symbol=stock_info.get("symbol", ""),
                 stock_name=stock_info.get("name", ""),
                 period=period,
@@ -315,6 +356,12 @@ def analyze_single_stock_for_batch(
                 final_decision=final_decision,
                 indicators=indicators,
                 historical_data=historical_data,
+                data_as_of=_format_dt(data_as_of_dt),
+                data_as_of_quality=data_as_of_quality,
+                valid_until=_format_dt(valid_until_dt),
+                analysis_context=analysis_context,
+                formula_profile=str((indicators or {}).get("formula_profile") or FORMULA_PROFILE_CN_TDX_V1),
+                indicator_version=str((indicators or {}).get("indicator_version") or INDICATOR_VERSION),
             )
             saved_to_db = True
         except Exception as exc:
@@ -324,6 +371,10 @@ def analyze_single_stock_for_batch(
             "symbol": symbol,
             "success": True,
             "generated_at": generated_at,
+            "data_as_of": _format_dt(data_as_of_dt),
+            "data_as_of_quality": data_as_of_quality,
+            "valid_until": _format_dt(valid_until_dt),
+            "analysis_context": analysis_context,
             "stock_info": stock_info,
             "indicators": indicators,
             "agents_results": agents_results,

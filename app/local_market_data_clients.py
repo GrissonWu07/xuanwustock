@@ -360,14 +360,14 @@ class TushareLocalClient:
         adjust: str = "qfq",
         output: str = "data_source",
     ) -> pd.DataFrame | None:
-        if self.tushare_api is None:
-            return None
         clean = _clean_symbol(symbol)
         normalized_start = _yyyymmdd(start_date)
         normalized_end = _yyyymmdd(end_date) or datetime.now().strftime("%Y%m%d")
         params = {"adjust": adjust or "none"}
 
         def fetch_remote(start: Any, end: Any) -> pd.DataFrame:
+            if self.tushare_api is None:
+                return pd.DataFrame()
             try:
                 df = self.tushare_api.daily(ts_code=_ts_code(clean), start_date=normalized_start, end_date=normalized_end, adj=adjust)
             except TypeError:
@@ -389,8 +389,6 @@ class TushareLocalClient:
         return canonical_to_akshare_frame(result.data) if output == "akshare" else canonical_to_data_source_frame(result.data)
 
     def get_stock_basic_info(self, symbol: str) -> dict[str, Any] | None:
-        if self.tushare_api is None:
-            return None
         clean = _clean_symbol(symbol)
         result = self.store.fetch_latest(
             "tushare",
@@ -403,6 +401,8 @@ class TushareLocalClient:
         return _latest_dict(result.data, "tushare")
 
     def _fetch_basic_info(self, symbol: str) -> pd.DataFrame:
+        if self.tushare_api is None:
+            return pd.DataFrame()
         df = self.tushare_api.stock_basic(ts_code=_ts_code(symbol), fields="ts_code,name,area,industry,market,list_date")
         if df is None or df.empty:
             return pd.DataFrame()
@@ -421,12 +421,12 @@ class TushareLocalClient:
         )
 
     def get_realtime_quote(self, symbol: str, *, ttl_seconds: int = DEFAULT_REALTIME_TTL_SECONDS) -> dict[str, Any] | None:
-        if self.tushare_api is None:
-            return None
         clean = _clean_symbol(symbol)
         today = datetime.now().strftime("%Y%m%d")
 
         def fetch_remote() -> pd.DataFrame:
+            if self.tushare_api is None:
+                return pd.DataFrame()
             df = self.tushare_api.daily(ts_code=_ts_code(clean), start_date=today, end_date=today)
             if df is None or df.empty:
                 return pd.DataFrame()
@@ -460,11 +460,11 @@ class TushareLocalClient:
         return _latest_dict(result.data, "tushare")
 
     def get_financial_data(self, symbol: str, report_type: str = "income") -> pd.DataFrame | None:
-        if self.tushare_api is None:
-            return None
         clean = _clean_symbol(symbol)
 
         def fetch_remote() -> pd.DataFrame:
+            if self.tushare_api is None:
+                return pd.DataFrame()
             method = {
                 "income": getattr(self.tushare_api, "income", None),
                 "balance": getattr(self.tushare_api, "balancesheet", None),

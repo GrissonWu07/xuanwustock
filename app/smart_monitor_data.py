@@ -13,6 +13,7 @@ from app.akshare_client import ak
 import pandas as pd
 from typing import Dict, Optional
 from datetime import datetime, timedelta
+from app.data.indicators import TechnicalIndicatorEngine
 from app.local_market_data_clients import AkshareLocalClient, TushareLocalClient
 
 
@@ -279,32 +280,20 @@ class SmartMonitorDataFetcher:
                 self.logger.warning(f"股票 {stock_code} 历史数据不足")
                 return None
             
-            # 计算均线
-            df['ma5'] = df['收盘'].rolling(window=5).mean()
-            df['ma20'] = df['收盘'].rolling(window=20).mean()
-            df['ma60'] = df['收盘'].rolling(window=60).mean()
-            
-            # 计算MACD
-            df = self._calculate_macd(df)
-            
-            # 计算RSI
-            df = self._calculate_rsi(df, periods=[6, 12, 24])
-            
-            # 计算KDJ
-            df = self._calculate_kdj(df)
-            
-            # 计算布林带
-            df = self._calculate_bollinger(df)
-            
-            # 计算量能均线
-            df['vol_ma5'] = df['成交量'].rolling(window=5).mean()
-            df['vol_ma10'] = df['成交量'].rolling(window=10).mean()
-            
-            # 取最后一行数据
-            latest = df.iloc[-1]
-            
-            # 判断趋势
-            current_price = float(latest['收盘'])
+            indicators = TechnicalIndicatorEngine().calculate(
+                df,
+                symbol=stock_code,
+                source="smart_monitor",
+                dataset="hist_daily",
+                timeframe="1d",
+                provider="akshare",
+                strict=False,
+            )
+            if indicators.empty:
+                return None
+            latest = indicators.iloc[-1]
+
+            current_price = float(latest['close'])
             ma5 = float(latest['ma5'])
             ma20 = float(latest['ma20'])
             ma60 = float(latest['ma60'])
@@ -333,23 +322,39 @@ class SmartMonitorDataFetcher:
             return {
                 'ma5': ma5,
                 'ma20': ma20,
+                'ma10': float(latest['ma10']) if pd.notna(latest['ma10']) else 0.0,
                 'ma60': ma60,
                 'trend': trend,
                 'macd_dif': float(latest['dif']),
                 'macd_dea': float(latest['dea']),
                 'macd': float(latest['macd']),
+                'dif': float(latest['dif']),
+                'dea': float(latest['dea']),
+                'hist': float(latest['hist']),
+                'hist_prev': float(indicators.iloc[-2]['hist']) if len(indicators) >= 2 and pd.notna(indicators.iloc[-2]['hist']) else 0.0,
                 'rsi6': float(latest['rsi6']),
                 'rsi12': float(latest['rsi12']),
+                'rsi14': float(latest['rsi14']),
                 'rsi24': float(latest['rsi24']),
                 'kdj_k': float(latest['kdj_k']),
                 'kdj_d': float(latest['kdj_d']),
                 'kdj_j': float(latest['kdj_j']),
+                'k': float(latest['kdj_k']),
+                'd': float(latest['kdj_d']),
+                'j': float(latest['kdj_j']),
+                'obv': float(latest['obv']),
+                'obv_prev': float(latest['obv_prev']) if pd.notna(latest['obv_prev']) else float(latest['obv']),
+                'atr': float(latest['atr']) if pd.notna(latest['atr']) else 0.0,
                 'boll_upper': boll_upper,
                 'boll_mid': boll_mid,
                 'boll_lower': boll_lower,
+                'boll_position_value': float(latest['boll_position_value']),
                 'boll_position': boll_position,
-                'vol_ma5': float(latest['vol_ma5']),
-                'volume_ratio': float(latest['成交量']) / float(latest['vol_ma5']) if latest['vol_ma5'] > 0 else 1.0
+                'vol_ma5': float(latest['volume_ma5']),
+                'vol_ma10': float(latest['volume_ma10']),
+                'volume_ratio': float(latest['volume_ratio']) if pd.notna(latest['volume_ratio']) else 1.0,
+                'formula_profile': str(latest['formula_profile']),
+                'indicator_version': str(latest['indicator_version']),
             }
             
         except Exception as e:
@@ -495,58 +500,6 @@ class SmartMonitorDataFetcher:
         
         return result
     
-    # ========== 技术指标计算方法 ==========
-    
-    def _calculate_macd(self, df: pd.DataFrame, 
-                       fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
-        """计算MACD指标"""
-        ema_fast = df['收盘'].ewm(span=fast, adjust=False).mean()
-        ema_slow = df['收盘'].ewm(span=slow, adjust=False).mean()
-        
-        df['dif'] = ema_fast - ema_slow
-        df['dea'] = df['dif'].ewm(span=signal, adjust=False).mean()
-        df['macd'] = (df['dif'] - df['dea']) * 2
-        
-        return df
-    
-    def _calculate_rsi(self, df: pd.DataFrame, periods: list = [6, 12, 24]) -> pd.DataFrame:
-        """计算RSI指标"""
-        for period in periods:
-            delta = df['收盘'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-            
-            rs = gain / loss
-            df[f'rsi{period}'] = 100 - (100 / (1 + rs))
-        
-        return df
-    
-    def _calculate_kdj(self, df: pd.DataFrame, n: int = 9, 
-                      m1: int = 3, m2: int = 3) -> pd.DataFrame:
-        """计算KDJ指标"""
-        low_list = df['最低'].rolling(window=n).min()
-        high_list = df['最高'].rolling(window=n).max()
-        
-        rsv = (df['收盘'] - low_list) / (high_list - low_list) * 100
-        
-        df['kdj_k'] = rsv.ewm(com=m1-1, adjust=False).mean()
-        df['kdj_d'] = df['kdj_k'].ewm(com=m2-1, adjust=False).mean()
-        df['kdj_j'] = 3 * df['kdj_k'] - 2 * df['kdj_d']
-        
-        return df
-    
-    def _calculate_bollinger(self, df: pd.DataFrame, 
-                           period: int = 20, std_num: int = 2) -> pd.DataFrame:
-        """计算布林带"""
-        df['boll_mid'] = df['收盘'].rolling(window=period).mean()
-        std = df['收盘'].rolling(window=period).std()
-        
-        df['boll_upper'] = df['boll_mid'] + std_num * std
-        df['boll_lower'] = df['boll_mid'] - std_num * std
-        
-        return df
-
-
     # ========== Tushare备用数据源方法 ==========
     
     def _get_realtime_quote_from_tushare(self, stock_code: str) -> Optional[Dict]:

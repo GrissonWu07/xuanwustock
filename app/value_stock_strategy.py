@@ -6,6 +6,7 @@
 """
 
 import pandas as pd
+from app.data.indicators import TechnicalIndicatorEngine
 from app.local_market_data_clients import AkshareLocalClient
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -160,19 +161,19 @@ class ValueStockStrategy:
             if df is None or len(df) < self.rsi_period + 1:
                 return None
 
-            # 计算RSI
-            close = df['收盘'].astype(float)
-            delta = close.diff()
-            gain = delta.where(delta > 0, 0)
-            loss = (-delta).where(delta < 0, 0)
-
-            avg_gain = gain.rolling(window=self.rsi_period).mean()
-            avg_loss = loss.rolling(window=self.rsi_period).mean()
-
-            rs = avg_gain / avg_loss
-            rsi = 100 - (100 / (1 + rs))
-
-            latest_rsi = rsi.iloc[-1]
+            indicators = TechnicalIndicatorEngine().calculate(
+                df,
+                symbol=stock_code,
+                source="akshare",
+                dataset="hist_daily",
+                timeframe="1d",
+                adjust="qfq",
+                provider="akshare",
+                strict=False,
+            )
+            if indicators.empty or "rsi14" not in indicators.columns:
+                return None
+            latest_rsi = indicators.iloc[-1]["rsi14"]
             return round(float(latest_rsi), 2) if pd.notna(latest_rsi) else None
 
         except Exception as e:

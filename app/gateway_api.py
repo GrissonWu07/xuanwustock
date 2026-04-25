@@ -477,6 +477,7 @@ class UIApiContext:
         return get_quant_sim_scheduler(
             db_file=self.quant_sim_db_file,
             watchlist_db_file=self.watchlist_db_file,
+            stock_analysis_db_file=self.stock_analysis_db_file,
         )
 
     def replay_service(self):
@@ -760,13 +761,25 @@ def _run_single_workbench_analysis(
     selected_values = _normalize_workbench_selected(selected)
     analyze_config = _workbench_analysis_config(selected_values)
     try:
-        result = stock_analysis_service.analyze_single_stock_for_batch(
-            symbol,
-            cycle,
-            enabled_analysts_config=analyze_config,
-            selected_model=None,
-            progress_callback=None,
-        )
+        try:
+            result = stock_analysis_service.analyze_single_stock_for_batch(
+                symbol,
+                cycle,
+                enabled_analysts_config=analyze_config,
+                selected_model=None,
+                progress_callback=None,
+                analysis_db=context.stock_analysis_db(),
+            )
+        except TypeError as exc:
+            if "analysis_db" not in str(exc):
+                raise
+            result = stock_analysis_service.analyze_single_stock_for_batch(
+                symbol,
+                cycle,
+                enabled_analysts_config=analyze_config,
+                selected_model=None,
+                progress_callback=None,
+            )
     except Exception as exc:
         result = {"success": False, "error": str(exc), "symbol": symbol}
 
@@ -824,21 +837,6 @@ def _run_single_workbench_analysis(
     final_decision = result.get("final_decision") if isinstance(result.get("final_decision"), dict) else {}
     agents_results = result.get("agents_results") if isinstance(result.get("agents_results"), dict) else {}
     historical_data = result.get("historical_data") if isinstance(result.get("historical_data"), list) else []
-
-    try:
-        context.stock_analysis_db().save_analysis(
-            symbol=symbol,
-            stock_name=stock_name,
-            period=cycle,
-            stock_info=stock_info,
-            agents_results=agents_results,
-            discussion_result=discussion_result,
-            final_decision=final_decision,
-            indicators=indicators,
-            historical_data=historical_data,
-        )
-    except Exception:
-        pass
 
     payload = _build_workbench_analysis_payload(
         code=symbol,
@@ -2814,6 +2812,11 @@ def _build_parameter_details(
         tech_track = _safe_json_load(technical_breakdown.get("track"))
         context_track = _safe_json_load(context_breakdown.get("track"))
         dynamic_strategy = strategy_profile.get("dynamic_strategy") if isinstance(strategy_profile.get("dynamic_strategy"), dict) else {}
+        stock_analysis_context = (
+            explain_obj.get("stock_analysis_context")
+            if isinstance(explain_obj.get("stock_analysis_context"), dict)
+            else {}
+        )
         position_metric_label = _position_metric_label(decision.get("action"), decision.get("executionIntent"))
         position_metric_value = _position_metric_value(decision.get("action"), decision.get("positionSizePct"))
 
@@ -2870,6 +2873,42 @@ def _build_parameter_details(
             _item("方向冲突标记", fusion_breakdown.get("sign_conflict"), "fusion_breakdown.sign_conflict", "技术轨与环境轨符号是否冲突（0/1）。"),
             _item("veto 来源模式", fusion_breakdown.get("veto_source_mode"), "fusion_breakdown.veto_source_mode", "标记 veto 判定来源（如 legacy/new）。"),
         ]
+
+        if stock_analysis_context:
+            rows.extend(
+                [
+                    _item(
+                        "股票分析上下文",
+                        "使用" if stock_analysis_context.get("used") else "未使用",
+                        "explainability.stock_analysis_context.used",
+                        "实时模拟可使用最近有效股票分析作为外部分析维度；历史回放默认禁用，避免当前分析污染历史决策。",
+                    ),
+                    _item(
+                        "股票分析记录ID",
+                        stock_analysis_context.get("record_id") or "--",
+                        "explainability.stock_analysis_context.record_id",
+                        "被交易决策引用的股票分析记录 ID。",
+                    ),
+                    _item(
+                        "股票分析数据时点",
+                        stock_analysis_context.get("data_as_of") or "--",
+                        "explainability.stock_analysis_context.data_as_of",
+                        "股票分析所依据的数据截止时间，必须早于等于决策点。",
+                    ),
+                    _item(
+                        "股票分析质量",
+                        stock_analysis_context.get("data_as_of_quality") or stock_analysis_context.get("omitted_reason") or "--",
+                        "explainability.stock_analysis_context.data_as_of_quality",
+                        "exact/asof_precomputed 可用于严格 as-of；generated_at_fallback 仅用于实时，不用于历史回放。",
+                    ),
+                    _item(
+                        "股票分析贡献分",
+                        stock_analysis_context.get("effective_score", stock_analysis_context.get("score", "--")),
+                        "context_breakdown.dimensions.stock_analysis.score",
+                        "归一化后的股票分析分，作为环境轨 external_analysis 维度参与融合。",
+                    ),
+                ]
+            )
 
         position_add_gate = strategy_profile.get("position_add_gate") if isinstance(strategy_profile.get("position_add_gate"), dict) else {}
         if position_add_gate:
@@ -4216,7 +4255,12 @@ def _action_live_sim_analyze_candidate(context: UIApiContext, payload: Any) -> d
     candidate = next((item for item in context.candidate_pool().list_candidates(status="active") if normalize_stock_code(item.get("stock_code")) == code), None)
     if not candidate:
         raise HTTPException(status_code=404, detail=f"Candidate not found: {code}")
-    engine = QuantSimEngine(db_file=context.quant_sim_db_file, watchlist_db_file=context.watchlist_db_file, watchlist_service=context.watchlist())
+    engine = QuantSimEngine(
+        db_file=context.quant_sim_db_file,
+        watchlist_db_file=context.watchlist_db_file,
+        watchlist_service=context.watchlist(),
+        stock_analysis_db_file=context.stock_analysis_db_file,
+    )
     analysis_timeframe = _txt(scheduler_state.get("analysis_timeframe"), "1d")
     strategy_mode = _txt(scheduler_state.get("strategy_mode"), "auto")
     strategy_profile_id = _txt(scheduler_state.get("strategy_profile_id")).strip() or None

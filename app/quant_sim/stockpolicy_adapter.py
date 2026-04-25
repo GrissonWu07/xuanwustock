@@ -126,16 +126,21 @@ class StockPolicyAdapter:
         if snapshot is None:
             return None
         account_context: dict[str, Any] = {}
+        stock_analysis_context: dict[str, Any] | None = None
         for payload in payloads:
             context = payload.get("_quant_account_context") if isinstance(payload, dict) else None
             if isinstance(context, dict) and context:
                 account_context = context
-                break
-        if not account_context:
+            stock_context = payload.get("_quant_stock_analysis_context") if isinstance(payload, dict) else None
+            if isinstance(stock_context, dict) and stock_context:
+                stock_analysis_context = stock_context
+        if not account_context and not stock_analysis_context:
             return snapshot
 
         merged = dict(snapshot)
         for key in ("available_cash", "total_equity", "cash_ratio", "position_count"):
             if key in account_context and key not in merged:
                 merged[key] = account_context[key]
+        if stock_analysis_context is not None and "stock_analysis_context" not in merged:
+            merged["stock_analysis_context"] = stock_analysis_context
         return merged

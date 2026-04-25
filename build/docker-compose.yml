@@ -15,6 +15,7 @@ services:
       - TZ=Asia/Shanghai
       - LOCAL_MARKET_DATA_DIR=/app/data/local_sources
       - MARKET_DATA_CACHE_ENABLED=true
+      - STOCK_ANALYSIS_ASYNC_REFRESH_ENABLED=false
     restart: unless-stopped
     networks:
       - agentsstock-network

@@ -617,6 +617,23 @@ class KernelStrategyRuntime:
         raw_feedback_score = float(snapshot.get("execution_feedback_score") or (context_components.get("execution_feedback") or {}).get("score") or 0.0)
         source_prior_score = float((context_components.get("source_prior") or {}).get("score") or 0.1)
         account_posture_score = float(snapshot.get("account_posture_score") or (context_components.get("account_posture") or {}).get("score") or 0.0)
+        stock_analysis_context = (
+            snapshot.get("stock_analysis_context")
+            if isinstance(snapshot.get("stock_analysis_context"), dict)
+            else {}
+        )
+        stock_analysis_used = bool(stock_analysis_context.get("used"))
+        stock_analysis_score = self._to_float(
+            stock_analysis_context.get("effective_score", stock_analysis_context.get("score")),
+            0.0,
+        )
+        stock_analysis_reason = (
+            f"record={stock_analysis_context.get('record_id')}; "
+            f"score={self._to_float(stock_analysis_context.get('score'), stock_analysis_score):.4f}; "
+            f"confidence={self._to_float(stock_analysis_context.get('confidence'), 0.0):.4f}; "
+            f"data_as_of={stock_analysis_context.get('data_as_of')}; "
+            f"{stock_analysis_context.get('summary') or ''}"
+        ).strip()
 
         context: dict[str, dict[str, Any]] = {
             "source_prior": self._score_lookup_dimension(
@@ -693,6 +710,11 @@ class KernelStrategyRuntime:
                 reason=f"cash_ratio={snapshot.get('cash_ratio')}",
                 available=snapshot.get("cash_ratio") is not None or (context_components.get("account_posture") is not None),
                 fallback_score=account_posture_score,
+            ),
+            "stock_analysis": self._score_payload(
+                score=stock_analysis_score,
+                available=stock_analysis_used,
+                reason=stock_analysis_reason if stock_analysis_used else "no_valid_stock_analysis_context",
             ),
         }
 
@@ -1189,6 +1211,11 @@ class KernelStrategyRuntime:
         profile = dict(strategy_profile)
         if isinstance(market_snapshot, dict):
             profile["market_snapshot"] = json.loads(json.dumps(market_snapshot, ensure_ascii=False, default=str))
+        stock_analysis_context = (
+            market_snapshot.get("stock_analysis_context")
+            if isinstance(market_snapshot, dict) and isinstance(market_snapshot.get("stock_analysis_context"), dict)
+            else None
+        )
         fusion_view = dict(fusion_breakdown)
         fusion_view["core_rule_action"] = str((resolved.dual_track_details or {}).get("tech_signal") or resolved.action)
         fusion_view["final_action"] = str(v23_action.get("final_action") or resolved.action)
@@ -1224,6 +1251,10 @@ class KernelStrategyRuntime:
             "vetoes": vetoes,
             "decision_path": v23_action.get("decision_path") or [],
         }
+        if stock_analysis_context is not None:
+            profile["explainability"]["stock_analysis_context"] = json.loads(
+                json.dumps(stock_analysis_context, ensure_ascii=False, default=str)
+            )
         return profile
 
     def _build_context_votes(self, contextual_score: ContextualScore) -> list[dict[str, Any]]:

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+import os
 from pathlib import Path
 from typing import Any, Optional
 
+from app.data.analysis_context import StockAnalysisContextRepository
+from app.data.analysis_context.refresh import refresh_enabled_by_env, stock_analysis_refresh_queue
+from app.quant_kernel.config import StrategyScoringConfig
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.db import DEFAULT_DB_FILE
 from app.quant_sim.dynamic_strategy import (
@@ -32,14 +37,24 @@ class QuantSimEngine:
         adapter: Optional[StockPolicyAdapter] = None,
         watchlist_db_file: str | Path = DEFAULT_WATCHLIST_DB_FILE,
         watchlist_service: WatchlistService | None = None,
+        stock_analysis_db_file: str | Path | None = None,
+        stock_analysis_context_enabled: bool = True,
+        stock_analysis_refresh_enabled: bool | None = None,
     ):
         self.db_file = db_file
+        self.stock_analysis_db_file = str(stock_analysis_db_file or default_db_path("stock_analysis.db"))
         self.candidate_pool = CandidatePoolService(db_file=db_file)
         self.signal_center = SignalCenterService(db_file=db_file)
         self.portfolio = PortfolioService(db_file=db_file)
         self.adapter = adapter or StockPolicyAdapter()
         self.watchlist = watchlist_service or WatchlistService(db_file=watchlist_db_file)
         self.dynamic_strategy = DynamicStrategyController(db_file=db_file)
+        self.stock_analysis_context_enabled = bool(stock_analysis_context_enabled)
+        self.stock_analysis_refresh_enabled = refresh_enabled_by_env() if stock_analysis_refresh_enabled is None else bool(stock_analysis_refresh_enabled)
+        self.stock_analysis_refresh_period = os.getenv("STOCK_ANALYSIS_REFRESH_PERIOD", "1y")
+        self.stock_analysis_context = StockAnalysisContextRepository(
+            db_path=self.stock_analysis_db_file
+        )
 
     def analyze_candidate(
         self,
@@ -218,7 +233,14 @@ class QuantSimEngine:
         strategy_mode: str = "auto",
         strategy_profile_binding: dict | None = None,
     ):
-        candidate_payload = self._with_account_context(candidate)
+        candidate_payload = self._with_account_context(
+            candidate,
+            profile_kind="candidate",
+            stock_analysis_policy=self._stock_analysis_policy_from_binding(
+                strategy_profile_binding,
+                profile_kind="candidate",
+            ),
+        )
         attempts = [
             {
                 "market_snapshot": market_snapshot,
@@ -270,8 +292,20 @@ class QuantSimEngine:
         strategy_mode: str = "auto",
         strategy_profile_binding: dict | None = None,
     ):
-        candidate_payload = self._with_account_context(candidate)
-        position_payload = self._with_account_context(position)
+        stock_analysis_policy = self._stock_analysis_policy_from_binding(
+            strategy_profile_binding,
+            profile_kind="position",
+        )
+        candidate_payload = self._with_account_context(
+            candidate,
+            profile_kind="position",
+            stock_analysis_policy=stock_analysis_policy,
+        )
+        position_payload = self._with_account_context(
+            position,
+            profile_kind="position",
+            stock_analysis_policy=stock_analysis_policy,
+        )
         attempts = [
             {
                 "market_snapshot": market_snapshot,
@@ -313,10 +347,126 @@ class QuantSimEngine:
             raise last_error
         return self.adapter.analyze_position(candidate_payload, position_payload)
 
-    def _with_account_context(self, payload: dict) -> dict:
+    def _with_account_context(
+        self,
+        payload: dict,
+        *,
+        profile_kind: str = "candidate",
+        stock_analysis_policy: dict[str, Any] | None = None,
+    ) -> dict:
         enriched = dict(payload)
         enriched["_quant_account_context"] = self._build_account_context()
+        enriched["_quant_stock_analysis_context"] = self._build_stock_analysis_context(
+            payload,
+            profile_kind=profile_kind,
+            policy=stock_analysis_policy,
+        )
         return enriched
+
+    def _build_stock_analysis_context(
+        self,
+        payload: dict,
+        *,
+        profile_kind: str = "candidate",
+        policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if not self.stock_analysis_context_enabled:
+            return None
+        resolved_policy = policy or self._default_stock_analysis_policy()
+        if not bool(resolved_policy.get("enabled", True)):
+            return {
+                "used": False,
+                "omitted_reason": "disabled_by_profile",
+                "profile_kind": profile_kind,
+            }
+        code = str(payload.get("stock_code") or payload.get("symbol") or "").strip()
+        if not code:
+            return None
+        ttl_hours = self._safe_float(resolved_policy.get("ttl_hours"), 48.0)
+        min_confidence = self._safe_float(resolved_policy.get("min_confidence"), 0.45)
+        context = self.stock_analysis_context.get_latest_valid(
+            code,
+            as_of=datetime.now(),
+            mode="realtime",
+            ttl_hours=ttl_hours,
+            min_confidence=min_confidence,
+        )
+        if context is not None:
+            context["profile_kind"] = profile_kind
+            context["policy"] = {
+                "ttl_hours": ttl_hours,
+                "min_confidence": min_confidence,
+                "max_positive_contribution": self._safe_float(resolved_policy.get("max_positive_contribution"), 0.08),
+                "max_negative_contribution": self._safe_float(resolved_policy.get("max_negative_contribution"), -0.08),
+            }
+            return context
+        refresh_state = {"enqueued": False, "reason": "disabled"}
+        if self.stock_analysis_refresh_enabled:
+            refresh_state = stock_analysis_refresh_queue.enqueue(
+                symbol=code,
+                period=self.stock_analysis_refresh_period,
+                db_path=self.stock_analysis_db_file,
+                reason="no_valid_recent_stock_analysis",
+            )
+        return {
+            "used": False,
+            "omitted_reason": "no_valid_recent_stock_analysis",
+            "profile_kind": profile_kind,
+            "refresh_enqueued": bool(refresh_state.get("enqueued")),
+            "refresh_status": str(refresh_state.get("reason") or ""),
+            "policy": {
+                "ttl_hours": ttl_hours,
+                "min_confidence": min_confidence,
+            },
+        }
+
+    @staticmethod
+    def _default_stock_analysis_policy() -> dict[str, Any]:
+        return {
+            "enabled": True,
+            "ttl_hours": 48.0,
+            "min_confidence": 0.45,
+            "max_positive_contribution": 0.08,
+            "max_negative_contribution": -0.08,
+        }
+
+    def _stock_analysis_policy_from_binding(
+        self,
+        strategy_profile_binding: dict | None,
+        *,
+        profile_kind: str,
+    ) -> dict[str, Any]:
+        default_policy = self._default_stock_analysis_policy()
+        if not isinstance(strategy_profile_binding, dict):
+            return default_policy
+        config_payload = strategy_profile_binding.get("config")
+        if not isinstance(config_payload, dict):
+            return default_policy
+        base = config_payload.get("base")
+        profiles = config_payload.get("profiles")
+        if not isinstance(base, dict) or not isinstance(profiles, dict):
+            return default_policy
+        try:
+            resolved = StrategyScoringConfig(
+                schema_version=str(config_payload.get("schema_version") or "quant_explain"),
+                base=base,
+                profiles=profiles,
+            ).resolve(profile_kind)
+        except Exception:
+            return default_policy
+        context_config = resolved.get("context") if isinstance(resolved.get("context"), dict) else {}
+        policy = context_config.get("stock_analysis_policy") if isinstance(context_config.get("stock_analysis_policy"), dict) else {}
+        return {**default_policy, **policy}
+
+    @staticmethod
+    def _safe_float(value: Any, default: float) -> float:
+        try:
+            parsed = float(value)
+            if parsed != parsed:
+                return default
+            return parsed
+        except (TypeError, ValueError):
+            return default
 
     def _build_account_context(self) -> dict[str, Any]:
         try:

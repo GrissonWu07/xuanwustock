@@ -3,11 +3,12 @@ import yfinance as yf
 from app.akshare_client import ak
 import pandas as pd
 import numpy as np
-import ta
 from datetime import datetime, timedelta
 import requests
 import json
 import pywencai
+from app.data.indicators import TechnicalIndicatorEngine
+from app.data.store.normalizer import canonical_to_stock_analysis_frame
 from app.data_source_manager import data_source_manager
 
 class StockDataFetcher:
@@ -556,37 +557,36 @@ class StockDataFetcher:
         try:
             if isinstance(df, dict) and "error" in df:
                 return df
-                
-            # 移动平均线
-            df['MA5'] = ta.trend.sma_indicator(df['Close'], window=5)
-            df['MA10'] = ta.trend.sma_indicator(df['Close'], window=10)
-            df['MA20'] = ta.trend.sma_indicator(df['Close'], window=20)
-            df['MA60'] = ta.trend.sma_indicator(df['Close'], window=60)
-            
-            # RSI
-            df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
-            
-            # MACD
-            macd = ta.trend.MACD(df['Close'])
-            df['MACD'] = macd.macd()
-            df['MACD_signal'] = macd.macd_signal()
-            df['MACD_histogram'] = macd.macd_diff()
-            
-            # 布林带
-            bollinger = ta.volatility.BollingerBands(df['Close'])
-            df['BB_upper'] = bollinger.bollinger_hband()
-            df['BB_middle'] = bollinger.bollinger_mavg()
-            df['BB_lower'] = bollinger.bollinger_lband()
-            
-            # KDJ指标
-            df['K'] = ta.momentum.stoch(df['High'], df['Low'], df['Close'])
-            df['D'] = ta.momentum.stoch_signal(df['High'], df['Low'], df['Close'])
-            
-            # 成交量指标
-            df['Volume_MA5'] = ta.trend.sma_indicator(df['Volume'], window=5)
-            df['Volume_ratio'] = df['Volume'] / df['Volume_MA5']
-            
-            return df
+
+            canonical = TechnicalIndicatorEngine().calculate(
+                df,
+                source="stock_analysis",
+                dataset="hist_daily",
+                timeframe="1d",
+                provider="stock_data",
+                strict=False,
+            )
+            if canonical.empty:
+                return {"error": "计算技术指标失败: 缺少必要OHLCV字段"}
+
+            result = canonical_to_stock_analysis_frame(canonical)
+            result["MA5"] = result["ma5"]
+            result["MA10"] = result["ma10"]
+            result["MA20"] = result["ma20"]
+            result["MA60"] = result["ma60"]
+            result["RSI"] = result["rsi14"]
+            result["MACD"] = result["macd"]
+            result["MACD_signal"] = result["dea"]
+            result["MACD_histogram"] = result["hist"]
+            result["BB_upper"] = result["boll_upper"]
+            result["BB_middle"] = result["boll_mid"]
+            result["BB_lower"] = result["boll_lower"]
+            result["K"] = result["kdj_k"]
+            result["D"] = result["kdj_d"]
+            result["J"] = result["kdj_j"]
+            result["Volume_MA5"] = result["volume_ma5"]
+            result["Volume_ratio"] = result["volume_ratio"]
+            return result
             
         except Exception as e:
             return {"error": f"计算技术指标失败: {str(e)}"}
@@ -598,25 +598,38 @@ class StockDataFetcher:
                 return df
                 
             latest = df.iloc[-1]
+
+            def _value(*keys):
+                for key in keys:
+                    if key in latest:
+                        return latest[key]
+                return None
             
             return {
-                "price": latest['Close'],
-                "ma5": latest['MA5'],
-                "ma10": latest['MA10'], 
-                "ma20": latest['MA20'],
-                "ma60": latest['MA60'],
-                "rsi": latest['RSI'],
-                "macd": latest['MACD'],
-                "macd_signal": latest['MACD_signal'],
-                "macd_histogram": latest.get('MACD_histogram'),
-                "bb_upper": latest['BB_upper'],
-                "bb_middle": latest.get('BB_middle'),
-                "bb_lower": latest['BB_lower'],
-                "k_value": latest['K'],
-                "d_value": latest['D'],
-                "volume": latest.get('Volume'),
-                "volume_ma5": latest.get('Volume_MA5'),
-                "volume_ratio": latest['Volume_ratio']
+                "price": _value("Close", "close"),
+                "ma5": _value("MA5", "ma5"),
+                "ma10": _value("MA10", "ma10"),
+                "ma20": _value("MA20", "ma20"),
+                "ma60": _value("MA60", "ma60"),
+                "rsi": _value("RSI", "rsi14"),
+                "rsi14": _value("rsi14", "RSI"),
+                "rsi12": _value("rsi12"),
+                "macd": _value("MACD", "macd"),
+                "macd_signal": _value("MACD_signal", "dea"),
+                "macd_histogram": _value("MACD_histogram", "hist"),
+                "dif": _value("dif"),
+                "dea": _value("dea"),
+                "hist": _value("hist"),
+                "bb_upper": _value("BB_upper", "boll_upper"),
+                "bb_middle": _value("BB_middle", "boll_mid"),
+                "bb_lower": _value("BB_lower", "boll_lower"),
+                "k_value": _value("K", "kdj_k"),
+                "d_value": _value("D", "kdj_d"),
+                "volume": _value("Volume", "volume"),
+                "volume_ma5": _value("Volume_MA5", "volume_ma5"),
+                "volume_ratio": _value("Volume_ratio", "volume_ratio"),
+                "formula_profile": _value("formula_profile"),
+                "indicator_version": _value("indicator_version"),
             }
         except Exception as e:
             return {"error": f"获取最新指标失败: {str(e)}"}

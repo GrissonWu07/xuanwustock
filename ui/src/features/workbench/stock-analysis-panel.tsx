@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import type { WorkbenchSnapshot } from "../../lib/page-models";
-import { Sparkline } from "../../components/ui/sparkline";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { t } from "../../lib/i18n";
 
@@ -636,7 +635,7 @@ export function StockAnalysisPanel({
             </div>
           </div>
 
-          <div className="evidence-grid" style={{ marginTop: "12px" }}>
+          <div className="summary-list" style={{ marginTop: "12px" }}>
             <div className="summary-item">
               <div className="summary-item__title">{t("Key indicators")}</div>
               {displayAnalysis.indicators.length > 0 ? (
@@ -648,10 +647,6 @@ export function StockAnalysisPanel({
               ) : (
                 <div className="summary-item__body">{t("No indicator data")}</div>
               )}
-            </div>
-            <div className="summary-item">
-              <div className="summary-item__title">{t("Trend summary")}</div>
-              <Sparkline points={displayAnalysis.curve} />
             </div>
           </div>
 

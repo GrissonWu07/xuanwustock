@@ -92,3 +92,52 @@ def test_kernel_candidate_uses_extended_snapshot_indicators_when_present():
     assert dimensions["obv_trend"]["available"] is True
     assert dimensions["atr_risk"]["available"] is True
     assert dimensions["kdj_cross"]["available"] is True
+
+
+def test_kernel_candidate_uses_stock_analysis_context_when_present():
+    runtime = KernelStrategyRuntime()
+
+    decision = runtime.evaluate_candidate(
+        candidate={
+            "stock_code": "002518",
+            "stock_name": "科士达",
+            "source": "manual",
+            "sources": ["manual"],
+        },
+        market_snapshot={
+            "current_price": 20.0,
+            "latest_price": 20.0,
+            "ma5": 20.4,
+            "ma20": 20.1,
+            "ma60": 19.2,
+            "macd": 0.12,
+            "dif": 0.08,
+            "dea": 0.02,
+            "hist": 0.06,
+            "hist_prev": 0.04,
+            "rsi14": 58.0,
+            "volume_ratio": 1.1,
+            "trend": "up",
+            "stock_analysis_context": {
+                "used": True,
+                "record_id": 99,
+                "score": 0.55,
+                "effective_score": 0.44,
+                "confidence": 0.8,
+                "summary": "AI团队结论偏多。",
+                "data_as_of": "2026-04-24 14:30:00",
+                "valid_until": "2026-04-26 14:30:00",
+            },
+        },
+        current_time=datetime(2026, 4, 24, 14, 30),
+        analysis_timeframe="30m",
+        strategy_mode="auto",
+    )
+
+    explainability = (decision.strategy_profile or {}).get("explainability") or {}
+    context_breakdown = explainability.get("context_breakdown") or {}
+    dimensions = {item["id"]: item for item in context_breakdown.get("dimensions") or []}
+
+    assert dimensions["stock_analysis"]["available"] is True
+    assert dimensions["stock_analysis"]["score"] == 0.44
+    assert explainability["stock_analysis_context"]["record_id"] == 99

@@ -28,6 +28,7 @@ CONTEXT_GROUP_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "risk_account": ("risk_balance", "account_posture"),
     "tradability_timing": ("liquidity", "session"),
     "source_execution": ("source_prior", "execution_feedback"),
+    "external_analysis": ("stock_analysis",),
 }
 
 TECHNICAL_DIMENSIONS: tuple[str, ...] = tuple(
@@ -67,6 +68,10 @@ KNOWN_REASON_FIELDS: set[str] = {
     "session",
     "feedback_sample_count",
     "cash_ratio",
+    "stock_analysis_score",
+    "stock_analysis_confidence",
+    "record_id",
+    "data_as_of",
 }
 
 
@@ -216,6 +221,11 @@ def _default_scorers() -> dict[str, dict[str, Any]]:
             "params": {"cash_ratio_bands": [0.1, 0.25, 0.55, 0.8], "posture_scores": [-0.3, 0.0, 0.3, 0.1]},
             "reason_template": "cash_ratio={cash_ratio}",
         },
+        "stock_analysis": {
+            "algorithm": "linear",
+            "params": {"min_clip": -1.0, "max_clip": 1.0, "intercept": 0.0},
+            "reason_template": "record={record_id}, score={stock_analysis_score}, confidence={stock_analysis_confidence}, data_as_of={data_as_of}",
+        },
     }
 
 
@@ -233,12 +243,20 @@ def _default_strategy_profile_payload() -> dict[str, Any]:
             "context": {
                 "group_weights": {group: 1.0 for group in CONTEXT_GROUP_DIMENSIONS},
                 "dimension_groups": {group: list(dimensions) for group, dimensions in CONTEXT_GROUP_DIMENSIONS.items()},
+                "optional_groups": ["external_analysis"],
                 "dimension_weights": base_context_weights,
                 "scorers": {dimension: scorers[dimension] for dimension in CONTEXT_DIMENSIONS},
                 "execution_feedback_policy": {
                     "feedback_decay_half_life": 20.0,
                     "min_feedback_samples": 5.0,
                     "execution_feedback_score_cap": 0.25,
+                },
+                "stock_analysis_policy": {
+                    "enabled": True,
+                    "ttl_hours": 48.0,
+                    "min_confidence": 0.45,
+                    "max_positive_contribution": 0.08,
+                    "max_negative_contribution": -0.08,
                 },
             },
             "dual_track": {
@@ -288,6 +306,7 @@ def _default_strategy_profile_payload() -> dict[str, Any]:
                         "risk_account": 1.1,
                         "tradability_timing": 0.7,
                         "source_execution": 0.7,
+                        "external_analysis": 0.2,
                     },
                     "dimension_weights": {
                         "trend_regime": 1.2,
@@ -299,6 +318,7 @@ def _default_strategy_profile_payload() -> dict[str, Any]:
                         "session": 0.5,
                         "source_prior": 1.0,
                         "execution_feedback": 0.8,
+                        "stock_analysis": 0.5,
                     },
                 },
                 "dual_track": {"fusion_buy_threshold": 0.78, "sell_precedence_gate": -0.52},
@@ -322,6 +342,7 @@ def _default_strategy_profile_payload() -> dict[str, Any]:
                         "risk_account": 1.5,
                         "tradability_timing": 0.6,
                         "source_execution": 0.7,
+                        "external_analysis": 0.15,
                     },
                     "dimension_weights": {
                         "trend_regime": 1.0,
@@ -333,6 +354,7 @@ def _default_strategy_profile_payload() -> dict[str, Any]:
                         "session": 0.4,
                         "source_prior": 0.7,
                         "execution_feedback": 1.1,
+                        "stock_analysis": 0.4,
                     },
                 },
                 "dual_track": {"fusion_buy_threshold": 0.72, "sell_precedence_gate": -0.48},

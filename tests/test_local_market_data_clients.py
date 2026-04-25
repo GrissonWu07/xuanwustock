@@ -78,6 +78,30 @@ def test_tushare_hist_source_isolation_writes_only_tushare_namespace(tmp_path):
     assert not store.path_for("akshare", "hist_daily", "000001", {"period": "daily", "adjust": "qfq"}).exists()
 
 
+def test_tushare_hist_local_hit_works_without_remote_api(tmp_path):
+    store = LocalMarketDataStore(tmp_path)
+    store.merge_frame(
+        "tushare",
+        "daily",
+        "000001",
+        pd.DataFrame(
+            [
+                {"symbol": "000001", "datetime": "2026-01-01", "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 1000, "amount": 10000},
+                {"symbol": "000001", "datetime": "2026-01-02", "open": 11, "high": 12, "low": 10, "close": 11.5, "volume": 1100, "amount": 11000},
+            ]
+        ),
+        params={"adjust": "qfq"},
+        key_columns=["symbol", "datetime"],
+    )
+    client = TushareLocalClient(store=store, tushare_api=None)
+
+    df = client.get_stock_hist_data("000001", start_date="20260101", end_date="20260102")
+
+    assert df["close"].tolist() == [10.5, 11.5]
+    assert set(df["cache_source"]) == {"local_tushare"}
+    assert set(df["cache_status"]) == {"hit"}
+
+
 def test_tdx_kline_local_hit_avoids_remote(tmp_path):
     store = LocalMarketDataStore(tmp_path)
     client = TdxLocalClient(store=store)

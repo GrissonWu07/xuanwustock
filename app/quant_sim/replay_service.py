@@ -560,7 +560,11 @@ class QuantSimReplayService:
         try:
             temp_candidate_service = CandidatePoolService(db_file=temp_db_file)
             temp_portfolio = PortfolioService(db_file=temp_db_file)
-            temp_engine = QuantSimEngine(db_file=temp_db_file, adapter=self.adapter)
+            temp_engine = QuantSimEngine(
+                db_file=temp_db_file,
+                adapter=self.adapter,
+                stock_analysis_context_enabled=False,
+            )
             temp_signal_service = SignalCenterService(db_file=temp_db_file)
             temp_db = QuantSimDB(temp_db_file)
             last_checkpoint_index = 0

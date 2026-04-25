@@ -108,6 +108,19 @@ def _normalize_codes(payload: Any) -> list[str]:
     return [code] if code else []
 
 
+def _analyze_stock_with_context(context: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    try:
+        return stock_analysis_service.analyze_single_stock_for_batch(
+            *args,
+            analysis_db=context.stock_analysis_db(),
+            **kwargs,
+        )
+    except TypeError as exc:
+        if "analysis_db" not in str(exc):
+            raise
+        return stock_analysis_service.analyze_single_stock_for_batch(*args, **kwargs)
+
+
 WORKBENCH_WATCHLIST_PAGE_SIZE = 20
 
 
@@ -372,7 +385,7 @@ def _submit_workbench_analysis_task(
             "normalize_code": normalize_stock_code,
             "analysis_config_builder": _analysis_config,
             "build_payload": _build_workbench_analysis_payload,
-            "analyze_stock": stock_analysis_service.analyze_single_stock_for_batch,
+            "analyze_stock": lambda *args, **kwargs: _analyze_stock_with_context(context, *args, **kwargs),
             "now": _now,
             "txt": _txt,
             "dict_value": _dict_value,

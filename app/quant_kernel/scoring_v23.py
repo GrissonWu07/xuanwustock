@@ -67,6 +67,11 @@ def score_track(
 ) -> dict[str, Any]:
     groups = _resolve_groups(track_name, track_config)
     group_weights = track_config.get("group_weights") if isinstance(track_config.get("group_weights"), Mapping) else {}
+    optional_groups = {
+        str(group)
+        for group in (track_config.get("optional_groups") or [])
+        if isinstance(group, (str, int, float))
+    }
     dimension_weights = (
         track_config.get("dimension_weights")
         if isinstance(track_config.get("dimension_weights"), Mapping)
@@ -104,7 +109,8 @@ def score_track(
         group_weight_raw = max(0.0, _to_float(group_weights.get(group_id), 0.0))
         if group_available:
             available_group_denominator += group_weight_raw
-        confidence_denominator += group_weight_raw
+        if group_available or group_id not in optional_groups:
+            confidence_denominator += group_weight_raw
         denominator = sum(item["_w_eff"] for item in dim_rows)
         group_score_raw = 0.0
         for item in dim_rows:

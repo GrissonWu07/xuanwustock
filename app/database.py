@@ -43,6 +43,12 @@ class StockAnalysisDatabase:
         ''')
         self._ensure_column(cursor, "analysis_records", "indicators", "TEXT")
         self._ensure_column(cursor, "analysis_records", "historical_data", "TEXT")
+        self._ensure_column(cursor, "analysis_records", "data_as_of", "TEXT")
+        self._ensure_column(cursor, "analysis_records", "data_as_of_quality", "TEXT")
+        self._ensure_column(cursor, "analysis_records", "valid_until", "TEXT")
+        self._ensure_column(cursor, "analysis_records", "analysis_context_json", "TEXT")
+        self._ensure_column(cursor, "analysis_records", "formula_profile", "TEXT")
+        self._ensure_column(cursor, "analysis_records", "indicator_version", "TEXT")
         
         conn.commit()
         conn.close()
@@ -65,6 +71,13 @@ class StockAnalysisDatabase:
         final_decision,
         indicators=None,
         historical_data=None,
+        data_as_of=None,
+        data_as_of_quality=None,
+        valid_until=None,
+        analysis_context=None,
+        analysis_context_json=None,
+        formula_profile=None,
+        indicator_version=None,
     ):
         """保存分析记录到数据库"""
         conn = sqlite3.connect(self.db_path)
@@ -81,11 +94,13 @@ class StockAnalysisDatabase:
         final_decision_json = json.dumps(final_decision, ensure_ascii=False, default=str)
         indicators_json = json.dumps(indicators or {}, ensure_ascii=False, default=str)
         historical_data_json = json.dumps(historical_data or [], ensure_ascii=False, default=str)
+        if analysis_context_json is None:
+            analysis_context_json = json.dumps(analysis_context or {}, ensure_ascii=False, default=str)
         
         cursor.execute('''
             INSERT INTO analysis_records 
-            (symbol, stock_name, analysis_date, period, stock_info, agents_results, discussion_result, final_decision, indicators, historical_data, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (symbol, stock_name, analysis_date, period, stock_info, agents_results, discussion_result, final_decision, indicators, historical_data, created_at, data_as_of, data_as_of_quality, valid_until, analysis_context_json, formula_profile, indicator_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             symbol,
             stock_name,
@@ -98,6 +113,12 @@ class StockAnalysisDatabase:
             indicators_json,
             historical_data_json,
             created_at,
+            data_as_of,
+            data_as_of_quality,
+            valid_until,
+            analysis_context_json,
+            formula_profile,
+            indicator_version,
         ))
         
         conn.commit()
@@ -264,6 +285,12 @@ class StockAnalysisDatabase:
             'final_decision': json.loads(record['final_decision']) if record['final_decision'] else {},
             'indicators': json.loads(record['indicators']) if 'indicators' in record.keys() and record['indicators'] else {},
             'historical_data': json.loads(record['historical_data']) if 'historical_data' in record.keys() and record['historical_data'] else [],
+            'data_as_of': record['data_as_of'] if 'data_as_of' in record.keys() else None,
+            'data_as_of_quality': record['data_as_of_quality'] if 'data_as_of_quality' in record.keys() else None,
+            'valid_until': record['valid_until'] if 'valid_until' in record.keys() else None,
+            'analysis_context': json.loads(record['analysis_context_json']) if 'analysis_context_json' in record.keys() and record['analysis_context_json'] else {},
+            'formula_profile': record['formula_profile'] if 'formula_profile' in record.keys() else None,
+            'indicator_version': record['indicator_version'] if 'indicator_version' in record.keys() else None,
             'created_at': record['created_at'],
         }
     

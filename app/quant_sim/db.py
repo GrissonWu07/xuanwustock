@@ -3341,6 +3341,7 @@ class QuantSimDB:
             "risk_account": 0.55,
             "tradability_timing": 0.55,
             "source_execution": 0.35,
+            "external_analysis": 0.08,
         }
         aggressive_config["profiles"]["candidate"]["context"]["dimension_weights"] = {
             "trend_regime": 1.15,
@@ -3352,6 +3353,7 @@ class QuantSimDB:
             "session": 0.35,
             "source_prior": 0.75,
             "execution_feedback": 0.05,
+            "stock_analysis": 1.00,
         }
         aggressive_config["profiles"]["candidate"]["dual_track"] = {
             "fusion_buy_threshold": 0.35,
@@ -3387,6 +3389,7 @@ class QuantSimDB:
             "risk_account": 1.00,
             "tradability_timing": 0.70,
             "source_execution": 0.60,
+            "external_analysis": 0.06,
         }
         aggressive_config["profiles"]["position"]["context"]["dimension_weights"] = {
             "trend_regime": 1.15,
@@ -3398,6 +3401,7 @@ class QuantSimDB:
             "session": 0.60,
             "source_prior": 0.80,
             "execution_feedback": 0.70,
+            "stock_analysis": 1.00,
         }
         aggressive_config["profiles"]["position"]["dual_track"] = {
             "fusion_buy_threshold": 0.50,
@@ -3442,6 +3446,7 @@ class QuantSimDB:
             "risk_account": 1.10,
             "tradability_timing": 0.80,
             "source_execution": 0.75,
+            "external_analysis": 0.05,
         }
         stable_config["profiles"]["candidate"]["context"]["dimension_weights"] = {
             "trend_regime": 1.10,
@@ -3453,6 +3458,7 @@ class QuantSimDB:
             "session": 0.60,
             "source_prior": 0.85,
             "execution_feedback": 0.10,
+            "stock_analysis": 1.00,
         }
         stable_config["profiles"]["candidate"]["dual_track"] = {
             "fusion_buy_threshold": 0.43,
@@ -3485,6 +3491,7 @@ class QuantSimDB:
             "risk_account": 1.40,
             "tradability_timing": 0.70,
             "source_execution": 0.75,
+            "external_analysis": 0.04,
         }
         stable_config["profiles"]["position"]["context"]["dimension_weights"] = {
             "trend_regime": 1.00,
@@ -3496,6 +3503,7 @@ class QuantSimDB:
             "session": 0.55,
             "source_prior": 0.75,
             "execution_feedback": 0.90,
+            "stock_analysis": 1.00,
         }
         stable_config["profiles"]["position"]["dual_track"] = {
             "fusion_buy_threshold": 0.57,
@@ -3543,6 +3551,7 @@ class QuantSimDB:
             "risk_account": 1.65,
             "tradability_timing": 0.75,
             "source_execution": 0.60,
+            "external_analysis": 0.03,
         }
         conservative_config["profiles"]["candidate"]["context"]["dimension_weights"] = {
             "trend_regime": 0.95,
@@ -3554,6 +3563,7 @@ class QuantSimDB:
             "session": 0.55,
             "source_prior": 0.70,
             "execution_feedback": 0.12,
+            "stock_analysis": 1.00,
         }
         conservative_config["profiles"]["candidate"]["dual_track"] = {
             "fusion_buy_threshold": 0.48,
@@ -3586,6 +3596,7 @@ class QuantSimDB:
             "risk_account": 1.80,
             "tradability_timing": 0.65,
             "source_execution": 0.55,
+            "external_analysis": 0.02,
         }
         conservative_config["profiles"]["position"]["context"]["dimension_weights"] = {
             "trend_regime": 0.85,
@@ -3597,6 +3608,7 @@ class QuantSimDB:
             "session": 0.50,
             "source_prior": 0.65,
             "execution_feedback": 1.10,
+            "stock_analysis": 1.00,
         }
         conservative_config["profiles"]["position"]["dual_track"] = {
             "fusion_buy_threshold": 0.58,

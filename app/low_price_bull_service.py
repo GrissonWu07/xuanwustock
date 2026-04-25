@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Optional
 import os
 
+from app.data.indicators import TechnicalIndicatorEngine
 from app.low_price_bull_monitor import low_price_bull_monitor
 from app.notification_service import notification_service
 from app.smart_monitor_tdx_data import SmartMonitorTDXDataFetcher
@@ -176,8 +177,6 @@ class LowPriceBullService:
             (当前价格, MA5, MA20)
         """
         try:
-            import pandas as pd
-            
             # 处理股票代码格式：去掉后缀，保留纯数字代码
             # 例如：002259.SZ -> 002259
             clean_code = stock_code.split('.')[0] if '.' in stock_code else stock_code
@@ -191,20 +190,24 @@ class LowPriceBullService:
                 self.logger.warning(f"{stock_code} K线数据不足，需要至少20天")
                 return None, None, None
 
-            df['收盘'] = pd.to_numeric(df['收盘'], errors='coerce')
-            
-            # 计算MA5和MA20
-            df['MA5'] = df['收盘'].rolling(window=5).mean()
-            df['MA20'] = df['收盘'].rolling(window=20).mean()
-            
-            # 获取最新数据
-            latest = df.iloc[-1]
-            current_price = latest['收盘']
-            ma5 = latest['MA5']
-            ma20 = latest['MA20']
-            
-            # 检查是否有效
-            if pd.isna(current_price) or pd.isna(ma5) or pd.isna(ma20):
+            indicators = TechnicalIndicatorEngine().calculate(
+                df,
+                symbol=clean_code,
+                source="tdx",
+                dataset="kline",
+                timeframe="1d",
+                provider="tdx",
+                strict=False,
+            )
+            if indicators.empty:
+                return None, None, None
+
+            latest = indicators.iloc[-1]
+            current_price = latest['close']
+            ma5 = latest['ma5']
+            ma20 = latest['ma20']
+
+            if any(value != value for value in (current_price, ma5, ma20)):
                 self.logger.warning(f"{stock_code} 数据包含NaN值")
                 return None, None, None
             
