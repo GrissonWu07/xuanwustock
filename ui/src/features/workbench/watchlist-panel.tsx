@@ -12,9 +12,9 @@ type WatchlistPanelProps = {
   onAddWatchlist: (code: string) => Promise<void> | void;
   onRefresh: (codes: string[]) => void;
   onBatchQuant: (codes: string[]) => void;
+  onBatchRemoveWatchlist: (codes: string[]) => void;
   onBatchPortfolio: (codes: string[], options?: { costPrice?: string; quantity?: string }) => Promise<void> | void;
   onClearSelection: () => void;
-  onRemoveWatchlist: (code: string) => void;
   onTableQueryChange?: (query: { search: string; page: number; pageSize: number }) => void;
 };
 
@@ -52,14 +52,33 @@ const buildVisiblePageItems = (currentPage: number, pageCount: number): Array<nu
   return pages;
 };
 
+const workflowBadgeTone = (label: string) => {
+  if (/缺失|待补|待刷新|过期|待分析|失败|refresh|missing|pending/i.test(label)) return "warning";
+  if (/持仓|量化|正常|BUY|买入|success|ok|pool/i.test(label)) return "success";
+  return "neutral";
+};
+
+const signalBadgeTone = (label: string) => {
+  const normalized = label.trim().toUpperCase();
+  if (normalized === "BUY" || normalized.includes("买入")) return "success";
+  if (normalized === "SELL" || normalized.includes("卖出")) return "danger";
+  if (normalized === "HOLD" || normalized.includes("持有")) return "neutral";
+  return "warning";
+};
+
+const isLegacySourceColumn = (column: unknown) => {
+  const normalized = String(column ?? "").trim().toLowerCase();
+  return normalized === "source" || normalized === "来源";
+};
+
 export function WatchlistPanel({
   watchlist,
   onAddWatchlist,
   onRefresh,
   onBatchQuant,
+  onBatchRemoveWatchlist,
   onBatchPortfolio,
   onClearSelection,
-  onRemoveWatchlist,
   onTableQueryChange,
 }: WatchlistPanelProps) {
   const isCompactLayout = useCompactLayout();
@@ -74,13 +93,26 @@ export function WatchlistPanel({
   const [portfolioQuantity, setPortfolioQuantity] = useState("");
   const [portfolioSaving, setPortfolioSaving] = useState(false);
   const [expandedRows, setExpandedRows] = useState<string[]>([]);
-  const [openMenuRowId, setOpenMenuRowId] = useState<string | null>(null);
   const normalizedSearch = search.trim();
   const pageCount = Math.max(1, Number(watchlist.pagination?.totalPages ?? 1));
   const currentPage = Math.min(Number(watchlist.pagination?.page ?? page), pageCount);
   const totalRows = Number(watchlist.pagination?.totalRows ?? watchlist.rows.length);
   const visiblePageItems = useMemo(() => buildVisiblePageItems(currentPage, pageCount), [currentPage, pageCount]);
-  const pageRows = watchlist.rows;
+  const sourceColumnIndex = useMemo(() => watchlist.columns.findIndex(isLegacySourceColumn), [watchlist.columns]);
+  const displayColumns = useMemo(
+    () => (sourceColumnIndex >= 0 ? watchlist.columns.filter((_, index) => index !== sourceColumnIndex) : watchlist.columns),
+    [sourceColumnIndex, watchlist.columns],
+  );
+  const pageRows = useMemo(
+    () =>
+      sourceColumnIndex >= 0
+        ? watchlist.rows.map((row) => ({
+            ...row,
+            cells: row.cells.filter((_, index) => index !== sourceColumnIndex),
+          }))
+        : watchlist.rows,
+    [sourceColumnIndex, watchlist.rows],
+  );
   const rowIds = useMemo(() => pageRows.map((row) => row.id), [pageRows]);
   const selection = useSelection(rowIds);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
@@ -101,6 +133,38 @@ export function WatchlistPanel({
     );
   };
 
+  const renderWorkflowCell = (row: TableRow, fallback: string | undefined) => {
+    const badges = Array.isArray(row.workflowBadges) && row.workflowBadges.length > 0 ? row.workflowBadges : [];
+    if (badges.length === 0) {
+      return fallback ? t(fallback) : "-";
+    }
+    return (
+      <div className="watchlist-workflow-badges">
+        {badges.map((badge) => (
+          <span className={`badge badge--${workflowBadgeTone(badge)} watchlist-workflow-badge`} key={`${row.id}-${badge}`}>
+            {t(badge)}
+          </span>
+        ))}
+      </div>
+    );
+  };
+
+  const renderCell = (row: TableRow, cell: string, index: number) => {
+    if (index === 0) {
+      return renderStockCodeLink(row);
+    }
+    if (index === 4) {
+      return <span className={`badge badge--${row.analysisTone || "neutral"} watchlist-analysis-badge`}>{t(cell)}</span>;
+    }
+    if (index === 5) {
+      return <span className={`badge badge--${signalBadgeTone(row.signalStatus || cell)} watchlist-signal-badge`}>{t(row.signalStatus || cell)}</span>;
+    }
+    if (index === 6) {
+      return renderWorkflowCell(row, cell);
+    }
+    return typeof cell === "string" ? t(cell) : cell;
+  };
+
   useEffect(() => {
     if (selectAllRef.current) {
       selectAllRef.current.indeterminate = selection.someSelected;
@@ -118,26 +182,6 @@ export function WatchlistPanel({
   useEffect(() => {
     onTableQueryChange?.({ search: normalizedSearch, page, pageSize: PAGE_SIZE });
   }, [normalizedSearch, onTableQueryChange, page]);
-
-  useEffect(() => {
-    if (!isCompactLayout || !openMenuRowId) return undefined;
-    const onMouseDown = (event: MouseEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest(".row-more")) return;
-      setOpenMenuRowId(null);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpenMenuRowId(null);
-      }
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [isCompactLayout, openMenuRowId]);
 
   const selectedCodes = selection.selectedIds;
   const selectedRows = pageRows.filter((row) => selectedCodes.includes(row.id));
@@ -160,6 +204,13 @@ export function WatchlistPanel({
     }
   };
 
+  const handleBatchDelete = () => {
+    if (selectedCodes.length > 0) {
+      onBatchRemoveWatchlist(selectedCodes);
+      selection.clear();
+    }
+  };
+
   const handleRefresh = () => {
     const targetCodes = (selectedCodes.length > 0 ? selectedCodes : pageRows.map((row) => row.id)).filter(Boolean);
     if (targetCodes.length === 0) return;
@@ -169,9 +220,6 @@ export function WatchlistPanel({
   const toggleExpandedRow = (rowId: string) => {
     setExpandedRows((current) => {
       const exists = current.includes(rowId);
-      if (exists && openMenuRowId === rowId) {
-        setOpenMenuRowId(null);
-      }
       return exists ? current.filter((item) => item !== rowId) : [...current, rowId];
     });
   };
@@ -228,6 +276,13 @@ export function WatchlistPanel({
                 label={t("Add to quant candidates")}
                 tone="accent"
                 onClick={handleBatchQuant}
+                disabled={selectedCodes.length === 0}
+              />
+              <IconButton
+                icon="🗑"
+                label={t("Delete selected")}
+                tone="danger"
+                onClick={handleBatchDelete}
                 disabled={selectedCodes.length === 0}
               />
               <button
@@ -337,11 +392,12 @@ export function WatchlistPanel({
                 <col className="watchlist-table__col watchlist-table__col--checkbox" />
                 <col className="watchlist-table__col watchlist-table__col--code" />
                 <col className="watchlist-table__col watchlist-table__col--name" />
-                <col className="watchlist-table__col watchlist-table__col--price" />
-                <col className="watchlist-table__col watchlist-table__col--source" />
-                <col className="watchlist-table__col watchlist-table__col--status" />
-                <col className="watchlist-table__col watchlist-table__col--quant" />
-                <col className="watchlist-table__col watchlist-table__col--actions" />
+                <col className="watchlist-table__col watchlist-table__col--quote" />
+                <col className="watchlist-table__col watchlist-table__col--sector" />
+                <col className="watchlist-table__col watchlist-table__col--analysis" />
+                <col className="watchlist-table__col watchlist-table__col--signal" />
+                <col className="watchlist-table__col watchlist-table__col--workflow" />
+                <col className="watchlist-table__col watchlist-table__col--updated" />
               </colgroup>
             ) : null}
             <thead>
@@ -359,45 +415,39 @@ export function WatchlistPanel({
                   <>
                     <th>{t(String(watchlist.columns[0] ?? "Code"))}</th>
                     <th>{t(String(watchlist.columns[1] ?? "Name"))}</th>
-                    <th>{t(String(watchlist.columns[4] ?? "Status"))}</th>
+                    <th>{t(String(watchlist.columns[4] ?? "Analysis"))}</th>
                     <th className="table__compact-actions-head">{t("Detail")}</th>
                   </>
                 ) : (
-                  watchlist.columns.map((column) => <th key={column}>{t(column)}</th>)
+                  displayColumns.map((column) => <th key={column}>{t(column)}</th>)
                 )}
-                <th className={isCompactLayout ? "table__compact-actions-head" : "table__actions-head"}>{t("Actions")}</th>
               </tr>
             </thead>
             <tbody>
                 {inlineAddOpen ? (
                   <tr className="table__row--selected">
                     <td className="table__checkbox-cell" />
-                    <td>
-                      <input
-                        className="input"
-                        autoFocus
-                        value={inlineCode}
-                        placeholder={t("Stock code")}
-                        onChange={(event) => setInlineCode(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            void submitInlineAdd();
-                          }
-                          if (event.key === "Escape") {
-                            event.preventDefault();
-                            setInlineAddOpen(false);
-                            setInlineCode("");
-                            setInlineError("");
-                          }
-                        }}
-                      />
-                    </td>
-                    <td>{isCompactLayout ? "-" : "-"}</td>
-                    <td>{isCompactLayout ? "-" : "-"}</td>
-                    {isCompactLayout ? <td>-</td> : <><td>-</td><td>-</td><td>-</td></>}
-                    <td className="table__actions-cell">
-                      <div className="table__actions">
+                    <td colSpan={isCompactLayout ? 4 : displayColumns.length}>
+                      <div className="watchlist-inline-add">
+                        <input
+                          className="input"
+                          autoFocus
+                          value={inlineCode}
+                          placeholder={t("Stock code")}
+                          onChange={(event) => setInlineCode(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void submitInlineAdd();
+                            }
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              setInlineAddOpen(false);
+                              setInlineCode("");
+                              setInlineError("");
+                            }
+                          }}
+                        />
                         <IconButton
                           icon="✓"
                           label={t("Add")}
@@ -426,7 +476,7 @@ export function WatchlistPanel({
                 ) : null}
                 {pageRows.length === 0 ? (
                 <tr>
-                  <td className="table__empty" colSpan={(isCompactLayout ? 6 : watchlist.columns.length + 2)}>
+                  <td className="table__empty" colSpan={(isCompactLayout ? 5 : displayColumns.length + 1)}>
                     {pageRows.length === 0
                       ? (watchlist.emptyLabel ? t(watchlist.emptyLabel) : t("My watchlist is empty"))
                       : t("Current page has no stocks. Switch page or adjust search.")}
@@ -455,7 +505,7 @@ export function WatchlistPanel({
                           </td>
                           <td className="table__cell-strong">{renderStockCodeLink(row)}</td>
                           <td>{typeof row.cells[1] === "string" ? t(String(row.cells[1])) : row.cells[1]}</td>
-                          <td>{typeof row.cells[4] === "string" ? t(String(row.cells[4])) : row.cells[4] ?? "-"}</td>
+                          <td>{renderCell(row, String(row.cells[4] ?? "-"), 4)}</td>
                           <td className="table__compact-control-cell">
                             <button
                               className="button button--secondary button--small table__expand-button"
@@ -469,47 +519,6 @@ export function WatchlistPanel({
                               {isExpanded ? t("Collapse") : t("Expand")}
                             </button>
                           </td>
-                          <td className="table__compact-control-cell">
-                            <div className="row-more" onClick={(event) => event.stopPropagation()}>
-                              <button
-                                className="icon-button icon-button--neutral row-more__trigger"
-                                type="button"
-                                aria-haspopup="menu"
-                                aria-expanded={openMenuRowId === row.id}
-                                onClick={() => setOpenMenuRowId((current) => (current === row.id ? null : row.id))}
-                              >
-                                ⋯
-                              </button>
-                              {openMenuRowId === row.id ? (
-                                <div className="row-more__menu" role="menu">
-                                  <button
-                                    className="row-more__item row-more__item--neutral"
-                                    type="button"
-                                    role="menuitem"
-                                    onClick={() => {
-                                      setOpenMenuRowId(null);
-                                      onBatchQuant([row.id]);
-                                    }}
-                                  >
-                                    <span aria-hidden="true">🧪</span>
-                                    <span>{t("Add to quant candidates")}</span>
-                                  </button>
-                                  <button
-                                    className="row-more__item row-more__item--danger"
-                                    type="button"
-                                    role="menuitem"
-                                    onClick={() => {
-                                      setOpenMenuRowId(null);
-                                      onRemoveWatchlist(row.id);
-                                    }}
-                                  >
-                                    <span aria-hidden="true">🗑</span>
-                                    <span>{t("Delete")}</span>
-                                  </button>
-                                </div>
-                              ) : null}
-                            </div>
-                          </td>
                         </tr>
                       );
                       if (!isExpanded) {
@@ -517,12 +526,12 @@ export function WatchlistPanel({
                       }
                       const compactDetailRow = (
                         <tr key={`${row.id}-detail`} className="table__compact-detail-row">
-                          <td colSpan={6} className="table__compact-detail-cell">
+                          <td colSpan={5} className="table__compact-detail-cell">
                             <div className="compact-detail-grid">
-                              {[2, 3, 5].map((index) => (
+                              {[2, 3, 5, 6, 7].map((index) => (
                                 <div className="compact-detail-item" key={`${row.id}-detail-${index}`}>
-                                  <div className="compact-detail-item__label">{t(String(watchlist.columns[index] ?? `col-${index}`))}</div>
-                                  <div className="compact-detail-item__value">{typeof row.cells[index] === "string" ? t(String(row.cells[index])) : row.cells[index] ?? "-"}</div>
+                                  <div className="compact-detail-item__label">{t(String(displayColumns[index] ?? `col-${index}`))}</div>
+                                  <div className="compact-detail-item__value">{renderCell(row, String(row.cells[index] ?? "-"), index)}</div>
                                 </div>
                               ))}
                             </div>
@@ -551,31 +560,9 @@ export function WatchlistPanel({
                           </td>
                           {row.cells.map((cell, index) => (
                             <td key={`${row.id}-${index}`} className={index === 0 ? "table__cell-strong" : undefined}>
-                              {index === 0 ? renderStockCodeLink(row) : typeof cell === "string" ? t(cell) : cell}
+                              {renderCell(row, cell, index)}
                             </td>
                           ))}
-                          <td className="table__actions-cell">
-                            <div className="table__actions">
-                              <IconButton
-                                icon="🧪"
-                                label={t("Add quant candidate {code}", { code: row.id })}
-                                tone="neutral"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  onBatchQuant([row.id]);
-                                }}
-                              />
-                              <IconButton
-                                icon="🗑"
-                                label={t("Delete {code}", { code: row.id })}
-                                tone="danger"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  onRemoveWatchlist(row.id);
-                                }}
-                              />
-                            </div>
-                          </td>
                         </tr>
                       );
                     })

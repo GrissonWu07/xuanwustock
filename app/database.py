@@ -304,6 +304,39 @@ class StockAnalysisDatabase:
 
         return self._parse_analysis_row(record)
 
+    def get_latest_records_by_symbols(self, symbols: list[str]) -> dict[str, dict]:
+        """批量获取一组股票代码的最近一次分析记录。"""
+        normalized_symbols = [str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()]
+        if not normalized_symbols:
+            return {}
+
+        placeholders = ",".join("?" for _ in normalized_symbols)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT ar.*
+            FROM analysis_records ar
+            INNER JOIN (
+                SELECT symbol, MAX(id) AS latest_id
+                FROM analysis_records
+                WHERE symbol IN ({placeholders})
+                GROUP BY symbol
+            ) latest
+            ON ar.id = latest.latest_id
+            """,
+            tuple(normalized_symbols),
+        )
+
+        rows = cursor.fetchall()
+        conn.close()
+        return {
+            str(row["symbol"]).strip().upper(): self._parse_analysis_row(row)
+            for row in rows
+            if str(row["symbol"]).strip()
+        }
+
     def get_recent_records_by_symbol(self, symbol: str, limit: int = 5) -> list[dict]:
         """根据股票代码获取最近几次分析记录"""
         conn = sqlite3.connect(self.db_path)

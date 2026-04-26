@@ -110,6 +110,9 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
             onBatchQuant={(codes) => {
               void resource.runAction("batch-quant", { codes }).then(() => setTableSnapshot(null));
             }}
+            onBatchRemoveWatchlist={(codes) => {
+              void resource.runAction("delete-watchlist", { codes }).then(() => setTableSnapshot(null));
+            }}
             onBatchPortfolio={async (codes, options) => {
               await resource.runAction("batch-portfolio", {
                 codes,
@@ -120,9 +123,6 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
             }}
             onClearSelection={() => {
               void resource.runAction("clear-selection");
-            }}
-            onRemoveWatchlist={(code) => {
-              void resource.runAction("delete-watchlist", { code }).then(() => setTableSnapshot(null));
             }}
             onTableQueryChange={handleWatchlistTableQuery}
           />

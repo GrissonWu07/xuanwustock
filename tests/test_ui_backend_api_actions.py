@@ -442,6 +442,64 @@ def test_workbench_watchlist_page_size_is_capped_at_twenty(tmp_path):
     assert len(payload["watchlist"]["rows"]) == 20
 
 
+def test_workbench_watchlist_uses_decision_table_columns(tmp_path):
+    context = _make_context(tmp_path)
+    context.watchlist().add_stock(
+        stock_code="600519",
+        stock_name="贵州茅台",
+        source="main_force",
+        latest_price=1453.96,
+        notes="主力资金流入",
+        metadata={"industry": "白酒", "change_pct": 1.23},
+    )
+    context.watchlist().mark_in_quant_pool("600519", True)
+    context.watchlist().update_watch_snapshot("600519", latest_signal="BUY")
+    context.stock_analysis_db().save_analysis(
+        "600519",
+        "贵州茅台",
+        "1y",
+        stock_info={},
+        agents_results={},
+        discussion_result={},
+        final_decision={"rating": "买入"},
+        indicators={},
+        historical_data=[],
+    )
+
+    client = TestClient(create_app(context=context))
+    response = client.get("/api/v1/workbench")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["watchlist"]["columns"] == ["代码", "名称", "行情", "板块", "分析", "信号", "工作流", "更新"]
+    row = payload["watchlist"]["rows"][0]
+    assert row["cells"][2] == "1453.96 +1.23%"
+    assert "今日已分析" in row["cells"][4]
+    assert "买入" in row["cells"][4]
+    assert row["cells"][5] == "BUY"
+    assert "量化池" in row["cells"][6]
+    assert row["analysisStatus"] == row["cells"][4]
+    assert row["signalStatus"] == "BUY"
+    assert "量化池" in row["workflowBadges"]
+    assert row["actions"] == []
+
+
+def test_workbench_delete_accepts_batch_codes(tmp_path):
+    context = _make_context(tmp_path)
+    context.watchlist().add_manual_stock("600519")
+    context.watchlist().add_manual_stock("000001")
+    context.watchlist().add_manual_stock("300750")
+
+    client = TestClient(create_app(context=context))
+    response = client.post("/api/v1/workbench/actions/delete-watchlist", json={"codes": ["600519", "000001"]})
+
+    assert response.status_code == 200
+    remaining = {row["id"] for row in response.json()["watchlist"]["rows"]}
+    assert "600519" not in remaining
+    assert "000001" not in remaining
+    assert "300750" in remaining
+
+
 def test_workbench_batch_analysis_snapshot_keeps_pending_symbols_visible(tmp_path):
     from app.gateway_workbench import build_workbench_snapshot
 

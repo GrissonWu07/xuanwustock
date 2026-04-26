@@ -1478,7 +1478,8 @@ a {
 
 .watchlist-table__viewport {
   max-height: none;
-  overflow: visible;
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 .watchlist-table__viewport .table thead th {
@@ -1512,6 +1513,16 @@ a {
 .watchlist-pagination__page {
   min-width: 42px;
   padding: 0 12px;
+}
+
+.watchlist-inline-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.watchlist-inline-add .input {
+  max-width: 220px;
 }
 
 .watchlist-pagination__page--active {
@@ -1985,31 +1996,54 @@ a {
 }
 
 .watchlist-table__col--code {
-  width: 112px;
+  width: 7%;
 }
 
 .watchlist-table__col--name {
-  width: 124px;
+  width: 10%;
 }
 
-.watchlist-table__col--price {
-  width: 108px;
+.watchlist-table__col--price,
+.watchlist-table__col--quote {
+  width: 9%;
 }
 
-.watchlist-table__col--source {
-  width: 136px;
+.watchlist-table__col--sector {
+  width: 7%;
 }
 
-.watchlist-table__col--status {
-  width: 112px;
+.watchlist-table__col--status,
+.watchlist-table__col--analysis {
+  width: 12%;
 }
 
-.watchlist-table__col--quant {
-  width: 116px;
+.watchlist-table__col--quant,
+.watchlist-table__col--signal {
+  width: 15%;
 }
 
-.watchlist-table__col--actions {
-  width: 188px;
+.watchlist-table__col--workflow {
+  width: 25%;
+}
+
+.watchlist-table__col--updated {
+  width: 7%;
+}
+
+.watchlist-workflow-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.watchlist-workflow-badge,
+.watchlist-analysis-badge,
+.watchlist-signal-badge {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 0.76rem;
+  white-space: nowrap;
 }
 
 .analysis-flow {

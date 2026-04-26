@@ -44,6 +44,15 @@ def _num(value: Any, digits: int = 2, default: str = "0.00") -> str:
         return default
 
 
+def _float(value: Any, default: float | None = None) -> float | None:
+    try:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _int(value: Any, default: int | None = None) -> int | None:
     try:
         if value is None or (isinstance(value, str) and not str(value).strip()):
@@ -93,6 +102,30 @@ def _code_from_payload(payload: Any) -> str:
     return ""
 
 
+def _parse_datetime(value: Any) -> datetime | None:
+    text = _txt(value)
+    if not text:
+        return None
+    for candidate in (text, text.replace("T", " ")):
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            pass
+    for fmt, length in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d", 10)):
+        try:
+            return datetime.strptime(text[:length], fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def _short_time(value: Any) -> str:
+    parsed = _parse_datetime(value)
+    if not parsed:
+        return _txt(value, "--")
+    return parsed.strftime("%m-%d %H:%M")
+
+
 def _normalize_codes(payload: Any) -> list[str]:
     if isinstance(payload, list):
         return [normalize_stock_code(item) for item in payload if normalize_stock_code(item)]
@@ -106,6 +139,75 @@ def _normalize_codes(payload: Any) -> list[str]:
         return []
     code = normalize_stock_code(payload)
     return [code] if code else []
+
+
+def _watchlist_quote_label(item: dict[str, Any], metadata: dict[str, Any]) -> str:
+    latest_price = _float(item.get("latest_price"))
+    price_text = "--" if latest_price is None or latest_price <= 0 else f"{latest_price:.2f}"
+    change_pct = None
+    for key in ("change_pct", "pct_chg", "涨跌幅", "changePercent"):
+        if key in metadata and metadata.get(key) not in (None, ""):
+            change_pct = _float(metadata.get(key))
+            break
+    if change_pct is None:
+        return price_text
+    return f"{price_text} {change_pct:+.2f}%"
+
+
+def _watchlist_data_status(item: dict[str, Any], metadata: dict[str, Any], sector: str) -> str:
+    latest_price = _float(item.get("latest_price"))
+    stock_code = normalize_stock_code(item.get("stock_code"))
+    stock_name = _txt(item.get("stock_name"))
+    if latest_price is None or latest_price <= 0:
+        return t("Quote missing")
+    if not stock_name or stock_name.upper() in {stock_code, "N/A", "UNKNOWN"}:
+        return t("Name pending")
+    if not sector or sector in {"-", "N/A", "未知"}:
+        return t("Sector pending")
+    if metadata.get("data_error") or metadata.get("refresh_error"):
+        return t("Data needs refresh")
+    return t("Data OK")
+
+
+def _watchlist_signal_label(item: dict[str, Any]) -> str:
+    signal = _txt(item.get("latest_signal")).upper()
+    return signal if signal else t("No signal")
+
+
+def _analysis_status(record: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(record, dict) or not record:
+        return t("Needs analysis"), "warning"
+    decision = record.get("final_decision") if isinstance(record.get("final_decision"), dict) else {}
+    rating = _txt(decision.get("rating") or decision.get("action") or record.get("rating"), t("Analyzed"))
+    parsed = _parse_datetime(record.get("analysis_date") or record.get("created_at"))
+    if not parsed:
+        return f"{t('Analyzed')} · {rating}", "neutral"
+    today = datetime.now().date()
+    age_days = (today - parsed.date()).days
+    if age_days <= 0:
+        return f"{t('Today analyzed')} · {rating}", "success"
+    return f"{t('Stale analysis')} {age_days}{t('Days suffix')} · {rating}", "warning"
+
+
+def _workflow_badges(
+    *,
+    in_quant_pool: bool,
+    has_position: bool,
+    data_status: str,
+    analysis_tone: str,
+) -> list[str]:
+    badges: list[str] = []
+    if has_position:
+        badges.append(t("Holding"))
+    if in_quant_pool:
+        badges.append(t("Quant pool"))
+    if analysis_tone == "warning":
+        badges.append(t("Analysis pending"))
+    if data_status != t("Data OK"):
+        badges.append(data_status)
+    if not badges:
+        badges.append(t("Watch only"))
+    return badges
 
 
 def _analyze_stock_with_context(context: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -148,34 +250,58 @@ def _pagination(page: int, page_size: int, total: int) -> dict[str, int]:
     return {"page": safe_page, "pageSize": page_size, "totalRows": max(0, int(total)), "totalPages": total_pages}
 
 
-def watchlist_rows_from_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def watchlist_rows_from_items(
+    items: list[dict[str, Any]],
+    *,
+    latest_analysis_by_code: dict[str, dict[str, Any]] | None = None,
+    position_codes: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    latest_analysis_by_code = latest_analysis_by_code or {}
+    position_codes = position_codes or set()
     rows: list[dict[str, Any]] = []
     for item in items:
         code = normalize_stock_code(item.get("stock_code"))
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         sector = _txt(metadata.get("industry") or metadata.get("sector"), "-")
+        quote_label = _watchlist_quote_label(item, metadata)
+        data_status = _watchlist_data_status(item, metadata, sector)
+        analysis_status, analysis_tone = _analysis_status(latest_analysis_by_code.get(code))
+        signal_status = _watchlist_signal_label(item)
+        latest_price_value = _float(item.get("latest_price"))
+        workflow_badges = _workflow_badges(
+            in_quant_pool=bool(item.get("in_quant_pool")),
+            has_position=code in position_codes,
+            data_status=data_status,
+            analysis_tone=analysis_tone,
+        )
+        updated_at = _short_time(item.get("updated_at"))
         rows.append(
             {
                 "id": code,
                 "cells": [
                     code,
                     _txt(item.get("stock_name") or code),
-                    _num(item.get("latest_price")),
+                    quote_label,
                     sector,
-                    _txt(item.get("latest_signal") or t("Pending analysis")),
-                    t("In quant pool") if item.get("in_quant_pool") else t("Not added"),
+                    analysis_status,
+                    signal_status,
+                    " · ".join(workflow_badges),
+                    updated_at,
                 ],
-                "actions": [
-                    {"label": t("Analyze"), "icon": "🔎", "tone": "accent", "action": "analysis"},
-                    {"label": t("Add to quant"), "icon": "🧪", "tone": "neutral", "action": "batch-quant"},
-                    {"label": t("Delete"), "icon": "🗑", "tone": "danger", "action": "delete-watchlist"},
-                ],
+                "actions": [],
                 "code": code,
                 "name": _txt(item.get("stock_name") or code),
-                "source": sector,
+                "source": "",
                 "industry": sector,
-                "latestPrice": _num(item.get("latest_price")),
-                "reason": _txt(item.get("latest_signal") or t("Pending analysis")),
+                "latestPrice": "--" if latest_price_value is None or latest_price_value <= 0 else _num(latest_price_value, default="--"),
+                "reason": analysis_status,
+                "quoteText": quote_label,
+                "analysisStatus": analysis_status,
+                "analysisTone": analysis_tone,
+                "signalStatus": signal_status,
+                "workflowBadges": workflow_badges,
+                "dataStatus": data_status,
+                "updatedAt": updated_at,
             }
         )
     return rows
@@ -203,7 +329,22 @@ def build_workbench_snapshot(
         limit=page_size,
         offset=(watchlist_pagination["page"] - 1) * page_size,
     )
-    watchlist = watchlist_rows_from_items(page_items)
+    page_codes = [normalize_stock_code(item.get("stock_code")) for item in page_items if normalize_stock_code(item.get("stock_code"))]
+    stock_analysis_db = context.stock_analysis_db()
+    latest_analysis_by_code: dict[str, dict[str, Any]] = stock_analysis_db.get_latest_records_by_symbols(page_codes)
+    try:
+        position_codes = {
+            normalize_stock_code(position.get("stock_code") or position.get("code"))
+            for position in context.portfolio().list_positions()
+            if normalize_stock_code(position.get("stock_code") or position.get("code"))
+        }
+    except Exception:
+        position_codes = set()
+    watchlist = watchlist_rows_from_items(
+        page_items,
+        latest_analysis_by_code=latest_analysis_by_code,
+        position_codes=position_codes,
+    )
     quant_count = context.watchlist().count_watches(in_quant_pool=True)
 
     def _analysis_from_record(latest_record: dict[str, Any], fallback_symbol: str = "") -> dict[str, Any]:
@@ -331,7 +472,7 @@ def build_workbench_snapshot(
         ],
         "watchlist": {
             **_table(
-                [t("Code"), t("Name"), t("Price"), t("Sector"), t("Status"), t("Quant status")],
+                [t("Code"), t("Name"), t("Quote"), t("Sector"), t("Analysis"), t("Signal"), t("Workflow"), t("Updated")],
                 watchlist,
                 t("Watchlist is empty."),
             ),
@@ -540,8 +681,8 @@ def action_workbench_refresh(context: Any, payload: dict[str, Any]) -> dict[str,
 
 
 def action_workbench_delete(context: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    code = _code_from_payload(payload)
-    if code:
+    codes = _normalize_codes(payload)
+    for code in codes:
         context.watchlist().delete_stock(code)
     return snapshot_workbench(context)
 

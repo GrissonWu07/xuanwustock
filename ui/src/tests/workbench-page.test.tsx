@@ -8,12 +8,15 @@ const workbenchSnapshot = {
   updatedAt: "2026-04-25 10:00:00",
   metrics: [],
   watchlist: {
-    columns: ["代码", "名称", "价格", "行业", "状态", "量化状态"],
+    columns: ["代码", "名称", "行情", "板块", "分析", "信号", "工作流", "更新"],
     rows: [
       {
         id: "600519",
-        cells: ["600519", "贵州茅台", "1453.96", "白酒", "待分析", "未加入"],
+        cells: ["600519", "贵州茅台", "1453.96 +1.23%", "白酒", "今日已分析 · 买入", "BUY", "量化池 · 数据正常", "04-25 10:00"],
         actions: [],
+        workflowBadges: ["量化池", "数据正常"],
+        analysisStatus: "今日已分析 · 买入",
+        signalStatus: "BUY",
       },
     ],
     emptyLabel: "关注池为空",
@@ -158,5 +161,79 @@ describe("WorkbenchPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("position-detail")).toHaveTextContent("600519");
     });
+  });
+
+  it("renders decision-oriented watchlist fields as structured badges", async () => {
+    const getPageSnapshot = vi.fn().mockResolvedValue(workbenchSnapshot);
+    const client = {
+      getPageSnapshot,
+      runPageAction: vi.fn().mockResolvedValue(workbenchSnapshot),
+    } as unknown as ApiClient;
+
+    renderWorkbenchPage(client);
+
+    await screen.findByRole("link", { name: "600519" });
+
+    expect(screen.getByText("行情")).toBeInTheDocument();
+    expect(screen.getByText("分析")).toBeInTheDocument();
+    expect(screen.getByText("信号")).toBeInTheDocument();
+    expect(screen.getByText("工作流")).toBeInTheDocument();
+    expect(screen.queryByText("来源")).toBeNull();
+    expect(screen.queryByText("量化状态")).toBeNull();
+    expect(screen.queryByText("AI选股 · 主力资金流入")).toBeNull();
+    expect(document.querySelectorAll(".watchlist-workflow-badge")).toHaveLength(2);
+  });
+
+  it("moves watchlist row actions to the toolbar and supports batch delete", async () => {
+    const getPageSnapshot = vi.fn().mockResolvedValue(workbenchSnapshot);
+    const runPageAction = vi.fn().mockResolvedValue(workbenchSnapshot);
+    const client = {
+      getPageSnapshot,
+      runPageAction,
+    } as unknown as ApiClient;
+
+    renderWorkbenchPage(client);
+
+    await screen.findByRole("link", { name: "600519" });
+
+    expect(screen.queryByRole("columnheader", { name: "操作" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete 600519" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select 贵州茅台" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    await waitFor(() => {
+      expect(runPageAction).toHaveBeenCalledWith("workbench", "delete-watchlist", { codes: ["600519"] });
+    });
+  });
+
+  it("filters legacy source columns from watchlist snapshots", async () => {
+    const legacySnapshot = {
+      ...workbenchSnapshot,
+      watchlist: {
+        ...workbenchSnapshot.watchlist,
+        columns: ["代码", "名称", "行情", "板块", "来源", "分析", "信号", "工作流", "更新"],
+        rows: [
+          {
+            ...workbenchSnapshot.watchlist.rows[0],
+            cells: ["600519", "贵州茅台", "1453.96 +1.23%", "白酒", "AI选股 · 主力资金流入", "今日已分析 · 买入", "BUY", "量化池 · 数据正常", "04-25 10:00"],
+          },
+        ],
+      },
+    };
+    const getPageSnapshot = vi.fn().mockResolvedValue(legacySnapshot);
+    const client = {
+      getPageSnapshot,
+      runPageAction: vi.fn().mockResolvedValue(legacySnapshot),
+    } as unknown as ApiClient;
+
+    renderWorkbenchPage(client);
+
+    await screen.findByRole("link", { name: "600519" });
+
+    expect(screen.queryByText("来源")).toBeNull();
+    expect(screen.queryByText("AI选股 · 主力资金流入")).toBeNull();
+    expect(screen.getByText("今日已分析 · 买入")).toBeInTheDocument();
+    expect(screen.getByText("BUY")).toBeInTheDocument();
   });
 });

@@ -59,6 +59,13 @@ export type TableRow = {
   latestPrice?: string;
   reason?: string;
   selectedAt?: string;
+  quoteText?: string;
+  analysisStatus?: string;
+  analysisTone?: "neutral" | "success" | "warning" | "danger" | "accent" | string;
+  signalStatus?: string;
+  workflowBadges?: string[];
+  dataStatus?: string;
+  updatedAt?: string;
 };
 
 export type TableSection = {
