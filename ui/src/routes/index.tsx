@@ -6,6 +6,7 @@ import { PortfolioPositionPage } from "../features/portfolio/portfolio-position-
 
 export const router = createBrowserRouter([
   { path: "/", element: <Navigate to="/main" replace /> },
+  { path: "/workbench", element: <Navigate to="/main" replace /> },
   {
     element: <AppShell />,
     children: [
