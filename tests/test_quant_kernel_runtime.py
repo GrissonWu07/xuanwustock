@@ -141,3 +141,121 @@ def test_kernel_candidate_uses_stock_analysis_context_when_present():
     assert dimensions["stock_analysis"]["available"] is True
     assert dimensions["stock_analysis"]["score"] == 0.44
     assert explainability["stock_analysis_context"]["record_id"] == 99
+
+
+def test_candidate_sell_is_downgraded_to_non_tradable_reject_in_explainability():
+    runtime = KernelStrategyRuntime()
+
+    decision = runtime.evaluate_candidate(
+        candidate={
+            "stock_code": "600000",
+            "stock_name": "浦发银行",
+            "source": "manual",
+            "sources": ["manual"],
+        },
+        market_snapshot={
+            "current_price": 8.0,
+            "latest_price": 8.0,
+            "ma5": 9.0,
+            "ma10": 10.0,
+            "ma20": 11.0,
+            "ma60": 12.0,
+            "ma20_slope": -0.02,
+            "macd": -1.2,
+            "dif": -1.2,
+            "dea": -0.3,
+            "hist": -0.9,
+            "hist_prev": -0.3,
+            "rsi14": 80.0,
+            "rsi12": 80.0,
+            "volume_ratio": 0.5,
+            "obv": 100.0,
+            "obv_prev": 200.0,
+            "atr": 2.0,
+            "boll_upper": 14.0,
+            "boll_lower": 9.0,
+            "k": 20.0,
+            "d": 30.0,
+            "j": 10.0,
+            "trend": "down",
+        },
+        current_time=datetime(2026, 4, 24, 14, 30),
+        analysis_timeframe="30m",
+        strategy_mode="aggressive",
+    )
+
+    explainability = (decision.strategy_profile or {}).get("explainability") or {}
+    fusion = explainability.get("fusion_breakdown") or {}
+
+    assert decision.action == "HOLD"
+    assert decision.decision_type == "candidate_reject"
+    assert fusion["raw_weighted_action_raw"] == "SELL"
+    assert fusion["weighted_action_raw"] == "HOLD"
+    assert fusion["final_action"] == "HOLD"
+    assert fusion["matched_branch"] == "candidate_sell_rejected"
+
+
+def test_position_stop_loss_is_audited_as_risk_veto():
+    runtime = KernelStrategyRuntime()
+
+    decision = runtime.evaluate_position(
+        candidate={
+            "stock_code": "002518",
+            "stock_name": "科士达",
+            "source": "manual",
+            "sources": ["manual"],
+        },
+        position={
+            "stock_code": "002518",
+            "stock_name": "科士达",
+            "quantity": 100,
+            "avg_price": 10.0,
+            "stop_loss": 9.8,
+        },
+        market_snapshot={
+            "current_price": 9.5,
+            "latest_price": 9.5,
+            "ma5": 9.4,
+            "ma20": 9.0,
+            "ma60": 8.6,
+            "macd": 0.18,
+            "dif": 0.12,
+            "dea": 0.03,
+            "hist": 0.09,
+            "hist_prev": 0.05,
+            "rsi14": 56.0,
+            "volume_ratio": 1.1,
+            "trend": "up",
+        },
+        current_time=datetime(2026, 4, 24, 14, 30),
+        analysis_timeframe="30m",
+        strategy_mode="aggressive",
+    )
+
+    explainability = (decision.strategy_profile or {}).get("explainability") or {}
+    vetoes = explainability.get("vetoes") or []
+    fusion = explainability.get("fusion_breakdown") or {}
+
+    assert decision.action == "SELL"
+    assert vetoes[0]["id"] == "stop_loss"
+    assert vetoes[0]["trigger_type"] == "stop_loss"
+    assert vetoes[0]["display_label"] == "止损线触发"
+    assert fusion["matched_branch"] == "veto_first"
+
+
+def test_position_forced_risk_and_hard_stop_veto_labels_are_distinct():
+    runtime = KernelStrategyRuntime()
+
+    forced = runtime._build_position_risk_vetoes(
+        position={"stock_code": "002518", "avg_price": 10.0, "force_sell": True},
+        market_snapshot={"current_price": 10.5},
+    )
+    hard_stop = runtime._build_position_risk_vetoes(
+        position={"stock_code": "002518", "avg_price": 10.0, "hard_stop_loss": 9.0},
+        market_snapshot={"current_price": 8.8},
+    )
+
+    assert forced[0]["id"] == "forced_risk"
+    assert forced[0]["display_label"] == "强制风控触发"
+    assert hard_stop[0]["id"] == "hard_stop_loss"
+    assert hard_stop[0]["display_label"] == "硬止损线触发"

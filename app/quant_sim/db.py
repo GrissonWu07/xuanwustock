@@ -2745,6 +2745,7 @@ class QuantSimDB:
         executed_at: datetime,
         apply_trade_cost: bool = False,
     ) -> dict[str, Any]:
+        self._validate_a_share_buy_quantity(quantity)
         executed_at_text = self._format_datetime(executed_at)
         gross_amount = round(price * quantity, 4)
         commission_fee = 0.0
@@ -2855,6 +2856,7 @@ class QuantSimDB:
         sellable_quantity = self._lot_metrics(lots, current_date)["sellable_quantity"]
         if quantity > sellable_quantity:
             raise ValueError("sell quantity exceeds sellable quantity")
+        self._validate_a_share_sell_quantity(quantity=quantity, sellable_quantity=sellable_quantity)
 
         remaining_to_sell = quantity
         executed_at_text = self._format_datetime(executed_at)
@@ -3944,6 +3946,22 @@ class QuantSimDB:
             raise ValueError("price must be positive")
         if quantity <= 0:
             raise ValueError("quantity must be positive")
+
+    @staticmethod
+    def _validate_a_share_buy_quantity(quantity: int) -> None:
+        if int(quantity) % 100 != 0:
+            raise ValueError("A-share buy quantity must be a multiple of 100")
+
+    @staticmethod
+    def _validate_a_share_sell_quantity(*, quantity: int, sellable_quantity: int) -> None:
+        quantity = int(quantity)
+        sellable_quantity = int(sellable_quantity)
+        if quantity % 100 == 0:
+            return
+        odd_lot = sellable_quantity % 100
+        if odd_lot > 0 and quantity <= sellable_quantity and quantity % 100 == odd_lot:
+            return
+        raise ValueError("A-share sell quantity must be a multiple of 100 or include the complete odd-lot remainder")
 
     @staticmethod
     def _merge_candidate_status(existing_status: str, new_status: str) -> str:

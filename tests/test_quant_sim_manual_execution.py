@@ -88,7 +88,7 @@ def test_ignore_signal_removes_it_from_pending_queue(tmp_path):
     assert history[0]["execution_note"] == "今天不做"
 
 
-def test_confirm_partial_sell_consumes_lot_quantity(tmp_path):
+def test_confirm_sell_rejects_split_odd_lot_quantity(tmp_path):
     candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
     signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
     portfolio_service = PortfolioService(db_file=tmp_path / "app.quant_sim.db")
@@ -111,20 +111,104 @@ def test_confirm_partial_sell_consumes_lot_quantity(tmp_path):
         candidate,
         {"action": "SELL", "confidence": 79, "reasoning": "减仓", "position_size_pct": 0},
     )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="A-share sell quantity"):
+        portfolio_service.confirm_sell(
+            sell_signal["id"],
+            price=36.5,
+            quantity=40,
+            note="非法拆分零股",
+            executed_at="2026-04-08 10:00:00",
+        )
+
+
+def test_confirm_buy_rejects_non_board_lot_quantity(tmp_path):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
+    portfolio_service = PortfolioService(db_file=tmp_path / "app.quant_sim.db")
+
+    candidate_service.add_manual_candidate("600036", "招商银行", "value_stock")
+    candidate = candidate_service.list_candidates()[0]
+    buy_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 83, "reasoning": "建仓", "position_size_pct": 20},
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="A-share buy quantity"):
+        portfolio_service.confirm_buy(
+            buy_signal["id"],
+            price=35.2,
+            quantity=50,
+            note="非整手买入",
+            executed_at="2026-04-07 10:00:00",
+        )
+
+
+def test_confirm_sell_uses_only_lots_unlocked_by_t_plus_one(tmp_path):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
+    portfolio_service = PortfolioService(db_file=tmp_path / "app.quant_sim.db")
+
+    candidate_service.add_manual_candidate("600036", "招商银行", "value_stock")
+    candidate = candidate_service.list_candidates()[0]
+    first_buy = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 83, "reasoning": "第一笔", "position_size_pct": 20},
+    )
+    portfolio_service.confirm_buy(
+        first_buy["id"],
+        price=35.2,
+        quantity=100,
+        note="第一笔",
+        executed_at="2026-04-08 10:00:00",
+    )
+    second_buy = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 83, "reasoning": "第二笔", "position_size_pct": 20},
+    )
+    portfolio_service.confirm_buy(
+        second_buy["id"],
+        price=35.0,
+        quantity=100,
+        note="第二笔",
+        executed_at="2026-04-09 10:00:00",
+    )
+    sell_signal = signal_service.create_signal(
+        candidate,
+        {"action": "SELL", "confidence": 79, "reasoning": "卖出", "position_size_pct": 0},
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="sellable"):
+        portfolio_service.confirm_sell(
+            sell_signal["id"],
+            price=36.5,
+            quantity=200,
+            note="尝试卖出未解锁持仓",
+            executed_at="2026-04-09 10:30:00",
+        )
+
     portfolio_service.confirm_sell(
         sell_signal["id"],
         price=36.5,
-        quantity=40,
-        note="已减仓",
-        executed_at="2026-04-08 10:00:00",
+        quantity=100,
+        note="只卖已解锁持仓",
+        executed_at="2026-04-09 10:30:00",
     )
 
-    positions = portfolio_service.list_positions()
-    lots = portfolio_service.list_position_lots(stock_code="600036")
+    positions = portfolio_service.db.get_positions(as_of="2026-04-09 10:30:00")
+    lots = portfolio_service.db.get_position_lots("600036", as_of="2026-04-09 10:30:00")
 
-    assert positions[0]["quantity"] == 60
-    assert positions[0]["sellable_quantity"] == 60
-    assert lots[0]["remaining_quantity"] == 60
+    assert positions[0]["quantity"] == 100
+    assert positions[0]["sellable_quantity"] == 0
+    assert positions[0]["locked_quantity"] == 100
+    assert len(lots) == 1
+    assert lots[0]["is_sellable"] is False
 
 
 def test_confirm_sell_rejects_oversell_and_locked_quantity(tmp_path):

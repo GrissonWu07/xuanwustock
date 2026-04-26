@@ -8,7 +8,14 @@ from typing import Any, Mapping
 from .config import DualTrackConfig
 from .models import ContextualScore, Decision
 
-VETO_PRIORITY: dict[str, int] = {"risk_stop": 1, "hard_constraint": 2, "context_veto": 3}
+VETO_PRIORITY: dict[str, int] = {
+    "forced_risk": 1,
+    "risk_stop": 2,
+    "stop_loss": 2,
+    "hard_stop_loss": 3,
+    "hard_constraint": 4,
+    "context_veto": 9,
+}
 
 
 class DualTrackResolver:
@@ -231,16 +238,24 @@ def resolve_v23_final_action(
 
     if selected_veto is not None:
         veto_action = str(selected_veto.get("action") or "HOLD")
+        veto_id = str(selected_veto.get("id") or "")
+        veto_trigger_type = str(selected_veto.get("trigger_type") or veto_id or "veto")
+        veto_label = str(selected_veto.get("display_label") or veto_trigger_type)
+        veto_reason = str(selected_veto.get("reason") or "")
         decision_path.append(
             {
                 "step": "veto_first",
                 "matched": "true",
-                "detail": f"{selected_veto.get('id')} => {veto_action}",
+                "detail": f"{veto_label}({veto_id}) => {veto_action}",
             }
         )
         return {
             "final_action": veto_action,
             "veto_action": veto_action,
+            "veto_id": veto_id,
+            "veto_trigger_type": veto_trigger_type,
+            "veto_display_label": veto_label,
+            "veto_reason": veto_reason,
             "decision_path": decision_path,
             "matched_branch": "veto_first",
         }
@@ -267,22 +282,6 @@ def resolve_v23_final_action(
         raise ValueError(f"unsupported mode: {normalized_mode}")
 
     decision_path.append({"step": "mode", "matched": "hybrid", "detail": "hybrid_matrix"})
-    if normalized_core == normalized_weighted:
-        decision_path.append({"step": "hybrid", "matched": "aligned", "detail": normalized_core})
-        return {
-            "final_action": normalized_core,
-            "veto_action": None,
-            "decision_path": decision_path,
-            "matched_branch": "hybrid_aligned",
-        }
-    if normalized_core == "SELL":
-        decision_path.append({"step": "hybrid", "matched": "core_sell", "detail": "core_rule_action=SELL"})
-        return {
-            "final_action": "SELL",
-            "veto_action": None,
-            "decision_path": decision_path,
-            "matched_branch": "hybrid_core_sell",
-        }
     if normalized_weighted == "SELL":
         if float(fusion_score) <= float(sell_precedence_gate):
             decision_path.append(
@@ -310,6 +309,42 @@ def resolve_v23_final_action(
             "veto_action": None,
             "decision_path": decision_path,
             "matched_branch": "hybrid_weighted_sell_blocked",
+        }
+    if normalized_core == normalized_weighted:
+        decision_path.append({"step": "hybrid", "matched": "aligned", "detail": normalized_core})
+        return {
+            "final_action": normalized_core,
+            "veto_action": None,
+            "decision_path": decision_path,
+            "matched_branch": "hybrid_aligned",
+        }
+    if normalized_core == "SELL" and normalized_weighted == "HOLD":
+        decision_path.append(
+            {
+                "step": "hybrid",
+                "matched": "core_sell_blocked",
+                "detail": "core_rule_action=SELL is audit-only without risk veto; use weighted_action=HOLD",
+            }
+        )
+        return {
+            "final_action": "HOLD",
+            "veto_action": None,
+            "decision_path": decision_path,
+            "matched_branch": "hybrid_core_sell_blocked",
+        }
+    if normalized_core == "SELL" and normalized_weighted == "BUY":
+        decision_path.append(
+            {
+                "step": "hybrid",
+                "matched": "core_sell_ignored_weighted_buy",
+                "detail": "core_rule_action=SELL is audit-only without risk veto; use weighted_action=BUY",
+            }
+        )
+        return {
+            "final_action": "BUY",
+            "veto_action": None,
+            "decision_path": decision_path,
+            "matched_branch": "hybrid_core_sell_ignored_weighted_buy",
         }
     if normalized_core == "BUY" and normalized_weighted == "HOLD":
         decision_path.append({"step": "hybrid", "matched": "core_buy_weighted_hold", "detail": "downgrade_to_hold"})

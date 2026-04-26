@@ -2535,9 +2535,10 @@ def _build_explanation_payload(
     for item in vetoes:
         if not isinstance(item, dict):
             continue
+        label = _txt(item.get("display_label") or item.get("trigger_type") or item.get("id"), "veto")
         veto_lines.append(
-            _txt(item.get("id"), "veto")
-            + f": action={_txt(item.get('action'), '--')}, reason={_txt(item.get('reason'), '--')}, priority={_txt(item.get('priority'), '--')}"
+            label
+            + f": action={_txt(item.get('action'), '--')}, id={_txt(item.get('id'), '--')}, reason={_txt(item.get('reason'), '--')}, priority={_txt(item.get('priority'), '--')}"
         )
 
     summary_lines = [
@@ -3258,10 +3259,10 @@ def _build_parameter_details(
                     continue
                 rows.append(
                     _item(
-                        f"否决.{index + 1}",
+                        _txt(item.get("display_label") or item.get("trigger_type"), f"否决.{index + 1}"),
                         _txt(item.get("action"), "--"),
                         "vetoes",
-                        f"id={_txt(item.get('id'), '--')}; priority={_txt(item.get('priority'), '--')}; reason={_txt(item.get('reason'), '--')}",
+                        f"id={_txt(item.get('id'), '--')}; trigger_type={_txt(item.get('trigger_type'), '--')}; priority={_txt(item.get('priority'), '--')}; reason={_txt(item.get('reason'), '--')}",
                     )
                 )
         else:

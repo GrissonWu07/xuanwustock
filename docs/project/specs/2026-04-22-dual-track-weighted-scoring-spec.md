@@ -199,7 +199,7 @@ Interpretation:
 - Candidate signal:
   - `BUY` => `candidate_buy`
   - `HOLD` => `watch`
-  - `SELL` => `reject` (not short-sell)
+  - raw negative `SELL` => `reject` / `HOLD` (not short-sell, not executable)
 - Position signal:
   - `BUY` => `add_or_hold_strong` (mapped to existing system enum)
   - `HOLD` => `hold`
@@ -207,7 +207,7 @@ Interpretation:
 
 Gateway/UI rule for candidate reject:
 - Candidate `reject` must not be exposed as tradable `SELL` signal in workbench/live/replay signal lists.
-- `gateway_api.py` must map candidate raw `SELL` to non-tradable status (`candidate_reject`) and filter it from execution queues.
+- Runtime must sanitize candidate raw `SELL` before final action resolution. Candidate `SELL` is an audit-only rejection reason and must not enter execution queues.
 - UI displays candidate reject as screening outcome only, never as short/exit instruction.
 
 ## 7. Hybrid Mode Precedence (Deterministic)
@@ -263,15 +263,17 @@ Sell precedence gate:
 1. Compute `veto_action`, `core_rule_action`, `weighted_action_raw`.
 2. Apply:
    - if veto exists => `veto_action`
-   - else if `core_rule_action == weighted_action_raw` => that action
-   - else if `core_rule_action == SELL` => `SELL`
    - else if `weighted_action_raw == SELL` and `FusionScore <= sell_precedence_gate` => `SELL`
    - else if `weighted_action_raw == SELL` => `HOLD`
+   - else if `core_rule_action == weighted_action_raw` => that action
+   - else if `core_rule_action == SELL` and `weighted_action_raw == HOLD` => `HOLD`
+   - else if `core_rule_action == SELL` and `weighted_action_raw == BUY` => `BUY`
    - else if `core_rule_action == BUY` and `weighted_action_raw == HOLD` => `HOLD`
    - else if `core_rule_action == HOLD` and `weighted_action_raw == BUY` => `BUY`
    - else => `HOLD`
 
 `context_veto` cannot be overridden by weighted fusion.
+`core_rule_action` is audit-only in hybrid mode. It cannot directly create an executable `SELL` unless a structured risk veto exists. Risk veto `SELL` must identify whether it was caused by stop-loss, forced risk control, or hard stop-loss. Candidate/no-position stocks never produce executable `SELL`; raw sell-like outcomes are downgraded to non-tradable rejection.
 
 ## 8. Context Track Structure and Overlay Ownership
 
@@ -582,7 +584,7 @@ Same structure as technical breakdown, using explicit context groups:
 - `veto_source_mode`
 
 ### 11.4 veto and decision path
-- `vetoes[]`: `{id, priority, action, reason}`
+- `vetoes[]`: `{id, priority, action, trigger_type, display_label, reason}`
 - `veto_action`
 - `decision_path[]`: ordered precedence steps and matched branch
 
@@ -991,9 +993,12 @@ Recommended production defaults:
 22. Context grouped scoring is available in UI/API with editable group weights; dimension-to-group mapping is locked in v2.3 standard UI.
 23. Weighted/hybrid production default profiles use non-uniform technical/context group weights.
 24. Weak weighted `SELL` cannot override `HOLD/BUY` unless `FusionScore <= sell_precedence_gate`.
-25. Fusion confidence includes divergence and sign-conflict penalty fields and values in explainability payload.
-26. Candidate `reject` outcomes are not emitted as tradable `SELL` signals in execution-facing APIs/UI.
-27. Dynamic threshold mode (`volatility_adjusted`) is configurable and reflected in effective threshold fields.
+25. `core_rule_action=SELL` cannot override `weighted_action_raw` without a structured risk veto.
+26. Risk veto `SELL` records explicit trigger type and display label for stop-loss, forced risk control, or hard stop-loss.
+27. Fusion confidence includes divergence and sign-conflict penalty fields and values in explainability payload.
+28. Candidate `reject` outcomes are not emitted as tradable `SELL` signals in execution-facing APIs/UI.
+29. A-share execution enforces per-lot T+1 sellability and board-lot quantity rules.
+30. Dynamic threshold mode (`volatility_adjusted`) is configurable and reflected in effective threshold fields.
 
 ## 18. Rollout Policy (Production Safety)
 1. Phase A: ship v2.3 payload and config schema under `rule_only`.

@@ -17,6 +17,8 @@ def test_hard_veto_applies_first_for_all_modes() -> None:
         )
         assert resolved["final_action"] == "SELL"
         assert resolved["matched_branch"] == "veto_first"
+        assert resolved["veto_id"] == "risk_stop"
+        assert resolved["veto_trigger_type"] == "risk_stop"
 
 
 def test_rule_only_uses_legacy_action_when_no_veto() -> None:
@@ -31,4 +33,3 @@ def test_rule_only_uses_legacy_action_when_no_veto() -> None:
     )
     assert resolved["final_action"] == "HOLD"
     assert resolved["matched_branch"] == "rule_only"
-

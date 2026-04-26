@@ -309,6 +309,7 @@ class KernelStrategyRuntime:
                 profile_kind="position",
                 sources=sources,
                 strategy_profile_binding=strategy_profile_binding,
+                position=position,
             )
 
         current_price = float(
@@ -344,6 +345,7 @@ class KernelStrategyRuntime:
             profile_kind="position",
             sources=sources,
             strategy_profile_binding=strategy_profile_binding,
+            position=position,
         )
 
     def _resolve_dual_track_decision(
@@ -361,6 +363,7 @@ class KernelStrategyRuntime:
         profile_kind: str,
         sources: list[str],
         strategy_profile_binding: dict[str, Any] | None = None,
+        position: dict[str, Any] | None = None,
     ) -> Decision:
         thresholds = strategy_profile["effective_thresholds"]
         tech_decision = Decision(
@@ -405,22 +408,38 @@ class KernelStrategyRuntime:
             dual_track=v23_profile["dual_track"],
             volatility_regime_score=raw_dimensions.get("volatility_regime_score"),
         )
+        candidate_sell_rejected = False
+        if profile_kind == "candidate":
+            candidate_sell_rejected = self._candidate_has_raw_sell(
+                core_rule_action=tech_decision.action,
+                legacy_rule_action=resolved.action,
+                fusion_breakdown=fusion_breakdown,
+            )
+            if candidate_sell_rejected:
+                fusion_breakdown = self._downgrade_candidate_sell_fusion(fusion_breakdown)
         vetoes = self._build_v23_vetoes(
             profile_kind=profile_kind,
             contextual_score=contextual_score,
             dual_track=v23_profile["dual_track"],
             veto_config=v23_profile.get("veto") if isinstance(v23_profile.get("veto"), dict) else {},
+            position=position,
+            market_snapshot=market_snapshot,
         )
         v23_action = resolve_v23_final_action(
             mode=str(v23_profile["dual_track"].get("mode") or "rule_only"),
-            core_rule_action=tech_decision.action,
+            core_rule_action="HOLD" if profile_kind == "candidate" and tech_decision.action == "SELL" else tech_decision.action,
             weighted_action_raw=str(fusion_breakdown["weighted_action_raw"]),
             fusion_score=float(fusion_breakdown["fusion_score"]),
             sell_precedence_gate=float(fusion_breakdown["sell_precedence_gate"]),
             vetoes=vetoes,
-            legacy_rule_action=resolved.action,
+            legacy_rule_action="HOLD" if profile_kind == "candidate" and resolved.action == "SELL" else resolved.action,
         )
-        if str(v23_profile["dual_track"].get("mode") or "rule_only") != "rule_only":
+        mode_value = str(v23_profile["dual_track"].get("mode") or "rule_only")
+        if candidate_sell_rejected and str(v23_action.get("final_action") or "").upper() != "BUY":
+            v23_action = self._downgrade_candidate_sell_action(v23_action)
+            resolved.action = "HOLD"
+            resolved.decision_type = "candidate_reject"
+        elif mode_value != "rule_only":
             resolved.action = str(v23_action["final_action"])
             if resolved.action == "BUY":
                 resolved.decision_type = "dual_track_weighted_buy"
@@ -452,6 +471,52 @@ class KernelStrategyRuntime:
             resolved.action = "HOLD"
             resolved.decision_type = "candidate_reject"
         return resolved
+
+    @staticmethod
+    def _candidate_has_raw_sell(
+        *,
+        core_rule_action: str,
+        legacy_rule_action: str,
+        fusion_breakdown: dict[str, Any],
+    ) -> bool:
+        return (
+            str(core_rule_action).upper() == "SELL"
+            or str(legacy_rule_action).upper() == "SELL"
+            or str(fusion_breakdown.get("weighted_threshold_action") or "").upper() == "SELL"
+            or str(fusion_breakdown.get("weighted_action_raw") or "").upper() == "SELL"
+        )
+
+    @staticmethod
+    def _downgrade_candidate_sell_fusion(fusion_breakdown: dict[str, Any]) -> dict[str, Any]:
+        downgraded = dict(fusion_breakdown)
+        if str(downgraded.get("weighted_threshold_action") or "").upper() == "SELL":
+            downgraded["raw_weighted_threshold_action"] = downgraded.get("weighted_threshold_action")
+            downgraded["weighted_threshold_action"] = "HOLD"
+        if str(downgraded.get("weighted_action_raw") or "").upper() == "SELL":
+            downgraded["raw_weighted_action_raw"] = downgraded.get("weighted_action_raw")
+            downgraded["weighted_action_raw"] = "HOLD"
+        gate_reasons = list(downgraded.get("weighted_gate_fail_reasons") or [])
+        gate_reasons.append("candidate_sell_not_tradable")
+        downgraded["weighted_gate_fail_reasons"] = gate_reasons
+        downgraded["candidate_sell_guard"] = "candidate_reject"
+        return downgraded
+
+    @staticmethod
+    def _downgrade_candidate_sell_action(v23_action: dict[str, Any]) -> dict[str, Any]:
+        downgraded = dict(v23_action)
+        decision_path = list(downgraded.get("decision_path") or [])
+        decision_path.append(
+            {
+                "step": "candidate_sell_guard",
+                "matched": "true",
+                "detail": "candidate SELL is non-tradable; downgrade to HOLD/candidate_reject",
+            }
+        )
+        downgraded["raw_final_action"] = downgraded.get("final_action")
+        downgraded["final_action"] = "HOLD"
+        downgraded["decision_path"] = decision_path
+        downgraded["matched_branch"] = "candidate_sell_rejected"
+        return downgraded
 
     def _build_v23_dimension_payload(
         self,
@@ -1126,6 +1191,8 @@ class KernelStrategyRuntime:
         contextual_score: ContextualScore,
         dual_track: dict[str, Any],
         veto_config: dict[str, Any],
+        position: dict[str, Any] | None = None,
+        market_snapshot: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         vetoes: list[dict[str, Any]] = []
         thresholds = veto_config.get("thresholds") if isinstance(veto_config.get("thresholds"), dict) else {}
@@ -1141,7 +1208,135 @@ class KernelStrategyRuntime:
                     "reason": f"context_score={contextual_score.score:.4f} < {context_veto_floor:.4f}",
                 }
             )
+        if profile_kind == "position":
+            vetoes.extend(self._build_position_risk_vetoes(position=position, market_snapshot=market_snapshot))
+        return sorted(vetoes, key=self._veto_sort_key)
+
+    def _build_position_risk_vetoes(
+        self,
+        *,
+        position: dict[str, Any] | None,
+        market_snapshot: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(position, dict):
+            return []
+
+        snapshot = market_snapshot if isinstance(market_snapshot, dict) else {}
+        current_price = self._first_float(
+            snapshot,
+            ("current_price", "latest_price", "close"),
+            default=self._first_float(position, ("latest_price", "current_price", "close"), default=0.0),
+        )
+        avg_price = self._first_float(position, ("avg_price", "cost_price", "cost"), default=0.0)
+        stop_loss = self._first_float(position, ("stop_loss", "stopLoss", "stop_loss_price", "risk_stop_price"), default=0.0)
+        hard_stop_price = self._first_float(
+            position,
+            ("hard_stop_loss", "hardStopLoss", "hard_stop_price", "hard_stop", "hardStop"),
+            default=0.0,
+        )
+        pnl_pct = ((current_price - avg_price) / avg_price * 100.0) if current_price > 0 and avg_price > 0 else 0.0
+        vetoes: list[dict[str, Any]] = []
+
+        if self._has_forced_risk_sell(position, snapshot):
+            vetoes.append(
+                {
+                    "id": "forced_risk",
+                    "priority": 1,
+                    "action": "SELL",
+                    "trigger_type": "forced_risk",
+                    "display_label": "强制风控触发",
+                    "reason": "position_or_snapshot_flag_requires_forced_sell",
+                }
+            )
+
+        if current_price > 0 and stop_loss > 0 and current_price <= stop_loss:
+            vetoes.append(
+                {
+                    "id": "stop_loss",
+                    "priority": 2,
+                    "action": "SELL",
+                    "trigger_type": "stop_loss",
+                    "display_label": "止损线触发",
+                    "reason": f"current_price={current_price:.4f} <= stop_loss={stop_loss:.4f}",
+                }
+            )
+
+        if current_price > 0 and hard_stop_price > 0 and current_price <= hard_stop_price:
+            vetoes.append(
+                {
+                    "id": "hard_stop_loss",
+                    "priority": 3,
+                    "action": "SELL",
+                    "trigger_type": "hard_stop_loss",
+                    "display_label": "硬止损线触发",
+                    "reason": f"current_price={current_price:.4f} <= hard_stop_loss={hard_stop_price:.4f}",
+                }
+            )
+
+        hard_loss_pct = float(self.config.position_scoring.deep_loss_threshold)
+        if avg_price > 0 and pnl_pct <= hard_loss_pct:
+            vetoes.append(
+                {
+                    "id": "hard_stop_loss",
+                    "priority": 3,
+                    "action": "SELL",
+                    "trigger_type": "hard_stop_loss",
+                    "display_label": "硬止损线触发",
+                    "reason": f"pnl_pct={pnl_pct:.4f}% <= hard_loss_threshold={hard_loss_pct:.4f}%",
+                }
+            )
+
         return vetoes
+
+    @staticmethod
+    def _has_forced_risk_sell(position: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+        truthy_fields = (
+            "force_sell",
+            "forced_sell",
+            "force_exit",
+            "forced_exit",
+            "risk_force_sell",
+            "force_risk_sell",
+            "risk_control_sell",
+        )
+        for source in (position, snapshot):
+            for field in truthy_fields:
+                if KernelStrategyRuntime._is_truthy(source.get(field)):
+                    return True
+            action = str(source.get("risk_action") or source.get("risk_control_action") or "").strip().upper()
+            if action == "SELL":
+                return True
+        return False
+
+    @staticmethod
+    def _first_float(source: dict[str, Any], keys: tuple[str, ...], *, default: float = 0.0) -> float:
+        for key in keys:
+            value = source.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return float(default)
+
+    @staticmethod
+    def _is_truthy(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on", "sell", "force", "forced"}
+        return False
+
+    @staticmethod
+    def _veto_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+        try:
+            priority = int(item.get("priority"))
+        except (TypeError, ValueError):
+            priority = 999
+        return priority, str(item.get("id") or "")
 
     def _build_contextual_score(
         self,
@@ -1219,7 +1414,14 @@ class KernelStrategyRuntime:
         fusion_view = dict(fusion_breakdown)
         fusion_view["core_rule_action"] = str((resolved.dual_track_details or {}).get("tech_signal") or resolved.action)
         fusion_view["final_action"] = str(v23_action.get("final_action") or resolved.action)
-        fusion_view["veto_source_mode"] = "legacy"
+        if "raw_final_action" in v23_action:
+            fusion_view["raw_final_action"] = v23_action.get("raw_final_action")
+        fusion_view["matched_branch"] = str(v23_action.get("matched_branch") or "")
+        fusion_view["veto_action"] = v23_action.get("veto_action")
+        fusion_view["veto_id"] = v23_action.get("veto_id")
+        fusion_view["veto_trigger_type"] = v23_action.get("veto_trigger_type")
+        fusion_view["veto_display_label"] = v23_action.get("veto_display_label")
+        fusion_view["veto_source_mode"] = "structured"
         if isinstance(strategy_profile_binding, dict):
             profile["selected_strategy_profile"] = {
                 "id": str(strategy_profile_binding.get("profile_id") or ""),
