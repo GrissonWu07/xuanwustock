@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 import threading
 import time
 from typing import Any
@@ -1587,6 +1588,21 @@ def test_his_replay_progress_endpoint_returns_lightweight_task_progress(tmp_path
     assert payload["signals"]["rows"] == []
     assert payload["trades"]["rows"] == []
     assert "curve" not in payload
+
+
+def test_his_replay_progress_endpoint_reports_database_busy(tmp_path, monkeypatch):
+    context = _make_context(tmp_path)
+    client = TestClient(create_app(context=context))
+
+    def locked_snapshot(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(gateway_api, "_snapshot_his_replay_progress", locked_snapshot)
+
+    response = client.get("/api/v1/quant/his-replay/progress")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "历史回放正在写入数据库，请稍后刷新。"
 
 
 def test_his_replay_snapshot_returns_only_first_page_for_heavy_tables(tmp_path):

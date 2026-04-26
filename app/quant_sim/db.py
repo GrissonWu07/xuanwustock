@@ -33,6 +33,7 @@ DEFAULT_AI_DYNAMIC_STRATEGY = "off"
 SUPPORTED_AI_DYNAMIC_STRATEGIES = {"off", "template", "weights", "hybrid"}
 DEFAULT_AI_DYNAMIC_STRENGTH = 0.5
 DEFAULT_AI_DYNAMIC_LOOKBACK = 48
+DEFAULT_SQLITE_BUSY_TIMEOUT_SECONDS = 30.0
 DEFAULT_CAPITAL_SLOT_ENABLED = bool(DEFAULT_CAPITAL_SLOT_CONFIG["capital_slot_enabled"])
 DEFAULT_CAPITAL_POOL_MIN_CASH = float(DEFAULT_CAPITAL_SLOT_CONFIG["capital_pool_min_cash"])
 DEFAULT_CAPITAL_POOL_MAX_CASH = float(DEFAULT_CAPITAL_SLOT_CONFIG["capital_pool_max_cash"])
@@ -69,6 +70,10 @@ BUILTIN_STRATEGY_PROFILES: tuple[dict[str, str], ...] = (
 )
 
 
+def is_sqlite_locked_error(exc: BaseException) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and "database is locked" in str(exc).lower()
+
+
 class QuantSimDB:
     """Persistence layer for candidate pool, strategy signals, and sim positions."""
 
@@ -80,11 +85,17 @@ class QuantSimDB:
         self._db_cache_key = self._cache_key(self.db_file)
         self._ensure_initialized()
 
-    def _connect(self, *, timeout: float = 30.0) -> sqlite3.Connection:
+    def _connect(self, *, timeout: float = DEFAULT_SQLITE_BUSY_TIMEOUT_SECONDS) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_file, timeout=timeout)
         conn.execute(f"PRAGMA busy_timeout = {max(0, int(timeout * 1000))}")
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _configure_journal_mode(self, conn: sqlite3.Connection) -> None:
+        if self.db_file == ":memory:":
+            return
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
 
     def _ensure_initialized(self) -> None:
         if self._is_initialized():
@@ -109,7 +120,7 @@ class QuantSimDB:
         return Path(self.db_file).exists()
 
     def _can_assume_existing_schema(self, exc: sqlite3.OperationalError) -> bool:
-        if "database is locked" not in str(exc).lower():
+        if not is_sqlite_locked_error(exc):
             return False
         db_path = Path(self.db_file)
         try:
@@ -119,6 +130,7 @@ class QuantSimDB:
 
     def _init_database(self) -> None:
         conn = self._connect(timeout=1.0)
+        self._configure_journal_mode(conn)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -1126,45 +1138,50 @@ class QuantSimDB:
         metadata: Optional[dict[str, Any]] = None,
     ) -> int:
         conn = self._connect()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO sim_runs
-            (
-                mode, status, timeframe, market, auto_execute, handoff_to_live,
-                start_datetime, end_datetime, initial_cash, progress_current, progress_total,
-                status_message, selected_strategy_profile_id, selected_strategy_profile_name,
-                selected_strategy_profile_version_id, strategy_profile_snapshot_json, metadata_json,
-                created_at, updated_at
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO sim_runs
+                (
+                    mode, status, timeframe, market, auto_execute, handoff_to_live,
+                    start_datetime, end_datetime, initial_cash, progress_current, progress_total,
+                    status_message, selected_strategy_profile_id, selected_strategy_profile_name,
+                    selected_strategy_profile_version_id, strategy_profile_snapshot_json, metadata_json,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mode,
+                    status,
+                    timeframe,
+                    market,
+                    int(auto_execute),
+                    int(handoff_to_live),
+                    start_datetime,
+                    end_datetime,
+                    float(initial_cash),
+                    int(progress_current),
+                    int(progress_total),
+                    status_message,
+                    selected_strategy_profile_id,
+                    selected_strategy_profile_name,
+                    selected_strategy_profile_version_id,
+                    self._dumps_metadata(strategy_profile_snapshot),
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                    self._now(),
+                    self._now(),
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                mode,
-                status,
-                timeframe,
-                market,
-                int(auto_execute),
-                int(handoff_to_live),
-                start_datetime,
-                end_datetime,
-                float(initial_cash),
-                int(progress_current),
-                int(progress_total),
-                status_message,
-                selected_strategy_profile_id,
-                selected_strategy_profile_name,
-                selected_strategy_profile_version_id,
-                self._dumps_metadata(strategy_profile_snapshot),
-                json.dumps(metadata or {}, ensure_ascii=False),
-                self._now(),
-                self._now(),
-            ),
-        )
-        run_id = int(cursor.lastrowid)
-        conn.commit()
-        conn.close()
-        return run_id
+            run_id = int(cursor.lastrowid)
+            conn.commit()
+            return run_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def add_sim_run_checkpoint(
         self,
@@ -1181,44 +1198,49 @@ class QuantSimDB:
         metadata: Optional[dict[str, Any]] = None,
     ) -> int:
         conn = self._connect()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO sim_run_checkpoints
-            (
-                run_id, checkpoint_at, candidates_scanned, positions_checked, signals_created,
-                auto_executed, available_cash, market_value, total_equity, metadata_json, created_at
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO sim_run_checkpoints
+                (
+                    run_id, checkpoint_at, candidates_scanned, positions_checked, signals_created,
+                    auto_executed, available_cash, market_value, total_equity, metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    checkpoint_at,
+                    candidates_scanned,
+                    positions_checked,
+                    signals_created,
+                    auto_executed,
+                    round(available_cash, 4),
+                    round(market_value, 4),
+                    round(total_equity, 4),
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                    self._now(),
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id,
-                checkpoint_at,
-                candidates_scanned,
-                positions_checked,
-                signals_created,
-                auto_executed,
-                round(available_cash, 4),
-                round(market_value, 4),
-                round(total_equity, 4),
-                json.dumps(metadata or {}, ensure_ascii=False),
-                self._now(),
-            ),
-        )
-        cursor.execute(
-            """
-            UPDATE sim_runs
-            SET checkpoint_count = checkpoint_count + 1,
-                latest_checkpoint_at = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (checkpoint_at, self._now(), run_id),
-        )
-        checkpoint_id = int(cursor.lastrowid)
-        conn.commit()
-        conn.close()
-        return checkpoint_id
+            checkpoint_id = int(cursor.lastrowid)
+            cursor.execute(
+                """
+                UPDATE sim_runs
+                SET checkpoint_count = checkpoint_count + 1,
+                    latest_checkpoint_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (checkpoint_at, self._now(), run_id),
+            )
+            conn.commit()
+            return checkpoint_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def update_sim_run_progress(
         self,
@@ -1250,46 +1272,52 @@ class QuantSimDB:
             updates.append("status_message = ?")
             params.append(status_message)
 
-        if metadata is not None:
-            conn = self._connect()
+        conn = self._connect()
+        try:
             cursor = conn.cursor()
-            cursor.execute("SELECT metadata_json FROM sim_runs WHERE id = ?", (run_id,))
-            row = cursor.fetchone()
-            merged_metadata = {**self._loads_metadata(row["metadata_json"] if row else None), **metadata}
-            updates.append("metadata_json = ?")
-            params.append(json.dumps(merged_metadata, ensure_ascii=False))
-        else:
-            conn = self._connect()
-            cursor = conn.cursor()
+            if metadata is not None:
+                cursor.execute("SELECT metadata_json FROM sim_runs WHERE id = ?", (run_id,))
+                row = cursor.fetchone()
+                merged_metadata = {**self._loads_metadata(row["metadata_json"] if row else None), **metadata}
+                updates.append("metadata_json = ?")
+                params.append(json.dumps(merged_metadata, ensure_ascii=False))
 
-        if not updates:
+            if not updates:
+                return
+
+            updates.append("updated_at = ?")
+            params.append(self._now())
+            params.append(run_id)
+            cursor.execute(
+                f"UPDATE sim_runs SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
             conn.close()
-            return
-
-        updates.append("updated_at = ?")
-        params.append(self._now())
-        params.append(run_id)
-        cursor.execute(
-            f"UPDATE sim_runs SET {', '.join(updates)} WHERE id = ?",
-            params,
-        )
-        conn.commit()
-        conn.close()
 
     def append_sim_run_event(self, run_id: int, message: str, *, level: str = "info") -> int:
         conn = self._connect()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO sim_run_events (run_id, level, message, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (run_id, level, message, self._now()),
-        )
-        event_id = int(cursor.lastrowid)
-        conn.commit()
-        conn.close()
-        return event_id
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO sim_run_events (run_id, level, message, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (run_id, level, message, self._now()),
+            )
+            event_id = int(cursor.lastrowid)
+            conn.commit()
+            return event_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def get_sim_run(self, run_id: int) -> Optional[dict[str, Any]]:
         conn = self._connect()
@@ -1497,96 +1525,24 @@ class QuantSimDB:
         signals: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         conn = self._connect()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM sim_run_trades WHERE run_id = ?", (run_id,))
-        cursor.execute("DELETE FROM sim_run_snapshots WHERE run_id = ?", (run_id,))
-        cursor.execute("DELETE FROM sim_run_positions WHERE run_id = ?", (run_id,))
-        cursor.execute("DELETE FROM sim_run_signals WHERE run_id = ?", (run_id,))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM sim_run_trades WHERE run_id = ?", (run_id,))
+            cursor.execute("DELETE FROM sim_run_snapshots WHERE run_id = ?", (run_id,))
+            cursor.execute("DELETE FROM sim_run_positions WHERE run_id = ?", (run_id,))
+            cursor.execute("DELETE FROM sim_run_signals WHERE run_id = ?", (run_id,))
 
-        for snapshot in snapshots:
-            cursor.execute(
-                """
-                INSERT INTO sim_run_snapshots
-                (
-                    run_id, run_reason, initial_cash, available_cash, market_value,
-                    total_equity, realized_pnl, unrealized_pnl, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    snapshot.get("run_reason") or "historical_range",
-                    float(snapshot.get("initial_cash") or 0),
-                    float(snapshot.get("available_cash") or 0),
-                    float(snapshot.get("market_value") or 0),
-                    float(snapshot.get("total_equity") or 0),
-                    float(snapshot.get("realized_pnl") or 0),
-                    float(snapshot.get("unrealized_pnl") or 0),
-                    snapshot.get("created_at") or self._now(),
-                ),
-            )
+            self._insert_sim_run_snapshots_with_cursor(cursor, run_id, snapshots)
+            self._insert_sim_run_positions_with_cursor(cursor, run_id, positions)
+            persisted_signal_ids_by_source_id = self._upsert_sim_run_signals_with_cursor(cursor, run_id, signals or [])
+            self._insert_sim_run_trades_with_cursor(cursor, run_id, trades, persisted_signal_ids_by_source_id)
 
-        for position in positions:
-            cursor.execute(
-                """
-                INSERT INTO sim_run_positions
-                (
-                    run_id, stock_code, stock_name, quantity, avg_price, latest_price,
-                    market_value, unrealized_pnl, sellable_quantity, locked_quantity, status, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    position.get("stock_code"),
-                    position.get("stock_name"),
-                    int(position.get("quantity") or 0),
-                    float(position.get("avg_price") or 0),
-                    float(position.get("latest_price") or 0),
-                    float(position.get("market_value") or 0),
-                    float(position.get("unrealized_pnl") or 0),
-                    int(position.get("sellable_quantity") or 0),
-                    int(position.get("locked_quantity") or 0),
-                    position.get("status") or "holding",
-                    self._now(),
-                ),
-            )
-
-        persisted_signal_ids_by_source_id = self._upsert_sim_run_signals_with_cursor(cursor, run_id, signals or [])
-
-        for trade in trades:
-            source_signal_id = trade.get("signal_id")
-            if source_signal_id is None:
-                persisted_signal_id = None
-            else:
-                persisted_signal_id = persisted_signal_ids_by_source_id.get(int(source_signal_id), int(source_signal_id))
-            cursor.execute(
-                """
-                INSERT INTO sim_run_trades
-                (
-                    run_id, signal_id, stock_code, stock_name, action, price, quantity, amount,
-                    realized_pnl, note, executed_at, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    persisted_signal_id,
-                    trade.get("stock_code"),
-                    trade.get("stock_name"),
-                    str(trade.get("action") or "").upper(),
-                    float(trade.get("price") or 0),
-                    int(trade.get("quantity") or 0),
-                    float(trade.get("amount") or 0),
-                    float(trade.get("realized_pnl") or 0),
-                    trade.get("note"),
-                    trade.get("executed_at") or self._now(),
-                    trade.get("created_at") or self._now(),
-                ),
-            )
-
-        conn.commit()
-        conn.close()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def replace_sim_run_runtime_results(
         self,
@@ -1597,42 +1553,47 @@ class QuantSimDB:
         positions: list[dict[str, Any]],
     ) -> None:
         conn = self._connect()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM sim_run_trades WHERE run_id = ?", (run_id,))
-        cursor.execute("DELETE FROM sim_run_snapshots WHERE run_id = ?", (run_id,))
-        cursor.execute("DELETE FROM sim_run_positions WHERE run_id = ?", (run_id,))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM sim_run_trades WHERE run_id = ?", (run_id,))
+            cursor.execute("DELETE FROM sim_run_snapshots WHERE run_id = ?", (run_id,))
+            cursor.execute("DELETE FROM sim_run_positions WHERE run_id = ?", (run_id,))
 
-        source_signal_ids = sorted(
-            {
-                int(trade.get("signal_id"))
-                for trade in trades
-                if self._normalize_optional_int(trade.get("signal_id")) is not None
-            }
-        )
-        persisted_signal_ids_by_source_id: dict[int, int] = {}
-        if source_signal_ids:
-            placeholders = ",".join("?" for _ in source_signal_ids)
-            cursor.execute(
-                f"""
-                SELECT source_signal_id, id
-                FROM sim_run_signals
-                WHERE run_id = ? AND source_signal_id IN ({placeholders})
-                """,
-                (run_id, *source_signal_ids),
+            source_signal_ids = sorted(
+                {
+                    int(trade.get("signal_id"))
+                    for trade in trades
+                    if self._normalize_optional_int(trade.get("signal_id")) is not None
+                }
             )
-            persisted_signal_ids_by_source_id = {
-                int(row["source_signal_id"]): int(row["id"])
-                for row in cursor.fetchall()
-                if row["source_signal_id"] is not None
-            }
+            persisted_signal_ids_by_source_id: dict[int, int] = {}
+            if source_signal_ids:
+                placeholders = ",".join("?" for _ in source_signal_ids)
+                cursor.execute(
+                    f"""
+                    SELECT source_signal_id, id
+                    FROM sim_run_signals
+                    WHERE run_id = ? AND source_signal_id IN ({placeholders})
+                    """,
+                    (run_id, *source_signal_ids),
+                )
+                persisted_signal_ids_by_source_id = {
+                    int(row["source_signal_id"]): int(row["id"])
+                    for row in cursor.fetchall()
+                    if row["source_signal_id"] is not None
+                }
 
-        self._insert_sim_run_snapshots_with_cursor(cursor, run_id, snapshots)
-        self._insert_sim_run_positions_with_cursor(cursor, run_id, positions)
-        self._insert_sim_run_trades_with_cursor(cursor, run_id, trades, persisted_signal_ids_by_source_id)
-        cursor.execute("UPDATE sim_runs SET trade_count = ? WHERE id = ?", (len(trades), run_id))
+            self._insert_sim_run_snapshots_with_cursor(cursor, run_id, snapshots)
+            self._insert_sim_run_positions_with_cursor(cursor, run_id, positions)
+            self._insert_sim_run_trades_with_cursor(cursor, run_id, trades, persisted_signal_ids_by_source_id)
+            cursor.execute("UPDATE sim_runs SET trade_count = ? WHERE id = ?", (len(trades), run_id))
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def finalize_sim_run(
         self,
@@ -1648,38 +1609,43 @@ class QuantSimDB:
         metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         conn = self._connect()
-        cursor = conn.cursor()
-        cursor.execute("SELECT metadata_json, progress_total, progress_current FROM sim_runs WHERE id = ?", (run_id,))
-        row = cursor.fetchone()
-        existing_metadata = self._loads_metadata(row["metadata_json"] if row else None)
-        merged_metadata = {**existing_metadata, **(metadata or {})}
-        progress_total = int(row["progress_total"] or 0) if row is not None else 0
-        progress_current = int(row["progress_current"] or 0) if row is not None else 0
-        final_progress_current = progress_total if status == "completed" else progress_current
-        cursor.execute(
-            """
-            UPDATE sim_runs
-            SET status = ?, final_equity = ?, total_return_pct = ?, max_drawdown_pct = ?,
-                win_rate = ?, trade_count = ?, progress_current = ?, status_message = ?,
-                worker_pid = NULL, metadata_json = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                status,
-                round(final_equity, 4),
-                round(total_return_pct, 4),
-                round(max_drawdown_pct, 4),
-                round(win_rate, 4),
-                int(trade_count),
-                final_progress_current,
-                status_message,
-                json.dumps(merged_metadata, ensure_ascii=False),
-                self._now(),
-                run_id,
-            ),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT metadata_json, progress_total, progress_current FROM sim_runs WHERE id = ?", (run_id,))
+            row = cursor.fetchone()
+            existing_metadata = self._loads_metadata(row["metadata_json"] if row else None)
+            merged_metadata = {**existing_metadata, **(metadata or {})}
+            progress_total = int(row["progress_total"] or 0) if row is not None else 0
+            progress_current = int(row["progress_current"] or 0) if row is not None else 0
+            final_progress_current = progress_total if status == "completed" else progress_current
+            cursor.execute(
+                """
+                UPDATE sim_runs
+                SET status = ?, final_equity = ?, total_return_pct = ?, max_drawdown_pct = ?,
+                    win_rate = ?, trade_count = ?, progress_current = ?, status_message = ?,
+                    worker_pid = NULL, metadata_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    round(final_equity, 4),
+                    round(total_return_pct, 4),
+                    round(max_drawdown_pct, 4),
+                    round(win_rate, 4),
+                    int(trade_count),
+                    final_progress_current,
+                    status_message,
+                    json.dumps(merged_metadata, ensure_ascii=False),
+                    self._now(),
+                    run_id,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def get_sim_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         conn = self._connect()
@@ -2157,11 +2123,16 @@ class QuantSimDB:
 
     def upsert_sim_run_signals(self, run_id: int, signals: list[dict[str, Any]]) -> dict[int, int]:
         conn = self._connect()
-        cursor = conn.cursor()
-        persisted = self._upsert_sim_run_signals_with_cursor(cursor, run_id, signals)
-        conn.commit()
-        conn.close()
-        return persisted
+        try:
+            cursor = conn.cursor()
+            persisted = self._upsert_sim_run_signals_with_cursor(cursor, run_id, signals)
+            conn.commit()
+            return persisted
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def update_strategy_profile(
         self,

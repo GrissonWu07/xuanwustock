@@ -53,6 +53,45 @@ def test_quant_db_skips_schema_init_for_existing_locked_database(tmp_path):
         lock_conn.close()
 
 
+def test_quant_db_enables_wal_for_file_database(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    db = QuantSimDB(db_file)
+
+    conn = db._connect()  # noqa: SLF001 - verifies persistence mode on the real connection
+    try:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert journal_mode.lower() == "wal"
+
+
+def test_quant_db_reads_during_uncommitted_writer_in_wal_mode(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    db = QuantSimDB(db_file)
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-01 15:00:00",
+        initial_cash=50000,
+        status="running",
+    )
+
+    writer = sqlite3.connect(db_file, timeout=0.1)
+    try:
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.execute("UPDATE sim_runs SET status = ? WHERE id = ?", ("running", run_id))
+
+        rows = db.get_sim_runs(limit=1)
+    finally:
+        writer.rollback()
+        writer.close()
+
+    assert rows[0]["id"] == run_id
+
+
 def test_add_candidate_records_source_and_status(tmp_path):
     db = QuantSimDB(tmp_path / "app.quant_sim.db")
 

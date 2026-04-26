@@ -73,6 +73,7 @@ from app.quant_sim.db import (
     DEFAULT_COMMISSION_RATE,
     DEFAULT_SELL_TAX_RATE,
     QuantSimDB,
+    is_sqlite_locked_error,
 )
 from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.portfolio_service import PortfolioService
@@ -1676,6 +1677,10 @@ def _calculate_replay_equity_metrics(initial_cash: float, equity_values: list[fl
         if peak > 0:
             max_drawdown_pct = max(max_drawdown_pct, (peak - value) / peak * 100)
     return final_equity, total_return_pct, max_drawdown_pct
+
+
+def _his_replay_database_busy(exc: BaseException) -> HTTPException:
+    return HTTPException(status_code=503, detail="历史回放正在写入数据库，请稍后刷新。")
 
 
 def _reconcile_stale_his_replay_runs(db: QuantSimDB) -> None:
@@ -5299,11 +5304,21 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
 
     @app.get("/api/v1/quant/his-replay")
     def get_his_replay_snapshot(request: Request) -> dict[str, Any]:
-        return _snapshot_his_replay(api_context, _replay_table_query_from_request(request))
+        try:
+            return _snapshot_his_replay(api_context, _replay_table_query_from_request(request))
+        except Exception as exc:
+            if is_sqlite_locked_error(exc):
+                raise _his_replay_database_busy(exc) from exc
+            raise
 
     @app.get("/api/v1/quant/his-replay/progress")
     def get_his_replay_progress(request: Request) -> dict[str, Any]:
-        return _snapshot_his_replay_progress(api_context, _replay_table_query_from_request(request))
+        try:
+            return _snapshot_his_replay_progress(api_context, _replay_table_query_from_request(request))
+        except Exception as exc:
+            if is_sqlite_locked_error(exc):
+                raise _his_replay_database_busy(exc) from exc
+            raise
 
     @app.get("/api/v1/history")
     def get_history_snapshot(request: Request) -> dict[str, Any]:
