@@ -27,7 +27,7 @@ const AI_DYNAMIC_STRATEGY_OPTIONS = [
 ];
 
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
-const REPLAY_PROGRESS_REFRESH_MS = 5 * 60 * 1000;
+const REPLAY_PROGRESS_REFRESH_MS = 60 * 1000;
 type ReplayProgressSnapshot = Pick<ReplaySnapshot, "updatedAt" | "tasks"> &
   Partial<Pick<ReplaySnapshot, "holdings" | "trades" | "signals">>;
 
@@ -225,6 +225,8 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [signalActionFilter, setSignalActionFilter] = useState("ALL");
   const [tradePage, setTradePage] = useState(1);
   const [signalPage, setSignalPage] = useState(1);
+  const [isReplayStarting, setIsReplayStarting] = useState(false);
+  const [replayStartStatus, setReplayStartStatus] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
 
   useEffect(() => {
     if (!snapshot) {
@@ -265,6 +267,13 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
 
   useEffect(() => {
     if (!rawSnapshot || typeof activeClient.getReplayProgress !== "function") {
+      return;
+    }
+    const hasPollingTask = rawSnapshot.tasks.some((task) => {
+      const normalized = String(task.status || "").trim().toLowerCase();
+      return normalized === "running" || normalized === "queued";
+    });
+    if (!hasPollingTask) {
       return;
     }
 
@@ -506,23 +515,32 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     navigate(`/signal-detail/${encodeURIComponent(row.id)}?source=replay`);
   };
   const handleReplayStart = async () => {
-    const nextSnapshot = await resource.runAction(replayMode === "continuous_to_live" ? "continue" : "start", {
-      startDateTime: `${startDate} ${startTime}:00`,
-      endDateTime: replayUntilNow ? null : `${endDate} ${endTime}:00`,
-      timeframe,
-      market,
-      strategyMode: "auto",
-      strategyProfileId,
-      aiDynamicStrategy,
-      aiDynamicStrength,
-      aiDynamicLookback,
-      commissionRatePct,
-      sellTaxRatePct,
-      overwriteLive,
-      autoStartScheduler,
-    });
-    if (nextSnapshot?.tasks?.length) {
-      setSelectedTaskId(pickPreferredReplayTaskId(nextSnapshot.tasks, ""));
+    setIsReplayStarting(true);
+    setReplayStartStatus("submitting");
+    try {
+      const nextSnapshot = await resource.runAction(replayMode === "continuous_to_live" ? "continue" : "start", {
+        startDateTime: `${startDate} ${startTime}:00`,
+        endDateTime: replayUntilNow ? null : `${endDate} ${endTime}:00`,
+        timeframe,
+        market,
+        strategyMode: "auto",
+        strategyProfileId,
+        aiDynamicStrategy,
+        aiDynamicStrength,
+        aiDynamicLookback,
+        commissionRatePct,
+        sellTaxRatePct,
+        overwriteLive,
+        autoStartScheduler,
+      });
+      if (nextSnapshot?.tasks?.length) {
+        setSelectedTaskId(pickPreferredReplayTaskId(nextSnapshot.tasks, ""));
+        setReplayStartStatus("submitted");
+      } else {
+        setReplayStartStatus("error");
+      }
+    } finally {
+      setIsReplayStarting(false);
     }
   };
 
@@ -684,10 +702,10 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               <button
                 className="button button--primary"
                 type="button"
-                disabled={resource.status === "loading" || hasActiveReplayTask}
+                disabled={isReplayStarting || resource.status === "loading" || hasActiveReplayTask}
                 onClick={() => void handleReplayStart()}
               >
-                {replayMode === "continuous_to_live" ? "接续" : "开始回溯"}
+                {isReplayStarting ? "提交中..." : replayMode === "continuous_to_live" ? "接续" : "开始回溯"}
               </button>
               <button
                 className="button button--secondary"
@@ -711,6 +729,24 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               <div className="summary-item summary-item--accent" style={{ marginTop: "12px" }}>
                 <div className="summary-item__title">已有回放任务在执行</div>
                 <div className="summary-item__body">当前存在进行中或排队中的回放任务。请先等待完成，或取消后再开始新的回放。</div>
+              </div>
+            ) : null}
+            {replayStartStatus === "submitting" ? (
+              <div className="summary-item summary-item--accent" style={{ marginTop: "12px" }}>
+                <div className="summary-item__title">回放任务正在提交</div>
+                <div className="summary-item__body">后台已接收请求前，前端会保持提交状态；任务创建后会自动切到最新任务进度。</div>
+              </div>
+            ) : null}
+            {replayStartStatus === "submitted" ? (
+              <div className="summary-item summary-item--success" style={{ marginTop: "12px" }}>
+                <div className="summary-item__title">回放任务已提交</div>
+                <div className="summary-item__body">已切换到最新回放任务；运行期间进度会每 1 分钟自动刷新一次。</div>
+              </div>
+            ) : null}
+            {replayStartStatus === "error" ? (
+              <div className="summary-item summary-item--danger" style={{ marginTop: "12px" }}>
+                <div className="summary-item__title">回放任务提交失败</div>
+                <div className="summary-item__body">后台没有返回新的任务快照，请查看操作失败信息或稍后重试。</div>
               </div>
             ) : null}
             {replayActionError ? (

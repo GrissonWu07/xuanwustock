@@ -180,6 +180,34 @@ function renderHisReplayPage(client: ApiClient) {
 }
 
 describe("HisReplayPage", () => {
+  it("shows immediate feedback while a replay start request is being submitted", async () => {
+    let resolveStart!: (value: typeof startedSnapshot) => void;
+    const startPromise = new Promise<typeof startedSnapshot>((resolve) => {
+      resolveStart = resolve;
+    });
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(initialSnapshot),
+      runPageAction: vi.fn().mockReturnValue(startPromise),
+    } as unknown as ApiClient;
+
+    renderHisReplayPage(client);
+
+    await screen.findByLabelText("已选回放任务详情");
+    fireEvent.click(screen.getByRole("button", { name: "开始回溯" }));
+
+    expect(screen.getByRole("button", { name: "提交中..." })).toBeDisabled();
+    expect(screen.getByText("回放任务正在提交")).toBeInTheDocument();
+    expect(screen.getByText("后台已接收请求前，前端会保持提交状态；任务创建后会自动切到最新任务进度。")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveStart(startedSnapshot);
+      await startPromise;
+    });
+
+    expect(await screen.findByText("回放任务已提交")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始回溯" })).toBeDisabled();
+  });
+
   it("switches the right-side summary to the newly started replay task and shows checkpoint progress", async () => {
     const client = {
       getPageSnapshot: vi.fn().mockResolvedValue(initialSnapshot),
@@ -208,7 +236,7 @@ describe("HisReplayPage", () => {
     const nativeSetInterval = window.setInterval.bind(window);
     const nativeClearInterval = window.clearInterval.bind(window);
     vi.spyOn(window, "setInterval").mockImplementation((callback: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      if (timeout === 5 * 60 * 1000) {
+      if (timeout === 60 * 1000) {
         intervalCallbacks.push(callback as () => Promise<void>);
         return 1;
       }
