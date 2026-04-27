@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.gateway.deps import *
 from app.gateway.context import UIApiContext
-from app.gateway_workbench import (
+from app.gateway.workbench import (
     action_workbench_analysis_batch as _gateway_action_workbench_analysis_batch,
     build_workbench_snapshot as _gateway_build_workbench_snapshot,
     snapshot_workbench as _gateway_snapshot_workbench,

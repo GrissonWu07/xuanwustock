@@ -12,7 +12,7 @@ from fastapi import HTTPException, Request
 from app import stock_analysis_service
 from app.config_manager import ConfigManager, config_manager
 from app.database import StockAnalysisDatabase
-from app.gateway_common import (
+from app.gateway.common import (
     code_from_payload as _code_from_payload,
     first_non_empty as _first_non_empty,
     float_value as _float,
