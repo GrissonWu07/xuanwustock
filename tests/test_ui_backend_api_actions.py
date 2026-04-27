@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sqlite3
 import threading
@@ -1577,7 +1578,7 @@ def test_his_replay_progress_endpoint_returns_lightweight_task_progress(tmp_path
 
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload) == {"updatedAt", "tasks", "holdings", "trades", "signals"}
+    assert set(payload) == {"updatedAt", "tasks", "holdings", "trades", "signals", "tradeCostSummary"}
     task = payload["tasks"][0]
     assert task["runId"] == str(run_id)
     assert task["status"] == "running"
@@ -1587,7 +1588,36 @@ def test_his_replay_progress_endpoint_returns_lightweight_task_progress(tmp_path
     assert task["progress"] == 75
     assert payload["signals"]["rows"] == []
     assert payload["trades"]["rows"] == []
+    assert payload["tradeCostSummary"]
     assert "curve" not in payload
+
+
+def test_his_replay_progress_endpoint_does_not_read_full_trade_cost_summary(tmp_path, monkeypatch):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2025-12-01 09:30:00",
+        end_datetime="2026-01-06 15:00:00",
+        initial_cash=100000,
+        status="running",
+        metadata={"selected_strategy_mode": "auto"},
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("progress endpoint must not scan full trade cost summary")
+
+    monkeypatch.setattr("app.quant_sim.db.QuantSimDB.get_sim_run_trade_cost_summary", fail_if_called)
+
+    response = TestClient(create_app(context=context)).get("/api/v1/quant/his-replay/progress")
+
+    assert response.status_code == 200
+    metric_labels = {item["label"] for item in response.json()["tradeCostSummary"]}
+    assert "买入笔数" in metric_labels
+    assert "加仓次数" not in metric_labels
+    assert "买入lot" not in metric_labels
 
 
 def test_his_replay_progress_endpoint_reports_database_busy(tmp_path, monkeypatch):
@@ -1603,6 +1633,112 @@ def test_his_replay_progress_endpoint_reports_database_busy(tmp_path, monkeypatc
 
     assert response.status_code == 503
     assert response.json()["detail"] == "历史回放正在写入数据库，请稍后刷新。"
+
+
+def test_live_sim_snapshot_exposes_trade_cost_ledger(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    db.configure_account(100000)
+    db.update_scheduler_config(commission_rate=0.001, sell_tax_rate=0.002)
+    candidate_id = db.add_candidate(
+        {
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "source": "manual",
+            "latest_price": 10,
+        }
+    )
+    signal_id = db.add_signal(
+        {
+            "candidate_id": candidate_id,
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "action": "BUY",
+            "confidence": 88,
+            "reasoning": "建仓",
+            "position_size_pct": 20,
+            "status": "pending",
+        }
+    )
+    db.confirm_signal(
+        signal_id,
+        executed_action="buy",
+        price=10,
+        quantity=100,
+        note="成本展示",
+        executed_at="2026-04-08 10:00:00",
+        apply_trade_cost=True,
+    )
+
+    payload = TestClient(create_app(context=context)).get("/api/v1/quant/live-sim").json()
+
+    assert payload["trades"]["columns"] == ["时间", "代码", "动作", "数量", "价格", "成交毛额", "费用", "净额", "盈亏", "执行明细", "备注"]
+    row = payload["trades"]["rows"][0]
+    assert row["cells"][5:11] == ["1000.00", "1.00", "1001.00", "0.00", "建仓 · 1 lot/100股 · slot#1 1001.00", "成本展示"]
+    summary_by_label = {item["label"]: item["value"] for item in payload["tradeCostSummary"]}
+    assert summary_by_label["买入总成本"] == "1001.00"
+    assert summary_by_label["总费用"] == "1.00"
+    assert summary_by_label["买入lot"] == "1"
+    assert summary_by_label["占用slot"] == "1"
+
+
+def test_his_replay_snapshot_exposes_trade_cost_ledger(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2025-12-01 09:30:00",
+        end_datetime="2026-01-06 15:00:00",
+        initial_cash=100000,
+        status="completed",
+        metadata={"selected_strategy_mode": "auto"},
+    )
+    db.replace_sim_run_results(
+        run_id,
+        trades=[
+            {
+                "signal_id": 1,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "SELL",
+                "price": 11,
+                "quantity": 100,
+                "amount": 1096.7,
+                "gross_amount": 1100,
+                "commission_fee": 1.1,
+                "sell_tax_fee": 2.2,
+                "net_amount": 1096.7,
+                "fee_total": 3.3,
+                "realized_pnl": 95.7,
+                "trade_metadata_json": json.dumps(
+                    {
+                        "side": "SELL",
+                        "consumed_lots": [{"lot_id": 1, "quantity": 100}],
+                        "released_slot_allocations": [{"slot_index": 1}],
+                    },
+                    ensure_ascii=False,
+                ),
+                "executed_at": "2026-01-06 10:00:00",
+                "created_at": "2026-01-06 10:00:00",
+            }
+        ],
+        snapshots=[],
+        positions=[],
+        signals=[],
+    )
+
+    payload = TestClient(create_app(context=context)).get("/api/v1/quant/his-replay").json()
+
+    assert payload["trades"]["columns"] == ["时间", "信号ID", "代码", "动作", "数量", "价格", "成交毛额", "费用", "净额", "盈亏", "执行明细"]
+    row = payload["trades"]["rows"][0]
+    assert row["cells"][6:11] == ["1100.00", "3.30", "1096.70", "95.70", "消耗 1 lot/100股 · 释放 slot#1 1096.70"]
+    summary_by_label = {item["label"]: item["value"] for item in payload["tradeCostSummary"]}
+    assert summary_by_label["卖出到账"] == "1096.70"
+    assert summary_by_label["总费用"] == "3.30"
+    assert summary_by_label["印花税"] == "2.20"
+    assert summary_by_label["实现盈亏"] == "95.70"
 
 
 def test_his_replay_snapshot_returns_only_first_page_for_heavy_tables(tmp_path):

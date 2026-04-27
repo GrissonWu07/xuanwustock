@@ -736,6 +736,21 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             ))}
           </div>
 
+          {snapshot.tradeCostSummary?.length ? (
+            <WorkbenchCard>
+              <h2 className="section-card__title">交易成本汇总</h2>
+              <p className="section-card__description">实时模拟成交按A股手续费、印花税、lot和slot账本计算，净额才是实际现金变化。</p>
+              <div className="mini-metric-grid">
+                {snapshot.tradeCostSummary.map((metric) => (
+                  <div className="mini-metric" key={metric.label}>
+                    <div className="mini-metric__label">{metric.label}</div>
+                    <div className="mini-metric__value">{metric.value}</div>
+                  </div>
+                ))}
+              </div>
+            </WorkbenchCard>
+          ) : null}
+
           {snapshot.capitalSlots ? (
             <QuantTableSectionCard
               title="Slot资金池"
@@ -779,7 +794,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             table={tradeTable}
             emptyTitle={tradeTable.emptyLabel ?? "成交记录暂无数据"}
             emptyDescription={tradeTable.emptyMessage ?? "如果调度还没有生成新的成交，这里会先保持为空。"}
-            compactConfig={{ coreColumnIndexes: [0, 2, 3, 5], detailColumnIndexes: [1, 4, 6] }}
+            compactConfig={{ coreColumnIndexes: [0, 1, 2, 7], detailColumnIndexes: [3, 4, 5, 6, 8, 9, 10] }}
             toolbar={renderTradeToolbar()}
           />
 

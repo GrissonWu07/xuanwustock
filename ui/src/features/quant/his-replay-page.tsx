@@ -29,7 +29,7 @@ const AI_DYNAMIC_STRATEGY_OPTIONS = [
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
 const REPLAY_PROGRESS_REFRESH_MS = 60 * 1000;
 type ReplayProgressSnapshot = Pick<ReplaySnapshot, "updatedAt" | "tasks"> &
-  Partial<Pick<ReplaySnapshot, "holdings" | "trades" | "signals">>;
+  Partial<Pick<ReplaySnapshot, "holdings" | "trades" | "signals" | "tradeCostSummary">>;
 
 function parseDateRange(range: string) {
   const match = String(range).match(/(\d{4}-\d{2}-\d{2})\s*->\s*(\d{4}-\d{2}-\d{2}|now)/);
@@ -131,6 +131,7 @@ function mergeReplayProgress(snapshot: ReplaySnapshot, progress: ReplayProgressS
     holdings: progress.holdings ?? snapshot.holdings,
     trades: progress.trades ?? snapshot.trades,
     signals: progress.signals ?? snapshot.signals,
+    tradeCostSummary: progress.tradeCostSummary ?? snapshot.tradeCostSummary,
   };
 }
 
@@ -845,6 +846,21 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             )}
           </WorkbenchCard>
 
+          {snapshot.tradeCostSummary?.length ? (
+            <WorkbenchCard>
+              <h2 className="section-card__title">费用与执行统计</h2>
+              <p className="section-card__description">回放成交按每笔毛额、手续费、印花税、净额、lot和slot归集，避免只看买卖价格误判收益。</p>
+              <div className="mini-metric-grid">
+                {snapshot.tradeCostSummary.map((metric) => (
+                  <div className="mini-metric" key={metric.label}>
+                    <div className="mini-metric__label">{metric.label}</div>
+                    <div className="mini-metric__value">{metric.value}</div>
+                  </div>
+                ))}
+              </div>
+            </WorkbenchCard>
+          ) : null}
+
           <QuantTableSectionCard
             title="历史持仓"
             table={selectedTaskHoldings}
@@ -860,7 +876,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             emptyTitle={snapshot.trades.emptyLabel ?? "成交明细暂无数据"}
             emptyDescription={snapshot.trades.emptyMessage ?? "历史回放执行后，所有成交会统一落在这里。"}
             tableLayout="auto"
-            compactConfig={{ coreColumnIndexes: [0, 2, 3, 5], detailColumnIndexes: [1, 4, 6] }}
+            compactConfig={{ coreColumnIndexes: [0, 2, 3, 8], detailColumnIndexes: [1, 4, 5, 6, 7, 9, 10] }}
             toolbar={renderFilterToolbar(
               tradeStockFilter,
               setTradeStockFilter,

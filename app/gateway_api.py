@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 import re
 from typing import Any, Callable
@@ -1451,6 +1452,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
             "暂无持仓",
         ),
         "trades": _live_trade_table(context, table_query),
+        "tradeCostSummary": _trade_cost_summary_metrics(db.get_trade_cost_summary()),
         "curve": [
             {"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
             for i, item in enumerate(db.get_account_snapshots(limit=20))
@@ -1560,6 +1562,129 @@ def _build_his_replay_task_items(
     return task_items
 
 
+def _trade_gross_amount(item: dict[str, Any]) -> float:
+    gross = _float(item.get("gross_amount"), None)
+    if gross is not None and gross > 0:
+        return gross
+    return round((_float(item.get("price"), 0.0) or 0.0) * (_float(item.get("quantity"), 0.0) or 0.0), 4)
+
+
+def _trade_fee_total(item: dict[str, Any]) -> float:
+    fee_total = _float(item.get("fee_total"), None)
+    if fee_total is not None and fee_total > 0:
+        return fee_total
+    return round((_float(item.get("commission_fee"), 0.0) or 0.0) + (_float(item.get("sell_tax_fee"), 0.0) or 0.0), 4)
+
+
+def _trade_net_amount(item: dict[str, Any]) -> float:
+    net_amount = _float(item.get("net_amount"), None)
+    if net_amount is not None and net_amount > 0:
+        return net_amount
+    amount = _float(item.get("amount"), None)
+    if amount is not None and amount > 0:
+        return amount
+    gross = _trade_gross_amount(item)
+    fee_total = _trade_fee_total(item)
+    return round(gross - fee_total if _txt(item.get("action")).upper() == "SELL" else gross + fee_total, 4)
+
+
+def _trade_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    value = item.get("trade_metadata") or item.get("trade_metadata_json")
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _trade_execution_detail(item: dict[str, Any]) -> str:
+    action = _txt(item.get("action")).upper()
+    quantity = int(_float(item.get("quantity"), 0.0) or 0.0)
+    metadata = _trade_metadata(item)
+    if action == "BUY":
+        lot = metadata.get("lot") if isinstance(metadata.get("lot"), dict) else {}
+        lot_count = int(_float(lot.get("lot_count") if isinstance(lot, dict) else None, 0.0) or 0.0)
+        if lot_count <= 0:
+            lot_count = max(1, (quantity + 99) // 100) if quantity > 0 else 0
+        slot_allocations = metadata.get("slot_allocations")
+        slot_parts: list[str] = []
+        if isinstance(slot_allocations, list):
+            for allocation in slot_allocations[:3]:
+                if not isinstance(allocation, dict):
+                    continue
+                slot_index = _txt(allocation.get("slot_index"), "?")
+                allocated_cash = _num(allocation.get("allocated_cash"))
+                slot_parts.append(f"slot#{slot_index} {allocated_cash}")
+            if len(slot_allocations) > 3:
+                slot_parts.append(f"+{len(slot_allocations) - 3} slot")
+        parts = ["加仓" if metadata.get("is_add") else "建仓"]
+        if lot_count > 0:
+            parts.append(f"{lot_count} lot/{quantity}股")
+        if slot_parts:
+            parts.append(", ".join(slot_parts))
+        return " · ".join(parts)
+    if action == "SELL":
+        consumed_lots = metadata.get("consumed_lots")
+        consumed_quantity = 0
+        if isinstance(consumed_lots, list):
+            for lot in consumed_lots:
+                if isinstance(lot, dict):
+                    consumed_quantity += int(_float(lot.get("quantity"), 0.0) or 0.0)
+        if consumed_quantity <= 0:
+            consumed_quantity = quantity
+        consumed_count = max(1, (consumed_quantity + 99) // 100) if consumed_quantity > 0 else 0
+        released_slots = metadata.get("released_slot_allocations")
+        release_parts: list[str] = []
+        if isinstance(released_slots, list):
+            for release in released_slots[:3]:
+                if not isinstance(release, dict):
+                    continue
+                slot_index = _txt(release.get("slot_index"), "?")
+                released_cash = release.get("released_cash")
+                if released_cash is None and len(released_slots) == 1:
+                    released_cash = _trade_net_amount(item)
+                release_parts.append(f"slot#{slot_index} {_num(released_cash)}")
+            if len(released_slots) > 3:
+                release_parts.append(f"+{len(released_slots) - 3} slot")
+        parts = []
+        if consumed_count > 0:
+            parts.append(f"消耗 {consumed_count} lot/{consumed_quantity}股")
+        if release_parts:
+            parts.append(f"释放 {', '.join(release_parts)}")
+        return " · ".join(parts) if parts else "--"
+    return "--"
+
+
+def _trade_cost_summary_metrics(summary: dict[str, Any] | None) -> list[dict[str, Any]]:
+    item = summary or {}
+    metrics = [
+        _metric("买入笔数", _txt(item.get("buy_count"), "0")),
+        _metric("卖出笔数", _txt(item.get("sell_count"), "0")),
+        _metric("买入总成本", _num(item.get("buy_net_amount"))),
+        _metric("卖出到账", _num(item.get("sell_net_amount"))),
+        _metric("总费用", _num(item.get("fee_total"))),
+        _metric("手续费", _num(item.get("commission_fee"))),
+        _metric("印花税", _num(item.get("sell_tax_fee"))),
+        _metric("实现盈亏", _num(item.get("realized_pnl"))),
+    ]
+    if "add_count" in item:
+        metrics.insert(2, _metric("加仓次数", _txt(item.get("add_count"), "0")))
+    if "buy_lot_count" in item:
+        metrics.extend(
+            [
+                _metric("买入lot", _txt(item.get("buy_lot_count"), "0")),
+                _metric("卖出lot", _txt(item.get("sold_lot_count"), "0")),
+                _metric("占用slot", _txt(item.get("slot_allocation_count"), "0")),
+                _metric("释放slot", _txt(item.get("slot_release_count"), "0")),
+            ]
+        )
+    return metrics
+
+
 def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     query = table_query or {}
     page_size = _normalize_replay_table_page_size(query.get("page_size"))
@@ -1578,6 +1703,11 @@ def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict
                 _txt(item.get("action"), "HOLD").upper(),
                 _txt(item.get("quantity"), "0"),
                 _num(item.get("price")),
+                _num(_trade_gross_amount(item)),
+                _num(_trade_fee_total(item)),
+                _num(_trade_net_amount(item)),
+                _num(item.get("realized_pnl")),
+                _trade_execution_detail(item),
             ],
             "code": _txt(item.get("stock_code")),
             "name": _txt(item.get("stock_name")),
@@ -1592,7 +1722,7 @@ def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict
             )
         )
     ]
-    table = _table(["时间", "信号ID", "代码", "动作", "数量", "价格"], rows, "暂无交易记录")
+    table = _table(["时间", "信号ID", "代码", "动作", "数量", "价格", "成交毛额", "费用", "净额", "盈亏", "执行明细"], rows, "暂无交易记录")
     table["pagination"] = pagination
     return table
 
@@ -1756,6 +1886,7 @@ def _snapshot_his_replay_progress(context: UIApiContext, table_query: dict[str, 
                 "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], _build_his_replay_holdings_rows(db, run_id), "暂无持仓"),
                 "trades": _build_his_replay_trade_table(db, run_id, table_query),
                 "signals": _build_his_replay_signal_table(db, run_id, table_query),
+                "tradeCostSummary": _trade_cost_summary_metrics(db.get_sim_run_trade_cost_summary_lightweight(run_id)),
             }
         )
     return payload
@@ -1832,8 +1963,9 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
             "tasks": [],
             "tradingAnalysis": {"title": "交易分析", "body": "暂无回放记录。", "chips": []},
             "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], [], "暂无持仓"),
-            "trades": _table(["时间", "信号ID", "代码", "动作", "数量", "价格"], [], "暂无交易记录"),
+            "trades": _table(["时间", "信号ID", "代码", "动作", "数量", "价格", "成交毛额", "费用", "净额", "盈亏", "执行明细"], [], "暂无交易记录"),
             "signals": _table(["信号ID", "时间", "代码", "动作", "策略", "执行结果"], [], "暂无信号"),
+            "tradeCostSummary": _trade_cost_summary_metrics({}),
             "curve": [],
         }
 
@@ -1918,6 +2050,7 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
         ),
         "trades": trade_table,
         "signals": signal_table,
+        "tradeCostSummary": _trade_cost_summary_metrics(db.get_sim_run_trade_cost_summary(rid)),
         "curve": [
             {"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
             for i, item in enumerate(db.get_sim_run_snapshots(rid))
@@ -1928,6 +2061,12 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
 def _safe_json_load(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
     return {}
 
 
@@ -4088,6 +4227,11 @@ def _live_trade_table(context: UIApiContext, table_query: dict[str, Any] | None 
                 _txt(item.get("action")),
                 _txt(item.get("quantity"), "0"),
                 _num(item.get("price")),
+                _num(_trade_gross_amount(item)),
+                _num(_trade_fee_total(item)),
+                _num(_trade_net_amount(item)),
+                _num(item.get("realized_pnl")),
+                _trade_execution_detail(item),
                 _txt(item.get("note") or "自动执行"),
             ],
             "code": _txt(item.get("stock_code")),
@@ -4102,7 +4246,7 @@ def _live_trade_table(context: UIApiContext, table_query: dict[str, Any] | None 
             )
         )
     ]
-    table = _table(["时间", "代码", "动作", "数量", "价格", "备注"], rows, "暂无交易记录")
+    table = _table(["时间", "代码", "动作", "数量", "价格", "成交毛额", "费用", "净额", "盈亏", "执行明细", "备注"], rows, "暂无交易记录")
     table["pagination"] = pagination
     return table
 

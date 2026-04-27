@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 from app.quant_kernel.config import StrategyScoringConfig
@@ -520,6 +521,307 @@ def test_replace_sim_run_runtime_results_preserves_incremental_signals(tmp_path)
     assert db.count_sim_run_signals(run_id, actions=["BUY"]) == 1
     assert db.count_sim_run_signals(run_id, actions=["SELL"]) == 0
     assert db.get_sim_run_signals(run_id, actions=["BUY"])[0]["stock_code"] == "300390"
+
+
+def test_live_trade_ledger_records_full_costs_pnl_slots_and_lots(tmp_path):
+    db = QuantSimDB(tmp_path / "app.quant_sim.db")
+    db.configure_account(100000.0)
+    db.update_scheduler_config(commission_rate=0.001, sell_tax_rate=0.002)
+    candidate_id = db.add_candidate(
+        {
+            "stock_code": "600036",
+            "stock_name": "招商银行",
+            "source": "manual",
+            "latest_price": 10.0,
+        }
+    )
+
+    buy_signal_id = db.add_signal(
+        {
+            "candidate_id": candidate_id,
+            "stock_code": "600036",
+            "stock_name": "招商银行",
+            "action": "BUY",
+            "confidence": 88,
+            "reasoning": "建仓",
+            "position_size_pct": 20,
+            "status": "pending",
+        }
+    )
+    db.confirm_signal(
+        buy_signal_id,
+        executed_action="buy",
+        price=10.0,
+        quantity=100,
+        note="买入成本测试",
+        executed_at="2026-04-08 10:00:00",
+        apply_trade_cost=True,
+    )
+
+    sell_signal_id = db.add_signal(
+        {
+            "candidate_id": candidate_id,
+            "stock_code": "600036",
+            "stock_name": "招商银行",
+            "action": "SELL",
+            "confidence": 82,
+            "reasoning": "卖出",
+            "position_size_pct": 0,
+            "status": "pending",
+        }
+    )
+    db.confirm_signal(
+        sell_signal_id,
+        executed_action="sell",
+        price=11.0,
+        quantity=100,
+        note="卖出成本测试",
+        executed_at="2026-04-09 10:00:00",
+        apply_trade_cost=True,
+    )
+
+    trades = db.get_trade_history(limit=10)
+    sell_trade = trades[0]
+    buy_trade = trades[1]
+    buy_metadata = json.loads(buy_trade["trade_metadata_json"])
+    sell_metadata = json.loads(sell_trade["trade_metadata_json"])
+    summary = db.get_account_summary()
+
+    assert buy_trade["gross_amount"] == 1000.0
+    assert buy_trade["commission_fee"] == 1.0
+    assert buy_trade["sell_tax_fee"] == 0.0
+    assert buy_trade["fee_total"] == 1.0
+    assert buy_trade["net_amount"] == 1001.0
+    assert buy_trade["amount"] == 1001.0
+    assert buy_metadata["side"] == "BUY"
+    assert buy_metadata["is_add"] is False
+    assert buy_metadata["lot"]["quantity"] == 100
+    assert buy_metadata["lot"]["lot_count"] == 1
+    assert buy_metadata["slot_allocations"]
+
+    assert sell_trade["gross_amount"] == 1100.0
+    assert sell_trade["commission_fee"] == 1.1
+    assert sell_trade["sell_tax_fee"] == 2.2
+    assert sell_trade["fee_total"] == 3.3
+    assert sell_trade["net_amount"] == 1096.7
+    assert sell_trade["amount"] == 1096.7
+    assert sell_trade["realized_pnl"] == 95.7
+    assert sell_metadata["side"] == "SELL"
+    assert sell_metadata["consumed_lots"][0]["quantity"] == 100
+    assert sell_metadata["released_slot_allocations"]
+    assert summary["available_cash"] == 100095.7
+    assert summary["realized_pnl"] == 95.7
+
+
+def test_delete_position_records_sell_costs_and_releases_slot_ledger(tmp_path):
+    db = QuantSimDB(tmp_path / "app.quant_sim.db")
+    db.configure_account(100000.0)
+    db.update_scheduler_config(commission_rate=0.001, sell_tax_rate=0.002)
+    candidate_id = db.add_candidate(
+        {
+            "stock_code": "600036",
+            "stock_name": "招商银行",
+            "source": "manual",
+            "latest_price": 10.0,
+        }
+    )
+    signal_id = db.add_signal(
+        {
+            "candidate_id": candidate_id,
+            "stock_code": "600036",
+            "stock_name": "招商银行",
+            "action": "BUY",
+            "confidence": 88,
+            "reasoning": "建仓",
+            "position_size_pct": 20,
+            "status": "pending",
+        }
+    )
+    db.confirm_signal(
+        signal_id,
+        executed_action="buy",
+        price=10.0,
+        quantity=100,
+        note="买入成本测试",
+        executed_at="2026-04-08 10:00:00",
+        apply_trade_cost=True,
+    )
+    db.update_position_market_price("600036", 11.0)
+
+    assert db.delete_position("600036") is True
+
+    sell_trade = db.get_trade_history(limit=1)[0]
+    metadata = json.loads(sell_trade["trade_metadata_json"])
+    summary = db.get_account_summary()
+    slot_allocations = db.get_lot_slot_allocations("600036")
+
+    assert sell_trade["action"] == "sell"
+    assert sell_trade["gross_amount"] == 1100.0
+    assert sell_trade["commission_fee"] == 1.1
+    assert sell_trade["sell_tax_fee"] == 2.2
+    assert sell_trade["fee_total"] == 3.3
+    assert sell_trade["net_amount"] == 1096.7
+    assert sell_trade["amount"] == 1096.7
+    assert sell_trade["realized_pnl"] == 95.7
+    assert metadata["side"] == "SELL"
+    assert metadata["manual_delete_position"] is True
+    assert metadata["consumed_lots"][0]["quantity"] == 100
+    assert metadata["released_slot_allocations"][0]["released_cash"] == 1096.7
+    assert slot_allocations[0]["status"] == "closed"
+    assert summary["available_cash"] == 100095.7
+    assert summary["realized_pnl"] == 95.7
+
+
+def test_replay_trade_results_preserve_full_trade_ledger_fields(tmp_path):
+    db = QuantSimDB(tmp_path / "app.quant_sim.db")
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-09 15:00:00",
+        initial_cash=100000.0,
+        status="running",
+    )
+    db.upsert_sim_run_signals(
+        run_id,
+        [
+            {
+                "id": 101,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "confidence": 82,
+                "reasoning": "回放策略买入",
+                "checkpoint_at": "2026-04-01 10:00:00",
+            }
+        ],
+    )
+
+    db.replace_sim_run_runtime_results(
+        run_id,
+        trades=[
+            {
+                "signal_id": 101,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "price": 10.0,
+                "quantity": 100,
+                "amount": 1001.0,
+                "gross_amount": 1000.0,
+                "commission_fee": 1.0,
+                "sell_tax_fee": 0.0,
+                "net_amount": 1001.0,
+                "fee_total": 1.0,
+                "realized_pnl": 0.0,
+                "trade_metadata_json": json.dumps({"side": "BUY", "lot": {"lot_count": 1}}, ensure_ascii=False),
+                "executed_at": "2026-04-01 10:00:00",
+            }
+        ],
+        snapshots=[],
+        positions=[],
+    )
+
+    trade = db.get_sim_run_trades(run_id)[0]
+
+    assert trade["gross_amount"] == 1000.0
+    assert trade["commission_fee"] == 1.0
+    assert trade["sell_tax_fee"] == 0.0
+    assert trade["fee_total"] == 1.0
+    assert trade["net_amount"] == 1001.0
+    assert json.loads(trade["trade_metadata_json"])["lot"]["lot_count"] == 1
+
+
+def test_replay_trade_cost_summary_counts_sold_lots_by_share_quantity(tmp_path):
+    db = QuantSimDB(tmp_path / "app.quant_sim.db")
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-09 15:00:00",
+        initial_cash=100000.0,
+        status="completed",
+    )
+    db.replace_sim_run_runtime_results(
+        run_id,
+        trades=[
+            {
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "SELL",
+                "price": 11.0,
+                "quantity": 200,
+                "amount": 2193.4,
+                "gross_amount": 2200.0,
+                "commission_fee": 2.2,
+                "sell_tax_fee": 4.4,
+                "net_amount": 2193.4,
+                "fee_total": 6.6,
+                "realized_pnl": 193.4,
+                "trade_metadata_json": json.dumps(
+                    {"side": "SELL", "consumed_lots": [{"lot_id": "L1", "quantity": 200}]},
+                    ensure_ascii=False,
+                ),
+                "executed_at": "2026-04-09 10:00:00",
+            }
+        ],
+        snapshots=[],
+        positions=[],
+    )
+
+    summary = db.get_sim_run_trade_cost_summary(run_id)
+
+    assert summary["sold_lot_count"] == 2
+
+
+def test_trade_cost_summary_falls_back_for_legacy_zero_ledger_columns(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    db = QuantSimDB(db_file)
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-09 15:00:00",
+        initial_cash=100000.0,
+        status="completed",
+    )
+    db.replace_sim_run_runtime_results(
+        run_id,
+        trades=[
+            {
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "price": 10.0,
+                "quantity": 100,
+                "amount": 1000.0,
+                "executed_at": "2026-04-09 10:00:00",
+            }
+        ],
+        snapshots=[],
+        positions=[],
+    )
+    conn = sqlite3.connect(db_file)
+    try:
+        conn.execute(
+            """
+            UPDATE sim_run_trades
+            SET gross_amount = 0, net_amount = 0, fee_total = 0, commission_fee = 0, sell_tax_fee = 0
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    summary = db.get_sim_run_trade_cost_summary(run_id)
+
+    assert summary["buy_gross_amount"] == 1000.0
+    assert summary["buy_net_amount"] == 1000.0
 
 
 def test_upsert_sim_run_signals_updates_existing_checkpoint_signal(tmp_path):

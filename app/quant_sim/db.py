@@ -48,6 +48,7 @@ DEFAULT_CAPITAL_SELL_CASH_REUSE_POLICY = str(DEFAULT_CAPITAL_SLOT_CONFIG["capita
 DEFAULT_STRATEGY_PROFILE_ID = "aggressive_v23"
 DEFAULT_STRATEGY_PROFILE_NAME = "积极"
 LEGACY_DEFAULT_STRATEGY_PROFILE_ID = "default_v23"
+A_SHARE_LOT_SIZE = 100
 BUILTIN_STRATEGY_PROFILES: tuple[dict[str, str], ...] = (
     {
         "id": "aggressive_v23",
@@ -246,6 +247,12 @@ class QuantSimDB:
                 price REAL NOT NULL,
                 quantity INTEGER NOT NULL,
                 amount REAL NOT NULL,
+                gross_amount REAL DEFAULT 0,
+                commission_fee REAL DEFAULT 0,
+                sell_tax_fee REAL DEFAULT 0,
+                net_amount REAL DEFAULT 0,
+                fee_total REAL DEFAULT 0,
+                trade_metadata_json TEXT,
                 realized_pnl REAL DEFAULT 0,
                 note TEXT,
                 executed_at TEXT NOT NULL,
@@ -427,6 +434,12 @@ class QuantSimDB:
                 price REAL NOT NULL,
                 quantity INTEGER NOT NULL,
                 amount REAL NOT NULL,
+                gross_amount REAL DEFAULT 0,
+                commission_fee REAL DEFAULT 0,
+                sell_tax_fee REAL DEFAULT 0,
+                net_amount REAL DEFAULT 0,
+                fee_total REAL DEFAULT 0,
+                trade_metadata_json TEXT,
                 realized_pnl REAL DEFAULT 0,
                 note TEXT,
                 executed_at TEXT NOT NULL,
@@ -551,6 +564,13 @@ class QuantSimDB:
         self._ensure_column(cursor, "sim_runs", "selected_strategy_profile_version_id", "INTEGER")
         self._ensure_column(cursor, "sim_runs", "strategy_profile_snapshot_json", "TEXT")
         self._ensure_column(cursor, "sim_run_trades", "signal_id", "INTEGER")
+        for table_name in ("sim_trades", "sim_run_trades"):
+            self._ensure_column(cursor, table_name, "gross_amount", "REAL DEFAULT 0")
+            self._ensure_column(cursor, table_name, "commission_fee", "REAL DEFAULT 0")
+            self._ensure_column(cursor, table_name, "sell_tax_fee", "REAL DEFAULT 0")
+            self._ensure_column(cursor, table_name, "net_amount", "REAL DEFAULT 0")
+            self._ensure_column(cursor, table_name, "fee_total", "REAL DEFAULT 0")
+            self._ensure_column(cursor, table_name, "trade_metadata_json", "TEXT")
         self._ensure_column(cursor, "sim_run_signals", "source_signal_id", "INTEGER")
 
         self._backfill_candidate_sources(cursor)
@@ -739,21 +759,57 @@ class QuantSimDB:
                 latest_price = float(position["avg_price"] or 0)
             latest_price = round(max(latest_price, 0.0), 4)
 
-            cursor.execute(
-                """
-                SELECT COALESCE(SUM(remaining_quantity * entry_price), 0) AS remaining_cost
-                FROM sim_position_lots
-                WHERE stock_code = ? AND remaining_quantity > 0
-                """,
-                (code,),
-            )
-            remaining_cost = float(cursor.fetchone()["remaining_cost"] or 0)
-            proceeds = round(latest_price * max(quantity, 0), 4)
-            realized_pnl = round(proceeds - remaining_cost, 4)
             executed_at_text = self._now()
 
             if quantity > 0 and latest_price > 0:
-                self._set_available_cash(cursor, self._get_available_cash(cursor) + proceeds)
+                cursor.execute(
+                    """
+                    SELECT * FROM sim_position_lots
+                    WHERE stock_code = ? AND remaining_quantity > 0
+                    ORDER BY entry_time ASC, id ASC
+                    """,
+                    (code,),
+                )
+                lot_rows = cursor.fetchall()
+                remaining_cost = round(
+                    sum(int(row["remaining_quantity"] or 0) * float(row["entry_price"] or 0) for row in lot_rows),
+                    4,
+                )
+                gross_proceeds = round(latest_price * quantity, 4)
+                cost_cfg = self._current_trade_cost_config(cursor)
+                commission_fee = round(gross_proceeds * cost_cfg["commission_rate"], 4)
+                sell_tax_fee = round(gross_proceeds * cost_cfg["sell_tax_rate"], 4)
+                fee_total = round(commission_fee + sell_tax_fee, 4)
+                net_proceeds = round(gross_proceeds - fee_total, 4)
+                realized_pnl = round(net_proceeds - remaining_cost, 4)
+                consumed_lots: list[dict[str, Any]] = []
+                released_slot_allocations: list[dict[str, Any]] = []
+                for row in lot_rows:
+                    lot_quantity = int(row["remaining_quantity"] or 0)
+                    if lot_quantity <= 0:
+                        continue
+                    consumed_lots.append(
+                        {
+                            "position_lot_db_id": int(row["id"]),
+                            "lot_id": row["lot_id"],
+                            "quantity": lot_quantity,
+                            "entry_price": float(row["entry_price"] or 0),
+                            "entry_time": row["entry_time"],
+                            "entry_date": row["entry_date"],
+                            "unlock_date": row["unlock_date"],
+                            "gross_realized_pnl": round((latest_price - float(row["entry_price"] or 0)) * lot_quantity, 4),
+                        }
+                    )
+                    lot_proceeds = round(net_proceeds * (lot_quantity / max(quantity, 1)), 4)
+                    released_slot_allocations.extend(
+                        self._release_capital_slot_allocations(
+                            cursor,
+                            position_lot_db_id=int(row["id"]),
+                            consumed_quantity=lot_quantity,
+                            proceeds=lot_proceeds,
+                        )
+                    )
+                self._set_available_cash(cursor, self._get_available_cash(cursor) + net_proceeds)
                 self._record_trade(
                     cursor,
                     signal_id=0,
@@ -762,7 +818,24 @@ class QuantSimDB:
                     action="sell",
                     price=latest_price,
                     quantity=quantity,
-                    amount=proceeds,
+                    amount=net_proceeds,
+                    gross_amount=gross_proceeds,
+                    commission_fee=commission_fee,
+                    sell_tax_fee=sell_tax_fee,
+                    net_amount=net_proceeds,
+                    fee_total=fee_total,
+                    trade_metadata={
+                        "side": "SELL",
+                        "manual_delete_position": True,
+                        "cost_config": cost_cfg,
+                        "gross_amount": gross_proceeds,
+                        "commission_fee": commission_fee,
+                        "sell_tax_fee": sell_tax_fee,
+                        "fee_total": fee_total,
+                        "net_amount": net_proceeds,
+                        "consumed_lots": consumed_lots,
+                        "released_slot_allocations": released_slot_allocations,
+                    },
                     realized_pnl=realized_pnl,
                     note="手动删除持仓",
                     executed_at=executed_at_text,
@@ -1115,6 +1188,14 @@ class QuantSimDB:
         row = cursor.fetchone()
         conn.close()
         return int(row["total"] or 0) if row else 0
+
+    def get_trade_cost_summary(self) -> dict[str, Any]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sim_trades ORDER BY executed_at ASC, id ASC")
+        rows = [self._row_to_dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return self._summarize_trade_costs(rows)
 
     def create_sim_run(
         self,
@@ -1477,6 +1558,116 @@ class QuantSimDB:
                 ),
             )
 
+    def _normalize_trade_ledger_fields(self, trade: dict[str, Any]) -> dict[str, Any]:
+        action = str(trade.get("action") or "").upper()
+        price = float(trade.get("price") or 0)
+        quantity = int(trade.get("quantity") or 0)
+        gross_raw = float(trade.get("gross_amount") or 0)
+        gross_fallback = round(price * quantity, 4)
+        gross_amount = round(gross_raw if gross_raw > 0 else gross_fallback, 4)
+        commission_fee = round(float(trade.get("commission_fee") or 0), 4)
+        sell_tax_fee = round(float(trade.get("sell_tax_fee") or 0), 4)
+        fee_total_raw = float(trade.get("fee_total") or 0)
+        fee_total = round(fee_total_raw if fee_total_raw > 0 else commission_fee + sell_tax_fee, 4)
+        net_raw = float(trade.get("net_amount") or 0)
+        if net_raw > 0:
+            net_amount = round(net_raw, 4)
+        elif fee_total > 0:
+            net_amount = round(gross_amount - fee_total if action == "SELL" else gross_amount + fee_total, 4)
+        elif trade.get("amount") is not None:
+            net_amount = round(float(trade.get("amount") or 0), 4)
+        elif action == "SELL":
+            net_amount = round(gross_amount - fee_total, 4)
+        else:
+            net_amount = round(gross_amount + fee_total, 4)
+        amount = round(float(trade.get("amount") if trade.get("amount") is not None else net_amount), 4)
+        if fee_total > 0:
+            amount = net_amount
+        metadata = trade.get("trade_metadata")
+        metadata_json = trade.get("trade_metadata_json")
+        if not metadata_json and isinstance(metadata, dict):
+            metadata_json = self._dumps_metadata(metadata)
+        return {
+            "gross_amount": gross_amount,
+            "commission_fee": commission_fee,
+            "sell_tax_fee": sell_tax_fee,
+            "fee_total": fee_total,
+            "net_amount": net_amount,
+            "amount": amount,
+            "trade_metadata_json": metadata_json,
+        }
+
+    def _summarize_trade_costs(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "trade_count": 0,
+            "buy_count": 0,
+            "sell_count": 0,
+            "add_count": 0,
+            "buy_gross_amount": 0.0,
+            "sell_gross_amount": 0.0,
+            "buy_net_amount": 0.0,
+            "sell_net_amount": 0.0,
+            "commission_fee": 0.0,
+            "sell_tax_fee": 0.0,
+            "fee_total": 0.0,
+            "realized_pnl": 0.0,
+            "buy_lot_count": 0,
+            "sold_lot_count": 0,
+            "slot_allocation_count": 0,
+            "slot_release_count": 0,
+        }
+        for row in rows:
+            action = str(row.get("action") or "").upper()
+            if action not in {"BUY", "SELL"}:
+                continue
+            ledger = self._normalize_trade_ledger_fields(row)
+            gross_amount = float(ledger["gross_amount"] or 0)
+            net_amount = float(ledger["net_amount"] or 0)
+            summary["trade_count"] += 1
+            summary["commission_fee"] += float(ledger["commission_fee"] or 0)
+            summary["sell_tax_fee"] += float(ledger["sell_tax_fee"] or 0)
+            summary["fee_total"] += float(ledger["fee_total"] or 0)
+            summary["realized_pnl"] += float(row.get("realized_pnl") or 0)
+
+            metadata = self._loads_metadata(row.get("trade_metadata_json"))
+            if action == "BUY":
+                summary["buy_count"] += 1
+                summary["buy_gross_amount"] += gross_amount
+                summary["buy_net_amount"] += net_amount
+                if bool(metadata.get("is_add")):
+                    summary["add_count"] += 1
+                lot = metadata.get("lot") if isinstance(metadata.get("lot"), dict) else {}
+                lot_count = int(float(lot.get("lot_count") or 0)) if isinstance(lot, dict) else 0
+                if lot_count <= 0:
+                    lot_count = int((int(row.get("quantity") or 0) + A_SHARE_LOT_SIZE - 1) // A_SHARE_LOT_SIZE)
+                summary["buy_lot_count"] += lot_count
+                slot_allocations = metadata.get("slot_allocations")
+                if isinstance(slot_allocations, list):
+                    summary["slot_allocation_count"] += len(slot_allocations)
+            elif action == "SELL":
+                summary["sell_count"] += 1
+                summary["sell_gross_amount"] += gross_amount
+                summary["sell_net_amount"] += net_amount
+                consumed_lots = metadata.get("consumed_lots")
+                if isinstance(consumed_lots, list):
+                    consumed_quantity = sum(
+                        int(float(lot.get("quantity") or 0))
+                        for lot in consumed_lots
+                        if isinstance(lot, dict)
+                    )
+                    if consumed_quantity > 0:
+                        summary["sold_lot_count"] += int((consumed_quantity + A_SHARE_LOT_SIZE - 1) // A_SHARE_LOT_SIZE)
+                    else:
+                        summary["sold_lot_count"] += len(consumed_lots)
+                released_slots = metadata.get("released_slot_allocations")
+                if isinstance(released_slots, list):
+                    summary["slot_release_count"] += len(released_slots)
+
+        for key, value in list(summary.items()):
+            if isinstance(value, float):
+                summary[key] = round(value, 4)
+        return summary
+
     def _insert_sim_run_trades_with_cursor(
         self,
         cursor: sqlite3.Cursor,
@@ -1490,14 +1681,16 @@ class QuantSimDB:
                 persisted_signal_id = None
             else:
                 persisted_signal_id = persisted_signal_ids_by_source_id.get(int(source_signal_id), int(source_signal_id))
+            ledger = self._normalize_trade_ledger_fields(trade)
             cursor.execute(
                 """
                 INSERT INTO sim_run_trades
                 (
                     run_id, signal_id, stock_code, stock_name, action, price, quantity, amount,
+                    gross_amount, commission_fee, sell_tax_fee, net_amount, fee_total, trade_metadata_json,
                     realized_pnl, note, executed_at, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -1507,7 +1700,13 @@ class QuantSimDB:
                     str(trade.get("action") or "").upper(),
                     float(trade.get("price") or 0),
                     int(trade.get("quantity") or 0),
-                    float(trade.get("amount") or 0),
+                    ledger["amount"],
+                    ledger["gross_amount"],
+                    ledger["commission_fee"],
+                    ledger["sell_tax_fee"],
+                    ledger["net_amount"],
+                    ledger["fee_total"],
+                    ledger["trade_metadata_json"],
                     float(trade.get("realized_pnl") or 0),
                     trade.get("note"),
                     trade.get("executed_at") or self._now(),
@@ -1739,6 +1938,60 @@ class QuantSimDB:
         row = cursor.fetchone()
         conn.close()
         return int(row["total"] or 0) if row else 0
+
+    def get_sim_run_trade_cost_summary(self, run_id: int) -> dict[str, Any]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM sim_run_trades
+            WHERE run_id = ?
+            ORDER BY executed_at ASC, id ASC
+            """,
+            (run_id,),
+        )
+        rows = [self._row_to_dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return self._summarize_trade_costs(rows)
+
+    def get_sim_run_trade_cost_summary_lightweight(self, run_id: int) -> dict[str, Any]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN UPPER(action) IN ('BUY', 'SELL') THEN 1 ELSE 0 END), 0) AS trade_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'BUY' THEN 1 ELSE 0 END), 0) AS buy_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' THEN 1 ELSE 0 END), 0) AS sell_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'BUY' THEN
+                    CASE WHEN COALESCE(gross_amount, 0) > 0 THEN gross_amount ELSE price * quantity END
+                    ELSE 0 END), 0) AS buy_gross_amount,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' THEN
+                    CASE WHEN COALESCE(gross_amount, 0) > 0 THEN gross_amount ELSE price * quantity END
+                    ELSE 0 END), 0) AS sell_gross_amount,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'BUY' THEN
+                    CASE WHEN COALESCE(net_amount, 0) > 0 THEN net_amount ELSE amount END
+                    ELSE 0 END), 0) AS buy_net_amount,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' THEN
+                    CASE WHEN COALESCE(net_amount, 0) > 0 THEN net_amount ELSE amount END
+                    ELSE 0 END), 0) AS sell_net_amount,
+                COALESCE(SUM(COALESCE(commission_fee, 0)), 0) AS commission_fee,
+                COALESCE(SUM(COALESCE(sell_tax_fee, 0)), 0) AS sell_tax_fee,
+                COALESCE(SUM(CASE WHEN COALESCE(fee_total, 0) > 0 THEN fee_total ELSE COALESCE(commission_fee, 0) + COALESCE(sell_tax_fee, 0) END), 0) AS fee_total,
+                COALESCE(SUM(COALESCE(realized_pnl, 0)), 0) AS realized_pnl
+            FROM sim_run_trades
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        summary = self._row_to_dict(row) if row else {}
+        count_fields = {"trade_count", "buy_count", "sell_count"}
+        return {
+            key: int(value or 0) if key in count_fields else round(float(value or 0), 4)
+            for key, value in summary.items()
+        }
 
     def get_sim_run_trade_quality(self, run_id: int) -> dict[str, Any]:
         conn = self._connect()
@@ -2541,6 +2794,12 @@ class QuantSimDB:
                 price=price,
                 quantity=quantity,
                 amount=trade_result["amount"],
+                gross_amount=trade_result.get("gross_amount"),
+                commission_fee=trade_result.get("commission_fee"),
+                sell_tax_fee=trade_result.get("sell_tax_fee"),
+                net_amount=trade_result.get("net_amount"),
+                fee_total=trade_result.get("fee_total"),
+                trade_metadata=trade_result.get("trade_metadata"),
                 realized_pnl=trade_result["realized_pnl"],
                 note=note,
                 executed_at=executed_at_text,
@@ -2763,6 +3022,12 @@ class QuantSimDB:
                 realized_pnl=float(trade.get("realized_pnl") or 0),
                 note=trade.get("note"),
                 executed_at=trade.get("executed_at") or self._now(),
+                gross_amount=trade.get("gross_amount"),
+                commission_fee=trade.get("commission_fee"),
+                sell_tax_fee=trade.get("sell_tax_fee"),
+                net_amount=trade.get("net_amount"),
+                fee_total=trade.get("fee_total"),
+                trade_metadata_json=trade.get("trade_metadata_json"),
             )
 
         for snapshot in snapshots:
@@ -3067,12 +3332,12 @@ class QuantSimDB:
         position_lot_db_id: int,
         consumed_quantity: int,
         proceeds: float,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         if consumed_quantity <= 0:
-            return
+            return []
         config = self._capital_config_from_cursor(cursor)
         if not config["capital_slot_enabled"]:
-            return
+            return []
         cursor.execute(
             """
             SELECT * FROM sim_lot_slot_allocations
@@ -3084,6 +3349,7 @@ class QuantSimDB:
         allocations = cursor.fetchall()
         remaining_quantity = int(consumed_quantity)
         now_text = self._now()
+        releases: list[dict[str, Any]] = []
         for allocation in allocations:
             if remaining_quantity <= 0:
                 break
@@ -3119,6 +3385,17 @@ class QuantSimDB:
                 """,
                 (occupied_release, proceeds_release, now_text, slot_index),
             )
+            releases.append(
+                {
+                    "slot_index": slot_index,
+                    "allocated_cash": round(float(allocation["allocated_cash"] or 0), 4),
+                    "released_cash": proceeds_release,
+                    "released_quantity": consume_quantity,
+                    "occupied_release": occupied_release,
+                    "status": next_status,
+                }
+            )
+        return releases
 
     def _apply_buy(
         self,
@@ -3134,10 +3411,12 @@ class QuantSimDB:
         executed_at_text = self._format_datetime(executed_at)
         gross_amount = round(price * quantity, 4)
         commission_fee = 0.0
+        cost_cfg = self._current_trade_cost_config(cursor)
         if apply_trade_cost:
-            cost_cfg = self._current_trade_cost_config(cursor)
             commission_fee = round(gross_amount * cost_cfg["commission_rate"], 4)
-        amount = round(gross_amount + commission_fee, 4)
+        sell_tax_fee = 0.0
+        fee_total = round(commission_fee + sell_tax_fee, 4)
+        amount = round(gross_amount + fee_total, 4)
         available_cash = self._get_available_cash(cursor)
         if amount > available_cash:
             raise ValueError("insufficient available cash")
@@ -3145,6 +3424,7 @@ class QuantSimDB:
 
         cursor.execute("SELECT * FROM sim_positions WHERE stock_code = ?", (stock_code,))
         position = cursor.fetchone()
+        is_add = position is not None
 
         if position:
             current_quantity = int(position["quantity"])
@@ -3226,8 +3506,34 @@ class QuantSimDB:
         return {
             "candidate_status": "holding",
             "amount": amount,
+            "gross_amount": gross_amount,
+            "commission_fee": commission_fee,
+            "sell_tax_fee": sell_tax_fee,
+            "fee_total": fee_total,
+            "net_amount": amount,
             "realized_pnl": 0.0,
             "slot_allocations": slot_allocations,
+            "trade_metadata": {
+                "side": "BUY",
+                "is_add": is_add,
+                "cost_config": cost_cfg,
+                "gross_amount": gross_amount,
+                "commission_fee": commission_fee,
+                "sell_tax_fee": sell_tax_fee,
+                "fee_total": fee_total,
+                "net_amount": amount,
+                "lot": {
+                    "position_lot_db_id": lot_db_id,
+                    "lot_id": lot_id,
+                    "quantity": quantity,
+                    "lot_count": quantity // A_SHARE_LOT_SIZE,
+                    "entry_price": lot_entry_price,
+                    "entry_time": executed_at_text,
+                    "entry_date": executed_at.date().isoformat(),
+                    "unlock_date": unlock_date,
+                },
+                "slot_allocations": slot_allocations,
+            },
         }
 
     def _apply_sell(
@@ -3267,8 +3573,20 @@ class QuantSimDB:
 
             consumed = lot.consume(remaining_to_sell)
             remaining_to_sell -= consumed
-            realized_pnl += round((price - lot.entry_price) * consumed, 4)
-            consumed_lots.append({"position_lot_db_id": int(row["id"]), "quantity": consumed})
+            lot_gross_pnl = round((price - lot.entry_price) * consumed, 4)
+            realized_pnl += lot_gross_pnl
+            consumed_lots.append(
+                {
+                    "position_lot_db_id": int(row["id"]),
+                    "lot_id": lot.lot_id,
+                    "quantity": consumed,
+                    "entry_price": lot.entry_price,
+                    "entry_time": self._format_datetime(lot.entry_time),
+                    "entry_date": lot.entry_date.isoformat(),
+                    "unlock_date": lot.unlock_date.isoformat(),
+                    "gross_realized_pnl": lot_gross_pnl,
+                }
+            )
             next_status = "closed" if lot.remaining_quantity == 0 else self._current_lot_status(lot, current_date)
             cursor.execute(
                 """
@@ -3298,22 +3616,48 @@ class QuantSimDB:
         )
         remaining_cost = float(cursor.fetchone()["remaining_cost"] or 0)
         gross_proceeds = round(price * quantity, 4)
-        sell_fee = 0.0
+        cost_cfg = self._current_trade_cost_config(cursor)
+        commission_fee = 0.0
+        sell_tax_fee = 0.0
         if apply_trade_cost:
-            cost_cfg = self._current_trade_cost_config(cursor)
-            sell_fee = round(gross_proceeds * (cost_cfg["commission_rate"] + cost_cfg["sell_tax_rate"]), 4)
+            commission_fee = round(gross_proceeds * cost_cfg["commission_rate"], 4)
+            sell_tax_fee = round(gross_proceeds * cost_cfg["sell_tax_rate"], 4)
+        sell_fee = round(commission_fee + sell_tax_fee, 4)
         proceeds = round(gross_proceeds - sell_fee, 4)
         realized_pnl = round(realized_pnl - sell_fee, 4)
+        released_slot_allocations: list[dict[str, Any]] = []
         for consumed_lot in consumed_lots:
             lot_quantity = int(consumed_lot["quantity"] or 0)
             lot_proceeds = round(proceeds * (lot_quantity / max(quantity, 1)), 4)
-            self._release_capital_slot_allocations(
-                cursor,
-                position_lot_db_id=int(consumed_lot["position_lot_db_id"]),
-                consumed_quantity=lot_quantity,
-                proceeds=lot_proceeds,
+            released_slot_allocations.extend(
+                self._release_capital_slot_allocations(
+                    cursor,
+                    position_lot_db_id=int(consumed_lot["position_lot_db_id"]),
+                    consumed_quantity=lot_quantity,
+                    proceeds=lot_proceeds,
+                )
             )
         self._set_available_cash(cursor, self._get_available_cash(cursor) + proceeds)
+        trade_ledger = {
+            "amount": proceeds,
+            "gross_amount": gross_proceeds,
+            "commission_fee": commission_fee,
+            "sell_tax_fee": sell_tax_fee,
+            "fee_total": sell_fee,
+            "net_amount": proceeds,
+            "realized_pnl": realized_pnl,
+            "trade_metadata": {
+                "side": "SELL",
+                "cost_config": cost_cfg,
+                "gross_amount": gross_proceeds,
+                "commission_fee": commission_fee,
+                "sell_tax_fee": sell_tax_fee,
+                "fee_total": sell_fee,
+                "net_amount": proceeds,
+                "consumed_lots": consumed_lots,
+                "released_slot_allocations": released_slot_allocations,
+            },
+        }
 
         if remaining_quantity > 0:
             avg_price = round(remaining_cost / remaining_quantity, 4)
@@ -3338,8 +3682,7 @@ class QuantSimDB:
             )
             return {
                 "candidate_status": "holding",
-                "amount": proceeds,
-                "realized_pnl": realized_pnl,
+                **trade_ledger,
             }
 
         cursor.execute(
@@ -3354,8 +3697,7 @@ class QuantSimDB:
         )
         return {
             "candidate_status": "active",
-            "amount": proceeds,
-            "realized_pnl": realized_pnl,
+            **trade_ledger,
         }
 
     def _build_account_summary(self, cursor: sqlite3.Cursor) -> dict[str, Any]:
@@ -3441,15 +3783,38 @@ class QuantSimDB:
         realized_pnl: float,
         note: str | None,
         executed_at: str,
+        gross_amount: float | None = None,
+        commission_fee: float | None = None,
+        sell_tax_fee: float | None = None,
+        net_amount: float | None = None,
+        fee_total: float | None = None,
+        trade_metadata: dict[str, Any] | None = None,
+        trade_metadata_json: str | None = None,
     ) -> None:
+        ledger = self._normalize_trade_ledger_fields(
+            {
+                "action": action,
+                "price": price,
+                "quantity": quantity,
+                "amount": amount,
+                "gross_amount": gross_amount,
+                "commission_fee": commission_fee,
+                "sell_tax_fee": sell_tax_fee,
+                "net_amount": net_amount,
+                "fee_total": fee_total,
+                "trade_metadata": trade_metadata,
+                "trade_metadata_json": trade_metadata_json,
+            }
+        )
         cursor.execute(
             """
             INSERT INTO sim_trades
             (
                 signal_id, stock_code, stock_name, action, price, quantity,
-                amount, realized_pnl, note, executed_at, created_at
+                amount, gross_amount, commission_fee, sell_tax_fee, net_amount, fee_total,
+                trade_metadata_json, realized_pnl, note, executed_at, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal_id,
@@ -3458,7 +3823,13 @@ class QuantSimDB:
                 action,
                 price,
                 quantity,
-                amount,
+                ledger["amount"],
+                ledger["gross_amount"],
+                ledger["commission_fee"],
+                ledger["sell_tax_fee"],
+                ledger["net_amount"],
+                ledger["fee_total"],
+                ledger["trade_metadata_json"],
                 realized_pnl,
                 note,
                 executed_at,
