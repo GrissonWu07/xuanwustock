@@ -14,6 +14,8 @@ data/selector_results/
 data/local_sources/
 data/*.db
 data/*.db-journal
+data/*.db-shm
+data/*.db-wal
 data/*.db.bak-*
 data/stocks/
 /.codex-runtime/
