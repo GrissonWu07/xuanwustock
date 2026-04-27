@@ -770,7 +770,7 @@ def test_run_checkpoint_resolves_dynamic_binding_per_symbol(tmp_path, monkeypatc
     ):
         captured.append((stock_code, stock_name, ai_dynamic_strategy, ai_dynamic_strength, ai_dynamic_lookback, as_of))
         return {
-            "profile_id": "aggressive_v23",
+            "profile_id": "aggressive",
             "profile_name": "积极",
             "version_id": 1,
             "version": 1,

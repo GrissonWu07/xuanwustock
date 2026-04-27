@@ -20,9 +20,9 @@ SUPPORTED_AI_DYNAMIC_STRATEGIES = {"off", "template", "weights", "hybrid"}
 DEFAULT_AI_DYNAMIC_STRENGTH = 0.5
 DEFAULT_AI_DYNAMIC_LOOKBACK = 48
 BUILTIN_PROFILE_BY_TEMPLATE = {
-    "aggressive": "aggressive_v23",
-    "stable": "stable_v23",
-    "conservative": "conservative_v23",
+    "aggressive": "aggressive",
+    "stable": "stable",
+    "conservative": "conservative",
 }
 TEMPLATE_BY_PROFILE_ID = {profile_id: variant for variant, profile_id in BUILTIN_PROFILE_BY_TEMPLATE.items()}
 TEMPLATE_ORDER = {"conservative": 0, "stable": 1, "aggressive": 2}

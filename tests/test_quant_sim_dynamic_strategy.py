@@ -104,7 +104,7 @@ def test_market_component_ignores_stale_flow_snapshot(tmp_path, monkeypatch):
 
 def test_resolve_binding_replay_asof_omits_future_ai_decisions(tmp_path, monkeypatch):
     controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
-    base_binding = controller.db.resolve_strategy_profile_binding("stable_v23")
+    base_binding = controller.db.resolve_strategy_profile_binding("stable")
     checkpoint = datetime(2025, 8, 29, 13, 30)
 
     monkeypatch.setattr(controller, "_sector_db_instance", lambda: _MissingMarketSectorDB())
@@ -137,7 +137,7 @@ def test_resolve_binding_replay_asof_omits_future_ai_decisions(tmp_path, monkeyp
 
 def test_resolve_binding_replay_asof_uses_only_ai_decisions_visible_at_checkpoint(tmp_path, monkeypatch):
     controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
-    base_binding = controller.db.resolve_strategy_profile_binding("stable_v23")
+    base_binding = controller.db.resolve_strategy_profile_binding("stable")
     checkpoint = datetime(2025, 8, 29, 13, 30)
 
     monkeypatch.setattr(controller, "_sector_db_instance", lambda: _MissingMarketSectorDB())
@@ -316,7 +316,7 @@ def test_news_flow_db_as_of_queries_ignore_future_records(tmp_path):
 
 def test_resolve_binding_keeps_base_template_without_enough_switch_evidence(tmp_path, monkeypatch):
     controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
-    base_binding = controller.db.resolve_strategy_profile_binding("aggressive_v23")
+    base_binding = controller.db.resolve_strategy_profile_binding("aggressive")
 
     monkeypatch.setattr(
         controller,
@@ -347,7 +347,7 @@ def test_resolve_binding_keeps_base_template_without_enough_switch_evidence(tmp_
 
     dynamic = binding["dynamic_strategy"]
 
-    assert binding["profile_id"] == "aggressive_v23"
+    assert binding["profile_id"] == "aggressive"
     assert dynamic["recommended_template_variant"] == "conservative"
     assert dynamic["applied_template_variant"] == "aggressive"
     assert dynamic["template_switch_applied"] is False
@@ -356,7 +356,7 @@ def test_resolve_binding_keeps_base_template_without_enough_switch_evidence(tmp_
 
 def test_resolve_binding_switches_template_when_fresh_multi_source_evidence_is_strong(tmp_path, monkeypatch):
     controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
-    base_binding = controller.db.resolve_strategy_profile_binding("aggressive_v23")
+    base_binding = controller.db.resolve_strategy_profile_binding("aggressive")
 
     monkeypatch.setattr(
         controller,
@@ -394,7 +394,7 @@ def test_resolve_binding_switches_template_when_fresh_multi_source_evidence_is_s
 
     dynamic = binding["dynamic_strategy"]
 
-    assert binding["profile_id"] == "conservative_v23"
+    assert binding["profile_id"] == "conservative"
     assert dynamic["recommended_template_variant"] == "conservative"
     assert dynamic["applied_template_variant"] == "conservative"
     assert dynamic["template_switch_applied"] is True
@@ -403,7 +403,7 @@ def test_resolve_binding_switches_template_when_fresh_multi_source_evidence_is_s
 
 def test_resolve_binding_weights_mode_uses_risk_on_overlay_bucket(tmp_path, monkeypatch):
     controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
-    base_binding = controller.db.resolve_strategy_profile_binding("stable_v23")
+    base_binding = controller.db.resolve_strategy_profile_binding("stable")
 
     monkeypatch.setattr(
         controller,
@@ -435,7 +435,7 @@ def test_resolve_binding_weights_mode_uses_risk_on_overlay_bucket(tmp_path, monk
     )
     candidate = scoring.resolve("candidate")
 
-    assert binding["profile_id"] == "stable_v23"
+    assert binding["profile_id"] == "stable"
     assert dynamic["template_switch_applied"] is False
     assert dynamic["template_switch_reason"] == "weights_only"
     assert dynamic["overlay_regime"] == "risk_on"
@@ -456,7 +456,7 @@ def test_resolve_binding_weights_mode_uses_risk_on_overlay_bucket(tmp_path, monk
 
 def test_resolve_binding_weights_mode_uses_risk_off_overlay_bucket(tmp_path, monkeypatch):
     controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
-    base_binding = controller.db.resolve_strategy_profile_binding("stable_v23")
+    base_binding = controller.db.resolve_strategy_profile_binding("stable")
 
     monkeypatch.setattr(
         controller,
@@ -503,7 +503,7 @@ def test_resolve_binding_weights_mode_uses_risk_off_overlay_bucket(tmp_path, mon
 
 def test_resolve_binding_weights_mode_stays_neutral_without_confident_signal(tmp_path, monkeypatch):
     controller = DynamicStrategyController(db_file=tmp_path / "app.quant_sim.db")
-    base_binding = controller.db.resolve_strategy_profile_binding("stable_v23")
+    base_binding = controller.db.resolve_strategy_profile_binding("stable")
 
     monkeypatch.setattr(
         controller,

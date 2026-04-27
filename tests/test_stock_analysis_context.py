@@ -121,7 +121,7 @@ def test_default_stock_analysis_policy_keeps_context_for_one_day(tmp_path) -> No
 
 def test_missing_stock_analysis_does_not_reduce_context_confidence() -> None:
     from app.quant_kernel.config import CONTEXT_DIMENSIONS, StrategyScoringConfig
-    from app.quant_kernel.scoring_v23 import score_track
+    from app.quant_kernel.scoring import score_track
 
     config = StrategyScoringConfig.default().resolve("candidate")
     raw_dimensions = {

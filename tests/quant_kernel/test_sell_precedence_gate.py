@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from app.quant_kernel.decision_engine import resolve_v23_final_action
+from app.quant_kernel.decision_engine import resolve_final_action
 
 
 def test_weak_weighted_sell_cannot_override_hold_or_buy() -> None:
-    resolved_hold = resolve_v23_final_action(
+    resolved_hold = resolve_final_action(
         mode="hybrid",
         core_rule_action="HOLD",
         weighted_action_raw="SELL",
@@ -12,7 +12,7 @@ def test_weak_weighted_sell_cannot_override_hold_or_buy() -> None:
         sell_precedence_gate=-0.50,
         vetoes=[],
     )
-    resolved_buy = resolve_v23_final_action(
+    resolved_buy = resolve_final_action(
         mode="hybrid",
         core_rule_action="BUY",
         weighted_action_raw="SELL",
@@ -25,7 +25,7 @@ def test_weak_weighted_sell_cannot_override_hold_or_buy() -> None:
 
 
 def test_strong_weighted_sell_overrides_when_below_sell_precedence_gate() -> None:
-    resolved = resolve_v23_final_action(
+    resolved = resolve_final_action(
         mode="hybrid",
         core_rule_action="HOLD",
         weighted_action_raw="SELL",
@@ -38,7 +38,7 @@ def test_strong_weighted_sell_overrides_when_below_sell_precedence_gate() -> Non
 
 
 def test_aligned_core_and_weighted_sell_still_requires_sell_precedence_gate() -> None:
-    resolved = resolve_v23_final_action(
+    resolved = resolve_final_action(
         mode="hybrid",
         core_rule_action="SELL",
         weighted_action_raw="SELL",
@@ -52,7 +52,7 @@ def test_aligned_core_and_weighted_sell_still_requires_sell_precedence_gate() ->
 
 
 def test_core_sell_without_risk_veto_cannot_override_weighted_hold() -> None:
-    resolved = resolve_v23_final_action(
+    resolved = resolve_final_action(
         mode="hybrid",
         core_rule_action="SELL",
         weighted_action_raw="HOLD",
@@ -66,7 +66,7 @@ def test_core_sell_without_risk_veto_cannot_override_weighted_hold() -> None:
 
 
 def test_core_sell_without_risk_veto_cannot_override_weighted_buy() -> None:
-    resolved = resolve_v23_final_action(
+    resolved = resolve_final_action(
         mode="hybrid",
         core_rule_action="SELL",
         weighted_action_raw="BUY",

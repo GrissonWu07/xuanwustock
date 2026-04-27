@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.quant_kernel.scoring_v23 import score_fusion, score_track
+from app.quant_kernel.scoring import score_fusion, score_track
 
 
 def test_group_local_normalization_is_applied_within_group_only() -> None:

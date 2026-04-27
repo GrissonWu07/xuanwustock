@@ -17,11 +17,11 @@ const snapshot = {
     interval: "15 分钟",
     timeframe: "30m",
     strategyMode: "auto",
-    strategyProfileId: "aggressive_v23",
+    strategyProfileId: "aggressive",
     aiDynamicStrategy: "hybrid",
     aiDynamicStrength: "0.5",
     aiDynamicLookback: "48",
-    strategyProfiles: [{ id: "aggressive_v23", name: "积极", enabled: true, isDefault: true }],
+    strategyProfiles: [{ id: "aggressive", name: "积极", enabled: true, isDefault: true }],
     autoExecute: "true",
     market: "CN",
     initialCapital: "100000",
@@ -115,7 +115,7 @@ describe("LiveSimPage", () => {
                   rows: [
                     {
                       id: "9001",
-                      cells: ["#9001", "2026-04-23 23:20:00", "600000 浦发银行", "BUY", "aggressive_v23", "已落库"],
+                      cells: ["#9001", "2026-04-23 23:20:00", "600000 浦发银行", "BUY", "aggressive", "已落库"],
                       code: "600000",
                       name: "浦发银行",
                       actions: [{ label: "详情", action: "show-signal-detail", icon: "→", tone: "accent" }],

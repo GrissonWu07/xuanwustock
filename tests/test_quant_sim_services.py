@@ -64,7 +64,7 @@ def test_signal_center_creates_pending_and_observed_signals(tmp_path):
     assert len(history) == 2
 
 
-def test_signal_center_persists_canonical_v23_scores_when_available(tmp_path):
+def test_signal_center_persists_canonical_scores_when_available(tmp_path):
     candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
     signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
     candidate_service.add_manual_candidate("002518", "科士达", "main_force", latest_price=10.0)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.quant_kernel.scoring_v23 import score_fusion
+from app.quant_kernel.scoring import score_fusion
 
 
 def test_weighted_buy_requires_enabled_track_gates() -> None:

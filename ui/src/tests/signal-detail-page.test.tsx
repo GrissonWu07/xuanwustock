@@ -52,8 +52,8 @@ const mockPayload = {
     finalAction: "HOLD",
     finalReason: "final reason",
     positionRatio: "0.0",
-    configuredProfile: "积极 (aggressive_v23)",
-    appliedProfile: "保守 (conservative_v23) v2",
+    configuredProfile: "积极 (aggressive)",
+    appliedProfile: "保守 (conservative) v2",
     aiDynamicStrategy: "hybrid",
     aiDynamicStrength: "0.5",
     aiDynamicLookback: "48",
@@ -347,7 +347,7 @@ describe("SignalDetailPage", () => {
     expect(screen.getByText("投票明细")).toBeInTheDocument();
     expect(screen.getByText("审计模式")).toBeInTheDocument();
     expect(screen.getAllByText(/未买入：融合分/).length).toBeGreaterThan(0);
-    expect(screen.getByText("策略：保守 (conservative_v23) v2 · Auto · 模板已切换")).toBeInTheDocument();
+    expect(screen.getByText("策略：保守 (conservative) v2 · Auto · 模板已切换")).toBeInTheDocument();
     expect(screen.getByText("市场：牛市 · 风格 稳重 · 基本面 中性")).toBeInTheDocument();
     expect(screen.getByText("双轨：技术偏空(-0.0088) · 环境偏多(+0.0338) · 置信度 0.6587")).toBeInTheDocument();
     expect(screen.getByText("链路：核心 Hold -> 加权 Hold -> 门控 Hold -> 最终 Hold")).toBeInTheDocument();

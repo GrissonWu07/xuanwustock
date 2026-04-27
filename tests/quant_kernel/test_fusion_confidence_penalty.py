@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.quant_kernel.scoring_v23 import score_fusion
+from app.quant_kernel.scoring import score_fusion
 
 
 def test_divergence_penalty_applies_only_when_both_tracks_enabled() -> None:

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from app.quant_kernel.decision_engine import resolve_v23_final_action
+from app.quant_kernel.decision_engine import resolve_final_action
 
 
 def test_hard_veto_applies_first_for_all_modes() -> None:
     vetoes = [{"id": "risk_stop", "priority": 1, "action": "SELL", "reason": "stop_loss"}]
     for mode in ("rule_only", "weighted_only", "hybrid"):
-        resolved = resolve_v23_final_action(
+        resolved = resolve_final_action(
             mode=mode,
             core_rule_action="BUY",
             weighted_action_raw="BUY",
@@ -22,7 +22,7 @@ def test_hard_veto_applies_first_for_all_modes() -> None:
 
 
 def test_rule_only_uses_legacy_action_when_no_veto() -> None:
-    resolved = resolve_v23_final_action(
+    resolved = resolve_final_action(
         mode="rule_only",
         core_rule_action="SELL",
         weighted_action_raw="BUY",

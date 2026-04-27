@@ -109,7 +109,7 @@ class SignalCenterService:
                 "context_score": decision.context_score,
                 "strategy_profile": decision.strategy_profile,
             }
-            return SignalCenterService._apply_canonical_v23_scores(payload)
+            return SignalCenterService._apply_canonical_scores(payload)
 
         position_size = decision.get("position_size_pct")
         if position_size is None and "position_ratio" in decision:
@@ -126,10 +126,10 @@ class SignalCenterService:
             "context_score": decision.get("context_score", 0),
             "strategy_profile": decision.get("strategy_profile"),
         }
-        return SignalCenterService._apply_canonical_v23_scores(payload)
+        return SignalCenterService._apply_canonical_scores(payload)
 
     @staticmethod
-    def _apply_canonical_v23_scores(payload: dict[str, Any]) -> dict[str, Any]:
+    def _apply_canonical_scores(payload: dict[str, Any]) -> dict[str, Any]:
         strategy_profile = payload.get("strategy_profile")
         if not isinstance(strategy_profile, dict):
             return payload

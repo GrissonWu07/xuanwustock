@@ -7,10 +7,10 @@ from datetime import datetime
 from typing import Any
 
 from .config import QuantKernelConfig, StrategyScoringConfig
-from .decision_engine import DualTrackResolver, resolve_v23_final_action
+from .decision_engine import DualTrackResolver, resolve_final_action
 from .interfaces import ContextProvider
 from .models import ContextualScore, Decision
-from .scoring_v23 import score_fusion, score_track
+from .scoring import score_fusion, score_track
 
 
 class MarketRegimeContextProvider:
@@ -383,29 +383,29 @@ class KernelStrategyRuntime:
             stock_code=stock_code,
             current_time=current_time,
         )
-        v23_profile = self._resolve_v23_profile(profile_kind=profile_kind, strategy_profile_binding=strategy_profile_binding)
-        raw_dimensions = self._build_v23_dimension_payload(
+        scoring_profile = self._resolve_scoring_profile(profile_kind=profile_kind, strategy_profile_binding=strategy_profile_binding)
+        raw_dimensions = self._build_dimension_payload(
             market_snapshot=market_snapshot,
             current_time=current_time,
             sources=sources,
             contextual_score=contextual_score,
             price=price,
-            scoring_profile=v23_profile,
+            scoring_profile=scoring_profile,
         )
         technical_breakdown = score_track(
             track_name="technical",
-            track_config=v23_profile["technical"],
+            track_config=scoring_profile["technical"],
             raw_dimensions=raw_dimensions["technical"],
         )
         context_breakdown = score_track(
             track_name="context",
-            track_config=v23_profile["context"],
+            track_config=scoring_profile["context"],
             raw_dimensions=raw_dimensions["context"],
         )
         fusion_breakdown = score_fusion(
             technical=technical_breakdown,
             context=context_breakdown,
-            dual_track=v23_profile["dual_track"],
+            dual_track=scoring_profile["dual_track"],
             volatility_regime_score=raw_dimensions.get("volatility_regime_score"),
         )
         candidate_sell_rejected = False
@@ -417,16 +417,16 @@ class KernelStrategyRuntime:
             )
             if candidate_sell_rejected:
                 fusion_breakdown = self._downgrade_candidate_sell_fusion(fusion_breakdown)
-        vetoes = self._build_v23_vetoes(
+        vetoes = self._build_vetoes(
             profile_kind=profile_kind,
             contextual_score=contextual_score,
-            dual_track=v23_profile["dual_track"],
-            veto_config=v23_profile.get("veto") if isinstance(v23_profile.get("veto"), dict) else {},
+            dual_track=scoring_profile["dual_track"],
+            veto_config=scoring_profile.get("veto") if isinstance(scoring_profile.get("veto"), dict) else {},
             position=position,
             market_snapshot=market_snapshot,
         )
-        v23_action = resolve_v23_final_action(
-            mode=str(v23_profile["dual_track"].get("mode") or "rule_only"),
+        action_resolution = resolve_final_action(
+            mode=str(scoring_profile["dual_track"].get("mode") or "rule_only"),
             core_rule_action="HOLD" if profile_kind == "candidate" and tech_decision.action == "SELL" else tech_decision.action,
             weighted_action_raw=str(fusion_breakdown["weighted_action_raw"]),
             fusion_score=float(fusion_breakdown["fusion_score"]),
@@ -434,13 +434,13 @@ class KernelStrategyRuntime:
             vetoes=vetoes,
             legacy_rule_action="HOLD" if profile_kind == "candidate" and resolved.action == "SELL" else resolved.action,
         )
-        mode_value = str(v23_profile["dual_track"].get("mode") or "rule_only")
-        if candidate_sell_rejected and str(v23_action.get("final_action") or "").upper() != "BUY":
-            v23_action = self._downgrade_candidate_sell_action(v23_action)
+        mode_value = str(scoring_profile["dual_track"].get("mode") or "rule_only")
+        if candidate_sell_rejected and str(action_resolution.get("final_action") or "").upper() != "BUY":
+            action_resolution = self._downgrade_candidate_sell_action(action_resolution)
             resolved.action = "HOLD"
             resolved.decision_type = "candidate_reject"
         elif mode_value != "rule_only":
-            resolved.action = str(v23_action["final_action"])
+            resolved.action = str(action_resolution["final_action"])
             if resolved.action == "BUY":
                 resolved.decision_type = "dual_track_weighted_buy"
             elif resolved.action == "SELL":
@@ -456,7 +456,7 @@ class KernelStrategyRuntime:
             technical_breakdown=technical_breakdown,
             context_breakdown=context_breakdown,
             fusion_breakdown=fusion_breakdown,
-            v23_action=v23_action,
+            action_resolution=action_resolution,
             vetoes=vetoes,
             profile_kind=profile_kind,
             strategy_profile_binding=strategy_profile_binding,
@@ -502,8 +502,8 @@ class KernelStrategyRuntime:
         return downgraded
 
     @staticmethod
-    def _downgrade_candidate_sell_action(v23_action: dict[str, Any]) -> dict[str, Any]:
-        downgraded = dict(v23_action)
+    def _downgrade_candidate_sell_action(action_resolution: dict[str, Any]) -> dict[str, Any]:
+        downgraded = dict(action_resolution)
         decision_path = list(downgraded.get("decision_path") or [])
         decision_path.append(
             {
@@ -518,7 +518,7 @@ class KernelStrategyRuntime:
         downgraded["matched_branch"] = "candidate_sell_rejected"
         return downgraded
 
-    def _build_v23_dimension_payload(
+    def _build_dimension_payload(
         self,
         *,
         market_snapshot: dict[str, Any] | None,
@@ -1184,7 +1184,7 @@ class KernelStrategyRuntime:
         )
         return self._score_payload(score=score, available=available, reason=reason if available else "missing_field")
 
-    def _build_v23_vetoes(
+    def _build_vetoes(
         self,
         *,
         profile_kind: str,
@@ -1366,7 +1366,7 @@ class KernelStrategyRuntime:
             reason=reason,
         )
 
-    def _resolve_v23_profile(
+    def _resolve_scoring_profile(
         self,
         *,
         profile_kind: str,
@@ -1398,7 +1398,7 @@ class KernelStrategyRuntime:
         technical_breakdown: dict[str, Any],
         context_breakdown: dict[str, Any],
         fusion_breakdown: dict[str, Any],
-        v23_action: dict[str, Any],
+        action_resolution: dict[str, Any],
         vetoes: list[dict[str, Any]],
         profile_kind: str,
         strategy_profile_binding: dict[str, Any] | None = None,
@@ -1413,14 +1413,14 @@ class KernelStrategyRuntime:
         )
         fusion_view = dict(fusion_breakdown)
         fusion_view["core_rule_action"] = str((resolved.dual_track_details or {}).get("tech_signal") or resolved.action)
-        fusion_view["final_action"] = str(v23_action.get("final_action") or resolved.action)
-        if "raw_final_action" in v23_action:
-            fusion_view["raw_final_action"] = v23_action.get("raw_final_action")
-        fusion_view["matched_branch"] = str(v23_action.get("matched_branch") or "")
-        fusion_view["veto_action"] = v23_action.get("veto_action")
-        fusion_view["veto_id"] = v23_action.get("veto_id")
-        fusion_view["veto_trigger_type"] = v23_action.get("veto_trigger_type")
-        fusion_view["veto_display_label"] = v23_action.get("veto_display_label")
+        fusion_view["final_action"] = str(action_resolution.get("final_action") or resolved.action)
+        if "raw_final_action" in action_resolution:
+            fusion_view["raw_final_action"] = action_resolution.get("raw_final_action")
+        fusion_view["matched_branch"] = str(action_resolution.get("matched_branch") or "")
+        fusion_view["veto_action"] = action_resolution.get("veto_action")
+        fusion_view["veto_id"] = action_resolution.get("veto_id")
+        fusion_view["veto_trigger_type"] = action_resolution.get("veto_trigger_type")
+        fusion_view["veto_display_label"] = action_resolution.get("veto_display_label")
         fusion_view["veto_source_mode"] = "structured"
         if isinstance(strategy_profile_binding, dict):
             profile["selected_strategy_profile"] = {
@@ -1451,7 +1451,7 @@ class KernelStrategyRuntime:
             "context_breakdown": context_breakdown,
             "fusion_breakdown": fusion_view,
             "vetoes": vetoes,
-            "decision_path": v23_action.get("decision_path") or [],
+            "decision_path": action_resolution.get("decision_path") or [],
         }
         if stock_analysis_context is not None:
             profile["explainability"]["stock_analysis_context"] = json.loads(

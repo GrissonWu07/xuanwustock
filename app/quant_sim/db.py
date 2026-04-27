@@ -45,30 +45,34 @@ DEFAULT_CAPITAL_CONFIDENCE_WEIGHT = float(DEFAULT_CAPITAL_SLOT_CONFIG["capital_c
 DEFAULT_CAPITAL_HIGH_PRICE_THRESHOLD = float(DEFAULT_CAPITAL_SLOT_CONFIG["capital_high_price_threshold"])
 DEFAULT_CAPITAL_HIGH_PRICE_MAX_SLOT_UNITS = float(DEFAULT_CAPITAL_SLOT_CONFIG["capital_high_price_max_slot_units"])
 DEFAULT_CAPITAL_SELL_CASH_REUSE_POLICY = str(DEFAULT_CAPITAL_SLOT_CONFIG["capital_sell_cash_reuse_policy"])
-DEFAULT_STRATEGY_PROFILE_ID = "aggressive_v23"
+DEFAULT_STRATEGY_PROFILE_ID = "aggressive"
 DEFAULT_STRATEGY_PROFILE_NAME = "积极"
-LEGACY_DEFAULT_STRATEGY_PROFILE_ID = "default_v23"
+LEGACY_DEFAULT_STRATEGY_PROFILE_ID = "default"
 A_SHARE_LOT_SIZE = 100
 BUILTIN_STRATEGY_PROFILES: tuple[dict[str, str], ...] = (
     {
-        "id": "aggressive_v23",
+        "id": "aggressive",
         "name": "积极",
         "description": "积极策略：技术轨权重更高，趋势/动量更敏感，买入阈值更低，适合进攻型交易。",
         "variant": "aggressive",
     },
     {
-        "id": "stable_v23",
+        "id": "stable",
         "name": "稳定",
         "description": "稳定策略：技术与环境均衡，阈值居中，兼顾收益与回撤控制。",
         "variant": "stable",
     },
     {
-        "id": "conservative_v23",
+        "id": "conservative",
         "name": "保守",
         "description": "保守策略：环境与风控约束更强，买入阈值更高，优先控制回撤与仓位风险。",
         "variant": "conservative",
     },
 )
+
+
+def normalize_strategy_profile_id(profile_id: Any) -> str:
+    return str(profile_id or "").strip()
 
 
 def is_sqlite_locked_error(exc: BaseException) -> bool:
@@ -2180,7 +2184,7 @@ class QuantSimDB:
         row = cursor.fetchone()
         conn.close()
         if row is not None and str(row["id"]).strip():
-            return str(row["id"]).strip()
+            return normalize_strategy_profile_id(row["id"])
         return DEFAULT_STRATEGY_PROFILE_ID
 
     def list_strategy_profiles(self, *, include_disabled: bool = False) -> list[dict[str, Any]]:
@@ -2206,7 +2210,7 @@ class QuantSimDB:
         return rows
 
     def get_strategy_profile(self, profile_id: str) -> Optional[dict[str, Any]]:
-        profile_key = str(profile_id or "").strip()
+        profile_key = normalize_strategy_profile_id(profile_id)
         if not profile_key:
             return None
         conn = self._connect()
@@ -2217,7 +2221,7 @@ class QuantSimDB:
         return self._strategy_profile_row_to_dict(row) if row is not None else None
 
     def get_latest_strategy_profile_version(self, profile_id: str) -> Optional[dict[str, Any]]:
-        profile_key = str(profile_id or "").strip()
+        profile_key = normalize_strategy_profile_id(profile_id)
         if not profile_key:
             return None
         conn = self._connect()
@@ -2237,7 +2241,7 @@ class QuantSimDB:
         return self._strategy_profile_version_row_to_dict(row) if row is not None else None
 
     def list_strategy_profile_versions(self, profile_id: str, limit: int = 20) -> list[dict[str, Any]]:
-        profile_key = str(profile_id or "").strip()
+        profile_key = normalize_strategy_profile_id(profile_id)
         if not profile_key:
             return []
         safe_limit = max(1, min(int(limit or 20), 200))
@@ -2547,7 +2551,7 @@ class QuantSimDB:
         return self.get_strategy_profile(profile_key) or {}
 
     def resolve_strategy_profile_binding(self, profile_id: str | None = None) -> dict[str, Any]:
-        selected_profile_id = str(profile_id or "").strip() or self.get_default_strategy_profile_id()
+        selected_profile_id = normalize_strategy_profile_id(profile_id) or self.get_default_strategy_profile_id()
         profile = self.get_strategy_profile(selected_profile_id)
         if profile is None:
             raise ValueError(f"strategy profile not found: {selected_profile_id}")

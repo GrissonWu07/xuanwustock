@@ -213,8 +213,8 @@ effective_score = score * confidence
 
 Runtime integration requirements:
 
-- `KernelStrategyRuntime._build_contextual_score(...)` or its context provider must fetch/receive the valid stock-analysis context before `_build_v23_dimension_payload(...)`.
-- `_build_v23_dimension_payload(...)` must include `context["stock_analysis"]` only when a valid record exists.
+- `KernelStrategyRuntime._build_contextual_score(...)` or its context provider must fetch/receive the valid stock-analysis context before `_build_dimension_payload(...)`.
+- `_build_dimension_payload(...)` must include `context["stock_analysis"]` only when a valid record exists.
 - `StrategyScoringConfig` profiles must define a `stock_analysis` context dimension weight and group placement, otherwise the raw dimension will be ignored.
 - The profile must expose `context.stock_analysis_policy.enabled`, `ttl_hours`, `min_confidence`, and positive/negative contribution caps.
 - Missing or invalid stock-analysis context must omit the dimension; it must not be converted into a zero-score vote because that would dilute normalized context weights.

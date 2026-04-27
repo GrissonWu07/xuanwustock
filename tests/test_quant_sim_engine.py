@@ -146,7 +146,7 @@ def test_engine_resolves_dynamic_binding_per_candidate(tmp_path, monkeypatch):
     ):
         captured.append((stock_code, stock_name, ai_dynamic_strategy, ai_dynamic_strength, ai_dynamic_lookback))
         return {
-            "profile_id": "aggressive_v23",
+            "profile_id": "aggressive",
             "profile_name": "积极",
             "version_id": 1,
             "version": 1,
@@ -214,7 +214,7 @@ def test_engine_resolves_dynamic_binding_per_position(tmp_path, monkeypatch):
     ):
         captured.append((stock_code, stock_name, ai_dynamic_strategy, ai_dynamic_strength, ai_dynamic_lookback))
         return {
-            "profile_id": "aggressive_v23",
+            "profile_id": "aggressive",
             "profile_name": "积极",
             "version_id": 1,
             "version": 1,

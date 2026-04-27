@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.quant_kernel.scoring_v23 import score_fusion
+from app.quant_kernel.scoring import score_fusion
 
 
 def test_weighted_threshold_action_and_weighted_action_raw_can_differ() -> None:

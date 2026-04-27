@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.quant_kernel.scoring_v23 import score_fusion
+from app.quant_kernel.scoring import score_fusion
 
 
 def test_buy_gates_skip_disabled_track_when_context_alpha_is_zero() -> None:

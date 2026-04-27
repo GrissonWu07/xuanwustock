@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.quant_kernel.scoring_v23 import score_track
+from app.quant_kernel.scoring import score_track
 
 
 def test_missing_dimension_sets_unavailable_and_reason_code() -> None:

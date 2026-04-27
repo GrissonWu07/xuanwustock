@@ -220,7 +220,7 @@ class DualTrackResolver:
         return "no_position"
 
 
-def resolve_v23_final_action(
+def resolve_final_action(
     *,
     mode: str,
     core_rule_action: str,

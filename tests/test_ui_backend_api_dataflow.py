@@ -124,7 +124,7 @@ def _make_context(tmp_path: Path):
 def _seed_structured_signal_for_detail(context: gateway_api.UIApiContext) -> int:
     db = context.quant_db()
     db.update_scheduler_config(
-        strategy_profile_id="aggressive_v23",
+        strategy_profile_id="aggressive",
         ai_dynamic_strategy="hybrid",
         ai_dynamic_strength=0.5,
         ai_dynamic_lookback=48,
@@ -210,7 +210,7 @@ def _seed_structured_signal_for_detail(context: gateway_api.UIApiContext) -> int
         "fundamental_quality": {"label": "中性"},
         "risk_style": {"label": "稳重"},
         "auto_inferred_risk_style": {"label": "稳重"},
-        "selected_strategy_profile": {"id": "conservative_v23", "name": "保守 (conservative_v23)", "version": "2"},
+        "selected_strategy_profile": {"id": "conservative", "name": "保守 (conservative)", "version": "2"},
         "dual_track": {
             "min_fusion_confidence": 0.62,
             "min_tech_score_for_buy": 0.08,

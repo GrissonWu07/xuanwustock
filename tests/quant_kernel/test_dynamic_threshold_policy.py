@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.quant_kernel.scoring_v23 import score_fusion
+from app.quant_kernel.scoring import score_fusion
 
 
 def _base_dual_track() -> dict[str, float | str | dict[str, float]]:

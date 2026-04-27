@@ -39,7 +39,7 @@ type DualTrackField = {
   path: string[];
 };
 
-const BUILTIN_PROFILE_IDS = ["aggressive_v23", "stable_v23", "conservative_v23"] as const;
+const BUILTIN_PROFILE_IDS = ["aggressive", "stable", "conservative"] as const;
 
 const TECHNICAL_GROUP_DIMENSIONS: Record<string, readonly string[]> = {
   trend: ["trend_direction", "ma_alignment", "ma_slope", "price_vs_ma20"],
@@ -535,7 +535,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
   useEffect(() => {
     const firstId =
       resource.data?.selectedStrategyProfileId ||
-      orderedProfiles.find((item) => item.id === "aggressive_v23")?.id ||
+      orderedProfiles.find((item) => item.id === "aggressive")?.id ||
       orderedProfiles[0]?.id ||
       "";
     setSelectedStrategyProfileId((prev) => (prev && orderedProfiles.some((item) => item.id === prev) ? prev : firstId));
@@ -623,35 +623,35 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
     activeGroup: string,
     onToggleGroup: (groupId: string) => void,
   ) => (
-    <WorkbenchCard className="strategy-v23-card">
-      <div className="strategy-v23-card__header">
+    <WorkbenchCard className="strategy-config-card">
+      <div className="strategy-config-card__header">
         <div>
-          <h2 className="strategy-v23-card__title">{title}</h2>
-          <div className="strategy-v23-card__subtitle">{subtitle}</div>
+          <h2 className="strategy-config-card__title">{title}</h2>
+          <div className="strategy-config-card__subtitle">{subtitle}</div>
         </div>
-        <div className="strategy-v23-card__meta">
+        <div className="strategy-config-card__meta">
           {locale === "zh-CN"
             ? `组权重总和：${trackGroupWeightSum(trackPath, Object.keys(groups)).toFixed(4)}（已归一化）`
             : `Category weight sum: ${trackGroupWeightSum(trackPath, Object.keys(groups)).toFixed(4)} (normalized)`}
         </div>
       </div>
-      <div className="strategy-v23-track">
+      <div className="strategy-config-track">
         {Object.entries(groups).map(([groupId, dimensions]) => {
           const isActive = activeGroup === groupId;
           const explain = GROUP_EXPLAINS[groupId];
           return (
-            <div key={`${trackPath.join(".")}-${groupId}`} className={`strategy-v23-track-item${isActive ? " is-active" : ""}`}>
+            <div key={`${trackPath.join(".")}-${groupId}`} className={`strategy-config-track-item${isActive ? " is-active" : ""}`}>
               <button
                 type="button"
-                className="strategy-v23-track-item__header"
+                className="strategy-config-track-item__header"
                 onClick={() => onToggleGroup(isActive ? "" : groupId)}
               >
-                <span className="strategy-v23-track-item__caret">{isActive ? "▾" : "▸"}</span>
-                <span className="strategy-v23-track-item__name">{groupTitleOf(groupId, locale)}</span>
-                <span className="strategy-v23-track-item__weight-label">{locale === "zh-CN" ? "组权重" : "Weight"}</span>
-                <span className="strategy-v23-track-item__weight-box" onClick={(event) => event.stopPropagation()}>
+                <span className="strategy-config-track-item__caret">{isActive ? "▾" : "▸"}</span>
+                <span className="strategy-config-track-item__name">{groupTitleOf(groupId, locale)}</span>
+                <span className="strategy-config-track-item__weight-label">{locale === "zh-CN" ? "组权重" : "Weight"}</span>
+                <span className="strategy-config-track-item__weight-box" onClick={(event) => event.stopPropagation()}>
                   <input
-                    className="input strategy-v23-group-weight-input"
+                    className="input strategy-config-group-weight-input"
                     type="number"
                     step="0.01"
                     value={getNumberAt(editableConfig, [...trackPath, "group_weights", groupId], 1)}
@@ -662,12 +662,12 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                     onChange={(event) => updateNumberPath([...trackPath, "group_weights", groupId], event.target.value, 2, groupId)}
                   />
                 </span>
-                <span className="strategy-v23-track-item__desc">{pickText(explain.meaning, locale)}</span>
-                <span className="strategy-v23-track-item__tail">{isActive ? "⌃" : "⌄"}</span>
+                <span className="strategy-config-track-item__desc">{pickText(explain.meaning, locale)}</span>
+                <span className="strategy-config-track-item__tail">{isActive ? "⌃" : "⌄"}</span>
               </button>
               {isActive ? (
-                <div className="strategy-v23-track-item__body">
-                  <table className="strategy-v23-table">
+                <div className="strategy-config-track-item__body">
+                  <table className="strategy-config-table">
                     <thead>
                       <tr>
                         <th>{locale === "zh-CN" ? "维度（指标）" : "Dimension"}</th>
@@ -695,9 +695,9 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                               />
                             </td>
                             <td>
-                              <div className="strategy-v23-meaning">
+                              <div className="strategy-config-meaning">
                                 <span>{pickText(dimensionExplain.meaning, locale)}</span>
-                                <span className="strategy-v23-info" title={pickText(dimensionExplain.effect, locale)}>ⓘ</span>
+                                <span className="strategy-config-info" title={pickText(dimensionExplain.effect, locale)}>ⓘ</span>
                               </div>
                             </td>
                           </tr>
@@ -761,18 +761,18 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
 
   const selectedProfileId = selectedProfile?.id ?? "";
   const formulaCardClass = (section: 1 | 2 | 3 | 4) =>
-    `strategy-v23-formula__item${highlightFormula && focusedFormulaSection === section ? " is-highlight" : ""}`;
+    `strategy-config-formula__item${highlightFormula && focusedFormulaSection === section ? " is-highlight" : ""}`;
 
   return (
-    <div className="strategy-v23">
-      <WorkbenchCard className="strategy-v23-top">
-        <div className="strategy-v23-top__title">
+    <div className="strategy-config">
+      <WorkbenchCard className="strategy-config-top">
+        <div className="strategy-config-top__title">
           <h1>{locale === "zh-CN" ? "策略配置" : "Strategy configuration"}</h1>
-          <span className="strategy-v23-info">ⓘ</span>
+          <span className="strategy-config-info">ⓘ</span>
           <span>{locale === "zh-CN" ? "配置量化评分的权重、阈值与算法参数" : "Configure quant weights, thresholds and algorithm parameters."}</span>
         </div>
-        <div className="strategy-v23-top__controls">
-          <label className="strategy-v23-field">
+        <div className="strategy-config-top__controls">
+          <label className="strategy-config-field">
             <span>{locale === "zh-CN" ? "当前策略" : "Current strategy"}</span>
             <select className="input" value={selectedProfileId} onChange={(event) => setSelectedStrategyProfileId(event.target.value)}>
               {orderedProfiles.map((profile) => (
@@ -782,12 +782,12 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
               ))}
             </select>
           </label>
-          <div className="strategy-v23-toggle">
+          <div className="strategy-config-toggle">
             <span>{locale === "zh-CN" ? "状态" : "Status"}</span>
-            <label className="strategy-v23-switch" aria-label={locale === "zh-CN" ? "启用策略" : "Enable strategy"}>
+            <label className="strategy-config-switch" aria-label={locale === "zh-CN" ? "启用策略" : "Enable strategy"}>
               <input type="checkbox" checked={strategyEnabled} onChange={(event) => setStrategyEnabled(event.target.checked)} />
-              <span className="strategy-v23-switch__track">
-                <span className="strategy-v23-switch__thumb" />
+              <span className="strategy-config-switch__track">
+                <span className="strategy-config-switch__thumb" />
               </span>
             </label>
             <span>{locale === "zh-CN" ? "启用" : "Enabled"}</span>
@@ -860,7 +860,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                   description: selectedProfile?.description ?? "",
                   enabled: strategyEnabled,
                   config: buildUnifiedSaveConfig(editableConfig),
-                  note: "ui_weight_editor_update_v23_layout",
+                  note: "ui_weight_editor_update_layout",
                 });
                 await resource.refresh();
                 setStrategyActionMessage(locale === "zh-CN" ? "保存成功" : "Saved");
@@ -887,10 +887,10 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
         </div>
       </WorkbenchCard>
 
-      {strategyActionMessage ? <div className="strategy-v23-message">{strategyActionMessage}</div> : null}
+      {strategyActionMessage ? <div className="strategy-config-message">{strategyActionMessage}</div> : null}
 
-      <div className="strategy-v23-layout">
-        <div className="strategy-v23-left">
+      <div className="strategy-config-layout">
+        <div className="strategy-config-left">
           {renderTrackSection(
             locale === "zh-CN" ? "技术轨" : "Technical track",
             locale === "zh-CN" ? "衡量个股技术面信号强度，共 12 个维度" : "Measures technical signal strength with 12 dimensions.",
@@ -908,27 +908,27 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
             setActiveContextGroup,
           )}
 
-          <WorkbenchCard className="strategy-v23-card">
-            <div className="strategy-v23-card__header">
+          <WorkbenchCard className="strategy-config-card">
+            <div className="strategy-config-card__header">
               <div>
-                <h2 className="strategy-v23-card__title">{locale === "zh-CN" ? "融合参数（决策门控）" : "Fusion parameters (decision gates)"}</h2>
-                <div className="strategy-v23-card__subtitle">
+                <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "融合参数（决策门控）" : "Fusion parameters (decision gates)"}</h2>
+                <div className="strategy-config-card__subtitle">
                   {locale === "zh-CN"
                     ? "用于控制技术轨 + 环境轨如何融合，以及 BUY/SELL/HOLD 的阈值与置信度门槛"
                     : "Controls how technical/context tracks are fused and how BUY/SELL/HOLD thresholds and confidence gates are applied."}
                 </div>
               </div>
             </div>
-            <div className="strategy-v23-dual-grid">
+            <div className="strategy-config-dual-grid">
               {dualTrackPanelFields.map((field) => {
                 const explain = DUAL_PARAM_EXPLAINS[field.key];
                 const fullPath = ["base", "dual_track", ...field.path];
                 const section = formulaSectionByDualField(field.key);
                 return (
-                  <div key={`dual-${field.key}`} className="strategy-v23-dual-item">
+                  <div key={`dual-${field.key}`} className="strategy-config-dual-item">
                     <label>
                       <span>{t(field.label)}</span>
-                      <span className="strategy-v23-info" title={pickText(explain.effect, locale)}>ⓘ</span>
+                      <span className="strategy-config-info" title={pickText(explain.effect, locale)}>ⓘ</span>
                     </label>
                     {field.type === "select" ? (
                       <select
@@ -965,11 +965,11 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
             </div>
           </WorkbenchCard>
 
-          <WorkbenchCard className="strategy-v23-card strategy-v23-card--compact">
-            <div className="strategy-v23-advanced">
+          <WorkbenchCard className="strategy-config-card strategy-config-card--compact">
+            <div className="strategy-config-advanced">
               <div>
-                <h2 className="strategy-v23-card__title">{locale === "zh-CN" ? "高级模式（Base / Candidate / Position）" : "Advanced mode (Base / Candidate / Position)"}</h2>
-                <div className="strategy-v23-card__subtitle">
+                <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "高级模式（Base / Candidate / Position）" : "Advanced mode (Base / Candidate / Position)"}</h2>
+                <div className="strategy-config-card__subtitle">
                   {locale === "zh-CN" ? "配置基础层与场景层覆盖参数（默认关闭）" : "Configure base and profile override params (collapsed by default)."}
                 </div>
               </div>
@@ -978,7 +978,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
               </button>
             </div>
             {advancedOpen ? (
-              <div className="strategy-v23-advanced__body">
+              <div className="strategy-config-advanced__body">
                 <div>{locale === "zh-CN" ? "当前页面对外展示单策略编辑，保存后会同步 Candidate 与 Position。" : "Single-view editing is shown. Save syncs Candidate and Position."}</div>
                 <button
                   className="button button--secondary"
@@ -1006,19 +1006,19 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
             ) : null}
           </WorkbenchCard>
 
-          <WorkbenchCard className="strategy-v23-card strategy-v23-card--compact">
-            <div className="strategy-v23-card__header">
+          <WorkbenchCard className="strategy-config-card strategy-config-card--compact">
+            <div className="strategy-config-card__header">
               <div>
-                <h2 className="strategy-v23-card__title">{locale === "zh-CN" ? "AI动态策略参数" : "AI dynamic strategy parameters"}</h2>
-                <div className="strategy-v23-card__subtitle">
+                <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "AI动态策略参数" : "AI dynamic strategy parameters"}</h2>
+                <div className="strategy-config-card__subtitle">
                   {locale === "zh-CN"
                     ? "控制 AI 对当前策略模板的动态调整幅度与观察窗口。"
                     : "Controls AI dynamic adjustment strength and lookback window on top of the selected strategy profile."}
                 </div>
               </div>
             </div>
-            <div className="strategy-v23-dual-grid">
-              <div className="strategy-v23-dual-item">
+            <div className="strategy-config-dual-grid">
+              <div className="strategy-config-dual-item">
                 <label>
                   <span>{locale === "zh-CN" ? "AI动态策略" : "AI dynamic strategy"}</span>
                 </label>
@@ -1032,7 +1032,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
               </div>
               {aiDynamicStrategy !== "off" ? (
                 <>
-                  <div className="strategy-v23-dual-item">
+                  <div className="strategy-config-dual-item">
                     <label>
                       <span>{locale === "zh-CN" ? "AI动态强度(0-1)" : "AI dynamic strength (0-1)"}</span>
                     </label>
@@ -1046,7 +1046,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                       onChange={(event) => setAiDynamicStrength(Math.max(0, Math.min(1, Number(event.target.value) || 0)))}
                     />
                   </div>
-                  <div className="strategy-v23-dual-item">
+                  <div className="strategy-config-dual-item">
                     <label>
                       <span>{locale === "zh-CN" ? "AI回看窗口(小时)" : "AI lookback window (hours)"}</span>
                     </label>
@@ -1094,22 +1094,22 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
           </WorkbenchCard>
         </div>
 
-        <div className="strategy-v23-right">
-          <WorkbenchCard className="strategy-v23-formula">
-            <h2 className="strategy-v23-card__title">{locale === "zh-CN" ? "公式与影响预览" : "Formula and impact preview"}</h2>
-            <div className="strategy-v23-card__subtitle">
+        <div className="strategy-config-right">
+          <WorkbenchCard className="strategy-config-formula">
+            <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "公式与影响预览" : "Formula and impact preview"}</h2>
+            <div className="strategy-config-card__subtitle">
               {locale === "zh-CN" ? "点击左侧参数可高亮公式中的对应项" : "Click parameters on the left to highlight related formula section."}
             </div>
 
             <div className={formulaCardClass(1)}>
-              <div className="strategy-v23-formula__title">1. {locale === "zh-CN" ? "组内归一化（Group 内）" : "In-group normalization"}</div>
+              <div className="strategy-config-formula__title">1. {locale === "zh-CN" ? "组内归一化（Group 内）" : "In-group normalization"}</div>
               <pre>{`w_i,norm = (w_i × a_i) / Σ_j∈Dg(w_j × a_j)
 c_i = w_i,norm × s_i
 S_g = clamp(Σ_i∈Dg(c_i), -1, 1)`}</pre>
             </div>
 
             <div className={formulaCardClass(2)}>
-              <div className="strategy-v23-formula__title">2. {locale === "zh-CN" ? "轨道汇总（Track 内）" : "Track aggregation"}</div>
+              <div className="strategy-config-formula__title">2. {locale === "zh-CN" ? "轨道汇总（Track 内）" : "Track aggregation"}</div>
               <pre>{`W_g,norm = (W_g × A_g) / Σ_k(W_k × A_k)
 C_g = W_g,norm × S_g
 TrackScore = clamp(Σ_g(C_g), -1, 1)
@@ -1117,7 +1117,7 @@ TrackConfidence = Σ_g(W_g × Coverage_g) / Σ_g(W_g)`}</pre>
             </div>
 
             <div className={formulaCardClass(3)}>
-              <div className="strategy-v23-formula__title">3. {locale === "zh-CN" ? "双轨融合（Fusion）" : "Fusion"}</div>
+              <div className="strategy-config-formula__title">3. {locale === "zh-CN" ? "双轨融合（Fusion）" : "Fusion"}</div>
               <pre>{`α_tech,norm = α_tech / (α_tech + α_ctx)
 α_ctx,norm = α_ctx / (α_tech + α_ctx)
 FusionScore = α_tech,norm × TechScore + α_ctx,norm × CtxScore
@@ -1125,7 +1125,7 @@ FusionConfidence = FusionConfidence_base × (1 - Penalty)`}</pre>
             </div>
 
             <div className={formulaCardClass(4)}>
-              <div className="strategy-v23-formula__title">4. {locale === "zh-CN" ? "动作门控（BUY / SELL / HOLD）" : "Action gates"}</div>
+              <div className="strategy-config-formula__title">4. {locale === "zh-CN" ? "动作门控（BUY / SELL / HOLD）" : "Action gates"}</div>
               <pre>{`先应用 Hard Veto（最高优先级）
 FusionConfidence < 最小置信度 ⇒ HOLD
 BUY: FusionScore ≥ BUY_threshold 且各轨道 BUY 门控通过
@@ -1133,7 +1133,7 @@ SELL: FusionScore ≤ SELL_threshold
 否则 ⇒ HOLD`}</pre>
             </div>
 
-            <label className="strategy-v23-formula__highlight-toggle">
+            <label className="strategy-config-formula__highlight-toggle">
               <input type="checkbox" checked={highlightFormula} onChange={(event) => setHighlightFormula(event.target.checked)} />
               <span>
                 {locale === "zh-CN" ? "高亮：对应左侧选中参数" : "Highlight selected parameter"}
