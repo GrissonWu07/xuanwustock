@@ -586,6 +586,7 @@ def test_live_trade_ledger_records_full_costs_pnl_slots_and_lots(tmp_path):
     buy_metadata = json.loads(buy_trade["trade_metadata_json"])
     sell_metadata = json.loads(sell_trade["trade_metadata_json"])
     summary = db.get_account_summary()
+    cost_summary = db.get_trade_cost_summary()
 
     assert buy_trade["gross_amount"] == 1000.0
     assert buy_trade["commission_fee"] == 1.0
@@ -611,6 +612,12 @@ def test_live_trade_ledger_records_full_costs_pnl_slots_and_lots(tmp_path):
     assert sell_metadata["released_slot_allocations"]
     assert summary["available_cash"] == 100095.7
     assert summary["realized_pnl"] == 95.7
+    assert cost_summary["buy_gross_amount"] == 1000.0
+    assert cost_summary["sell_gross_amount"] == 1100.0
+    assert cost_summary["slot_allocated_cash"] == 1001.0
+    assert cost_summary["slot_released_cash"] == 1096.7
+    assert cost_summary["max_occupied_slot_count"] == 1
+    assert cost_summary["final_occupied_slot_count"] == 0
 
 
 def test_delete_position_records_sell_costs_and_releases_slot_ledger(tmp_path):

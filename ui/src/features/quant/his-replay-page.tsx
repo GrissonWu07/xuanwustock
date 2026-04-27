@@ -876,7 +876,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             emptyTitle={snapshot.trades.emptyLabel ?? "成交明细暂无数据"}
             emptyDescription={snapshot.trades.emptyMessage ?? "历史回放执行后，所有成交会统一落在这里。"}
             tableLayout="auto"
-            compactConfig={{ coreColumnIndexes: [0, 2, 3, 8], detailColumnIndexes: [1, 4, 5, 6, 7, 9, 10] }}
+            compactConfig={{ coreColumnIndexes: [0, 2, 3, 11], detailColumnIndexes: [1, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15] }}
             toolbar={renderFilterToolbar(
               tradeStockFilter,
               setTradeStockFilter,

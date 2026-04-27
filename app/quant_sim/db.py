@@ -1615,7 +1615,15 @@ class QuantSimDB:
             "sold_lot_count": 0,
             "slot_allocation_count": 0,
             "slot_release_count": 0,
+            "slot_allocated_cash": 0.0,
+            "slot_released_cash": 0.0,
+            "max_occupied_slot_count": 0,
+            "avg_occupied_slot_count": 0.0,
+            "final_occupied_slot_count": 0,
+            "final_occupied_slot_cash": 0.0,
         }
+        occupied_slots: dict[int, float] = {}
+        occupied_samples: list[int] = []
         for row in rows:
             action = str(row.get("action") or "").upper()
             if action not in {"BUY", "SELL"}:
@@ -1644,6 +1652,17 @@ class QuantSimDB:
                 slot_allocations = metadata.get("slot_allocations")
                 if isinstance(slot_allocations, list):
                     summary["slot_allocation_count"] += len(slot_allocations)
+                    for allocation in slot_allocations:
+                        if not isinstance(allocation, dict):
+                            continue
+                        try:
+                            slot_index = int(allocation.get("slot_index") or 0)
+                        except (TypeError, ValueError):
+                            slot_index = 0
+                        allocated_cash = round(float(allocation.get("allocated_cash") or 0), 4)
+                        if slot_index > 0 and allocated_cash > 0:
+                            occupied_slots[slot_index] = round(occupied_slots.get(slot_index, 0.0) + allocated_cash, 4)
+                            summary["slot_allocated_cash"] += allocated_cash
             elif action == "SELL":
                 summary["sell_count"] += 1
                 summary["sell_gross_amount"] += gross_amount
@@ -1662,7 +1681,31 @@ class QuantSimDB:
                 released_slots = metadata.get("released_slot_allocations")
                 if isinstance(released_slots, list):
                     summary["slot_release_count"] += len(released_slots)
+                    for release in released_slots:
+                        if not isinstance(release, dict):
+                            continue
+                        try:
+                            slot_index = int(release.get("slot_index") or 0)
+                        except (TypeError, ValueError):
+                            slot_index = 0
+                        released_cash = round(float(release.get("released_cash") or 0), 4)
+                        occupied_release = round(float(release.get("occupied_release") or 0), 4)
+                        if released_cash > 0:
+                            summary["slot_released_cash"] += released_cash
+                        if slot_index > 0 and occupied_release > 0:
+                            next_occupied = round(occupied_slots.get(slot_index, 0.0) - occupied_release, 4)
+                            if next_occupied > 0.01:
+                                occupied_slots[slot_index] = next_occupied
+                            else:
+                                occupied_slots.pop(slot_index, None)
+            occupied_count = sum(1 for value in occupied_slots.values() if value > 0.01)
+            occupied_samples.append(occupied_count)
+            summary["max_occupied_slot_count"] = max(int(summary["max_occupied_slot_count"]), occupied_count)
 
+        if occupied_samples:
+            summary["avg_occupied_slot_count"] = round(sum(occupied_samples) / len(occupied_samples), 4)
+        summary["final_occupied_slot_count"] = sum(1 for value in occupied_slots.values() if value > 0.01)
+        summary["final_occupied_slot_cash"] = round(sum(value for value in occupied_slots.values() if value > 0.01), 4)
         for key, value in list(summary.items()):
             if isinstance(value, float):
                 summary[key] = round(value, 4)
@@ -2771,6 +2814,13 @@ class QuantSimDB:
                 )
             else:
                 raise ValueError(f"Unsupported executed_action: {executed_action}")
+
+            signal_profile = self._loads_metadata(signal["strategy_profile_json"] if "strategy_profile_json" in signal.keys() else None)
+            position_sizing = signal_profile.get("position_sizing") if isinstance(signal_profile.get("position_sizing"), dict) else None
+            if position_sizing:
+                trade_metadata = trade_result.get("trade_metadata") if isinstance(trade_result.get("trade_metadata"), dict) else {}
+                trade_metadata["position_sizing"] = position_sizing
+                trade_result["trade_metadata"] = trade_metadata
 
             cursor.execute(
                 """

@@ -794,7 +794,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             table={tradeTable}
             emptyTitle={tradeTable.emptyLabel ?? "成交记录暂无数据"}
             emptyDescription={tradeTable.emptyMessage ?? "如果调度还没有生成新的成交，这里会先保持为空。"}
-            compactConfig={{ coreColumnIndexes: [0, 1, 2, 7], detailColumnIndexes: [3, 4, 5, 6, 8, 9, 10] }}
+            compactConfig={{ coreColumnIndexes: [0, 1, 2, 10], detailColumnIndexes: [3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15] }}
             toolbar={renderTradeToolbar()}
           />
 

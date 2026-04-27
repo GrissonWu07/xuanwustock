@@ -461,6 +461,7 @@ class QuantSimReplayService:
             "ai_dynamic_lookback": dynamic_lookback,
             "commission_rate": resolved_commission_rate,
             "sell_tax_rate": resolved_sell_tax_rate,
+            "scheduler_config": scheduler_config,
             "candidates": candidates,
             "stock_codes": stock_codes,
             "checkpoints": checkpoints,
@@ -508,6 +509,17 @@ class QuantSimReplayService:
                 "ai_dynamic_lookback": context.get("ai_dynamic_lookback"),
                 "commission_rate": float(context.get("commission_rate") or 0),
                 "sell_tax_rate": float(context.get("sell_tax_rate") or 0),
+                "capital_slot_enabled": bool((context.get("scheduler_config") or {}).get("capital_slot_enabled", True)),
+                "capital_pool_min_cash": float((context.get("scheduler_config") or {}).get("capital_pool_min_cash") or 0),
+                "capital_pool_max_cash": float((context.get("scheduler_config") or {}).get("capital_pool_max_cash") or 0),
+                "capital_slot_min_cash": float((context.get("scheduler_config") or {}).get("capital_slot_min_cash") or 0),
+                "capital_max_slots": int((context.get("scheduler_config") or {}).get("capital_max_slots") or 0),
+                "capital_min_buy_slot_fraction": float((context.get("scheduler_config") or {}).get("capital_min_buy_slot_fraction") or 0),
+                "capital_full_buy_edge": float((context.get("scheduler_config") or {}).get("capital_full_buy_edge") or 0),
+                "capital_confidence_weight": float((context.get("scheduler_config") or {}).get("capital_confidence_weight") or 0),
+                "capital_high_price_threshold": float((context.get("scheduler_config") or {}).get("capital_high_price_threshold") or 0),
+                "capital_high_price_max_slot_units": float((context.get("scheduler_config") or {}).get("capital_high_price_max_slot_units") or 0),
+                "capital_sell_cash_reuse_policy": str((context.get("scheduler_config") or {}).get("capital_sell_cash_reuse_policy") or "next_batch"),
             },
         )
 
@@ -692,6 +704,7 @@ class QuantSimReplayService:
             self.db.replace_sim_run_results(run_id, trades=trades, snapshots=snapshots, positions=positions, signals=replay_signals)
 
             metrics = self._calculate_run_metrics(account_summary["initial_cash"], trades, snapshots)
+            final_slot_summary = self._collect_slot_summary(temp_db)
 
             if cancelled:
                 completed_checkpoints = len(self.db.get_sim_run_checkpoints(run_id))
@@ -704,7 +717,7 @@ class QuantSimReplayService:
                     win_rate=float(metrics["win_rate"]),
                     trade_count=len(trades),
                     status_message="回放任务已取消",
-                    metadata={"checkpoint_count": completed_checkpoints},
+                    metadata={"checkpoint_count": completed_checkpoints, "final_slot_summary": final_slot_summary},
                 )
                 self.db.append_sim_run_event(run_id, "回放任务已取消。", level="warning")
                 return {
@@ -728,7 +741,7 @@ class QuantSimReplayService:
                 win_rate=float(metrics["win_rate"]),
                 trade_count=len(trades),
                 status_message="回放任务已完成",
-                metadata={"checkpoint_count": len(checkpoints)},
+                metadata={"checkpoint_count": len(checkpoints), "final_slot_summary": final_slot_summary},
             )
             self.db.append_sim_run_event(run_id, f"回放任务已完成，共生成 {len(trades)} 笔交易。", level="success")
 
@@ -777,6 +790,7 @@ class QuantSimReplayService:
             partial_snapshots: list[dict] = []
             partial_positions: list[dict] = []
             partial_signals: list[dict] = list(locals().get("replay_signals", []))
+            partial_slot_summary: dict = {}
             if "temp_db" in locals() and "temp_portfolio" in locals():
                 partial_trades = temp_db.get_trade_history(limit=10000)
                 partial_snapshots = self._sort_snapshots_chronologically(
@@ -787,6 +801,7 @@ class QuantSimReplayService:
                     ]
                 )
                 partial_positions = temp_portfolio.list_positions()
+                partial_slot_summary = self._collect_slot_summary(temp_db)
                 self.db.replace_sim_run_results(
                     run_id,
                     trades=partial_trades,
@@ -816,6 +831,7 @@ class QuantSimReplayService:
                     "error": str(exc),
                     "failed_checkpoint_index": locals().get("last_checkpoint_index", 0),
                     "failed_checkpoint_at": locals().get("last_checkpoint_text", ""),
+                    "final_slot_summary": partial_slot_summary,
                 },
             )
             self.db.append_sim_run_event(run_id, status_message, level="error")
@@ -1063,6 +1079,21 @@ class QuantSimReplayService:
                 continue
             lots.extend(temp_db.get_position_lots(stock_code, as_of=as_of))
         return lots
+
+    @staticmethod
+    def _collect_slot_summary(temp_db: QuantSimDB) -> dict:
+        slots = temp_db.get_capital_slots()
+        if not slots:
+            return {}
+        slot_count = len(slots)
+        total_budget = sum(float(slot.get("budget_cash") or 0) for slot in slots)
+        return {
+            "slot_count": slot_count,
+            "slot_budget": round(total_budget / slot_count, 4) if slot_count else 0.0,
+            "available_cash": round(sum(float(slot.get("available_cash") or 0) for slot in slots), 4),
+            "occupied_cash": round(sum(float(slot.get("occupied_cash") or 0) for slot in slots), 4),
+            "settling_cash": round(sum(float(slot.get("settling_cash") or 0) for slot in slots), 4),
+        }
 
     @staticmethod
     def _calculate_run_metrics(initial_cash: float, trades: list[dict], snapshots: list[dict]) -> dict:

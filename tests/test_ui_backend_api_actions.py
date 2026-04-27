@@ -1672,14 +1672,49 @@ def test_live_sim_snapshot_exposes_trade_cost_ledger(tmp_path):
 
     payload = TestClient(create_app(context=context)).get("/api/v1/quant/live-sim").json()
 
-    assert payload["trades"]["columns"] == ["时间", "代码", "动作", "数量", "价格", "成交毛额", "费用", "净额", "盈亏", "执行明细", "备注"]
+    assert payload["trades"]["columns"] == [
+        "时间",
+        "代码",
+        "动作",
+        "类型",
+        "数量",
+        "价格",
+        "成交毛额",
+        "手续费",
+        "印花税",
+        "总费用",
+        "现金影响",
+        "盈亏",
+        "盈亏率",
+        "Slot用量",
+        "执行明细",
+        "备注",
+    ]
     row = payload["trades"]["rows"][0]
-    assert row["cells"][5:11] == ["1000.00", "1.00", "1001.00", "0.00", "建仓 · 1 lot/100股 · slot#1 1001.00", "成本展示"]
+    assert row["cells"][3:16] == [
+        "建仓",
+        "100",
+        "10.00",
+        "1000.00",
+        "1.00",
+        "0.00",
+        "1.00",
+        "1001.00",
+        "0.00",
+        "--",
+        "1 slot",
+        row["cells"][14],
+        "成本展示",
+    ]
+    assert "T+1" in row["cells"][14]
+    assert "slot#1 1001.00" in row["cells"][14]
     summary_by_label = {item["label"]: item["value"] for item in payload["tradeCostSummary"]}
+    assert summary_by_label["买入毛额"] == "1000.00"
     assert summary_by_label["买入总成本"] == "1001.00"
     assert summary_by_label["总费用"] == "1.00"
     assert summary_by_label["买入lot"] == "1"
     assert summary_by_label["占用slot"] == "1"
+    assert summary_by_label["剩余lot"] == "1"
 
 
 def test_his_replay_snapshot_exposes_trade_cost_ledger(tmp_path):
@@ -1715,8 +1750,8 @@ def test_his_replay_snapshot_exposes_trade_cost_ledger(tmp_path):
                 "trade_metadata_json": json.dumps(
                     {
                         "side": "SELL",
-                        "consumed_lots": [{"lot_id": 1, "quantity": 100}],
-                        "released_slot_allocations": [{"slot_index": 1}],
+                        "consumed_lots": [{"lot_id": 1, "quantity": 100, "unlock_date": "2026-01-02"}],
+                        "released_slot_allocations": [{"slot_index": 1, "released_cash": 1096.7, "occupied_release": 1001.0}],
                     },
                     ensure_ascii=False,
                 ),
@@ -1728,17 +1763,76 @@ def test_his_replay_snapshot_exposes_trade_cost_ledger(tmp_path):
         positions=[],
         signals=[],
     )
+    db.finalize_sim_run(
+        run_id,
+        status="completed",
+        final_equity=101096.7,
+        total_return_pct=1.0967,
+        max_drawdown_pct=0.0,
+        win_rate=100.0,
+        trade_count=1,
+        metadata={
+            "final_slot_summary": {
+                "available_cash": 100000.0,
+                "occupied_cash": 0.0,
+                "settling_cash": 1096.7,
+                "slot_count": 5,
+                "slot_budget": 20000.0,
+            },
+            "capital_max_slots": 25,
+            "capital_sell_cash_reuse_policy": "next_batch",
+        },
+    )
 
     payload = TestClient(create_app(context=context)).get("/api/v1/quant/his-replay").json()
 
-    assert payload["trades"]["columns"] == ["时间", "信号ID", "代码", "动作", "数量", "价格", "成交毛额", "费用", "净额", "盈亏", "执行明细"]
+    assert payload["trades"]["columns"] == [
+        "时间",
+        "信号ID",
+        "代码",
+        "动作",
+        "类型",
+        "数量",
+        "价格",
+        "成交毛额",
+        "手续费",
+        "印花税",
+        "总费用",
+        "现金影响",
+        "盈亏",
+        "盈亏率",
+        "Slot用量",
+        "执行明细",
+    ]
     row = payload["trades"]["rows"][0]
-    assert row["cells"][6:11] == ["1100.00", "3.30", "1096.70", "95.70", "消耗 1 lot/100股 · 释放 slot#1 1096.70"]
+    assert row["cells"][4:16] == [
+        "卖出",
+        "100",
+        "11.00",
+        "1100.00",
+        "1.10",
+        "2.20",
+        "3.30",
+        "1096.70",
+        "95.70",
+        "9.56%",
+        "释放 1 slot",
+        "消耗 1 lot/100股 · lot 1 · T+1已解锁 2026-01-02 · 释放 slot#1 1096.70",
+    ]
+    assert "T+1已解锁" in row["cells"][15]
     summary_by_label = {item["label"]: item["value"] for item in payload["tradeCostSummary"]}
+    assert summary_by_label["交易笔数"] == "1"
+    assert summary_by_label["初始资金"] == "100000.00"
+    assert summary_by_label["最终权益"] == "101096.70"
+    assert summary_by_label["胜率"] == "100.00%"
+    assert summary_by_label["总盈亏"] == "1096.70"
+    assert summary_by_label["卖出毛额"] == "1100.00"
     assert summary_by_label["卖出到账"] == "1096.70"
     assert summary_by_label["总费用"] == "3.30"
     assert summary_by_label["印花税"] == "2.20"
     assert summary_by_label["实现盈亏"] == "95.70"
+    assert summary_by_label["最大占用slot"] == "0"
+    assert summary_by_label["最终待结算"] == "1096.70"
 
 
 def test_his_replay_snapshot_returns_only_first_page_for_heavy_tables(tmp_path):
