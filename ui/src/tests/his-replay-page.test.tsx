@@ -124,6 +124,7 @@ const initialSnapshot = {
                 allocatedCash: "24961.00",
                 marketValue: "25440.00",
                 costBand: "20.80",
+                priceBasis: "market",
                 status: "locked",
                 isAdd: false,
                 isStack: true,
@@ -173,7 +174,30 @@ const initialSnapshot = {
     { label: "总盈亏", value: "479.00" },
     { label: "总收益率", value: "0.96%" },
     { label: "交易笔数", value: "14" },
+    { label: "胜率", value: "57.1%" },
+    { label: "买入笔数", value: "7" },
+    { label: "卖出笔数", value: "7" },
+    { label: "加仓次数", value: "2" },
+    { label: "买入毛额", value: "23800.00" },
+    { label: "卖出毛额", value: "24400.00" },
+    { label: "买入总成本", value: "23807.14" },
+    { label: "卖出到账", value: "24375.66" },
     { label: "总费用", value: "18.20" },
+    { label: "手续费", value: "8.20" },
+    { label: "印花税", value: "10.00" },
+    { label: "实现盈亏", value: "568.52" },
+    { label: "买入lot", value: "12" },
+    { label: "卖出lot", value: "6" },
+    { label: "剩余lot", value: "6" },
+    { label: "占用slot", value: "4" },
+    { label: "释放slot", value: "2" },
+    { label: "最大占用slot", value: "3" },
+    { label: "平均占用slot", value: "1.50" },
+    { label: "Slot数量", value: "2" },
+    { label: "单Slot预算", value: "25000.00" },
+    { label: "最终空闲", value: "25039.00" },
+    { label: "最终占用", value: "24961.00" },
+    { label: "最终待结算", value: "0.00" },
     { label: "期末清算费用", value: "25.44" },
     { label: "期末清算盈亏", value: "454.56" },
     { label: "清算后现金", value: "50453.56" },
@@ -281,6 +305,25 @@ function renderHisReplayPage(client: ApiClient) {
 }
 
 describe("HisReplayPage", () => {
+  it("loads the initial signal table as BUY/SELL with a ten-row page size", async () => {
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(initialSnapshot),
+      runPageAction: vi.fn(),
+    } as unknown as ApiClient;
+
+    renderHisReplayPage(client);
+
+    await screen.findByLabelText("已选回放任务详情");
+    expect(client.getPageSnapshot).toHaveBeenCalledWith(
+      "his-replay",
+      expect.objectContaining({
+        signalAction: "TRADE",
+        signalPage: 1,
+        signalPageSize: 10,
+      }),
+    );
+  });
+
   it("shows immediate feedback while a replay start request is being submitted", async () => {
     let resolveStart!: (value: typeof startedSnapshot) => void;
     const startPromise = new Promise<typeof startedSnapshot>((resolve) => {
@@ -372,6 +415,8 @@ describe("HisReplayPage", () => {
     expect(screen.queryByText("每个回放任务的最终资金池快照：现金、持仓市值、slot占用和lot批次集中展示。")).not.toBeInTheDocument();
     expect(screen.getAllByText("Slot 01").length).toBeGreaterThan(0);
     expect(screen.getAllByText("12 lot · 1200 股").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("成本 20.80 · 现价 21.20").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("涨 +1.92%").length).toBeGreaterThan(0);
     const stockLinks = screen.getAllByRole("link", { name: "301381 宏工科技" });
     expect(stockLinks.length).toBeGreaterThan(0);
     expect(stockLinks[0]).toHaveAttribute("href", "/portfolio/position/301381");
@@ -396,6 +441,29 @@ describe("HisReplayPage", () => {
     expect(within(taskDetails).queryByText("盈亏比")).not.toBeInTheDocument();
     expect(screen.getByText("费用与执行统计")).toBeInTheDocument();
     expect(screen.getAllByText("清算后现金")).toHaveLength(1);
+  });
+
+  it("renders execution statistics as grouped summaries", async () => {
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(initialSnapshot),
+      runPageAction: vi.fn(),
+    } as unknown as ApiClient;
+
+    renderHisReplayPage(client);
+
+    const section = await screen.findByLabelText("费用与执行统计");
+    expect(within(section).getByText("关键成交")).toBeInTheDocument();
+    expect(within(section).getByText("14")).toBeInTheDocument();
+    expect(within(section).getByText("交易笔数 · 胜率 57.1%")).toBeInTheDocument();
+    expect(within(section).getByText("交易结构")).toBeInTheDocument();
+    expect(within(section).getByText("资金与费用")).toBeInTheDocument();
+    expect(within(section).getByText("Lot / Slot")).toBeInTheDocument();
+    expect(within(section).getByText("期末资金")).toBeInTheDocument();
+    expect(within(section).getAllByText("总费用")).toHaveLength(1);
+    expect(within(section).getByText("买入毛额")).toBeInTheDocument();
+    expect(within(section).getByText("手续费")).toBeInTheDocument();
+    expect(within(section).queryByText("其他")).not.toBeInTheDocument();
+    expect(within(section).queryByText("清算后现金")).not.toBeInTheDocument();
   });
 
   it("opens all lot details from the capital pool slot summary", async () => {
@@ -428,6 +496,14 @@ describe("HisReplayPage", () => {
         ...initialSnapshot.tasks[0].capitalPool.pool,
         cashValue: "26000.00",
       },
+      slots: initialSnapshot.tasks[0].capitalPool.slots.map((slot) => ({
+        ...slot,
+        lots: slot.lots.map((lot) => ({
+          ...lot,
+          marketValue: "24960.00",
+          priceBasis: "entry",
+        })),
+      })),
     };
     const client = {
       getPageSnapshot: vi.fn().mockResolvedValue(initialSnapshot),
@@ -462,6 +538,7 @@ describe("HisReplayPage", () => {
       expect(client.getReplayCapitalPool).toHaveBeenCalledWith(expect.objectContaining({ runId: "101", checkpointAt: "2026-04-09 10:00:00" }));
     });
     expect(await screen.findByText("26000.00")).toBeInTheDocument();
+    expect(screen.getAllByText("成本价 20.80").length).toBeGreaterThan(0);
     expect(screen.getByText("第 1 / 996 页")).toBeInTheDocument();
   });
 
@@ -493,11 +570,13 @@ describe("HisReplayPage", () => {
     expect(await within(taskDetails).findByText("检查点进度：1497/1992 · 75%")).toBeInTheDocument();
     expect(client.getReplayProgress).toHaveBeenCalledWith({
       pageSize: 20,
+      tradePageSize: 20,
       tradePage: 1,
       tradeAction: "ALL",
       tradeStock: "",
+      signalPageSize: 10,
       signalPage: 1,
-      signalAction: "ALL",
+      signalAction: "TRADE",
       signalStock: "",
     });
 

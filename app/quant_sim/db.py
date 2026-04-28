@@ -535,6 +535,24 @@ class QuantSimDB:
             ON sim_run_trades(run_id, executed_at DESC, id DESC)
             """
         )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sim_run_trades_run_action_time
+            ON sim_run_trades(run_id, UPPER(action), executed_at DESC, id DESC)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sim_run_signals_run_time
+            ON sim_run_signals(run_id, checkpoint_at DESC, id DESC)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sim_run_signals_run_action_time
+            ON sim_run_signals(run_id, UPPER(action), checkpoint_at DESC, id DESC)
+            """
+        )
 
         self._ensure_column(cursor, "strategy_signals", "decision_type", "TEXT")
         self._ensure_column(cursor, "strategy_signals", "tech_score", "REAL DEFAULT 0")
@@ -2228,7 +2246,7 @@ class QuantSimDB:
             SELECT * FROM sim_run_signals
             WHERE run_id = ?
             {where_suffix}
-            ORDER BY COALESCE(checkpoint_at, created_at) DESC, id DESC
+            ORDER BY checkpoint_at DESC, created_at DESC, id DESC
             """.format(where_suffix=where_suffix)
         params: list[Any] = [run_id, *filter_params]
         if limit is not None:

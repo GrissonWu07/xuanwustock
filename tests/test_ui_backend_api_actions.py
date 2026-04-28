@@ -1808,11 +1808,11 @@ def test_his_replay_snapshot_exposes_trade_cost_ledger(tmp_path):
         "现金影响",
         "盈亏",
         "盈亏率",
-        "Slot用量",
         "执行明细",
     ]
+    assert "Slot用量" not in payload["trades"]["columns"]
     row = payload["trades"]["rows"][0]
-    assert row["cells"][4:16] == [
+    assert row["cells"][4:15] == [
         "卖出",
         "100",
         "11.00",
@@ -1823,10 +1823,9 @@ def test_his_replay_snapshot_exposes_trade_cost_ledger(tmp_path):
         "1096.70",
         "95.70",
         "9.56%",
-        "释放 1 slot",
         "消耗 1 lot/100股 · lot 1 · T+1已解锁 2026-01-02 · 释放 slot#1 1096.70",
     ]
-    assert "T+1已解锁" in row["cells"][15]
+    assert "T+1已解锁" in row["cells"][14]
     summary_by_label = {item["label"]: item["value"] for item in payload["tradeCostSummary"]}
     assert summary_by_label["交易笔数"] == "1"
     assert summary_by_label["初始资金"] == "100000.00"
@@ -1846,7 +1845,7 @@ def test_his_replay_snapshot_exposes_trade_cost_ledger(tmp_path):
     assert "资金复用" not in summary_by_label
 
 
-def test_his_replay_snapshot_exposes_task_capital_pool_slots_and_lots(tmp_path):
+def test_his_replay_capital_pool_endpoint_exposes_slots_and_lots(tmp_path):
     context = _make_context(tmp_path)
     db = context.quant_db()
     run_id = db.create_sim_run(
@@ -1934,10 +1933,13 @@ def test_his_replay_snapshot_exposes_task_capital_pool_slots_and_lots(tmp_path):
         signals=[],
     )
 
-    payload = TestClient(create_app(context=context)).get("/api/v1/quant/his-replay").json()
+    client = TestClient(create_app(context=context))
+    snapshot = client.get("/api/v1/quant/his-replay").json()
+    assert "capitalPool" not in snapshot["tasks"][0]
 
-    task = payload["tasks"][0]
-    capital_pool = task["capitalPool"]
+    payload = client.get(f"/api/v1/quant/his-replay/capital-pool?runId={run_id}").json()
+
+    capital_pool = payload["capitalPool"]
     assert capital_pool["task"]["runId"] == str(run_id)
     assert capital_pool["task"]["status"] == "completed"
     assert capital_pool["pool"]["initialCash"] == "50000.00"
@@ -1957,6 +1959,7 @@ def test_his_replay_snapshot_exposes_task_capital_pool_slots_and_lots(tmp_path):
     assert occupied_slot["lots"][0]["quantity"] == 1200
     assert occupied_slot["lots"][0]["lockedQuantity"] == 1200
     assert occupied_slot["lots"][0]["marketValue"] == "25440.00"
+    assert occupied_slot["lots"][0]["priceBasis"] == "market"
 
 
 def test_his_replay_snapshot_adds_terminal_liquidation_summary_and_ranked_rows(tmp_path):
@@ -2174,6 +2177,15 @@ def test_his_replay_capital_pool_endpoint_rebuilds_lots_at_selected_checkpoint(t
     ]
     assert visible_lot_codes == ["301381"]
     assert "300750" not in visible_lot_codes
+    visible_lot = next(
+        lot
+        for slot in capital_pool["slots"]
+        for lot in slot["lots"]
+        if lot["stockCode"] == "301381"
+    )
+    assert visible_lot["costBand"] == "20.00"
+    assert visible_lot["marketValue"] == "2000.00"
+    assert visible_lot["priceBasis"] == "entry"
 
 
 def test_his_replay_snapshot_returns_only_first_page_for_heavy_tables(tmp_path):
@@ -2372,12 +2384,14 @@ def test_his_replay_signal_filters_are_applied_by_database(tmp_path):
 
     client = TestClient(create_app(context=context))
     unfiltered = client.get("/api/v1/quant/his-replay").json()
-    filtered = client.get("/api/v1/quant/his-replay?signalAction=TRADE").json()
+    filtered = client.get("/api/v1/quant/his-replay?signalAction=TRADE&signalPageSize=1").json()
     buy_only = client.get("/api/v1/quant/his-replay/progress?signalAction=BUY").json()
 
     assert {row["cells"][3] for row in unfiltered["signals"]["rows"]} == {"HOLD"}
-    assert [row["cells"][3] for row in filtered["signals"]["rows"]] == ["BUY", "SELL"]
+    assert [row["cells"][3] for row in filtered["signals"]["rows"]] == ["BUY"]
     assert filtered["signals"]["pagination"]["totalRows"] == 2
+    assert filtered["signals"]["pagination"]["pageSize"] == 1
+    assert filtered["signals"]["pagination"]["totalPages"] == 2
     assert [row["code"] for row in buy_only["signals"]["rows"]] == ["300684"]
     assert buy_only["signals"]["pagination"]["totalRows"] == 1
 

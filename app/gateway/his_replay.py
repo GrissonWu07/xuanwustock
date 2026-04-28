@@ -16,7 +16,6 @@ from app.gateway.trades import (
     _trade_net_amount,
     _trade_realized_pnl_pct,
     _trade_sell_tax_fee,
-    _trade_slot_units,
 )
 from app.gateway.replay_capital_pool import build_his_replay_capital_pool
 from app.gateway.replay_liquidation import build_terminal_liquidation, terminal_liquidation_metrics
@@ -65,9 +64,10 @@ def _build_his_replay_task_items(
     runs: list[dict[str, Any]],
     *,
     include_positions: bool = True,
+    include_terminal_limit: int = 0,
 ) -> list[dict[str, Any]]:
     task_items: list[dict[str, Any]] = []
-    for item in runs[:10]:
+    for task_index, item in enumerate(runs[:10]):
         run_id = int(item.get("id") or 0)
         trade_count = db.count_sim_run_trades(run_id) if run_id else int(_float(item.get("trade_count"), 0.0) or 0.0)
         latest_snapshot = db.get_latest_sim_run_snapshot(run_id) if run_id else None
@@ -159,6 +159,8 @@ def _build_his_replay_task_items(
                 )
             task["holdings"] = position_rows
             task["capitalPool"] = build_his_replay_capital_pool(db, item, latest_snapshot)
+
+        if task_index < include_terminal_limit:
             run_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             terminal_liquidation = build_terminal_liquidation(
                 db,
@@ -191,7 +193,7 @@ def _build_his_replay_task_items(
 
 def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     query = table_query or {}
-    page_size = _normalize_replay_table_page_size(query.get("page_size"))
+    page_size = _normalize_replay_table_page_size(query.get("trade_page_size") or query.get("page_size"))
     page = _normalize_replay_table_page(query.get("trade_page"))
     actions = _replay_actions_for_filter(query.get("trade_action"))
     stock_keyword = _txt(query.get("trade_stock"))
@@ -215,7 +217,6 @@ def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict
                 _num(_trade_net_amount(item)),
                 _num(item.get("realized_pnl")),
                 _trade_realized_pnl_pct(item),
-                _trade_slot_units(item),
                 _trade_execution_detail(item),
             ],
             "code": _txt(item.get("stock_code")),
@@ -232,7 +233,7 @@ def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict
         )
     ]
     table = _table(
-        ["时间", "信号ID", "代码", "动作", "类型", "数量", "价格", "成交毛额", "手续费", "印花税", "总费用", "现金影响", "盈亏", "盈亏率", "Slot用量", "执行明细"],
+        ["时间", "信号ID", "代码", "动作", "类型", "数量", "价格", "成交毛额", "手续费", "印花税", "总费用", "现金影响", "盈亏", "盈亏率", "执行明细"],
         rows,
         "暂无交易记录",
     )
@@ -242,7 +243,7 @@ def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict
 
 def _build_his_replay_signal_table(db: QuantSimDB, run_id: int, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     query = table_query or {}
-    page_size = _normalize_replay_table_page_size(query.get("page_size"))
+    page_size = _normalize_replay_table_page_size(query.get("signal_page_size") or query.get("page_size"))
     page = _normalize_replay_table_page(query.get("signal_page"))
     actions = _replay_actions_for_filter(query.get("signal_action"))
     stock_keyword = _txt(query.get("signal_stock"))
@@ -551,7 +552,7 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
             "tradingAnalysis": {"title": "交易分析", "body": "暂无回放记录。", "chips": []},
             "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], [], "暂无持仓"),
             "trades": _table(
-                ["时间", "信号ID", "代码", "动作", "类型", "数量", "价格", "成交毛额", "手续费", "印花税", "总费用", "现金影响", "盈亏", "盈亏率", "Slot用量", "执行明细"],
+                ["时间", "信号ID", "代码", "动作", "类型", "数量", "价格", "成交毛额", "手续费", "印花税", "总费用", "现金影响", "盈亏", "盈亏率", "执行明细"],
                 [],
                 "暂无交易记录",
             ),
@@ -566,7 +567,7 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
     trade_table = _build_his_replay_trade_table(db, rid, table_query)
     trade_count = db.count_sim_run_trades(rid)
 
-    task_items = _build_his_replay_task_items(db, runs, include_positions=True)
+    task_items = _build_his_replay_task_items(db, runs, include_positions=False, include_terminal_limit=1)
 
     run_metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
     replay_commission_rate = _normalize_fee_rate(

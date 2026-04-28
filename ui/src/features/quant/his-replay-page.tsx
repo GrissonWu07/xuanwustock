@@ -6,7 +6,7 @@ import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
 import { Sparkline } from "../../components/ui/sparkline";
 import { usePageData } from "../../lib/use-page-data";
-import type { ReplayCapitalPoolSnapshot, ReplaySnapshot, TableAction, TableRow, TableSection } from "../../lib/page-models";
+import type { ReplayCapitalPoolSnapshot, ReplaySnapshot, SummaryMetric, TableAction, TableRow, TableSection } from "../../lib/page-models";
 import { summarizeTaskStatuses, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
 import { ReplayCapitalPoolPanel } from "./replay-capital-pool-panel";
@@ -30,6 +30,20 @@ const AI_DYNAMIC_STRATEGY_OPTIONS = [
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
 const REPLAY_PROGRESS_REFRESH_MS = 60 * 1000;
 const REPLAY_CHECKPOINT_PAGE_SIZE = 50;
+const TRADE_PAGE_SIZE = 20;
+const SIGNAL_PAGE_SIZE = 10;
+const DEFAULT_SIGNAL_ACTION_FILTER = "TRADE";
+const INITIAL_REPLAY_TABLE_QUERY = {
+  pageSize: TRADE_PAGE_SIZE,
+  tradePageSize: TRADE_PAGE_SIZE,
+  tradePage: 1,
+  tradeAction: "ALL",
+  tradeStock: "",
+  signalPageSize: SIGNAL_PAGE_SIZE,
+  signalPage: 1,
+  signalAction: DEFAULT_SIGNAL_ACTION_FILTER,
+  signalStock: "",
+};
 const REPLAY_SUMMARY_METRIC_LABELS = new Set([
   "初始资金",
   "最终权益",
@@ -46,6 +60,13 @@ const REPLAY_SUMMARY_METRIC_LABELS = new Set([
   "清算后总盈亏",
   "清算后收益率",
 ]);
+const EXECUTION_HERO_METRIC_LABELS = ["交易笔数", "胜率", "买入总成本", "卖出到账", "总费用", "实现盈亏"];
+const EXECUTION_STAT_GROUPS = [
+  { title: "交易结构", labels: ["买入笔数", "卖出笔数", "加仓次数"] },
+  { title: "资金与费用", labels: ["买入毛额", "卖出毛额", "手续费", "印花税"] },
+  { title: "Lot / Slot", labels: ["买入lot", "卖出lot", "剩余lot", "占用slot", "释放slot", "最大占用slot", "平均占用slot"] },
+  { title: "期末资金", labels: ["Slot数量", "单Slot预算", "最大Slot", "高价双Slot线", "最终空闲", "最终占用", "最终待结算"] },
+];
 type ReplayProgressSnapshot = Pick<ReplaySnapshot, "updatedAt" | "tasks"> &
   Partial<Pick<ReplaySnapshot, "holdings" | "trades" | "signals" | "tradeCostSummary">>;
 
@@ -136,6 +157,11 @@ function findMetricValue(metrics: ReplaySnapshot["tradeCostSummary"], label: str
   return metrics?.find((metric) => metric.label === label)?.value;
 }
 
+function pickMetrics(metrics: SummaryMetric[], labels: string[]) {
+  const byLabel = new Map(metrics.map((metric) => [metric.label, metric]));
+  return labels.map((label) => byLabel.get(label)).filter((metric): metric is SummaryMetric => Boolean(metric));
+}
+
 function pickPreferredReplayTaskId(
   tasks: Array<{ id: string; status?: string }>,
   previousId = "",
@@ -196,8 +222,6 @@ type HisReplayPageProps = {
   client?: ApiClient;
 };
 
-const PAGE_SIZE = 20;
-
 function localizeTaskStatus(status: string) {
   const normalized = String(status || "").trim().toLowerCase();
   if (normalized === "completed") return "已完成";
@@ -247,7 +271,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     (query: Record<string, string | number>) => activeClient.getReplayCapitalPool<ReplayCapitalPoolSnapshot>(query),
     [activeClient],
   );
-  const resource = usePageData("his-replay", activeClient);
+  const resource = usePageData("his-replay", activeClient, INITIAL_REPLAY_TABLE_QUERY);
   const rawSnapshot = resource.data;
   const snapshotVersion = rawSnapshot?.updatedAt ?? "loading";
   const [progressSnapshot, setProgressSnapshot] = useState<ReplayProgressSnapshot | null>(null);
@@ -273,14 +297,14 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [tradeStockFilter, setTradeStockFilter] = useState("");
   const [tradeActionFilter, setTradeActionFilter] = useState("ALL");
   const [signalStockFilter, setSignalStockFilter] = useState("");
-  const [signalActionFilter, setSignalActionFilter] = useState("ALL");
+  const [signalActionFilter, setSignalActionFilter] = useState(DEFAULT_SIGNAL_ACTION_FILTER);
   const [tradePage, setTradePage] = useState(1);
   const [signalPage, setSignalPage] = useState(1);
   const [isReplayStarting, setIsReplayStarting] = useState(false);
   const [replayStartStatus, setReplayStartStatus] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
   const selectedTaskForCheckpoint = snapshot?.tasks.find((task) => task.id === selectedTaskId) ?? snapshot?.tasks[0] ?? null;
   const selectedTaskRunId = selectedTaskForCheckpoint?.runId ?? "";
-  const hasReplayCheckpointLoader = Boolean(selectedTaskForCheckpoint?.capitalPool && typeof activeClient.getReplayCapitalPool === "function");
+  const hasReplayCheckpointLoader = Boolean(selectedTaskRunId && typeof activeClient.getReplayCapitalPool === "function");
   const [checkpointSnapshot, setCheckpointSnapshot] = useState<ReplayCapitalPoolSnapshot | null>(null);
   const [checkpointPage, setCheckpointPage] = useState(1);
   const [checkpointLoading, setCheckpointLoading] = useState(false);
@@ -370,16 +394,15 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
       const normalized = String(task.status || "").trim().toLowerCase();
       return normalized === "running" || normalized === "queued";
     });
-    if (!hasPollingTask) {
-      return;
-    }
 
     let cancelled = false;
     const replayQuery = {
-      pageSize: PAGE_SIZE,
+      pageSize: TRADE_PAGE_SIZE,
+      tradePageSize: TRADE_PAGE_SIZE,
       tradePage,
       tradeAction: tradeActionFilter,
       tradeStock: tradeStockFilter.trim(),
+      signalPageSize: SIGNAL_PAGE_SIZE,
       signalPage,
       signalAction: signalActionFilter,
       signalStock: signalStockFilter.trim(),
@@ -396,6 +419,11 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     };
 
     void refreshProgress();
+    if (!hasPollingTask) {
+      return () => {
+        cancelled = true;
+      };
+    }
     const timer = window.setInterval(refreshProgress, REPLAY_PROGRESS_REFRESH_MS);
 
     return () => {
@@ -502,6 +530,19 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
       ]
     : [];
   const executionCostSummary = (snapshot.tradeCostSummary ?? []).filter((metric) => !REPLAY_SUMMARY_METRIC_LABELS.has(metric.label));
+  const executionHeroMetrics = pickMetrics(executionCostSummary, EXECUTION_HERO_METRIC_LABELS);
+  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === "交易笔数");
+  const executionWinRateMetric = executionHeroMetrics.find((metric) => metric.label === "胜率");
+  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== "交易笔数" && metric.label !== "胜率");
+  const executionHeroMetricLabels = new Set(executionHeroMetrics.map((metric) => metric.label));
+  const executionGroupMetricLabels = new Set(EXECUTION_STAT_GROUPS.flatMap((group) => group.labels));
+  const executionStatGroups = EXECUTION_STAT_GROUPS.map((group) => ({
+    ...group,
+    metrics: pickMetrics(executionCostSummary, group.labels).filter((metric) => !executionHeroMetricLabels.has(metric.label)),
+  })).filter((group) => group.metrics.length > 0);
+  const executionOtherMetrics = executionCostSummary.filter(
+    (metric) => !executionHeroMetricLabels.has(metric.label) && !executionGroupMetricLabels.has(metric.label),
+  );
   const selectedTaskTopWinningTrades: TableSection = {
     columns: ["时间", "信号ID", "代码", "卖出价", "净盈亏", "盈亏率", "执行明细"],
     rows: withCodeName(selectedTask?.topWinningTrades ?? [], 2),
@@ -1041,13 +1082,55 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             <WorkbenchCard>
               <h2 className="section-card__title">费用与执行统计</h2>
               <p className="section-card__description">回放成交按每笔毛额、手续费、印花税、净额、lot和slot归集，避免只看买卖价格误判收益。</p>
-              <div className="mini-metric-grid">
-                {executionCostSummary.map((metric) => (
-                  <div className="mini-metric" key={metric.label}>
-                    <div className="mini-metric__label">{metric.label}</div>
-                    <div className="mini-metric__value">{metric.value}</div>
+              <div className="execution-summary" aria-label="费用与执行统计">
+                {executionHeroMetrics.length ? (
+                  <div className="execution-summary__hero">
+                    {primaryExecutionMetric ? (
+                      <div className="execution-summary__hero-card execution-summary__hero-card--primary" key={primaryExecutionMetric.label}>
+                        <span>关键成交</span>
+                        <strong>{primaryExecutionMetric.value}</strong>
+                        <em>
+                          {primaryExecutionMetric.label}
+                          {executionWinRateMetric ? ` · 胜率 ${executionWinRateMetric.value}` : ""}
+                        </em>
+                      </div>
+                    ) : null}
+                    {secondaryExecutionHeroMetrics.map((metric) => (
+                      <div className="execution-summary__hero-card" key={metric.label}>
+                        <span>{metric.label}</span>
+                        <strong>{metric.value}</strong>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                ) : null}
+                <div className="execution-summary__groups">
+                  {executionStatGroups.map((group) => (
+                    <section className="execution-summary__group" key={group.title}>
+                      <h3>{group.title}</h3>
+                      <div className="execution-summary__rows">
+                        {group.metrics.map((metric) => (
+                          <div className="execution-summary__row" key={metric.label}>
+                            <span>{metric.label}</span>
+                            <strong>{metric.value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                  {executionOtherMetrics.length ? (
+                    <section className="execution-summary__group">
+                      <h3>其他</h3>
+                      <div className="execution-summary__rows">
+                        {executionOtherMetrics.map((metric) => (
+                          <div className="execution-summary__row" key={metric.label}>
+                            <span>{metric.label}</span>
+                            <strong>{metric.value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                </div>
               </div>
             </WorkbenchCard>
           ) : null}
@@ -1082,7 +1165,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             emptyTitle={snapshot.trades.emptyLabel ?? "成交明细暂无数据"}
             emptyDescription={snapshot.trades.emptyMessage ?? "历史回放执行后，所有成交会统一落在这里。"}
             tableLayout="auto"
-            compactConfig={{ coreColumnIndexes: [0, 2, 3, 11], detailColumnIndexes: [1, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15] }}
+            compactConfig={{ coreColumnIndexes: [0, 2, 3, 11], detailColumnIndexes: [1, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14] }}
             signalDetailSource="replay"
             toolbar={renderFilterToolbar(
               tradeStockFilter,

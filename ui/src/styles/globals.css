@@ -2543,6 +2543,107 @@ a {
   white-space: nowrap;
 }
 
+.execution-summary {
+  display: grid;
+  gap: 14px;
+}
+
+.execution-summary__hero {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.35fr) repeat(4, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.execution-summary__hero-card {
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(78, 121, 202, 0.18);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(247, 250, 255, 0.9));
+}
+
+.execution-summary__hero-card--primary {
+  border-color: rgba(77, 134, 247, 0.34);
+  background: linear-gradient(135deg, rgba(77, 134, 247, 0.13), rgba(103, 209, 179, 0.12));
+}
+
+.execution-summary__hero-card span,
+.execution-summary__row span {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.execution-summary__hero-card strong {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--text-main);
+  font-size: 1.18rem;
+  font-weight: 950;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.execution-summary__hero-card em {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-soft);
+  font-size: 0.74rem;
+  font-style: normal;
+}
+
+.execution-summary__groups {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.execution-summary__group {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(78, 121, 202, 0.16);
+  border-radius: 18px;
+  background: rgba(248, 251, 255, 0.78);
+}
+
+.execution-summary__group h3 {
+  margin: 0 0 8px;
+  color: var(--text-main);
+  font-size: 0.92rem;
+  font-weight: 950;
+}
+
+.execution-summary__rows {
+  display: grid;
+  gap: 7px;
+}
+
+.execution-summary__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(78, 121, 202, 0.1);
+}
+
+.execution-summary__row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.execution-summary__row strong {
+  overflow: hidden;
+  color: var(--text-main);
+  font-size: 0.94rem;
+  font-weight: 900;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .replay-capital-header {
   display: flex;
   align-items: flex-start;
@@ -2769,14 +2870,18 @@ a {
   height: 8px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(82, 117, 194, 0.12);
+  background: #e5ebf4;
 }
 
 .replay-capital-slot__bar span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #4d86f7 0%, #67d1b3 100%);
+  background: linear-gradient(90deg, #73a4ff 0%, #4d86f7 100%);
+}
+
+.replay-capital-slot.is-full .replay-capital-slot__bar span {
+  background: linear-gradient(90deg, #4d86f7 0%, #173f82 100%);
 }
 
 .replay-capital-slot__lots {
@@ -2807,6 +2912,39 @@ a {
 
 .replay-capital-lot-card strong {
   font-size: 0.92rem;
+}
+
+.replay-capital-lot-price {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-soft);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.replay-capital-lot-price em {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.replay-capital-lot-price em.is-up {
+  background: rgba(239, 83, 80, 0.12);
+  color: #c93d39;
+}
+
+.replay-capital-lot-price em.is-down {
+  background: rgba(24, 121, 78, 0.12);
+  color: #18794e;
+}
+
+.replay-capital-lot-price em.is-flat {
+  background: rgba(82, 100, 134, 0.1);
+  color: var(--text-soft);
 }
 
 .replay-capital-lot-card small,
@@ -2875,6 +3013,10 @@ a {
 .replay-capital-inspector__lot span {
   color: var(--text-soft);
   font-size: 0.78rem;
+}
+
+.replay-capital-inspector__lot .replay-capital-lot-price span {
+  color: var(--text-soft);
 }
 
 .content-scroll {
@@ -4101,6 +4243,11 @@ a {
 
   .replay-task-checkpoint-controls__pager {
     justify-content: space-between;
+  }
+
+  .execution-summary__hero,
+  .execution-summary__groups {
+    grid-template-columns: 1fr;
   }
 
   .compact-detail-grid {

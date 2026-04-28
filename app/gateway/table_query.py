@@ -41,15 +41,25 @@ def _replay_table_query_from_request(request: Request | None) -> dict[str, Any]:
         return {}
     params = request.query_params
     page_size = _normalize_replay_table_page_size(params.get("pageSize") or params.get("page_size"))
+    trade_page_size = _normalize_replay_table_page_size(
+        params.get("tradePageSize") or params.get("trade_page_size") or page_size,
+        default=page_size,
+    )
+    signal_page_size = _normalize_replay_table_page_size(
+        params.get("signalPageSize") or params.get("signal_page_size") or page_size,
+        default=page_size,
+    )
     return {
         "search": params.get("search") or "",
         "page": _normalize_replay_table_page(params.get("page")),
         "pageSize": page_size,
         "page_size": page_size,
         "trade_page": _normalize_replay_table_page(params.get("tradePage") or params.get("trade_page")),
+        "trade_page_size": trade_page_size,
         "trade_action": params.get("tradeAction") or params.get("trade_action") or "ALL",
         "trade_stock": params.get("tradeStock") or params.get("trade_stock") or "",
         "signal_page": _normalize_replay_table_page(params.get("signalPage") or params.get("signal_page")),
+        "signal_page_size": signal_page_size,
         "signal_action": params.get("signalAction") or params.get("signal_action") or "ALL",
         "signal_stock": params.get("signalStock") or params.get("signal_stock") or "",
         "run_id": params.get("runId") or params.get("run_id") or "",

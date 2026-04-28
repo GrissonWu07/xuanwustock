@@ -353,6 +353,7 @@ export type ReplayCapitalLot = {
   allocatedCash: string;
   marketValue: string;
   costBand?: string;
+  priceBasis?: "market" | "entry" | string;
   status: "available" | "locked" | "mixed" | "settling" | string;
   isAdd?: boolean;
   isStack?: boolean;

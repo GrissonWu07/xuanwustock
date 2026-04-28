@@ -21,6 +21,14 @@ function slotStatusClass(status: string) {
   return "is-free";
 }
 
+function slotUsageClass(status: string, usagePct: number) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "occupied" && Number(usagePct) >= 99.5) {
+    return "is-full";
+  }
+  return "";
+}
+
 function localizeLotStatus(status: string) {
   const normalized = String(status || "").trim().toLowerCase();
   if (normalized === "locked") return "T+1锁定";
@@ -42,6 +50,66 @@ function flattenLots(capitalPool: ReplayCapitalPool): LotWithSlot[] {
       slotTitle: slot.title,
       slotIndex: slot.index,
     })),
+  );
+}
+
+function parseDisplayNumber(value: unknown) {
+  const match = String(value ?? "").replace(/,/g, "").match(/-?\d+(\.\d+)?/);
+  if (!match) return null;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatPrice(value: number | null) {
+  return value === null ? "--" : value.toFixed(2);
+}
+
+function lotPriceInfo(lot: ReplayCapitalLot) {
+  const cost = parseDisplayNumber(lot.costBand);
+  const marketValue = parseDisplayNumber(lot.marketValue);
+  const quantity = Number(lot.quantity || 0);
+  const hasMarketPrice = String(lot.priceBasis || "").trim().toLowerCase() === "market";
+  const current = marketValue !== null && quantity > 0 ? marketValue / quantity : null;
+  if (!hasMarketPrice) {
+    return {
+      priceText: `成本价 ${formatPrice(cost)}`,
+      trendText: "",
+      trendClass: "is-flat",
+    };
+  }
+  if (cost === null || current === null || cost <= 0) {
+    return {
+      priceText: `成本 ${formatPrice(cost)} · 现价 ${formatPrice(current)}`,
+      trendText: "",
+      trendClass: "is-flat",
+    };
+  }
+  const pct = ((current - cost) / cost) * 100;
+  if (Math.abs(pct) < 0.005) {
+    return {
+      priceText: `成本 ${formatPrice(cost)} · 现价 ${formatPrice(current)}`,
+      trendText: "平 0.00%",
+      trendClass: "is-flat",
+    };
+  }
+  return {
+    priceText: `成本 ${formatPrice(cost)} · 现价 ${formatPrice(current)}`,
+    trendText: pct > 0 ? `涨 +${pct.toFixed(2)}%` : `跌 ${pct.toFixed(2)}%`,
+    trendClass: pct > 0 ? "is-up" : "is-down",
+  };
+}
+
+function lotValueLabel(lot: ReplayCapitalLot) {
+  return String(lot.priceBasis || "").trim().toLowerCase() === "market" ? "市值" : "成本市值";
+}
+
+function renderLotPriceLine(lot: ReplayCapitalLot) {
+  const info = lotPriceInfo(lot);
+  return (
+    <div className="replay-capital-lot-price">
+      <span>{info.priceText}</span>
+      {info.trendText ? <em className={info.trendClass}>{info.trendText}</em> : null}
+    </div>
   );
 }
 
@@ -206,6 +274,7 @@ export function ReplayCapitalPoolPanel({
                   </Link>
                   <strong>{lot.slotTitle}</strong>
                 </div>
+                {renderLotPriceLine(lot)}
                 <div>
                   <span>{`${lot.lotCount} lot · ${lot.quantity}股 · ${localizeLotStatus(lot.status)}`}</span>
                   <span>{`占用 ${lot.allocatedCash}`}</span>
@@ -231,7 +300,7 @@ export function ReplayCapitalPoolPanel({
                 <button
                   type="button"
                   key={slot.id}
-                  className={`replay-capital-slot ${slotStatusClass(slot.status)} ${selectedSlot?.index === slot.index ? "is-selected" : ""}`}
+                  className={`replay-capital-slot ${slotStatusClass(slot.status)} ${slotUsageClass(slot.status, slot.usagePct)} ${selectedSlot?.index === slot.index ? "is-selected" : ""}`}
                   onClick={() => setSelectedSlotIndex(slot.index)}
                 >
                   <div className="replay-capital-slot__head">
@@ -255,7 +324,8 @@ export function ReplayCapitalPoolPanel({
                           <em>{localizeLotStatus(lot.status)}</em>
                         </div>
                         <strong>{`${lot.lotCount} lot · ${lot.quantity} 股`}</strong>
-                        <small>{`市值 ${lot.marketValue} · 成本 ${lot.costBand || "--"}`}</small>
+                        {renderLotPriceLine(lot)}
+                        <small>{`${lotValueLabel(lot)} ${lot.marketValue} · 占用 ${lot.allocatedCash}`}</small>
                       </div>
                     ))}
                     {slot.hiddenLotGroups ? <div className="replay-capital-lot-more">{`+${slot.hiddenLotGroups} 个lot组`}</div> : null}
@@ -283,6 +353,7 @@ export function ReplayCapitalPoolPanel({
                     </Link>
                     <span>{`${lot.lotCount} lot · ${lot.quantity}股 · ${localizeLotStatus(lot.status)}`}</span>
                   </div>
+                  {renderLotPriceLine(lot)}
                   <div>
                     <span>{`占用 ${lot.allocatedCash}`}</span>
                     <span>{`可卖 ${lot.sellableQuantity ?? 0} · 锁定 ${lot.lockedQuantity ?? 0}`}</span>

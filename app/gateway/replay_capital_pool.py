@@ -176,6 +176,7 @@ def _build_slot_lot_groups(
             position = positions_by_code.get(stock_code, {})
             position_quantity = max(_safe_int(position.get("quantity")), 0)
             latest_price = _float(position.get("latest_price"), None)
+            price_basis = "market" if latest_price is not None and latest_price > 0 else "entry"
             if latest_price is None or latest_price <= 0:
                 latest_price = _float(lot.get("entry_price"), 0.0) or 0.0
             locked_total = max(_safe_int(position.get("locked_quantity")), 0)
@@ -201,9 +202,12 @@ def _build_slot_lot_groups(
                     "allocated_cash": 0.0,
                     "market_value": 0.0,
                     "entry_prices": [],
+                    "price_basis": price_basis,
                     "is_add": False,
                 },
             )
+            if price_basis == "market":
+                group["price_basis"] = "market"
             group["lot_ids"].append(_txt(lot.get("lot_id")))
             group["lot_count"] += group_lot_count
             group["quantity"] += group_quantity
@@ -243,6 +247,7 @@ def _capital_lot_card(group: dict[str, Any]) -> dict[str, Any]:
         "allocatedCash": _num(group.get("allocated_cash")),
         "marketValue": _num(group.get("market_value")),
         "costBand": cost_band,
+        "priceBasis": _txt(group.get("price_basis"), "entry"),
         "status": status,
         "isAdd": bool(group.get("is_add")),
         "isStack": max(_safe_int(group.get("lot_count")), 0) > 1 or len(lot_ids) > 1,
