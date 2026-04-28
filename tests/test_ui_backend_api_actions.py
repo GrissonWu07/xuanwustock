@@ -1507,6 +1507,7 @@ def test_his_replay_actions_enqueue_cancel_delete_and_rerun(tmp_path, monkeypatc
         end_datetime="2026-04-10 15:00:00",
         initial_cash=100000,
         status="completed",
+        selected_strategy_profile_id="aggressive_v23",
         metadata={"selected_strategy_mode": "auto"},
     )
     db.update_sim_run_progress(
@@ -1529,10 +1530,16 @@ def test_his_replay_actions_enqueue_cancel_delete_and_rerun(tmp_path, monkeypatc
     assert task["mode"] == "historical_range"
     assert task["timeframe"] == "30m"
     assert task["market"] == "CN"
+    assert snapshot_resp.json()["config"]["strategyProfileId"] == "aggressive"
 
-    start_resp = client.post("/api/v1/quant/his-replay/actions/start", json={})
+    start_resp = client.post(
+        "/api/v1/quant/his-replay/actions/start",
+        json={"initialCash": 300000, "strategyProfileId": "aggressive_v23"},
+    )
     assert start_resp.status_code == 200
     assert fake_replay.calls and fake_replay.calls[0][0] == "historical"
+    assert fake_replay.calls[0][1]["initial_cash"] == 300000
+    assert fake_replay.calls[0][1]["strategy_profile_id"] == "aggressive"
 
     continue_resp = client.post("/api/v1/quant/his-replay/actions/continue", json={})
     assert continue_resp.status_code == 200
@@ -1833,6 +1840,340 @@ def test_his_replay_snapshot_exposes_trade_cost_ledger(tmp_path):
     assert summary_by_label["实现盈亏"] == "95.70"
     assert summary_by_label["最大占用slot"] == "0"
     assert summary_by_label["最终待结算"] == "1096.70"
+    assert "资金池下限" not in summary_by_label
+    assert "资金池上限" not in summary_by_label
+    assert "最小Slot" not in summary_by_label
+    assert "资金复用" not in summary_by_label
+
+
+def test_his_replay_snapshot_exposes_task_capital_pool_slots_and_lots(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2025-12-01 09:30:00",
+        end_datetime="2026-01-06 15:00:00",
+        initial_cash=50000,
+        status="completed",
+        metadata={
+            "selected_strategy_mode": "auto",
+            "final_slot_summary": {
+                "available_cash": 24899.0,
+                "occupied_cash": 25101.0,
+                "settling_cash": 0.0,
+                "slot_count": 2,
+                "slot_budget": 25000.0,
+            },
+        },
+    )
+    db.replace_sim_run_results(
+        run_id,
+        trades=[
+            {
+                "signal_id": 7,
+                "stock_code": "301381",
+                "stock_name": "宏工科技",
+                "action": "BUY",
+                "price": 20.8,
+                "quantity": 1200,
+                "gross_amount": 24960.0,
+                "commission_fee": 1.0,
+                "sell_tax_fee": 0.0,
+                "fee_total": 1.0,
+                "net_amount": 24961.0,
+                "amount": 24961.0,
+                "trade_metadata_json": json.dumps(
+                    {
+                        "side": "BUY",
+                        "is_add": False,
+                        "lot": {
+                            "lot_id": "301381-20260106-1",
+                            "lot_count": 12,
+                            "quantity": 1200,
+                            "remaining_quantity": 1200,
+                            "entry_price": 20.8,
+                            "unlock_date": "2026-01-07",
+                        },
+                        "slot_allocations": [
+                            {"slot_index": 1, "allocated_cash": 24961.0, "slot_units": 1.0}
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                "executed_at": "2026-01-06 10:00:00",
+                "created_at": "2026-01-06 10:00:00",
+            }
+        ],
+        snapshots=[
+            {
+                "run_reason": "checkpoint",
+                "initial_cash": 50000,
+                "available_cash": 25039,
+                "market_value": 25440,
+                "total_equity": 50479,
+                "realized_pnl": 0,
+                "unrealized_pnl": 480,
+                "created_at": "2026-01-06 15:00:00",
+            }
+        ],
+        positions=[
+            {
+                "stock_code": "301381",
+                "stock_name": "宏工科技",
+                "quantity": 1200,
+                "avg_price": 20.8,
+                "latest_price": 21.2,
+                "market_value": 25440,
+                "unrealized_pnl": 480,
+                "sellable_quantity": 0,
+                "locked_quantity": 1200,
+            }
+        ],
+        signals=[],
+    )
+
+    payload = TestClient(create_app(context=context)).get("/api/v1/quant/his-replay").json()
+
+    task = payload["tasks"][0]
+    capital_pool = task["capitalPool"]
+    assert capital_pool["task"]["runId"] == str(run_id)
+    assert capital_pool["task"]["status"] == "completed"
+    assert capital_pool["pool"]["initialCash"] == "50000.00"
+    assert capital_pool["pool"]["cashValue"] == "25039.00"
+    assert capital_pool["pool"]["marketValue"] == "25440.00"
+    assert capital_pool["pool"]["slotCount"] == 2
+    assert capital_pool["pool"]["slotBudget"] == "25000.00"
+    assert capital_pool["pool"]["occupiedCash"] == "24961.00"
+    assert len(capital_pool["slots"]) == 2
+    occupied_slot = capital_pool["slots"][0]
+    assert occupied_slot["index"] == 1
+    assert occupied_slot["status"] == "occupied"
+    assert occupied_slot["occupiedCash"] == "24961.00"
+    assert occupied_slot["lots"][0]["stockCode"] == "301381"
+    assert occupied_slot["lots"][0]["stockName"] == "宏工科技"
+    assert occupied_slot["lots"][0]["lotCount"] == 12
+    assert occupied_slot["lots"][0]["quantity"] == 1200
+    assert occupied_slot["lots"][0]["lockedQuantity"] == 1200
+    assert occupied_slot["lots"][0]["marketValue"] == "25440.00"
+
+
+def test_his_replay_snapshot_adds_terminal_liquidation_summary_and_ranked_rows(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-01-01 09:30:00",
+        end_datetime="2026-01-03 15:00:00",
+        initial_cash=50000,
+        status="completed",
+        metadata={
+            "selected_strategy_mode": "auto",
+            "commission_rate": 0.001,
+            "sell_tax_rate": 0.002,
+        },
+    )
+    db.replace_sim_run_results(
+        run_id,
+        trades=[],
+        snapshots=[
+            {
+                "run_reason": "checkpoint",
+                "initial_cash": 50000,
+                "available_cash": 49000,
+                "market_value": 3000,
+                "total_equity": 52000,
+                "realized_pnl": 0,
+                "unrealized_pnl": 2000,
+                "created_at": "2026-01-03 15:00:00",
+            }
+        ],
+        positions=[
+            {
+                "stock_code": "301381",
+                "stock_name": "宏工科技",
+                "quantity": 100,
+                "avg_price": 10,
+                "latest_price": 12,
+                "market_value": 1200,
+                "unrealized_pnl": 200,
+                "sellable_quantity": 100,
+                "locked_quantity": 0,
+            },
+            {
+                "stock_code": "300750",
+                "stock_name": "宁德时代",
+                "quantity": 100,
+                "avg_price": 20,
+                "latest_price": 18,
+                "market_value": 1800,
+                "unrealized_pnl": -200,
+                "sellable_quantity": 100,
+                "locked_quantity": 0,
+            },
+        ],
+        signals=[],
+    )
+    db.finalize_sim_run(
+        run_id,
+        status="completed",
+        final_equity=52000,
+        total_return_pct=4.0,
+        max_drawdown_pct=0,
+        win_rate=0,
+        trade_count=0,
+    )
+
+    payload = TestClient(create_app(context=context)).get("/api/v1/quant/his-replay").json()
+
+    task = payload["tasks"][0]
+    winning = task["topWinningTrades"]["rows"] if isinstance(task["topWinningTrades"], dict) else task["topWinningTrades"]
+    losing = task["topLosingTrades"]["rows"] if isinstance(task["topLosingTrades"], dict) else task["topLosingTrades"]
+    assert winning[0]["cells"][1] == "期末清算"
+    assert winning[0]["cells"][2] == "301381"
+    assert winning[0]["cells"][4] == "196.40"
+    assert "期末模拟清仓" in winning[0]["cells"][6]
+    assert losing[0]["cells"][1] == "期末清算"
+    assert losing[0]["cells"][2] == "300750"
+    assert losing[0]["cells"][4] == "-205.40"
+    summary_by_label = {item["label"]: item["value"] for item in payload["tradeCostSummary"]}
+    assert summary_by_label["清算后现金"] == "51991.00"
+    assert summary_by_label["期末清算盈亏"] == "-9.00"
+    assert summary_by_label["期末清算费用"] == "9.00"
+    assert summary_by_label["清算后总盈亏"] == "1991.00"
+    assert summary_by_label["清算后收益率"] == "3.98%"
+
+
+def test_his_replay_capital_pool_endpoint_rebuilds_lots_at_selected_checkpoint(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-01-01 09:30:00",
+        end_datetime="2026-01-03 15:00:00",
+        initial_cash=50000,
+        status="completed",
+        progress_current=3,
+        progress_total=3,
+        metadata={"selected_strategy_mode": "auto"},
+    )
+    for checkpoint_at, cash, market_value, total_equity in [
+        ("2026-01-01 10:00:00", 47999, 2000, 49999),
+        ("2026-01-02 10:00:00", 47999, 2100, 50099),
+        ("2026-01-03 10:00:00", 44998, 5200, 50198),
+    ]:
+        db.add_sim_run_checkpoint(
+            run_id,
+            checkpoint_at=checkpoint_at,
+            candidates_scanned=2,
+            positions_checked=1,
+            signals_created=1,
+            auto_executed=1,
+            available_cash=cash,
+            market_value=market_value,
+            total_equity=total_equity,
+        )
+    db.replace_sim_run_results(
+        run_id,
+        trades=[
+            {
+                "signal_id": 7,
+                "stock_code": "301381",
+                "stock_name": "宏工科技",
+                "action": "BUY",
+                "price": 20,
+                "quantity": 100,
+                "gross_amount": 2000,
+                "commission_fee": 1,
+                "sell_tax_fee": 0,
+                "fee_total": 1,
+                "net_amount": 2001,
+                "amount": 2001,
+                "trade_metadata_json": json.dumps(
+                    {
+                        "side": "BUY",
+                        "lot": {
+                            "lot_id": "lot-before-checkpoint",
+                            "lot_count": 1,
+                            "quantity": 100,
+                            "remaining_quantity": 100,
+                            "entry_price": 20,
+                            "unlock_date": "2026-01-02",
+                        },
+                        "slot_allocations": [{"slot_index": 1, "allocated_cash": 2001, "slot_units": 0.1}],
+                    },
+                    ensure_ascii=False,
+                ),
+                "executed_at": "2026-01-01 10:00:00",
+                "created_at": "2026-01-01 10:00:00",
+            },
+            {
+                "signal_id": 8,
+                "stock_code": "300750",
+                "stock_name": "宁德时代",
+                "action": "BUY",
+                "price": 30,
+                "quantity": 100,
+                "gross_amount": 3000,
+                "commission_fee": 1,
+                "sell_tax_fee": 0,
+                "fee_total": 1,
+                "net_amount": 3001,
+                "amount": 3001,
+                "trade_metadata_json": json.dumps(
+                    {
+                        "side": "BUY",
+                        "lot": {
+                            "lot_id": "future-lot",
+                            "lot_count": 1,
+                            "quantity": 100,
+                            "remaining_quantity": 100,
+                            "entry_price": 30,
+                            "unlock_date": "2026-01-04",
+                        },
+                        "slot_allocations": [{"slot_index": 2, "allocated_cash": 3001, "slot_units": 0.12}],
+                    },
+                    ensure_ascii=False,
+                ),
+                "executed_at": "2026-01-03 10:00:00",
+                "created_at": "2026-01-03 10:00:00",
+            },
+        ],
+        snapshots=[],
+        positions=[],
+        signals=[],
+    )
+
+    response = TestClient(create_app(context=context)).get(
+        f"/api/v1/quant/his-replay/capital-pool?runId={run_id}&checkpointPage=1&checkpointPageSize=2&checkpointAt=2026-01-02%2010:00:00"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["runId"] == str(run_id)
+    assert payload["selectedCheckpointAt"] == "2026-01-02 10:00:00"
+    assert payload["checkpoints"]["pagination"]["totalRows"] == 3
+    assert payload["checkpoints"]["pagination"]["totalPages"] == 2
+    assert [item["checkpointAt"] for item in payload["checkpoints"]["items"]] == [
+        "2026-01-03 10:00:00",
+        "2026-01-02 10:00:00",
+    ]
+    capital_pool = payload["capitalPool"]
+    assert capital_pool["task"]["checkpoint"] == "2026-01-02 10:00:00"
+    assert capital_pool["pool"]["cashValue"] == "47999.00"
+    assert capital_pool["pool"]["marketValue"] == "2100.00"
+    visible_lot_codes = [
+        lot["stockCode"]
+        for slot in capital_pool["slots"]
+        for lot in slot["lots"]
+    ]
+    assert visible_lot_codes == ["301381"]
+    assert "300750" not in visible_lot_codes
 
 
 def test_his_replay_snapshot_returns_only_first_page_for_heavy_tables(tmp_path):

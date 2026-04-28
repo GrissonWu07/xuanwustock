@@ -1,3 +1,4 @@
+import inspect
 from datetime import datetime
 
 import pandas as pd
@@ -10,6 +11,11 @@ from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.replay_service import MainProjectHistoricalSnapshotProvider, QuantSimReplayService
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.notification_service import notification_service
+
+
+def test_replay_queue_methods_accept_initial_cash():
+    assert "initial_cash" in inspect.signature(QuantSimReplayService.enqueue_historical_range).parameters
+    assert "initial_cash" in inspect.signature(QuantSimReplayService.enqueue_past_to_live).parameters
 
 
 class FakeSnapshotProvider:

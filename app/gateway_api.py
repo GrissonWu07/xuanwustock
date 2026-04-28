@@ -11,7 +11,7 @@ from app import akshare_client, smart_monitor_tdx_data
 from app.gateway.constants import REPLAY_TABLE_PAGE_SIZE, SERVICE_NAME, UI_DIST_DIR
 from app.gateway.context import UIApiContext
 from app.gateway.deps import _int, _now, _payload_dict, _txt, normalize_stock_code
-from app.gateway.his_replay import _action_his_replay_cancel, _action_his_replay_continue, _action_his_replay_delete, _action_his_replay_start, _his_replay_database_busy, _snapshot_his_replay, _snapshot_his_replay_progress
+from app.gateway.his_replay import _action_his_replay_cancel, _action_his_replay_continue, _action_his_replay_delete, _action_his_replay_start, _his_replay_database_busy, _snapshot_his_replay, _snapshot_his_replay_capital_pool, _snapshot_his_replay_progress
 from app.gateway.history import _action_history_rerun, _snapshot_history
 from app.gateway.live_sim import _action_live_sim_analyze_candidate, _action_live_sim_bulk_quant, _action_live_sim_delete_candidate, _action_live_sim_delete_position, _action_live_sim_reset, _action_live_sim_save, _action_live_sim_start, _action_live_sim_stop, _live_signal_table, _live_trade_table, _snapshot_live_sim
 from app.gateway.monitor import _action_ai_monitor_analyze, _action_ai_monitor_delete, _action_ai_monitor_start, _action_ai_monitor_stop, _action_real_monitor_delete_rule, _action_real_monitor_refresh, _action_real_monitor_start, _action_real_monitor_stop, _action_real_monitor_update_rule, _snapshot_ai_monitor, _snapshot_real_monitor
@@ -348,6 +348,15 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
     def get_his_replay_progress(request: Request) -> dict[str, Any]:
         try:
             return _snapshot_his_replay_progress(api_context, _replay_table_query_from_request(request))
+        except Exception as exc:
+            if is_sqlite_locked_error(exc):
+                raise _his_replay_database_busy(exc) from exc
+            raise
+
+    @app.get("/api/v1/quant/his-replay/capital-pool")
+    def get_his_replay_capital_pool(request: Request) -> dict[str, Any]:
+        try:
+            return _snapshot_his_replay_capital_pool(api_context, _replay_table_query_from_request(request))
         except Exception as exc:
             if is_sqlite_locked_error(exc):
                 raise _his_replay_database_busy(exc) from exc

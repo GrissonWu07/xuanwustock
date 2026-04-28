@@ -37,6 +37,135 @@ def _track_direction_label(signal: Any) -> str:
     return mapping.get(normalized, _txt(signal, "--"))
 
 
+def _format_signed(value: Any, digits: int = 4) -> str:
+    parsed = _float(value)
+    if parsed is None:
+        return "--"
+    return f"{parsed:+.{digits}f}"
+
+
+def _format_plain(value: Any, digits: int = 4) -> str:
+    parsed = _float(value)
+    if parsed is None:
+        return "--"
+    return f"{parsed:.{digits}f}"
+
+
+def _group_reasonability_line(label: str, groups: list[dict[str, Any]]) -> str:
+    ranked = [
+        {
+            "id": _txt(item.get("id"), "--"),
+            "contribution": _float(item.get("track_contribution"), 0.0) or 0.0,
+        }
+        for item in groups
+        if isinstance(item, dict)
+    ]
+    if not ranked:
+        return f"{label}暂无组贡献数据。"
+    positive = sorted([item for item in ranked if item["contribution"] > 0], key=lambda item: item["contribution"], reverse=True)
+    negative = sorted([item for item in ranked if item["contribution"] < 0], key=lambda item: item["contribution"])
+    parts: list[str] = []
+    if positive:
+        leader = positive[0]
+        parts.append(f"主要支撑来自 {leader['id']}（{_format_signed(leader['contribution'])}）")
+    if negative:
+        drag = negative[0]
+        if not positive or drag["id"] != positive[0]["id"]:
+            parts.append(f"主要拖累来自 {drag['id']}（{_format_signed(drag['contribution'])}）")
+    if not parts:
+        neutral = ranked[0]
+        return f"{label}整体接近中性，最显著的组是 {neutral['id']}（{_format_signed(neutral['contribution'])}）。"
+    return f"{label}" + "，".join(parts) + "。"
+
+
+def _build_audit_summary_lines(
+    *,
+    decision: dict[str, Any],
+    fusion_breakdown: dict[str, Any],
+    technical_breakdown: dict[str, Any],
+    context_breakdown: dict[str, Any],
+    effective_thresholds: dict[str, Any],
+    decision_path: list[dict[str, Any]],
+    vetoes: list[dict[str, Any]],
+) -> list[str]:
+    final_action = _txt(fusion_breakdown.get("final_action"), _txt(decision.get("finalAction") or decision.get("action"), "--")).upper()
+    core_rule_action = _txt(fusion_breakdown.get("core_rule_action"), "--").upper()
+    weighted_threshold_action = _txt(fusion_breakdown.get("weighted_threshold_action"), "--").upper()
+    weighted_gate_action = _txt(fusion_breakdown.get("weighted_action_raw"), "--").upper()
+    mode = _txt(fusion_breakdown.get("mode"), _txt(decision.get("decisionType"), "--"))
+    tech_score = _float(fusion_breakdown.get("tech_score"), _float(technical_breakdown.get("track", {}).get("score")))
+    context_score = _float(fusion_breakdown.get("context_score"), _float(context_breakdown.get("track", {}).get("score")))
+    fusion_score = _float(fusion_breakdown.get("fusion_score"))
+    fusion_confidence = _float(fusion_breakdown.get("fusion_confidence"), _float(decision.get("confidence")))
+    buy_threshold = _float(fusion_breakdown.get("buy_threshold_eff"), _float(effective_thresholds.get("buy_threshold")))
+    sell_threshold = _float(fusion_breakdown.get("sell_threshold_eff"), _float(effective_thresholds.get("sell_threshold")))
+    min_fusion_confidence = _float(effective_thresholds.get("min_fusion_confidence"))
+    tech_weight_norm = _float(fusion_breakdown.get("tech_weight_norm"), 0.0) or 0.0
+    context_weight_norm = _float(fusion_breakdown.get("context_weight_norm"), 0.0) or 0.0
+    tech_weighted = (tech_score or 0.0) * tech_weight_norm if tech_score is not None else None
+    context_weighted = (context_score or 0.0) * context_weight_norm if context_score is not None else None
+    dominant_track = "技术轨" if abs(tech_weighted or 0.0) >= abs(context_weighted or 0.0) else "环境轨"
+    gate_fail_reasons = fusion_breakdown.get("weighted_gate_fail_reasons") if isinstance(fusion_breakdown.get("weighted_gate_fail_reasons"), list) else []
+    tech_groups = technical_breakdown.get("groups") if isinstance(technical_breakdown.get("groups"), list) else []
+    context_groups = context_breakdown.get("groups") if isinstance(context_breakdown.get("groups"), list) else []
+    matched_path = " -> ".join(
+        f"{_txt(item.get('step'), '--')}:{_txt(item.get('detail'), '--')}"
+        for item in decision_path
+        if isinstance(item, dict)
+    )
+
+    if vetoes:
+        veto_labels = "；".join(
+            f"{_txt(item.get('id') or item.get('display_label'), 'veto')}：{_txt(item.get('reason'), '--')}"
+            for item in vetoes
+            if isinstance(item, dict)
+        )
+        decision_line = f"本次动作首先受否决/风控链路控制，命中 {veto_labels}，因此最终动作定为 {_humanize_signal(final_action)}。"
+    elif final_action == "BUY":
+        threshold_reason = (
+            f"融合分 {_format_plain(fusion_score)} 高于买入阈值 {_format_plain(buy_threshold)}"
+            if fusion_score is not None and buy_threshold is not None and fusion_score >= buy_threshold
+            else f"最终仍判为买入，但需要回看阈值链路（当前 fusion_score={_format_plain(fusion_score)}，buy_threshold={_format_plain(buy_threshold)}）"
+        )
+        confidence_reason = (
+            f"融合置信度 {_format_plain(fusion_confidence)} 也高于最低要求 {_format_plain(min_fusion_confidence)}"
+            if fusion_confidence is not None and min_fusion_confidence is not None and fusion_confidence >= min_fusion_confidence
+            else ""
+        )
+        decision_line = f"本次买入总体合理，{threshold_reason}" + (f"，{confidence_reason}" if confidence_reason else "") + "。"
+    elif final_action == "SELL":
+        if core_rule_action == "SELL" and (fusion_score is None or sell_threshold is None or fusion_score > sell_threshold):
+            decision_line = f"本次卖出主要由规则层触发，虽然融合分 {_format_plain(fusion_score)} 尚未跌破卖出阈值 {_format_plain(sell_threshold)}，但系统优先执行风险退出。"
+        else:
+            decision_line = f"本次卖出总体合理，融合分 {_format_plain(fusion_score)} 已跌破卖出阈值 {_format_plain(sell_threshold)}，系统进入退出链路。"
+    else:
+        if fusion_score is not None and buy_threshold is not None and sell_threshold is not None:
+            decision_line = (
+                f"本次保持观望是合理的，融合分 {_format_plain(fusion_score)} 没有达到买入阈值 {_format_plain(buy_threshold)}，"
+                f"同时也没有跌破卖出阈值 {_format_plain(sell_threshold)}。"
+            )
+        else:
+            decision_line = f"本次保持观望，规则层为 {core_rule_action}，阈值层为 {weighted_threshold_action}，门控层为 {weighted_gate_action}。"
+        if gate_fail_reasons:
+            decision_line += " 门控补充原因：" + "；".join(_txt(item, "--") for item in gate_fail_reasons) + "。"
+
+    balance_line = (
+        f"双轨融合采用 技术轨 {tech_weight_norm * 100:.1f}% / 环境轨 {context_weight_norm * 100:.1f}% 的权重。"
+        f"当前技术分 {_format_signed(tech_score)}、环境分 {_format_signed(context_score)}，折算后由 {dominant_track} 主导最终方向。"
+    )
+    path_line = (
+        f"本次链路为 {matched_path or '--'}，最终从 core_rule={core_rule_action} -> weighted_threshold={weighted_threshold_action}"
+        f" -> weighted_gate={weighted_gate_action} -> final={final_action}，模式={mode}。"
+    )
+    return [
+        decision_line,
+        balance_line,
+        _group_reasonability_line("技术侧", tech_groups),
+        _group_reasonability_line("环境侧", context_groups),
+        path_line,
+    ]
+
+
 def _is_position_add_intent(intent: Any) -> bool:
     return _txt(intent, "").strip().lower() == "position_add"
 
@@ -303,6 +432,15 @@ def _build_explanation_payload(
 
     return {
         "summary": "\n".join(summary_lines),
+        "auditSummary": _build_audit_summary_lines(
+            decision=decision,
+            fusion_breakdown=fusion_breakdown,
+            technical_breakdown=technical_breakdown,
+            context_breakdown=context_breakdown,
+            effective_thresholds=effective_thresholds,
+            decision_path=[item for item in decision_path if isinstance(item, dict)],
+            vetoes=[item for item in vetoes if isinstance(item, dict)],
+        ),
         "contextScoreExplain": {
             "formula": "环境轨分值 = Σ(组权重归一化 × 组分值)，组分值=Σ(组内维度归一化权重 × 维度分)，并截断到 [-1, 1]。",
             "confidenceFormula": "环境轨置信度 = Σ(组权重 × 组覆盖率)/Σ组权重；融合置信度 = base_confidence × (1 - divergence_penalty)。",

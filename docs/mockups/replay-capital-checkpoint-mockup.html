@@ -1,0 +1,1486 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>历史回放资金池检查点可视化</title>
+  <style>
+    :root {
+      --app-bg: #f4f7fc;
+      --panel-bg: #ffffff;
+      --soft-bg: #edf4ff;
+      --soft-line: #d9e2f4;
+      --text-strong: #1f2a44;
+      --text-soft: #697694;
+      --accent: #4f6ef7;
+      --accent-soft: #eaf0ff;
+      --success: #2fa36b;
+      --success-soft: #e8f8ef;
+      --warning: #d78c2f;
+      --warning-soft: #fff3e2;
+      --danger: #ef5350;
+      --danger-soft: #ffe9e8;
+      --shadow: 0 24px 80px rgba(45, 74, 132, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(79, 110, 247, 0.08), transparent 26%),
+        linear-gradient(180deg, #f8fbff 0%, var(--app-bg) 100%);
+      color: var(--text-strong);
+    }
+
+    .canvas {
+      width: 1600px;
+      min-height: 1200px;
+      margin: 0 auto;
+      padding: 40px 44px 48px;
+    }
+
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 24px;
+      margin-bottom: 28px;
+    }
+
+    .eyebrow {
+      font-size: 13px;
+      letter-spacing: 0.16em;
+      color: var(--accent);
+      font-weight: 700;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 42px;
+      line-height: 1.08;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 760px;
+      font-size: 18px;
+      line-height: 1.7;
+      color: var(--text-soft);
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(31, 42, 68, 0.95);
+      color: #fff;
+      border-radius: 999px;
+      padding: 14px 18px;
+      box-shadow: var(--shadow);
+      min-width: 300px;
+    }
+
+    .status-pill .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: #7ff2af;
+      box-shadow: 0 0 0 8px rgba(127, 242, 175, 0.18);
+    }
+
+    .status-pill strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 2px;
+    }
+
+    .status-pill span {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.78);
+    }
+
+    .panel {
+      background: var(--panel-bg);
+      border: 1px solid var(--soft-line);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+    }
+
+    .timeline {
+      padding: 24px 28px 28px;
+      margin-bottom: 22px;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 22px;
+    }
+
+    .panel-header h2 {
+      margin: 0;
+      font-size: 27px;
+    }
+
+    .panel-header p {
+      margin: 6px 0 0;
+      color: var(--text-soft);
+      font-size: 15px;
+    }
+
+    .selected-badge {
+      padding: 10px 14px;
+      border-radius: 16px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    .timeline-summary {
+      display: grid;
+      grid-template-columns: 250px 1fr 220px;
+      gap: 18px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .timeline-metrics {
+      display: grid;
+      gap: 10px;
+    }
+
+    .timeline-mini {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 14px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+      border: 1px solid var(--soft-line);
+    }
+
+    .timeline-mini span {
+      font-size: 13px;
+      color: var(--text-soft);
+    }
+
+    .timeline-mini strong {
+      font-size: 18px;
+    }
+
+    .density-wrap {
+      position: relative;
+      padding: 18px 18px 16px;
+      border-radius: 22px;
+      background: linear-gradient(180deg, #fbfdff 0%, #f3f7ff 100%);
+      border: 1px solid var(--soft-line);
+    }
+
+    .density-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      font-size: 13px;
+      color: var(--text-soft);
+      font-weight: 700;
+    }
+
+    .density-bars {
+      height: 84px;
+      display: grid;
+      grid-template-columns: repeat(36, 1fr);
+      align-items: end;
+      gap: 4px;
+    }
+
+    .density-bars span {
+      display: block;
+      border-radius: 8px 8px 0 0;
+      background: linear-gradient(180deg, rgba(79, 110, 247, 0.88), rgba(79, 110, 247, 0.25));
+      min-height: 10px;
+    }
+
+    .focus-window {
+      position: absolute;
+      left: 58%;
+      width: 20%;
+      top: 38px;
+      bottom: 22px;
+      border-radius: 18px;
+      border: 2px solid rgba(79, 110, 247, 0.9);
+      background: rgba(79, 110, 247, 0.08);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.8);
+    }
+
+    .focus-window::before,
+    .focus-window::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      width: 8px;
+      height: 46px;
+      border-radius: 999px;
+      background: #fff;
+      border: 1px solid rgba(79, 110, 247, 0.18);
+      transform: translateY(-50%);
+    }
+
+    .focus-window::before {
+      left: -4px;
+    }
+
+    .focus-window::after {
+      right: -4px;
+    }
+
+    .window-meta {
+      display: grid;
+      gap: 10px;
+    }
+
+    .window-card {
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid var(--soft-line);
+      background: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+    }
+
+    .window-card span {
+      display: block;
+      font-size: 12px;
+      color: var(--text-soft);
+      margin-bottom: 6px;
+    }
+
+    .window-card strong {
+      display: block;
+      font-size: 18px;
+      margin-bottom: 2px;
+    }
+
+    .window-card em {
+      display: block;
+      font-style: normal;
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .focus-track {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .focus-track::before {
+      content: "";
+      position: absolute;
+      left: 6%;
+      right: 6%;
+      top: 28px;
+      height: 4px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #dbe4fb 0%, #4f6ef7 74%, #dbe4fb 100%);
+      z-index: 0;
+    }
+
+    .checkpoint {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding-top: 2px;
+    }
+
+    .checkpoint .node {
+      width: 24px;
+      height: 24px;
+      margin: 0 auto 12px;
+      border-radius: 999px;
+      background: #fff;
+      border: 4px solid #b8c8ef;
+      box-shadow: 0 0 0 6px rgba(79, 110, 247, 0.08);
+    }
+
+    .checkpoint.active .node {
+      border-color: var(--accent);
+      background: var(--accent);
+      box-shadow: 0 0 0 8px rgba(79, 110, 247, 0.18);
+    }
+
+    .checkpoint time {
+      display: block;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-strong);
+      margin-bottom: 4px;
+    }
+
+    .checkpoint span {
+      display: block;
+      font-size: 13px;
+      color: var(--text-soft);
+    }
+
+    .checkpoint.active span {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .overview-row {
+      display: grid;
+      grid-template-columns: 1.25fr 0.95fr;
+      gap: 22px;
+      margin-bottom: 22px;
+    }
+
+    .capital-overview,
+    .checkpoint-summary {
+      padding: 28px;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }
+
+    .metric {
+      background: linear-gradient(180deg, #fafdff 0%, var(--soft-bg) 100%);
+      border: 1px solid var(--soft-line);
+      border-radius: 22px;
+      padding: 18px 18px 16px;
+      min-height: 108px;
+    }
+
+    .metric .label {
+      font-size: 14px;
+      color: var(--text-soft);
+      margin-bottom: 10px;
+    }
+
+    .metric .value {
+      font-size: 34px;
+      font-weight: 800;
+      line-height: 1;
+      margin-bottom: 8px;
+      letter-spacing: -0.03em;
+    }
+
+    .metric .hint {
+      font-size: 13px;
+      color: var(--text-soft);
+      line-height: 1.5;
+    }
+
+    .value.success {
+      color: var(--success);
+    }
+
+    .value.warning {
+      color: var(--warning);
+    }
+
+    .summary-list {
+      display: grid;
+      gap: 14px;
+      margin-top: 20px;
+    }
+
+    .summary-item {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+      border: 1px solid var(--soft-line);
+    }
+
+    .summary-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 15px;
+      color: var(--text-strong);
+      background: var(--accent-soft);
+    }
+
+    .summary-item strong {
+      display: block;
+      font-size: 16px;
+      margin-bottom: 3px;
+    }
+
+    .summary-item span {
+      color: var(--text-soft);
+      font-size: 13px;
+    }
+
+    .summary-item em {
+      font-style: normal;
+      font-weight: 800;
+      font-size: 15px;
+    }
+
+    .summary-item.buy .summary-icon {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .summary-item.sell .summary-icon {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .summary-item.flow .summary-icon {
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .visual-row {
+      display: grid;
+      grid-template-columns: 0.95fr 1.35fr;
+      gap: 22px;
+      margin-bottom: 22px;
+    }
+
+    .slots,
+    .lots {
+      padding: 28px;
+    }
+
+    .slot-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }
+
+    .slot-alert {
+      margin-top: 18px;
+      padding: 16px 18px;
+      border-radius: 20px;
+      border: 1px solid #ffd9a8;
+      background: linear-gradient(180deg, #fffaf2 0%, #fff5e5 100%);
+      display: grid;
+      gap: 12px;
+    }
+
+    .slot-alert-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .slot-alert strong {
+      font-size: 16px;
+    }
+
+    .slot-alert p {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #8c6a2a;
+    }
+
+    .slot-waiting {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .waiting-card {
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid rgba(215, 140, 47, 0.22);
+    }
+
+    .waiting-card span {
+      display: block;
+      font-size: 12px;
+      color: var(--text-soft);
+      margin-bottom: 4px;
+    }
+
+    .waiting-card strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 2px;
+    }
+
+    .waiting-card em {
+      display: block;
+      font-style: normal;
+      color: #a26a12;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .slot-card {
+      border-radius: 22px;
+      border: 1px solid var(--soft-line);
+      padding: 18px;
+      background: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+    }
+
+    .slot-card .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .slot-id {
+      font-weight: 800;
+      font-size: 17px;
+    }
+
+    .slot-state {
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .slot-state.free {
+      color: var(--success);
+      background: var(--success-soft);
+    }
+
+    .slot-state.used {
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .slot-state.settling {
+      color: var(--warning);
+      background: var(--warning-soft);
+    }
+
+    .slot-bar {
+      height: 10px;
+      border-radius: 999px;
+      background: #e8eefb;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+
+    .slot-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #4f6ef7 0%, #7c92ff 100%);
+    }
+
+    .slot-meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      font-size: 13px;
+      color: var(--text-soft);
+      line-height: 1.45;
+    }
+
+    .slot-meta strong {
+      display: block;
+      color: var(--text-strong);
+      font-size: 18px;
+      margin-top: 2px;
+    }
+
+    .stock-stack {
+      display: grid;
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .stock-card {
+      display: grid;
+      grid-template-columns: 250px 1fr 250px;
+      gap: 16px;
+      align-items: center;
+      padding: 18px 18px 16px;
+      border-radius: 22px;
+      border: 1px solid var(--soft-line);
+      background: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+    }
+
+    .stock-head strong {
+      display: block;
+      font-size: 20px;
+      margin-bottom: 3px;
+    }
+
+    .stock-head span {
+      font-size: 14px;
+      color: var(--text-soft);
+    }
+
+    .stock-bars {
+      display: grid;
+      gap: 10px;
+    }
+
+    .bar-line {
+      display: grid;
+      grid-template-columns: 94px 1fr 72px;
+      gap: 10px;
+      align-items: center;
+      font-size: 13px;
+      color: var(--text-soft);
+    }
+
+    .progress {
+      height: 12px;
+      border-radius: 999px;
+      background: #e8eefb;
+      overflow: hidden;
+    }
+
+    .progress > span {
+      display: block;
+      height: 100%;
+      border-radius: 999px;
+    }
+
+    .progress.value > span {
+      background: linear-gradient(90deg, #2fa36b 0%, #71c48f 100%);
+    }
+
+    .progress.slot > span {
+      background: linear-gradient(90deg, #4f6ef7 0%, #7d92ff 100%);
+    }
+
+    .progress.locked > span {
+      background: linear-gradient(90deg, #d78c2f 0%, #f0b95d 100%);
+    }
+
+    .stock-side {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .mini-stat {
+      border-radius: 16px;
+      padding: 12px 14px;
+      background: #fff;
+      border: 1px solid var(--soft-line);
+    }
+
+    .mini-stat .label {
+      font-size: 12px;
+      color: var(--text-soft);
+      margin-bottom: 6px;
+    }
+
+    .mini-stat .value {
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .footer-note {
+      padding: 22px 28px;
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: center;
+      background: linear-gradient(135deg, rgba(79, 110, 247, 0.08), rgba(255, 255, 255, 0.92));
+      border-radius: 24px;
+      border: 1px solid var(--soft-line);
+    }
+
+    .footer-note strong {
+      display: block;
+      font-size: 21px;
+      margin-bottom: 6px;
+    }
+
+    .footer-note p {
+      margin: 0;
+      color: var(--text-soft);
+      line-height: 1.6;
+      max-width: 980px;
+    }
+
+    .footer-chip {
+      flex-shrink: 0;
+      padding: 14px 18px;
+      border-radius: 18px;
+      background: #fff;
+      border: 1px solid var(--soft-line);
+      color: var(--accent);
+      font-weight: 800;
+    }
+
+    .tables-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 22px;
+      margin-bottom: 22px;
+    }
+
+    .table-panel {
+      padding: 24px 24px 22px;
+    }
+
+    .table-shell {
+      margin-top: 18px;
+      border-radius: 22px;
+      border: 1px solid var(--soft-line);
+      overflow: hidden;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    }
+
+    .table-head,
+    .table-row {
+      display: grid;
+      grid-template-columns: 122px 90px 1fr 88px 108px;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 16px;
+    }
+
+    .table-head {
+      background: #f4f8ff;
+      border-bottom: 1px solid var(--soft-line);
+      font-size: 12px;
+      color: var(--text-soft);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .table-body {
+      max-height: 292px;
+      overflow-y: auto;
+    }
+
+    .table-row {
+      font-size: 14px;
+      border-bottom: 1px solid rgba(217, 226, 244, 0.8);
+    }
+
+    .table-row:last-child {
+      border-bottom: 0;
+    }
+
+    .table-row strong {
+      font-size: 14px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .tag.buy {
+      color: var(--success);
+      background: var(--success-soft);
+    }
+
+    .tag.sell {
+      color: var(--danger);
+      background: var(--danger-soft);
+    }
+
+    .tag.hold {
+      color: var(--warning);
+      background: var(--warning-soft);
+    }
+
+    .table-note {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--text-soft);
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <main class="canvas">
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Historical Replay Visual</div>
+        <h1>历史回放中的资金池 / Slot / Lot 检查点快照</h1>
+        <p>
+          不是只看任务结束后的汇总，而是随检查点切换查看当时的现金、占用资金、待结算资金、Slot 使用状态，以及每只股票拆分成多少个 Lot、锁定多少股、占用了多少 Slot。
+        </p>
+      </div>
+      <div class="status-pill">
+        <div class="dot"></div>
+        <div>
+          <strong>检查点 2025-12-12 13:30</strong>
+          <span>运行中第 1,396 / 1,992 个节点，当前展示该时刻的真实资金快照</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel timeline">
+      <div class="panel-header">
+        <div>
+          <h2>检查点时间轴</h2>
+          <p>任务结束时默认停在最后一个检查点，也支持随时回看任意检查点的资金状态。</p>
+        </div>
+        <div class="selected-badge">当前选中：2025-12-12 13:30</div>
+      </div>
+      <div class="timeline-summary">
+        <div class="timeline-metrics">
+          <div class="timeline-mini">
+            <span>总检查点</span>
+            <strong>1,992</strong>
+          </div>
+          <div class="timeline-mini">
+            <span>当前定位</span>
+            <strong>1,396 / 1,992</strong>
+          </div>
+          <div class="timeline-mini">
+            <span>缩放窗口</span>
+            <strong>13:00 - 14:00</strong>
+          </div>
+        </div>
+        <div class="density-wrap">
+          <div class="density-title">
+            <span>全局检查点密度带</span>
+            <span>按时间分桶，总览 1000+ 节点分布</span>
+          </div>
+          <div class="density-bars">
+            <span style="height: 22%"></span>
+            <span style="height: 30%"></span>
+            <span style="height: 26%"></span>
+            <span style="height: 38%"></span>
+            <span style="height: 46%"></span>
+            <span style="height: 51%"></span>
+            <span style="height: 44%"></span>
+            <span style="height: 62%"></span>
+            <span style="height: 56%"></span>
+            <span style="height: 42%"></span>
+            <span style="height: 34%"></span>
+            <span style="height: 28%"></span>
+            <span style="height: 20%"></span>
+            <span style="height: 18%"></span>
+            <span style="height: 25%"></span>
+            <span style="height: 31%"></span>
+            <span style="height: 48%"></span>
+            <span style="height: 64%"></span>
+            <span style="height: 70%"></span>
+            <span style="height: 82%"></span>
+            <span style="height: 88%"></span>
+            <span style="height: 72%"></span>
+            <span style="height: 63%"></span>
+            <span style="height: 54%"></span>
+            <span style="height: 50%"></span>
+            <span style="height: 47%"></span>
+            <span style="height: 57%"></span>
+            <span style="height: 68%"></span>
+            <span style="height: 76%"></span>
+            <span style="height: 84%"></span>
+            <span style="height: 73%"></span>
+            <span style="height: 58%"></span>
+            <span style="height: 40%"></span>
+            <span style="height: 35%"></span>
+            <span style="height: 26%"></span>
+            <span style="height: 18%"></span>
+          </div>
+          <div class="focus-window"></div>
+        </div>
+        <div class="window-meta">
+          <div class="window-card">
+            <span>当前窗口</span>
+            <strong>13:00 - 14:00</strong>
+            <em>聚焦 142 个检查点</em>
+          </div>
+          <div class="window-card">
+            <span>跳转方式</span>
+            <strong>拖动窗口 / 点击密度带</strong>
+            <em>避免在 1000+ 圆点里逐个点选</em>
+          </div>
+        </div>
+      </div>
+      <div class="focus-track">
+        <div class="checkpoint">
+          <div class="node"></div>
+          <time>13:00</time>
+          <span>午后重算</span>
+        </div>
+        <div class="checkpoint">
+          <div class="node"></div>
+          <time>13:10</time>
+          <span>择强排序</span>
+        </div>
+        <div class="checkpoint">
+          <div class="node"></div>
+          <time>13:20</time>
+          <span>卖出释放</span>
+        </div>
+        <div class="checkpoint active">
+          <div class="node"></div>
+          <time>13:30</time>
+          <span>当前快照</span>
+        </div>
+        <div class="checkpoint">
+          <div class="node"></div>
+          <time>13:40</time>
+          <span>候选重排</span>
+        </div>
+        <div class="checkpoint">
+          <div class="node"></div>
+          <time>13:50</time>
+          <span>加仓确认</span>
+        </div>
+        <div class="checkpoint">
+          <div class="node"></div>
+          <time>14:00</time>
+          <span>窗口末端</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="overview-row">
+      <div class="panel capital-overview">
+        <div class="panel-header">
+          <div>
+            <h2>资金池总览</h2>
+            <p>展示检查点时刻的现金、权益、持仓市值，以及资金在空闲 / 占用 / 待结算之间的拆分。</p>
+          </div>
+          <div class="selected-badge">总 Slot 6 · 单 Slot 20,000</div>
+        </div>
+        <div class="metric-grid">
+          <div class="metric">
+            <div class="label">当前现金</div>
+            <div class="value">20,956</div>
+            <div class="hint">可直接用于下一次 BUY 分配的可用资金。</div>
+          </div>
+          <div class="metric">
+            <div class="label">持仓市值</div>
+            <div class="value">88,016</div>
+            <div class="hint">按当前检查点行情快照估值得到的股票持仓价值。</div>
+          </div>
+          <div class="metric">
+            <div class="label">总权益</div>
+            <div class="value success">108,972</div>
+            <div class="hint">现金与持仓市值之和，是这一时刻的真实权益。</div>
+          </div>
+          <div class="metric">
+            <div class="label">空闲资金</div>
+            <div class="value">19,480</div>
+            <div class="hint">尚未被任何 Slot 占用，可参与下一轮信号竞争。</div>
+          </div>
+          <div class="metric">
+            <div class="label">占用资金</div>
+            <div class="value">80,520</div>
+            <div class="hint">已分配给股票持仓的 Slot 预算，对应当前 Lot 账本。</div>
+          </div>
+          <div class="metric">
+            <div class="label">待结算</div>
+            <div class="value warning">8,972</div>
+            <div class="hint">卖出后未重新释放的资金，下一检查点才重新回到可用池。</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel checkpoint-summary">
+        <div class="panel-header">
+          <div>
+            <h2>检查点交易摘要</h2>
+            <p>这一刻刚刚发生了什么，为什么资金池会变成现在这样。</p>
+          </div>
+          <div class="selected-badge">本节点摘要</div>
+        </div>
+        <div class="summary-list">
+          <div class="summary-item buy">
+            <div class="summary-icon">B</div>
+            <div>
+              <strong>新增买入 2 笔</strong>
+              <span>301381 加仓 1 lot，002463 首次建仓 1 lot</span>
+            </div>
+            <em>+2 lot</em>
+          </div>
+          <div class="summary-item sell">
+            <div class="summary-icon">S</div>
+            <div>
+              <strong>卖出 1 笔并进入待结算</strong>
+              <span>603093 触发风控卖出，释放 0.8 个 Slot，但资金下一检查点才可复用</span>
+            </div>
+            <em>8,972</em>
+          </div>
+          <div class="summary-item flow">
+            <div class="summary-icon">↺</div>
+            <div>
+              <strong>资金重分配完成</strong>
+              <span>强 BUY 信号优先占用 Slot，弱 BUY 只在剩余预算允许时成交</span>
+            </div>
+            <em>2.9 Slot</em>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="visual-row">
+      <div class="panel slots">
+        <div class="panel-header">
+          <div>
+            <h2>Slot 占用图</h2>
+            <p>每个 Slot 代表一份可分配预算，显示当前处于空闲、占用还是待结算。</p>
+          </div>
+          <div class="selected-badge">6 个 Slot</div>
+        </div>
+        <div class="slot-grid">
+          <article class="slot-card">
+            <div class="top">
+              <div class="slot-id">Slot 01</div>
+              <div class="slot-state free">空闲</div>
+            </div>
+            <div class="slot-bar"><div class="slot-fill" style="width: 18%"></div></div>
+            <div class="slot-meta">
+              <div>预算<strong>20,000</strong></div>
+              <div>可用<strong>16,380</strong></div>
+              <div>占用<strong>3,620</strong></div>
+              <div>绑定<strong>空</strong></div>
+            </div>
+          </article>
+
+          <article class="slot-card">
+            <div class="top">
+              <div class="slot-id">Slot 02</div>
+              <div class="slot-state used">占用中</div>
+            </div>
+            <div class="slot-bar"><div class="slot-fill" style="width: 84%"></div></div>
+            <div class="slot-meta">
+              <div>预算<strong>20,000</strong></div>
+              <div>可用<strong>3,180</strong></div>
+              <div>占用<strong>16,820</strong></div>
+              <div>绑定<strong>301381</strong></div>
+            </div>
+          </article>
+
+          <article class="slot-card">
+            <div class="top">
+              <div class="slot-id">Slot 03</div>
+              <div class="slot-state used">占用中</div>
+            </div>
+            <div class="slot-bar"><div class="slot-fill" style="width: 96%"></div></div>
+            <div class="slot-meta">
+              <div>预算<strong>20,000</strong></div>
+              <div>可用<strong>820</strong></div>
+              <div>占用<strong>19,180</strong></div>
+              <div>绑定<strong>002463</strong></div>
+            </div>
+          </article>
+
+          <article class="slot-card">
+            <div class="top">
+              <div class="slot-id">Slot 04</div>
+              <div class="slot-state settling">待结算</div>
+            </div>
+            <div class="slot-bar"><div class="slot-fill" style="width: 52%"></div></div>
+            <div class="slot-meta">
+              <div>预算<strong>20,000</strong></div>
+              <div>可用<strong>11,028</strong></div>
+              <div>待结算<strong>8,972</strong></div>
+              <div>来源<strong>603093 卖出</strong></div>
+            </div>
+          </article>
+
+          <article class="slot-card">
+            <div class="top">
+              <div class="slot-id">Slot 05</div>
+              <div class="slot-state used">占用中</div>
+            </div>
+            <div class="slot-bar"><div class="slot-fill" style="width: 78%"></div></div>
+            <div class="slot-meta">
+              <div>预算<strong>20,000</strong></div>
+              <div>可用<strong>4,310</strong></div>
+              <div>占用<strong>15,690</strong></div>
+              <div>绑定<strong>605298</strong></div>
+            </div>
+          </article>
+
+          <article class="slot-card">
+            <div class="top">
+              <div class="slot-id">Slot 06</div>
+              <div class="slot-state used">占用中</div>
+              </div>
+            <div class="slot-bar"><div class="slot-fill" style="width: 72%"></div></div>
+            <div class="slot-meta">
+              <div>预算<strong>20,000</strong></div>
+              <div>可用<strong>5,182</strong></div>
+              <div>占用<strong>14,818</strong></div>
+              <div>绑定<strong>301358</strong></div>
+            </div>
+          </article>
+        </div>
+        <div class="slot-alert">
+          <div class="slot-alert-top">
+            <strong>Slot 不够时，不强行成交</strong>
+            <div class="selected-badge">本检查点有 3 个等待信号</div>
+          </div>
+          <p>
+            强 BUY 先按融合分排序抢占空闲 Slot；如果剩余可用预算不足，候选信号不会硬买，而是进入“待分配队列”，等下一检查点有 Slot 释放或待结算资金回流后再重新竞争。
+          </p>
+          <div class="slot-waiting">
+            <div class="waiting-card">
+              <span>等待信号</span>
+              <strong>300857 中科科技</strong>
+              <em>BUY 强度 0.61 · 仍差 0.4 Slot</em>
+            </div>
+            <div class="waiting-card">
+              <span>等待信号</span>
+              <strong>603477 巨星农牧</strong>
+              <em>BUY 强度 0.49 · 排名第 2</em>
+            </div>
+            <div class="waiting-card">
+              <span>等待信号</span>
+              <strong>603093 南华期货</strong>
+              <em>待结算资金回流后再判断</em>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel lots">
+        <div class="panel-header">
+          <div>
+            <h2>股票 Lot 分布图</h2>
+            <p>按股票汇总当前持仓拆成多少个 Lot、占用多少 Slot，并明确可卖与 T+1 锁定股数。</p>
+          </div>
+          <div class="selected-badge">当前持仓 4 只</div>
+        </div>
+        <div class="stock-stack">
+          <article class="stock-card">
+            <div class="stock-head">
+              <strong>301381 宏工科技</strong>
+              <span>技术强趋势加仓 · 占用最重的核心仓位</span>
+            </div>
+            <div class="stock-bars">
+              <div class="bar-line">
+                <span>持仓市值</span>
+                <div class="progress value"><span style="width: 91%"></span></div>
+                <strong>31,800</strong>
+              </div>
+              <div class="bar-line">
+                <span>Slot 占用</span>
+                <div class="progress slot"><span style="width: 78%"></span></div>
+                <strong>2.0 / 2.6</strong>
+              </div>
+              <div class="bar-line">
+                <span>T+1 锁定</span>
+                <div class="progress locked"><span style="width: 32%"></span></div>
+                <strong>100 股</strong>
+              </div>
+            </div>
+            <div class="stock-side">
+              <div class="mini-stat">
+                <div class="label">Lot 数</div>
+                <div class="value">3</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">总股数</div>
+                <div class="value">300</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">可卖</div>
+                <div class="value">200</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">加仓次数</div>
+                <div class="value">2</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="stock-card">
+            <div class="stock-head">
+              <strong>002463 沪电股份</strong>
+              <span>高强度 BUY 首次开仓 · 环境确认较稳</span>
+            </div>
+            <div class="stock-bars">
+              <div class="bar-line">
+                <span>持仓市值</span>
+                <div class="progress value"><span style="width: 72%"></span></div>
+                <strong>24,300</strong>
+              </div>
+              <div class="bar-line">
+                <span>Slot 占用</span>
+                <div class="progress slot"><span style="width: 61%"></span></div>
+                <strong>1.4 / 2.3</strong>
+              </div>
+              <div class="bar-line">
+                <span>T+1 锁定</span>
+                <div class="progress locked"><span style="width: 18%"></span></div>
+                <strong>100 股</strong>
+              </div>
+            </div>
+            <div class="stock-side">
+              <div class="mini-stat">
+                <div class="label">Lot 数</div>
+                <div class="value">2</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">总股数</div>
+                <div class="value">200</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">可卖</div>
+                <div class="value">100</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">加仓次数</div>
+                <div class="value">0</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="stock-card">
+            <div class="stock-head">
+              <strong>605298 必得科技</strong>
+              <span>中等强度持有仓位 · 主要承担防守与平衡</span>
+            </div>
+            <div class="stock-bars">
+              <div class="bar-line">
+                <span>持仓市值</span>
+                <div class="progress value"><span style="width: 44%"></span></div>
+                <strong>18,220</strong>
+              </div>
+              <div class="bar-line">
+                <span>Slot 占用</span>
+                <div class="progress slot"><span style="width: 46%"></span></div>
+                <strong>1.0 / 2.2</strong>
+              </div>
+              <div class="bar-line">
+                <span>T+1 锁定</span>
+                <div class="progress locked"><span style="width: 0%"></span></div>
+                <strong>0 股</strong>
+              </div>
+            </div>
+            <div class="stock-side">
+              <div class="mini-stat">
+                <div class="label">Lot 数</div>
+                <div class="value">1</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">总股数</div>
+                <div class="value">100</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">可卖</div>
+                <div class="value">100</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">加仓次数</div>
+                <div class="value">0</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="stock-card">
+            <div class="stock-head">
+              <strong>301358 湖南裕能</strong>
+              <span>低仓位试探仓 · 信号强但预算优先级次于前两只</span>
+            </div>
+            <div class="stock-bars">
+              <div class="bar-line">
+                <span>持仓市值</span>
+                <div class="progress value"><span style="width: 31%"></span></div>
+                <strong>13,696</strong>
+              </div>
+              <div class="bar-line">
+                <span>Slot 占用</span>
+                <div class="progress slot"><span style="width: 34%"></span></div>
+                <strong>0.8 / 2.0</strong>
+              </div>
+              <div class="bar-line">
+                <span>T+1 锁定</span>
+                <div class="progress locked"><span style="width: 10%"></span></div>
+                <strong>100 股</strong>
+              </div>
+            </div>
+            <div class="stock-side">
+              <div class="mini-stat">
+                <div class="label">Lot 数</div>
+                <div class="value">1</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">总股数</div>
+                <div class="value">100</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">可卖</div>
+                <div class="value">0</div>
+              </div>
+              <div class="mini-stat">
+                <div class="label">加仓次数</div>
+                <div class="value">0</div>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="tables-row">
+      <div class="panel table-panel">
+        <div class="panel-header">
+          <div>
+            <h2>成交列表</h2>
+            <p>仍然保留在底部，但只占固定高度，内部滚动，不让页面无限拉长。</p>
+          </div>
+          <div class="selected-badge">限高 292px</div>
+        </div>
+        <div class="table-shell">
+          <div class="table-head">
+            <div>时间</div>
+            <div>动作</div>
+            <div>股票</div>
+            <div>Lot</div>
+            <div>净额</div>
+          </div>
+          <div class="table-body">
+            <div class="table-row">
+              <div>13:30:00</div>
+              <div><span class="tag buy">BUY</span></div>
+              <div><strong>301381 宏工科技</strong></div>
+              <div>+1 lot</div>
+              <div>16,820</div>
+            </div>
+            <div class="table-row">
+              <div>13:30:00</div>
+              <div><span class="tag buy">BUY</span></div>
+              <div><strong>002463 沪电股份</strong></div>
+              <div>+1 lot</div>
+              <div>19,180</div>
+            </div>
+            <div class="table-row">
+              <div>13:20:00</div>
+              <div><span class="tag sell">SELL</span></div>
+              <div><strong>603093 南华期货</strong></div>
+              <div>-1 lot</div>
+              <div>8,972</div>
+            </div>
+            <div class="table-row">
+              <div>13:10:00</div>
+              <div><span class="tag buy">BUY</span></div>
+              <div><strong>301358 湖南裕能</strong></div>
+              <div>+1 lot</div>
+              <div>14,818</div>
+            </div>
+            <div class="table-row">
+              <div>11:00:00</div>
+              <div><span class="tag sell">SELL</span></div>
+              <div><strong>603477 巨星农牧</strong></div>
+              <div>-1 lot</div>
+              <div>17,406</div>
+            </div>
+            <div class="table-row">
+              <div>10:30:00</div>
+              <div><span class="tag buy">BUY</span></div>
+              <div><strong>605298 必得科技</strong></div>
+              <div>+1 lot</div>
+              <div>15,690</div>
+            </div>
+          </div>
+        </div>
+        <div class="table-note">点击某一行仍可进入完整成交详情，这里只是把高频回放表固定在底部，便于一边看资金快照一边对照最近交易。</div>
+      </div>
+
+      <div class="panel table-panel">
+        <div class="panel-header">
+          <div>
+            <h2>信号列表</h2>
+            <p>和成交列表同样保留，但默认只展示一个滚动视窗，避免挤占快照区域。</p>
+          </div>
+          <div class="selected-badge">限高 292px</div>
+        </div>
+        <div class="table-shell">
+          <div class="table-head">
+            <div>时间</div>
+            <div>动作</div>
+            <div>股票</div>
+            <div>强度</div>
+            <div>状态</div>
+          </div>
+          <div class="table-body">
+            <div class="table-row">
+              <div>13:30:00</div>
+              <div><span class="tag buy">BUY</span></div>
+              <div><strong>301381 宏工科技</strong></div>
+              <div>0.63</div>
+              <div>已成交</div>
+            </div>
+            <div class="table-row">
+              <div>13:30:00</div>
+              <div><span class="tag buy">BUY</span></div>
+              <div><strong>002463 沪电股份</strong></div>
+              <div>0.59</div>
+              <div>已成交</div>
+            </div>
+            <div class="table-row">
+              <div>13:30:00</div>
+              <div><span class="tag hold">HOLD</span></div>
+              <div><strong>300857 中石科技</strong></div>
+              <div>0.61</div>
+              <div>预算不足待分配</div>
+            </div>
+            <div class="table-row">
+              <div>13:30:00</div>
+              <div><span class="tag hold">HOLD</span></div>
+              <div><strong>603477 巨星农牧</strong></div>
+              <div>0.49</div>
+              <div>Slot 不足</div>
+            </div>
+            <div class="table-row">
+              <div>13:20:00</div>
+              <div><span class="tag sell">SELL</span></div>
+              <div><strong>603093 南华期货</strong></div>
+              <div>-0.41</div>
+              <div>已执行</div>
+            </div>
+            <div class="table-row">
+              <div>13:10:00</div>
+              <div><span class="tag buy">BUY</span></div>
+              <div><strong>301358 湖南裕能</strong></div>
+              <div>0.44</div>
+              <div>已成交</div>
+            </div>
+          </div>
+        </div>
+        <div class="table-note">这里能直接看到“信号存在，但因为 Slot 不足没有成交”的情况，避免用户误以为系统漏掉了 BUY。</div>
+      </div>
+    </section>
+
+    <section class="footer-note">
+      <div>
+        <strong>设计意图</strong>
+        <p>
+          顶部时间轴负责“切换检查点”，中间两层负责回答“这一刻钱在哪里、仓位怎么分”，左边看预算 Slot，右边看股票 Lot。这样用户在复盘历史回放时，不需要先翻成交表，就能直接理解某个检查点为什么还能买、为什么卖出资金还不能复用、以及当前仓位是否已经过重。
+        </p>
+      </div>
+      <div class="footer-chip">可直接映射到历史回放页</div>
+    </section>
+  </main>
+</body>
+</html>

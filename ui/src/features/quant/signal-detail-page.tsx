@@ -194,6 +194,7 @@ type SignalDetailPayload = {
   reasoning: string;
   explanation?: {
     summary?: string;
+    auditSummary?: string[];
     basis?: string[];
     techEvidence?: string[];
     contextEvidence?: string[];
@@ -1267,6 +1268,7 @@ export function SignalDetailPage() {
     || (decision as unknown as { market?: string }).market
     || "--";
   const basisList = explanation.basis ?? [];
+  const auditSummaryList = explanation.auditSummary ?? [];
   const voteActorLines = voteRows.map((item) => {
     const trackLabel = item.track === "context" ? "环境" : "技术";
     const voterLabel = item.track === "context" ? _localizeEnvComponentName(item.voter) : _localizeDynamicText(item.voter);
@@ -1944,6 +1946,17 @@ export function SignalDetailPage() {
               expandLabel="展开审计模式"
               collapseLabel="收起审计模式"
             >
+              {auditSummaryList.length > 0 ? (
+                <div className="summary-item">
+                  <div className="summary-item__title">审计总结</div>
+                  <ul className="insight-list">
+                    {auditSummaryList.map((item, index) => (
+                      <li key={`audit-summary-line-${index}`}>{_localizeDynamicText(item)}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
               {basisList.length > 0 ? (
                 <div className="summary-item">
                   <div className="summary-item__title">原始依据链路</div>

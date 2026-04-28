@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiClient, type ApiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
@@ -6,9 +6,10 @@ import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
 import { Sparkline } from "../../components/ui/sparkline";
 import { usePageData } from "../../lib/use-page-data";
-import type { ReplaySnapshot, TableAction, TableRow, TableSection } from "../../lib/page-models";
+import type { ReplayCapitalPoolSnapshot, ReplaySnapshot, TableAction, TableRow, TableSection } from "../../lib/page-models";
 import { summarizeTaskStatuses, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
+import { ReplayCapitalPoolPanel } from "./replay-capital-pool-panel";
 
 const REPLAY_MODE_OPTIONS = [
   { value: "historical_range", label: "历史区间回放" },
@@ -28,6 +29,23 @@ const AI_DYNAMIC_STRATEGY_OPTIONS = [
 
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
 const REPLAY_PROGRESS_REFRESH_MS = 60 * 1000;
+const REPLAY_CHECKPOINT_PAGE_SIZE = 50;
+const REPLAY_SUMMARY_METRIC_LABELS = new Set([
+  "初始资金",
+  "最终权益",
+  "最终现金",
+  "持仓市值",
+  "浮动盈亏",
+  "总盈亏",
+  "总收益率",
+  "期末持仓数",
+  "期末清算毛额",
+  "期末清算费用",
+  "期末清算盈亏",
+  "清算后现金",
+  "清算后总盈亏",
+  "清算后收益率",
+]);
 type ReplayProgressSnapshot = Pick<ReplaySnapshot, "updatedAt" | "tasks"> &
   Partial<Pick<ReplaySnapshot, "holdings" | "trades" | "signals" | "tradeCostSummary">>;
 
@@ -62,6 +80,15 @@ function parseRatePercent(value: string | undefined, fallback: number) {
   return Math.max(0, parsed);
 }
 
+function parseMoney(value: string | undefined, fallback: number) {
+  const normalized = String(value ?? "").replace(/,/g, "");
+  const match = normalized.match(/-?\d+(\.\d+)?/);
+  if (!match) return fallback;
+  const parsed = Number(match[0]);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.round(parsed));
+}
+
 function normalizeMarket(value: string) {
   const normalized = String(value).trim().toUpperCase();
   return MARKET_OPTIONS.includes(normalized as (typeof MARKET_OPTIONS)[number]) ? normalized : "CN";
@@ -89,6 +116,24 @@ function parseDynamicLookback(value: string | undefined, fallback: number) {
   const parsed = Number(match[0]);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(6, Math.min(336, Math.round(parsed)));
+}
+
+function formatSummaryNumber(value: unknown, fallback = "--") {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value.toFixed(2);
+  }
+  return toDisplayText(value, fallback);
+}
+
+function formatSummaryPercent(value: unknown, fallback = "--") {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `${value.toFixed(2)}%`;
+  }
+  return toDisplayText(value, fallback);
+}
+
+function findMetricValue(metrics: ReplaySnapshot["tradeCostSummary"], label: string) {
+  return metrics?.find((metric) => metric.label === label)?.value;
 }
 
 function pickPreferredReplayTaskId(
@@ -198,6 +243,10 @@ function removeExecutionResultColumn(table: TableSection): TableSection {
 export function HisReplayPage({ client }: HisReplayPageProps) {
   const navigate = useNavigate();
   const activeClient = client ?? apiClient;
+  const loadReplayCapitalPool = useCallback(
+    (query: Record<string, string | number>) => activeClient.getReplayCapitalPool<ReplayCapitalPoolSnapshot>(query),
+    [activeClient],
+  );
   const resource = usePageData("his-replay", activeClient);
   const rawSnapshot = resource.data;
   const snapshotVersion = rawSnapshot?.updatedAt ?? "loading";
@@ -214,6 +263,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [aiDynamicStrategy, setAiDynamicStrategy] = useState("off");
   const [aiDynamicStrength, setAiDynamicStrength] = useState(0.5);
   const [aiDynamicLookback, setAiDynamicLookback] = useState(48);
+  const [initialCash, setInitialCash] = useState(50000);
   const [commissionRatePct, setCommissionRatePct] = useState(0.03);
   const [sellTaxRatePct, setSellTaxRatePct] = useState(0.1);
   const [replayUntilNow, setReplayUntilNow] = useState(false);
@@ -228,6 +278,38 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [signalPage, setSignalPage] = useState(1);
   const [isReplayStarting, setIsReplayStarting] = useState(false);
   const [replayStartStatus, setReplayStartStatus] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
+  const selectedTaskForCheckpoint = snapshot?.tasks.find((task) => task.id === selectedTaskId) ?? snapshot?.tasks[0] ?? null;
+  const selectedTaskRunId = selectedTaskForCheckpoint?.runId ?? "";
+  const hasReplayCheckpointLoader = Boolean(selectedTaskForCheckpoint?.capitalPool && typeof activeClient.getReplayCapitalPool === "function");
+  const [checkpointSnapshot, setCheckpointSnapshot] = useState<ReplayCapitalPoolSnapshot | null>(null);
+  const [checkpointPage, setCheckpointPage] = useState(1);
+  const [checkpointLoading, setCheckpointLoading] = useState(false);
+  const [checkpointError, setCheckpointError] = useState("");
+
+  const loadReplayCheckpointPage = useCallback(
+    async (page: number, checkpointAt?: string) => {
+      if (!selectedTaskRunId || typeof activeClient.getReplayCapitalPool !== "function") {
+        return;
+      }
+      setCheckpointLoading(true);
+      setCheckpointError("");
+      try {
+        const next = await loadReplayCapitalPool({
+          runId: selectedTaskRunId,
+          checkpointPage: page,
+          checkpointPageSize: REPLAY_CHECKPOINT_PAGE_SIZE,
+          ...(checkpointAt ? { checkpointAt } : {}),
+        });
+        setCheckpointSnapshot(next);
+        setCheckpointPage(next.checkpoints.pagination.page);
+      } catch (error) {
+        setCheckpointError(error instanceof Error ? error.message : "检查点资金池加载失败");
+      } finally {
+        setCheckpointLoading(false);
+      }
+    },
+    [activeClient, loadReplayCapitalPool, selectedTaskRunId],
+  );
 
   useEffect(() => {
     if (!snapshot) {
@@ -246,6 +328,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     setAiDynamicStrategy(normalizeAiDynamicStrategy(snapshot.config.aiDynamicStrategy ?? "off"));
     setAiDynamicStrength(parseDynamicStrength(snapshot.config.aiDynamicStrength, 0.5));
     setAiDynamicLookback(parseDynamicLookback(snapshot.config.aiDynamicLookback, 48));
+    setInitialCash(parseMoney(snapshot.config.initialCapital, 50000));
     setCommissionRatePct(parseRatePercent(snapshot.config.commissionRatePct, 0.03));
     setSellTaxRatePct(parseRatePercent(snapshot.config.sellTaxRatePct, 0.1));
     setReplayUntilNow(false);
@@ -265,6 +348,19 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   useEffect(() => {
     setProgressSnapshot(null);
   }, [snapshotVersion]);
+
+  useEffect(() => {
+    setCheckpointSnapshot(null);
+    setCheckpointPage(1);
+    setCheckpointError("");
+  }, [selectedTaskRunId]);
+
+  useEffect(() => {
+    if (!hasReplayCheckpointLoader || !selectedTaskRunId) {
+      return;
+    }
+    void loadReplayCheckpointPage(1);
+  }, [hasReplayCheckpointLoader, loadReplayCheckpointPage, selectedTaskRunId]);
 
   useEffect(() => {
     if (!rawSnapshot || typeof activeClient.getReplayProgress !== "function") {
@@ -355,6 +451,10 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const replayActionError = resource.status === "error" && resource.data ? resource.error : null;
   const runningProgress = Math.max(0, Math.min(Number(runningTask?.progress ?? 0), 100));
   const selectedTask = snapshot.tasks.find((task) => task.id === selectedTaskId) ?? snapshot.tasks[0] ?? null;
+  const selectedTaskCapitalPool = checkpointSnapshot?.capitalPool ?? selectedTask?.capitalPool;
+  const checkpointItems = checkpointSnapshot?.checkpoints.items ?? [];
+  const checkpointPagination = checkpointSnapshot?.checkpoints.pagination;
+  const selectedCheckpointAt = checkpointSnapshot?.selectedCheckpointAt ?? selectedTaskCapitalPool?.task.checkpoint ?? "";
   const selectedTaskRange = selectedTask?.range || snapshot.config.range;
   const selectedTaskStatusLabel = selectedTask ? localizeTaskStatus(selectedTask.status) : "--";
   const selectedTaskStageLabel = selectedTask?.stage || "--";
@@ -371,9 +471,25 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const selectedTaskProgressText =
     selectedTaskProgressTotal > 0 ? `${selectedTaskProgressCurrent}/${selectedTaskProgressTotal}` : "--";
   const selectedTaskLatestCheckpointAt = selectedTask?.latestCheckpointAt || "--";
-  const selectedTaskTradeLabel = selectedTask
-    ? `${selectedTask.tradeCount || "0"} · 买${selectedTask.buyTradeCount ?? "--"} 卖${selectedTask.sellTradeCount ?? "--"}`
-    : "--";
+  const selectedTaskLiquidation = selectedTask?.terminalLiquidation ?? {};
+  const selectedTaskLiquidationMetrics = [
+    {
+      label: "清算后现金",
+      value: formatSummaryNumber(selectedTaskLiquidation.liquidation_cash ?? findMetricValue(snapshot.tradeCostSummary, "清算后现金")),
+    },
+    {
+      label: "清算后总盈亏",
+      value: formatSummaryNumber(selectedTaskLiquidation.liquidation_total_pnl ?? findMetricValue(snapshot.tradeCostSummary, "清算后总盈亏")),
+    },
+    {
+      label: "期末清算费用",
+      value: formatSummaryNumber(selectedTaskLiquidation.fee_total ?? findMetricValue(snapshot.tradeCostSummary, "期末清算费用")),
+    },
+    {
+      label: "清算后收益率",
+      value: formatSummaryPercent(selectedTaskLiquidation.liquidation_return_pct ?? findMetricValue(snapshot.tradeCostSummary, "清算后收益率")),
+    },
+  ];
   const selectedTaskMetrics = selectedTask
     ? [
         { label: "收益率", value: selectedTask.returnPct || "--" },
@@ -382,17 +498,21 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         { label: "持仓市值", value: selectedTask.marketValue || "--" },
         { label: "已实现", value: selectedTask.realizedPnl || "--" },
         { label: "浮动盈亏", value: selectedTask.unrealizedPnl || "--" },
-        { label: "成交", value: selectedTaskTradeLabel },
-        { label: "SELL胜率", value: selectedTask.sellWinRate || selectedTask.winRate || "--" },
-        { label: "均盈/均亏", value: `${selectedTask.avgWin || "--"} / ${selectedTask.avgLoss || "--"}` },
-        { label: "盈亏比", value: selectedTask.payoffRatio || "--" },
+        ...selectedTaskLiquidationMetrics,
       ]
     : [];
-  const selectedTaskHoldings: TableSection = {
-    columns: ["代码", "名称", "数量", "成本", "现价", "浮盈亏(元)", "浮盈亏(%)"],
-    rows: selectedTask?.holdings ?? [],
-    emptyLabel: "暂无持仓",
-    emptyMessage: "选中任务没有持仓记录，可能已清仓或尚未执行到持仓阶段。",
+  const executionCostSummary = (snapshot.tradeCostSummary ?? []).filter((metric) => !REPLAY_SUMMARY_METRIC_LABELS.has(metric.label));
+  const selectedTaskTopWinningTrades: TableSection = {
+    columns: ["时间", "信号ID", "代码", "卖出价", "净盈亏", "盈亏率", "执行明细"],
+    rows: withCodeName(selectedTask?.topWinningTrades ?? [], 2),
+    emptyLabel: "暂无盈利交易",
+    emptyMessage: "选中任务里还没有已兑现的盈利卖出交易。",
+  };
+  const selectedTaskTopLosingTrades: TableSection = {
+    columns: ["时间", "信号ID", "代码", "卖出价", "净盈亏", "盈亏率", "执行明细"],
+    rows: withCodeName(selectedTask?.topLosingTrades ?? [], 2),
+    emptyLabel: "暂无亏损交易",
+    emptyMessage: "选中任务里还没有已兑现的亏损卖出交易。",
   };
   const tradeRows = withCodeName(snapshot.trades.rows, 2);
   const signalTable = removeExecutionResultColumn(snapshot.signals);
@@ -526,6 +646,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         market,
         strategyMode: "auto",
         strategyProfileId,
+        initialCash,
         aiDynamicStrategy,
         aiDynamicStrength,
         aiDynamicLookback,
@@ -534,7 +655,9 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         overwriteLive,
         autoStartScheduler,
       });
-      if (nextSnapshot?.tasks?.length) {
+      if (!nextSnapshot) {
+        setReplayStartStatus("idle");
+      } else if (nextSnapshot.tasks?.length) {
         setSelectedTaskId(pickPreferredReplayTaskId(nextSnapshot.tasks, ""));
         setReplayStartStatus("submitted");
       } else {
@@ -550,7 +673,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
       <PageHeader
         eyebrow="Replay"
         title="历史回放"
-        description="围绕同一批量化候选池回放历史区间，核对任务、成交、持仓和信号落库结果。"
+        description="围绕同一批量化候选池回放历史区间，核对任务、成交、费用和信号落库结果。"
         actions={
           <div className="chip-row">
             <span className="badge badge--neutral">快照 {snapshot.updatedAt}</span>
@@ -640,6 +763,17 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                     </option>
                   ))}
                 </select>
+              </label>
+              <label className="field">
+                <span className="field__label">回放资金池(元)</span>
+                <input
+                  className="input"
+                  min={20000}
+                  step={10000}
+                  type="number"
+                  value={initialCash}
+                  onChange={(event) => setInitialCash(Math.max(20000, Math.round(Number(event.target.value) || 20000)))}
+                />
               </label>
               <label className="field">
                 <span className="field__label">AI动态策略</span>
@@ -771,24 +905,30 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
 
         <div className="stack">
           <WorkbenchCard>
-            <h2 className="section-card__title">回放任务</h2>
-            <div className="chip-row" style={{ marginBottom: "12px" }}>
-              <span className="badge badge--neutral">已完成 {taskSummary.completed}</span>
-              <span className="badge badge--accent">进行中 {taskSummary.running}</span>
-              <span className="badge badge--neutral">排队 {taskSummary.queued}</span>
+            <div className="replay-task-card-header">
+              <h2 className="section-card__title replay-task-card-title">回放任务</h2>
+              <div className="replay-task-card-controls">
+                <div className="chip-row replay-task-card-badges">
+                  <span className="badge badge--neutral">已完成 {taskSummary.completed}</span>
+                  <span className="badge badge--accent">进行中 {taskSummary.running}</span>
+                  <span className="badge badge--neutral">排队 {taskSummary.queued}</span>
+                </div>
+                {snapshot.tasks.length > 0 ? (
+                  <label className="field replay-task-selector">
+                    <span className="field__label replay-task-selector__label">选择任务</span>
+                    <select className="input replay-task-selector__input" value={selectedTask?.id ?? ""} onChange={(event) => setSelectedTaskId(event.target.value)}>
+                      {snapshot.tasks.map((task) => (
+                        <option key={task.id} value={task.id}>
+                          {`${task.id} · ${localizeTaskStatus(task.status)}`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+              </div>
             </div>
             {snapshot.tasks.length > 0 ? (
               <div className="summary-list">
-                <label className="field">
-                  <span className="field__label">选择任务</span>
-                  <select className="input" value={selectedTask?.id ?? ""} onChange={(event) => setSelectedTaskId(event.target.value)}>
-                    {snapshot.tasks.map((task) => (
-                      <option key={task.id} value={task.id}>
-                        {`${task.id} · ${localizeTaskStatus(task.status)}`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
                 {selectedTask ? (
                   <div className="summary-list" aria-label="已选回放任务详情">
                     <div className="summary-item replay-task-overview">
@@ -813,6 +953,53 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                           <span>{`检查点进度：${selectedTaskProgressText} · ${selectedTaskProgressPct}%`}</span>
                           <span>{`已写入：${selectedTaskCheckpointCount}`}</span>
                         </div>
+                        {hasReplayCheckpointLoader ? (
+                          <div className="replay-task-checkpoint-controls">
+                            <label className="field replay-task-checkpoint-controls__select">
+                              <span className="field__label">检查点</span>
+                              <select
+                                className="input"
+                                value={selectedCheckpointAt}
+                                aria-label="检查点"
+                                disabled={checkpointLoading || !checkpointItems.length}
+                                onChange={(event) => void loadReplayCheckpointPage(checkpointPage, event.target.value)}
+                              >
+                                {checkpointItems.length ? (
+                                  checkpointItems.map((item) => (
+                                    <option key={item.id} value={item.checkpointAt}>
+                                      {`${item.label} · 权益 ${item.totalEquity ?? "--"}`}
+                                    </option>
+                                  ))
+                                ) : (
+                                  <option value={selectedCheckpointAt}>{selectedCheckpointAt || "暂无检查点"}</option>
+                                )}
+                              </select>
+                            </label>
+                            <div className="replay-task-checkpoint-controls__pager">
+                              <button
+                                type="button"
+                                className="icon-button icon-button--neutral"
+                                aria-label="上一组检查点"
+                                disabled={checkpointLoading || !checkpointPagination || checkpointPagination.page <= 1}
+                                onClick={() => void loadReplayCheckpointPage(Math.max(1, checkpointPage - 1))}
+                              >
+                                ←
+                              </button>
+                              <span>{checkpointPagination ? `第 ${checkpointPagination.page} / ${checkpointPagination.totalPages} 页` : "第 -- / -- 页"}</span>
+                              <button
+                                type="button"
+                                className="icon-button icon-button--neutral"
+                                aria-label="下一组检查点"
+                                disabled={checkpointLoading || !checkpointPagination || checkpointPagination.page >= checkpointPagination.totalPages}
+                                onClick={() => void loadReplayCheckpointPage(checkpointPage + 1)}
+                              >
+                                →
+                              </button>
+                            </div>
+                            {checkpointLoading ? <span className="badge badge--neutral">加载中</span> : null}
+                            {checkpointError ? <span className="badge badge--danger">{checkpointError}</span> : null}
+                          </div>
+                        ) : null}
                       </div>
                       <div className="replay-task-overview__grid">
                         <div className="summary-item__body">{`开始时间：${selectedTaskStartedAt}`}</div>
@@ -846,12 +1033,16 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             )}
           </WorkbenchCard>
 
-          {snapshot.tradeCostSummary?.length ? (
+          {selectedTaskCapitalPool ? (
+            <ReplayCapitalPoolPanel capitalPool={selectedTaskCapitalPool} />
+          ) : null}
+
+          {executionCostSummary.length ? (
             <WorkbenchCard>
               <h2 className="section-card__title">费用与执行统计</h2>
               <p className="section-card__description">回放成交按每笔毛额、手续费、印花税、净额、lot和slot归集，避免只看买卖价格误判收益。</p>
               <div className="mini-metric-grid">
-                {snapshot.tradeCostSummary.map((metric) => (
+                {executionCostSummary.map((metric) => (
                   <div className="mini-metric" key={metric.label}>
                     <div className="mini-metric__label">{metric.label}</div>
                     <div className="mini-metric__value">{metric.value}</div>
@@ -861,14 +1052,29 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             </WorkbenchCard>
           ) : null}
 
-          <QuantTableSectionCard
-            title="历史持仓"
-            table={selectedTaskHoldings}
-            emptyTitle={selectedTaskHoldings.emptyLabel ?? "历史持仓暂无数据"}
-            emptyDescription={selectedTaskHoldings.emptyMessage ?? "选中任务没有持仓记录。"}
-            tableLayout="auto"
-            compactConfig={{ coreColumnIndexes: [0, 1, 4], detailColumnIndexes: [2, 3, 5, 6] }}
-          />
+          <div className="section-grid">
+            <QuantTableSectionCard
+              title="Top 5 盈利交易"
+              description="只统计本次回放中已卖出并兑现盈利的交易，按净盈亏从高到低排序。"
+              table={selectedTaskTopWinningTrades}
+              emptyTitle={selectedTaskTopWinningTrades.emptyLabel ?? "暂无盈利交易"}
+              emptyDescription={selectedTaskTopWinningTrades.emptyMessage ?? "选中任务没有盈利交易。"}
+              tableLayout="auto"
+              compactConfig={{ coreColumnIndexes: [2, 4, 5], detailColumnIndexes: [0, 1, 3, 6] }}
+              signalDetailSource="replay"
+            />
+
+            <QuantTableSectionCard
+              title="Top 5 亏损交易"
+              description="只统计本次回放中已卖出并兑现亏损的交易，按净亏损从大到小排序。"
+              table={selectedTaskTopLosingTrades}
+              emptyTitle={selectedTaskTopLosingTrades.emptyLabel ?? "暂无亏损交易"}
+              emptyDescription={selectedTaskTopLosingTrades.emptyMessage ?? "选中任务没有亏损交易。"}
+              tableLayout="auto"
+              compactConfig={{ coreColumnIndexes: [2, 4, 5], detailColumnIndexes: [0, 1, 3, 6] }}
+              signalDetailSource="replay"
+            />
+          </div>
 
           <QuantTableSectionCard
             title="成交明细"
@@ -877,6 +1083,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             emptyDescription={snapshot.trades.emptyMessage ?? "历史回放执行后，所有成交会统一落在这里。"}
             tableLayout="auto"
             compactConfig={{ coreColumnIndexes: [0, 2, 3, 11], detailColumnIndexes: [1, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15] }}
+            signalDetailSource="replay"
             toolbar={renderFilterToolbar(
               tradeStockFilter,
               setTradeStockFilter,

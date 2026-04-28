@@ -13,6 +13,7 @@ import pandas as pd
 from app.data_source_manager import data_source_manager
 from app.quant_kernel import ReplayTimepointGenerator
 from app.quant_sim.candidate_pool_service import CandidatePoolService
+from app.quant_sim.capital_slots import DEFAULT_CAPITAL_SLOT_CONFIG
 from app.quant_sim.db import DEFAULT_DB_FILE, QuantSimDB
 from app.quant_sim.dynamic_strategy import (
     DEFAULT_AI_DYNAMIC_LOOKBACK,
@@ -173,6 +174,7 @@ class QuantSimReplayService:
         market: str,
         strategy_mode: str = "auto",
         strategy_profile_id: str | None = None,
+        initial_cash: float | None = None,
         ai_dynamic_strategy: str = DEFAULT_AI_DYNAMIC_STRATEGY,
         ai_dynamic_strength: float = DEFAULT_AI_DYNAMIC_STRENGTH,
         ai_dynamic_lookback: int = DEFAULT_AI_DYNAMIC_LOOKBACK,
@@ -186,6 +188,7 @@ class QuantSimReplayService:
             market=market,
             strategy_mode=strategy_mode,
             strategy_profile_id=strategy_profile_id,
+            initial_cash=initial_cash,
             ai_dynamic_strategy=ai_dynamic_strategy,
             ai_dynamic_strength=ai_dynamic_strength,
             ai_dynamic_lookback=ai_dynamic_lookback,
@@ -218,6 +221,7 @@ class QuantSimReplayService:
         market: str,
         strategy_mode: str = "auto",
         strategy_profile_id: str | None = None,
+        initial_cash: float | None = None,
         ai_dynamic_strategy: str = DEFAULT_AI_DYNAMIC_STRATEGY,
         ai_dynamic_strength: float = DEFAULT_AI_DYNAMIC_STRENGTH,
         ai_dynamic_lookback: int = DEFAULT_AI_DYNAMIC_LOOKBACK,
@@ -234,6 +238,7 @@ class QuantSimReplayService:
             market=market,
             strategy_mode=strategy_mode,
             strategy_profile_id=strategy_profile_id,
+            initial_cash=initial_cash,
             ai_dynamic_strategy=ai_dynamic_strategy,
             ai_dynamic_strength=ai_dynamic_strength,
             ai_dynamic_lookback=ai_dynamic_lookback,
@@ -268,6 +273,7 @@ class QuantSimReplayService:
         market: str,
         strategy_mode: str = "auto",
         strategy_profile_id: str | None = None,
+        initial_cash: float | None = None,
         ai_dynamic_strategy: str = DEFAULT_AI_DYNAMIC_STRATEGY,
         ai_dynamic_strength: float = DEFAULT_AI_DYNAMIC_STRENGTH,
         ai_dynamic_lookback: int = DEFAULT_AI_DYNAMIC_LOOKBACK,
@@ -282,6 +288,7 @@ class QuantSimReplayService:
             market=market,
             strategy_mode=strategy_mode,
             strategy_profile_id=strategy_profile_id,
+            initial_cash=initial_cash,
             ai_dynamic_strategy=ai_dynamic_strategy,
             ai_dynamic_strength=ai_dynamic_strength,
             ai_dynamic_lookback=ai_dynamic_lookback,
@@ -332,6 +339,7 @@ class QuantSimReplayService:
         market: str,
         strategy_mode: str = "auto",
         strategy_profile_id: str | None = None,
+        initial_cash: float | None = None,
         ai_dynamic_strategy: str = DEFAULT_AI_DYNAMIC_STRATEGY,
         ai_dynamic_strength: float = DEFAULT_AI_DYNAMIC_STRENGTH,
         ai_dynamic_lookback: int = DEFAULT_AI_DYNAMIC_LOOKBACK,
@@ -349,6 +357,7 @@ class QuantSimReplayService:
             market=market,
             strategy_mode=strategy_mode,
             strategy_profile_id=strategy_profile_id,
+            initial_cash=initial_cash,
             ai_dynamic_strategy=ai_dynamic_strategy,
             ai_dynamic_strength=ai_dynamic_strength,
             ai_dynamic_lookback=ai_dynamic_lookback,
@@ -399,6 +408,7 @@ class QuantSimReplayService:
         market: str,
         strategy_mode: str,
         strategy_profile_id: str | None,
+        initial_cash: float | None = None,
         ai_dynamic_strategy: str = DEFAULT_AI_DYNAMIC_STRATEGY,
         ai_dynamic_strength: float = DEFAULT_AI_DYNAMIC_STRENGTH,
         ai_dynamic_lookback: int = DEFAULT_AI_DYNAMIC_LOOKBACK,
@@ -418,7 +428,28 @@ class QuantSimReplayService:
         checkpoints = self.timepoint_generator.generate(start_dt, end_dt, timeframe)
         if not checkpoints:
             raise ValueError("指定区间内没有可用的交易检查点")
-        scheduler_config = self.db.get_scheduler_config()
+        account_summary = self.db.get_account_summary()
+        try:
+            resolved_initial_cash = float(initial_cash) if initial_cash is not None else float(account_summary["initial_cash"])
+        except (TypeError, ValueError):
+            resolved_initial_cash = float(account_summary["initial_cash"])
+        if resolved_initial_cash <= 0:
+            resolved_initial_cash = float(account_summary["initial_cash"])
+        account_summary = {
+            **account_summary,
+            "initial_cash": resolved_initial_cash,
+            "available_cash": resolved_initial_cash,
+            "market_value": 0.0,
+            "total_equity": resolved_initial_cash,
+        }
+        scheduler_config = {
+            **self.db.get_scheduler_config(),
+            "capital_slot_enabled": True,
+            "capital_pool_min_cash": float(DEFAULT_CAPITAL_SLOT_CONFIG["capital_pool_min_cash"]),
+            "capital_pool_max_cash": 1_000_000_000_000.0,
+            "capital_slot_min_cash": float(DEFAULT_CAPITAL_SLOT_CONFIG["capital_slot_min_cash"]),
+            "capital_sell_cash_reuse_policy": str(DEFAULT_CAPITAL_SLOT_CONFIG["capital_sell_cash_reuse_policy"]),
+        }
         selected_profile_id = str(
             strategy_profile_id
             if strategy_profile_id not in (None, "")
@@ -465,7 +496,7 @@ class QuantSimReplayService:
             "candidates": candidates,
             "stock_codes": stock_codes,
             "checkpoints": checkpoints,
-            "account_summary": self.db.get_account_summary(),
+            "account_summary": account_summary,
         }
 
     def _create_replay_run(
@@ -590,6 +621,17 @@ class QuantSimReplayService:
                 ai_dynamic_strategy=ai_dynamic_strategy,
                 ai_dynamic_strength=ai_dynamic_strength,
                 ai_dynamic_lookback=ai_dynamic_lookback,
+                capital_slot_enabled=bool((context.get("scheduler_config") or {}).get("capital_slot_enabled", True)),
+                capital_pool_min_cash=float((context.get("scheduler_config") or {}).get("capital_pool_min_cash") or 0),
+                capital_pool_max_cash=float((context.get("scheduler_config") or {}).get("capital_pool_max_cash") or 0),
+                capital_slot_min_cash=float((context.get("scheduler_config") or {}).get("capital_slot_min_cash") or 0),
+                capital_max_slots=int((context.get("scheduler_config") or {}).get("capital_max_slots") or 1),
+                capital_min_buy_slot_fraction=float((context.get("scheduler_config") or {}).get("capital_min_buy_slot_fraction") or 0.25),
+                capital_full_buy_edge=float((context.get("scheduler_config") or {}).get("capital_full_buy_edge") or 0.25),
+                capital_confidence_weight=float((context.get("scheduler_config") or {}).get("capital_confidence_weight") or 0.35),
+                capital_high_price_threshold=float((context.get("scheduler_config") or {}).get("capital_high_price_threshold") or 100),
+                capital_high_price_max_slot_units=float((context.get("scheduler_config") or {}).get("capital_high_price_max_slot_units") or 2),
+                capital_sell_cash_reuse_policy=str((context.get("scheduler_config") or {}).get("capital_sell_cash_reuse_policy") or "next_batch"),
             )
             for candidate in candidates:
                 temp_candidate_service.add_candidate(

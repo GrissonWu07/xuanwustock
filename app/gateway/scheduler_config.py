@@ -65,11 +65,26 @@ def _payload_fee_rate(
     return False, _normalize_fee_rate(default, default)
 
 
+def _enabled_strategy_profile_id(context: UIApiContext, requested: Any = None) -> str:
+    enabled_profiles = context.quant_db().list_strategy_profiles(include_disabled=False)
+    enabled_ids = [_txt(item.get("id")).strip() for item in enabled_profiles if _txt(item.get("id")).strip()]
+    enabled_id_set = set(enabled_ids)
+    requested_id = _txt(requested).strip()
+    if requested_id in enabled_id_set:
+        return requested_id
+    default_id = _txt(context.quant_db().get_default_strategy_profile_id()).strip()
+    if default_id in enabled_id_set:
+        return default_id
+    return enabled_ids[0] if enabled_ids else ""
+
+
 def _latest_replay_defaults(context: UIApiContext) -> dict[str, Any]:
     scheduler_cfg = context.quant_db().get_scheduler_config()
+    account_summary = context.quant_db().get_account_summary()
+    default_initial_cash = _float(account_summary.get("initial_cash"), 100000.0) or 100000.0
     default_commission_rate = _normalize_fee_rate(scheduler_cfg.get("commission_rate"), DEFAULT_COMMISSION_RATE)
     default_sell_tax_rate = _normalize_fee_rate(scheduler_cfg.get("sell_tax_rate"), DEFAULT_SELL_TAX_RATE)
-    default_strategy_profile_id = _txt(scheduler_cfg.get("strategy_profile_id")).strip() or context.quant_db().get_default_strategy_profile_id()
+    default_strategy_profile_id = _enabled_strategy_profile_id(context, scheduler_cfg.get("strategy_profile_id"))
     default_ai_dynamic_strategy = _txt(scheduler_cfg.get("ai_dynamic_strategy"), DEFAULT_AI_DYNAMIC_STRATEGY)
     default_ai_dynamic_strength = _normalize_dynamic_strength(scheduler_cfg.get("ai_dynamic_strength"), DEFAULT_AI_DYNAMIC_STRENGTH)
     default_ai_dynamic_lookback = _normalize_dynamic_lookback(scheduler_cfg.get("ai_dynamic_lookback"), DEFAULT_AI_DYNAMIC_LOOKBACK)
@@ -82,9 +97,10 @@ def _latest_replay_defaults(context: UIApiContext) -> dict[str, Any]:
             "timeframe": _txt(latest.get("timeframe"), "30m"),
             "market": _txt(latest.get("market"), "CN"),
             "strategy_mode": _txt(latest.get("selected_strategy_mode") or latest.get("strategy_mode"), "auto"),
+            "initial_cash": _float(latest.get("initial_cash"), default_initial_cash) or default_initial_cash,
             "commission_rate": _normalize_fee_rate(metadata.get("commission_rate"), default_commission_rate),
             "sell_tax_rate": _normalize_fee_rate(metadata.get("sell_tax_rate"), default_sell_tax_rate),
-            "strategy_profile_id": _txt(latest.get("selected_strategy_profile_id"), default_strategy_profile_id),
+            "strategy_profile_id": _enabled_strategy_profile_id(context, latest.get("selected_strategy_profile_id")) or default_strategy_profile_id,
             "ai_dynamic_strategy": _txt(metadata.get("ai_dynamic_strategy"), default_ai_dynamic_strategy),
             "ai_dynamic_strength": _normalize_dynamic_strength(metadata.get("ai_dynamic_strength"), default_ai_dynamic_strength),
             "ai_dynamic_lookback": _normalize_dynamic_lookback(metadata.get("ai_dynamic_lookback"), default_ai_dynamic_lookback),
@@ -97,6 +113,7 @@ def _latest_replay_defaults(context: UIApiContext) -> dict[str, Any]:
         "timeframe": "30m",
         "market": "CN",
         "strategy_mode": "auto",
+        "initial_cash": default_initial_cash,
         "commission_rate": default_commission_rate,
         "sell_tax_rate": default_sell_tax_rate,
         "strategy_profile_id": default_strategy_profile_id,

@@ -57,11 +57,16 @@ def _trade_kind(item: dict[str, Any]) -> str:
     if action == "BUY":
         return "加仓" if metadata.get("is_add") else "建仓"
     if action == "SELL":
+        if metadata.get("terminal_liquidation"):
+            return "期末清算"
         return "卖出"
     return "--"
 
 
 def _trade_cost_basis(item: dict[str, Any], metadata: dict[str, Any]) -> float:
+    metadata_cost_basis = _float(metadata.get("cost_basis"), 0.0) or 0.0
+    if metadata_cost_basis > 0:
+        return round(metadata_cost_basis, 4)
     consumed_lots = metadata.get("consumed_lots")
     cost_basis = 0.0
     if isinstance(consumed_lots, list):
@@ -149,6 +154,11 @@ def _trade_execution_detail(item: dict[str, Any]) -> str:
             parts.append(", ".join(slot_parts))
         return " · ".join(parts)
     if action == "SELL":
+        if metadata.get("terminal_liquidation"):
+            return (
+                f"期末模拟清仓 · {quantity}股 · 毛额 {_num(_trade_gross_amount(item))} · "
+                f"费用 {_num(_trade_fee_total(item))} · 到账 {_num(_trade_net_amount(item))}"
+            )
         consumed_lots = metadata.get("consumed_lots")
         consumed_quantity = 0
         if isinstance(consumed_lots, list):
@@ -290,11 +300,7 @@ def _replay_execution_summary_metrics(
             _metric("Slot数量", _txt(final_slot_summary.get("slot_count"), _txt(slot_plan.get("slot_count"), "0"))),
             _metric("单Slot预算", _num(final_slot_summary.get("slot_budget"), default=_num(slot_plan.get("slot_budget")))),
             _metric("最大Slot", _txt(capital_config.get("capital_max_slots"), "0")),
-            _metric("资金池下限", _num(capital_config.get("capital_pool_min_cash"))),
-            _metric("资金池上限", _num(capital_config.get("capital_pool_max_cash"))),
-            _metric("最小Slot", _num(capital_config.get("capital_slot_min_cash"))),
             _metric("高价双Slot线", _num(capital_config.get("capital_high_price_threshold"))),
-            _metric("资金复用", _txt(capital_config.get("capital_sell_cash_reuse_policy"), "next_batch")),
             _metric("最终空闲", _num(final_slot_summary.get("available_cash"), default="--")),
             _metric("最终占用", _num(final_slot_summary.get("occupied_cash"), default=_num(cost_summary.get("final_occupied_slot_cash"), default="--"))),
             _metric("最终待结算", _num(final_slot_summary.get("settling_cash"), default="--")),

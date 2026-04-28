@@ -205,6 +205,9 @@ export function createApiClient(options: ApiClientOptions = {}) {
   const getReplayProgress = async <T,>(query?: Record<string, QueryValue>): Promise<T> =>
     requestLive<T>(withQuery("/api/v1/quant/his-replay/progress", query));
 
+  const getReplayCapitalPool = async <T,>(query?: Record<string, QueryValue>): Promise<T> =>
+    requestLive<T>(withQuery("/api/v1/quant/his-replay/capital-pool", query));
+
   const requestPortfolioPosition = async <T,>(symbol: string): Promise<T> => {
     if (!symbol.trim()) {
       throw new ApiError(t("Missing stock code"), 400, `/api/v1/portfolio_v2/positions/${symbol}`);
@@ -291,6 +294,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
     runPageAction: requestAction,
     getTaskStatus: requestTask,
     getReplayProgress,
+    getReplayCapitalPool,
     getPortfolioPosition: requestPortfolioPosition,
     patchPortfolioPosition,
     listStrategyProfiles,

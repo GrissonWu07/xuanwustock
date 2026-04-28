@@ -342,6 +342,95 @@ export type LiveSimSnapshot = {
   curve: ChartPoint[];
 };
 
+export type ReplayCapitalLot = {
+  id: string;
+  stockCode: string;
+  stockName?: string;
+  lotCount: number;
+  quantity: number;
+  sellableQuantity?: number;
+  lockedQuantity?: number;
+  allocatedCash: string;
+  marketValue: string;
+  costBand?: string;
+  status: "available" | "locked" | "mixed" | "settling" | string;
+  isAdd?: boolean;
+  isStack?: boolean;
+  lotIds?: string[];
+  hiddenLotCount?: number;
+};
+
+export type ReplayCapitalSlot = {
+  id: string;
+  index: number;
+  title: string;
+  status: "free" | "occupied" | "settling" | string;
+  budgetCash: string;
+  availableCash: string;
+  occupiedCash: string;
+  settlingCash: string;
+  usagePct: number;
+  hiddenLotGroups?: number;
+  lots: ReplayCapitalLot[];
+};
+
+export type ReplayCapitalPool = {
+  task: {
+    runId: string;
+    status: string;
+    progress?: number;
+    checkpoint?: string;
+    timeframe?: string;
+    range?: string;
+    strategy?: string;
+  };
+  pool: {
+    initialCash: string;
+    cashValue: string;
+    marketValue: string;
+    totalEquity: string;
+    realizedPnl: string;
+    unrealizedPnl: string;
+    slotCount: number;
+    slotBudget: string;
+    availableCash: string;
+    occupiedCash: string;
+    settlingCash: string;
+    poolReady: boolean;
+  };
+  slots: ReplayCapitalSlot[];
+  selectedSlotIndex?: number | null;
+  taskMetrics?: SummaryMetric[];
+  notes?: string[];
+};
+
+export type ReplayCheckpointItem = {
+  id: string;
+  checkpointAt: string;
+  label: string;
+  cashValue?: string;
+  marketValue?: string;
+  totalEquity?: string;
+  signalsCreated?: number;
+  autoExecuted?: number;
+};
+
+export type ReplayCapitalPoolSnapshot = {
+  updatedAt: string;
+  runId: string;
+  selectedCheckpointAt: string;
+  checkpoints: {
+    items: ReplayCheckpointItem[];
+    pagination: {
+      page: number;
+      pageSize: number;
+      totalRows: number;
+      totalPages: number;
+    };
+  };
+  capitalPool: ReplayCapitalPool;
+};
+
 export type ReplaySnapshot = {
   updatedAt: string;
   config: {
@@ -360,6 +449,7 @@ export type ReplaySnapshot = {
       enabled: boolean;
       isDefault: boolean;
     }[];
+    initialCapital?: string;
     commissionRatePct?: string;
     sellTaxRatePct?: string;
   };
@@ -403,6 +493,10 @@ export type ReplaySnapshot = {
     strategyProfileName?: string;
     strategyProfileVersionId?: string;
     holdings?: TableRow[];
+    topWinningTrades?: TableRow[];
+    topLosingTrades?: TableRow[];
+    capitalPool?: ReplayCapitalPool;
+    terminalLiquidation?: Record<string, string | number | null | undefined>;
   }[];
   tradingAnalysis: {
     title: string;

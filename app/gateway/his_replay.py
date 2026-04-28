@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.gateway.deps import *
 from app.gateway.context import UIApiContext
-from app.gateway.scheduler_config import _fee_rate_pct_text, _latest_replay_defaults, _normalize_dynamic_lookback, _normalize_dynamic_strength, _normalize_fee_rate, _payload_fee_rate
+from app.gateway.scheduler_config import _enabled_strategy_profile_id, _fee_rate_pct_text, _latest_replay_defaults, _normalize_dynamic_lookback, _normalize_dynamic_strength, _normalize_fee_rate, _payload_fee_rate
 from app.gateway.table_query import _normalize_replay_table_page, _normalize_replay_table_page_size, _replay_actions_for_filter, _replay_table_pagination
 from app.gateway.trades import (
     _replay_execution_summary_metrics,
@@ -12,11 +12,53 @@ from app.gateway.trades import (
     _trade_fee_total,
     _trade_gross_amount,
     _trade_kind,
+    _trade_metadata,
     _trade_net_amount,
     _trade_realized_pnl_pct,
     _trade_sell_tax_fee,
     _trade_slot_units,
 )
+from app.gateway.replay_capital_pool import build_his_replay_capital_pool
+from app.gateway.replay_liquidation import build_terminal_liquidation, terminal_liquidation_metrics
+
+
+def _build_his_replay_ranked_trade_row(item: dict[str, Any], index: int) -> dict[str, Any]:
+    metadata = _trade_metadata(item)
+    signal_id = _txt(item.get("signal_id"))
+    return {
+        "id": _txt(item.get("id"), str(index)),
+        "cells": [
+            _txt(item.get("executed_at") or item.get("created_at"), "--"),
+            "期末清算" if metadata.get("terminal_liquidation") else (f"#{signal_id}" if signal_id else "--"),
+            _txt(item.get("stock_code")),
+            _num(item.get("price")),
+            _num(item.get("realized_pnl")),
+            _trade_realized_pnl_pct(item),
+            _trade_execution_detail(item),
+        ],
+        "code": _txt(item.get("stock_code")),
+        "name": _txt(item.get("stock_name")),
+    }
+
+
+def _build_his_replay_ranked_trade_rows(
+    db: QuantSimDB,
+    run_id: int,
+    *,
+    profitable: bool,
+    limit: int,
+    extra_items: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    items = list(db.get_sim_run_ranked_trades(run_id, profitable=profitable, limit=limit))
+    for extra in extra_items or []:
+        realized_pnl = _float(extra.get("realized_pnl"), 0.0) or 0.0
+        if profitable and realized_pnl > 0:
+            items.append(extra)
+        elif not profitable and realized_pnl < 0:
+            items.append(extra)
+    items.sort(key=lambda item: (_float(item.get("realized_pnl"), 0.0) or 0.0), reverse=profitable)
+    return [_build_his_replay_ranked_trade_row(item, index) for index, item in enumerate(items[:limit])]
+
 
 def _build_his_replay_task_items(
     db: QuantSimDB,
@@ -91,6 +133,7 @@ def _build_his_replay_task_items(
             "strategyProfileVersionId": _txt(item.get("selected_strategy_profile_version_id")),
         }
 
+        terminal_liquidation_items: list[dict[str, Any]] = []
         if include_positions:
             position_rows: list[dict[str, Any]] = []
             for idx, position in enumerate(db.get_sim_run_positions(run_id)):
@@ -115,9 +158,37 @@ def _build_his_replay_task_items(
                     }
                 )
             task["holdings"] = position_rows
+            task["capitalPool"] = build_his_replay_capital_pool(db, item, latest_snapshot)
+            run_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            terminal_liquidation = build_terminal_liquidation(
+                db,
+                item,
+                latest_snapshot,
+                commission_rate=_normalize_fee_rate(run_metadata.get("commission_rate"), DEFAULT_COMMISSION_RATE),
+                sell_tax_rate=_normalize_fee_rate(run_metadata.get("sell_tax_rate"), DEFAULT_SELL_TAX_RATE),
+            )
+            task["terminalLiquidation"] = terminal_liquidation.get("summary", {})
+            terminal_liquidation_items = terminal_liquidation.get("items", [])
+
+        task["topWinningTrades"] = _build_his_replay_ranked_trade_rows(
+            db,
+            run_id,
+            profitable=True,
+            limit=5,
+            extra_items=terminal_liquidation_items,
+        )
+        task["topLosingTrades"] = _build_his_replay_ranked_trade_rows(
+            db,
+            run_id,
+            profitable=False,
+            limit=5,
+            extra_items=terminal_liquidation_items,
+        )
 
         task_items.append(task)
     return task_items
+
+
 def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     query = table_query or {}
     page_size = _normalize_replay_table_page_size(query.get("page_size"))
@@ -334,6 +405,79 @@ def _snapshot_his_replay_progress(context: UIApiContext, table_query: dict[str, 
     return payload
 
 
+def _build_checkpoint_selector_item(item: dict[str, Any]) -> dict[str, Any]:
+    checkpoint_at = _txt(item.get("checkpoint_at"), "--")
+    return {
+        "id": _txt(item.get("id"), checkpoint_at),
+        "checkpointAt": checkpoint_at,
+        "label": checkpoint_at,
+        "cashValue": _num(item.get("available_cash"), 0),
+        "marketValue": _num(item.get("market_value"), 0),
+        "totalEquity": _num(item.get("total_equity"), 0),
+        "signalsCreated": int(_float(item.get("signals_created"), 0.0) or 0),
+        "autoExecuted": int(_float(item.get("auto_executed"), 0.0) or 0),
+    }
+
+
+def _snapshot_his_replay_capital_pool(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
+    db = context.quant_db()
+    query = table_query or {}
+    requested_run_id = _int(query.get("run_id"))
+    run = db.get_sim_run(requested_run_id) if requested_run_id is not None else None
+    if run is None:
+        run = next(iter(db.get_sim_runs(limit=1)), None)
+    if not run:
+        raise HTTPException(status_code=404, detail="未找到历史回放任务")
+
+    run_id = int(run.get("id") or 0)
+    page_size = _normalize_replay_table_page_size(query.get("checkpoint_page_size"), default=50)
+    requested_page = _normalize_replay_table_page(query.get("checkpoint_page"))
+    checkpoint_search = _txt(query.get("checkpoint_search"))
+    checkpoint_total = db.count_sim_run_checkpoints(run_id, keyword=checkpoint_search)
+    pagination = _replay_table_pagination(requested_page, page_size, checkpoint_total)
+    checkpoint_rows = db.get_sim_run_checkpoints(
+        run_id,
+        limit=page_size,
+        offset=(pagination["page"] - 1) * page_size,
+        keyword=checkpoint_search,
+        order="desc",
+    )
+
+    selected_checkpoint = None
+    checkpoint_at = _txt(query.get("checkpoint_at"))
+    if checkpoint_at:
+        selected_checkpoint = db.get_sim_run_checkpoint_at(run_id, checkpoint_at)
+    if selected_checkpoint is None:
+        selected_checkpoint = checkpoint_rows[0] if checkpoint_rows else None
+    if selected_checkpoint is None:
+        latest_snapshot = db.get_latest_sim_run_snapshot(run_id)
+        capital_pool = build_his_replay_capital_pool(db, run, latest_snapshot)
+        return {
+            "updatedAt": _now(),
+            "runId": _txt(run_id),
+            "selectedCheckpointAt": _txt(capital_pool["task"].get("checkpoint"), "--"),
+            "checkpoints": {"items": [], "pagination": pagination},
+            "capitalPool": capital_pool,
+        }
+
+    return {
+        "updatedAt": _now(),
+        "runId": _txt(run_id),
+        "selectedCheckpointAt": _txt(selected_checkpoint.get("checkpoint_at")),
+        "checkpoints": {
+            "items": [_build_checkpoint_selector_item(item) for item in checkpoint_rows],
+            "pagination": pagination,
+        },
+        "capitalPool": build_his_replay_capital_pool(
+            db,
+            run,
+            selected_checkpoint,
+            checkpoint=selected_checkpoint,
+            include_position_fallback=False,
+        ),
+    }
+
+
 def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     db = context.quant_db()
     _reconcile_stale_his_replay_runs(db)
@@ -387,11 +531,12 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
                 "timeframe": "30m",
                 "market": "CN",
                 "strategyMode": "auto",
-                "strategyProfileId": _txt(scheduler_status.get("strategy_profile_id")),
+                "strategyProfileId": _enabled_strategy_profile_id(context, scheduler_status.get("strategy_profile_id")),
                 "aiDynamicStrategy": _txt(scheduler_status.get("ai_dynamic_strategy"), DEFAULT_AI_DYNAMIC_STRATEGY),
                 "aiDynamicStrength": _txt(scheduler_status.get("ai_dynamic_strength"), f"{DEFAULT_AI_DYNAMIC_STRENGTH:.2f}"),
                 "aiDynamicLookback": _txt(scheduler_status.get("ai_dynamic_lookback"), str(DEFAULT_AI_DYNAMIC_LOOKBACK)),
                 "strategyProfiles": strategy_profiles,
+                "initialCapital": _num(context.quant_db().get_account_summary().get("initial_cash"), 0, default="100000"),
                 "commissionRatePct": _fee_rate_pct_text(scheduler_status.get("commission_rate"), DEFAULT_COMMISSION_RATE),
                 "sellTaxRatePct": _fee_rate_pct_text(scheduler_status.get("sell_tax_rate"), DEFAULT_SELL_TAX_RATE),
             },
@@ -444,6 +589,14 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
         run_metadata.get("ai_dynamic_lookback"),
         _txt(scheduler_status.get("ai_dynamic_lookback"), str(DEFAULT_AI_DYNAMIC_LOOKBACK)),
     )
+    latest_snapshot = db.get_latest_sim_run_snapshot(rid)
+    terminal_liquidation = build_terminal_liquidation(
+        db,
+        run,
+        latest_snapshot,
+        commission_rate=replay_commission_rate,
+        sell_tax_rate=replay_sell_tax_rate,
+    )
 
     return {
         "updatedAt": _now(),
@@ -453,11 +606,15 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
             "timeframe": _txt(run.get("timeframe"), "30m"),
             "market": _txt(run.get("market"), "CN"),
             "strategyMode": _txt(run.get("selected_strategy_mode") or run.get("strategy_mode"), "auto"),
-            "strategyProfileId": _txt(run.get("selected_strategy_profile_id"), _txt(scheduler_status.get("strategy_profile_id"))),
+            "strategyProfileId": _enabled_strategy_profile_id(
+                context,
+                run.get("selected_strategy_profile_id") or scheduler_status.get("strategy_profile_id"),
+            ),
             "aiDynamicStrategy": replay_ai_dynamic_strategy,
             "aiDynamicStrength": replay_ai_dynamic_strength,
             "aiDynamicLookback": replay_ai_dynamic_lookback,
             "strategyProfiles": strategy_profiles,
+            "initialCapital": _num(run.get("initial_cash"), 0, default="100000"),
             "commissionRatePct": _fee_rate_pct_text(replay_commission_rate, DEFAULT_COMMISSION_RATE),
             "sellTaxRatePct": _fee_rate_pct_text(replay_sell_tax_rate, DEFAULT_SELL_TAX_RATE),
         },
@@ -498,10 +655,11 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
         "signals": signal_table,
         "tradeCostSummary": _replay_execution_summary_metrics(
             run,
-            db.get_latest_sim_run_snapshot(rid),
+            latest_snapshot,
             db.get_sim_run_trade_cost_summary(rid),
             scheduler_status,
-        ),
+        )
+        + terminal_liquidation_metrics(terminal_liquidation),
         "curve": [
             {"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
             for i, item in enumerate(db.get_sim_run_snapshots(rid))
@@ -529,8 +687,15 @@ def _action_his_replay_start(context: UIApiContext, payload: Any) -> dict[str, A
         end_datetime=body.get("endDateTime") or body.get("end_datetime") or defaults["end_datetime"],
         timeframe=body.get("timeframe") or defaults["timeframe"],
         market=body.get("market") or defaults["market"],
+        initial_cash=_float(
+            body.get("initialCash") if "initialCash" in body else body.get("initial_cash"),
+            float(defaults.get("initial_cash") or 100000),
+        ),
         strategy_mode=body.get("strategyMode") or body.get("strategy_mode") or defaults["strategy_mode"],
-        strategy_profile_id=body.get("strategyProfileId") or body.get("strategy_profile_id") or defaults.get("strategy_profile_id"),
+        strategy_profile_id=_enabled_strategy_profile_id(
+            context,
+            body.get("strategyProfileId") or body.get("strategy_profile_id") or defaults.get("strategy_profile_id"),
+        ),
         ai_dynamic_strategy=body.get("aiDynamicStrategy") or body.get("ai_dynamic_strategy") or defaults.get("ai_dynamic_strategy"),
         ai_dynamic_strength=_normalize_dynamic_strength(
             body.get("aiDynamicStrength") if "aiDynamicStrength" in body else body.get("ai_dynamic_strength"),
@@ -569,8 +734,15 @@ def _action_his_replay_continue(context: UIApiContext, payload: Any) -> dict[str
         end_datetime=body.get("endDateTime") or body.get("end_datetime") or defaults["end_datetime"],
         timeframe=body.get("timeframe") or defaults["timeframe"],
         market=body.get("market") or defaults["market"],
+        initial_cash=_float(
+            body.get("initialCash") if "initialCash" in body else body.get("initial_cash"),
+            float(defaults.get("initial_cash") or 100000),
+        ),
         strategy_mode=body.get("strategyMode") or body.get("strategy_mode") or defaults["strategy_mode"],
-        strategy_profile_id=body.get("strategyProfileId") or body.get("strategy_profile_id") or defaults.get("strategy_profile_id"),
+        strategy_profile_id=_enabled_strategy_profile_id(
+            context,
+            body.get("strategyProfileId") or body.get("strategy_profile_id") or defaults.get("strategy_profile_id"),
+        ),
         ai_dynamic_strategy=body.get("aiDynamicStrategy") or body.get("ai_dynamic_strategy") or defaults.get("ai_dynamic_strategy"),
         ai_dynamic_strength=_normalize_dynamic_strength(
             body.get("aiDynamicStrength") if "aiDynamicStrength" in body else body.get("ai_dynamic_strength"),

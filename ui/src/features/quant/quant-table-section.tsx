@@ -24,6 +24,7 @@ type QuantTableSectionProps = {
   toolbar?: ReactNode;
   onRowAction?: (row: TableRow, action: TableAction) => void;
   compactConfig?: CompactConfig;
+  signalDetailSource?: "live" | "replay";
 };
 
 const emptyShellStyle: CSSProperties = {
@@ -35,13 +36,21 @@ const emptyBodyStyle: CSSProperties = {
 };
 
 const STOCK_CODE_PATTERN = /\b\d{6}\b/;
+const SIGNAL_ID_PATTERN = /\b\d+\b/;
 
 const normalizeStockCode = (value?: string) => {
   const match = String(value ?? "").match(STOCK_CODE_PATTERN);
   return match?.[0] ?? "";
 };
 
+const normalizeSignalId = (value?: string) => {
+  const match = String(value ?? "").match(SIGNAL_ID_PATTERN);
+  return match?.[0] ?? "";
+};
+
 const stockDetailPath = (code: string) => `/portfolio/position/${encodeURIComponent(code)}`;
+const signalDetailPath = (signalId: string, source: "live" | "replay") =>
+  `/signal-detail/${encodeURIComponent(signalId)}?source=${encodeURIComponent(source)}`;
 
 const rowStockCode = (row: TableRow) =>
   normalizeStockCode(row.code)
@@ -61,6 +70,11 @@ const isStockReferenceColumn = (column: string, index: number) => {
   );
 };
 
+const isSignalReferenceColumn = (column: string) => {
+  const normalized = String(column).trim().toLowerCase();
+  return normalized.includes("信号id") || normalized === "signalid" || normalized === "signal_id";
+};
+
 export function QuantTableSectionCard({
   title,
   description,
@@ -74,6 +88,7 @@ export function QuantTableSectionCard({
   toolbar,
   onRowAction,
   compactConfig,
+  signalDetailSource,
 }: QuantTableSectionProps) {
   const isCompactLayout = useCompactLayout();
   const showActions = Boolean(actionsHead) || table.rows.some((row) => (row.actions?.length ?? 0) > 0);
@@ -139,6 +154,14 @@ export function QuantTableSectionCard({
     const isActionColumn = normalizedColumn.includes("动作") || normalizedColumn === "action";
     const isStrategyColumn = normalizedColumn.includes("策略") || normalizedColumn === "strategy";
     const code = rowStockCode(row);
+    const signalId = signalDetailSource && isSignalReferenceColumn(column) ? normalizeSignalId(cell) : "";
+    if (signalId && signalDetailSource) {
+      return (
+        <Link className="stock-link" to={signalDetailPath(signalId, signalDetailSource)}>
+          {cell}
+        </Link>
+      );
+    }
     if (code && isStockReferenceColumn(column, index)) {
       return (
         <Link className="stock-link" to={stockDetailPath(code)}>

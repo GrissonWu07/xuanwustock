@@ -133,6 +133,14 @@ describe("LiveSimPage", () => {
     expect(screen.getByRole("link", { name: "600519" })).toHaveAttribute("href", "/portfolio/position/600519");
     expect(await screen.findByRole("link", { name: "600000 浦发银行" })).toHaveAttribute("href", "/portfolio/position/600000");
     expect(screen.getAllByText("策略配置")).toHaveLength(1);
+    expect(screen.queryByText("资金池最低(元)")).not.toBeInTheDocument();
+    expect(screen.queryByText("资金池最高(元)")).not.toBeInTheDocument();
+    expect(screen.queryByText("单Slot最低(元)")).not.toBeInTheDocument();
+    expect(screen.queryByText("卖出资金复用")).not.toBeInTheDocument();
+    expect(screen.queryByText("启用Slot资金管理")).not.toBeInTheDocument();
+    expect(screen.queryByText("自动执行模拟交易")).not.toBeInTheDocument();
+    expect(screen.queryByText("弱BUY最小Slot比例")).not.toBeInTheDocument();
+    expect(screen.queryByText("Slot下限")).not.toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "策略" })).not.toBeInTheDocument();
     expect(await screen.findByRole("columnheader", { name: "状态" })).toBeInTheDocument();
   });

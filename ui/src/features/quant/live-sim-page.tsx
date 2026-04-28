@@ -47,11 +47,6 @@ function normalizeAiDynamicStrategy(value: string) {
   return "off";
 }
 
-function parseAutoExecute(value: string) {
-  const normalized = String(value).trim().toLowerCase();
-  return normalized === "true" || normalized === "1" || normalized.includes("开");
-}
-
 function parseRatePercent(value: string | undefined, fallback: number) {
   const match = String(value ?? "").match(/-?\d+(\.\d+)?/);
   if (!match) return fallback;
@@ -122,21 +117,14 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const [aiDynamicStrength, setAiDynamicStrength] = useState(0.5);
   const [aiDynamicLookback, setAiDynamicLookback] = useState(48);
   const [market, setMarket] = useState<(typeof MARKET_OPTIONS)[number]>("CN");
-  const [autoExecute, setAutoExecute] = useState(true);
   const [initialCash, setInitialCash] = useState(100000);
   const [commissionRatePct, setCommissionRatePct] = useState(0.03);
   const [sellTaxRatePct, setSellTaxRatePct] = useState(0.1);
-  const [capitalSlotEnabled, setCapitalSlotEnabled] = useState(true);
-  const [capitalPoolMinCash, setCapitalPoolMinCash] = useState(20000);
-  const [capitalPoolMaxCash, setCapitalPoolMaxCash] = useState(1000000);
-  const [capitalSlotMinCash, setCapitalSlotMinCash] = useState(20000);
   const [capitalMaxSlots, setCapitalMaxSlots] = useState(25);
-  const [capitalMinBuySlotFraction, setCapitalMinBuySlotFraction] = useState(0.25);
   const [capitalFullBuyEdge, setCapitalFullBuyEdge] = useState(0.25);
   const [capitalConfidenceWeight, setCapitalConfidenceWeight] = useState(0.35);
   const [capitalHighPriceThreshold, setCapitalHighPriceThreshold] = useState(100);
   const [capitalHighPriceMaxSlotUnits, setCapitalHighPriceMaxSlotUnits] = useState(2);
-  const [capitalSellCashReusePolicy, setCapitalSellCashReusePolicy] = useState("next_batch");
   const [actionPending, setActionPending] = useState<"save" | "reset" | "start" | "stop" | null>(null);
   const [signalTable, setSignalTable] = useState<TableSection>({
     columns: ["信号ID", "时间", "代码", "动作", "状态"],
@@ -169,21 +157,14 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     setAiDynamicStrength(parseDynamicStrength(snapshot.config.aiDynamicStrength, 0.5));
     setAiDynamicLookback(parseDynamicLookback(snapshot.config.aiDynamicLookback, 48));
     setMarket(normalizeMarket(snapshot.config.market) as (typeof MARKET_OPTIONS)[number]);
-    setAutoExecute(parseAutoExecute(snapshot.config.autoExecute));
     setInitialCash(Number.parseFloat(String(snapshot.config.initialCapital)) || 100000);
     setCommissionRatePct(parseRatePercent(snapshot.config.commissionRatePct, 0.03));
     setSellTaxRatePct(parseRatePercent(snapshot.config.sellTaxRatePct, 0.1));
-    setCapitalSlotEnabled(snapshot.config.capitalSlotEnabled ?? true);
-    setCapitalPoolMinCash(parseNumberConfig(snapshot.config.capitalPoolMinCash, 20000));
-    setCapitalPoolMaxCash(parseNumberConfig(snapshot.config.capitalPoolMaxCash, 1000000));
-    setCapitalSlotMinCash(parseNumberConfig(snapshot.config.capitalSlotMinCash, 20000));
     setCapitalMaxSlots(parseNumberConfig(snapshot.config.capitalMaxSlots, 25));
-    setCapitalMinBuySlotFraction(parseNumberConfig(snapshot.config.capitalMinBuySlotFraction, 0.25));
     setCapitalFullBuyEdge(parseNumberConfig(snapshot.config.capitalFullBuyEdge, 0.25));
     setCapitalConfidenceWeight(parseNumberConfig(snapshot.config.capitalConfidenceWeight, 0.35));
     setCapitalHighPriceThreshold(parseNumberConfig(snapshot.config.capitalHighPriceThreshold, 100));
     setCapitalHighPriceMaxSlotUnits(parseNumberConfig(snapshot.config.capitalHighPriceMaxSlotUnits, 2));
-    setCapitalSellCashReusePolicy(String(snapshot.config.capitalSellCashReusePolicy ?? "next_batch"));
   }, [snapshotVersion]);
 
   useEffect(() => {
@@ -442,20 +423,20 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     aiDynamicStrength,
     aiDynamicLookback,
     market,
-    autoExecute,
+    autoExecute: true,
     commissionRatePct,
     sellTaxRatePct,
-    capitalSlotEnabled,
-    capitalPoolMinCash,
-    capitalPoolMaxCash,
-    capitalSlotMinCash,
+    capitalSlotEnabled: true,
+    capitalPoolMinCash: 20000,
+    capitalPoolMaxCash: 1_000_000_000_000,
+    capitalSlotMinCash: 20000,
     capitalMaxSlots,
-    capitalMinBuySlotFraction,
+    capitalMinBuySlotFraction: 0.25,
     capitalFullBuyEdge,
     capitalConfidenceWeight,
     capitalHighPriceThreshold,
     capitalHighPriceMaxSlotUnits,
-    capitalSellCashReusePolicy,
+    capitalSellCashReusePolicy: "next_batch",
   };
 
   return (
@@ -495,10 +476,6 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
               <div className="mini-metric">
                 <div className="mini-metric__label">卖出税费</div>
                 <div className="mini-metric__value">{`${parseRatePercent(snapshot.config.sellTaxRatePct, sellTaxRatePct).toFixed(4)}%`}</div>
-              </div>
-              <div className="mini-metric">
-                <div className="mini-metric__label">Slot下限</div>
-                <div className="mini-metric__value">{`${capitalSlotMinCash.toLocaleString()} 元`}</div>
               </div>
               <div className="mini-metric">
                 <div className="mini-metric__label">最大Slot</div>
@@ -598,37 +575,9 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                   onChange={(event) => setSellTaxRatePct(Math.max(0, Number(event.target.value) || 0))}
                 />
               </label>
-              <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: "10px" }}>
-                <input type="checkbox" checked={autoExecute} onChange={(event) => setAutoExecute(event.target.checked)} />
-                <span className="field__label" style={{ marginBottom: 0 }}>
-                  自动执行模拟交易
-                </span>
-              </label>
-              <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: "10px" }}>
-                <input type="checkbox" checked={capitalSlotEnabled} onChange={(event) => setCapitalSlotEnabled(event.target.checked)} />
-                <span className="field__label" style={{ marginBottom: 0 }}>
-                  启用Slot资金管理
-                </span>
-              </label>
-              <label className="field">
-                <span className="field__label">资金池最低(元)</span>
-                <input className="input" min={20000} step={1000} type="number" value={capitalPoolMinCash} onChange={(event) => setCapitalPoolMinCash(Math.max(20000, Number(event.target.value) || 20000))} />
-              </label>
-              <label className="field">
-                <span className="field__label">资金池最高(元)</span>
-                <input className="input" min={capitalPoolMinCash} step={10000} type="number" value={capitalPoolMaxCash} onChange={(event) => setCapitalPoolMaxCash(Number(event.target.value) || 1000000)} />
-              </label>
-              <label className="field">
-                <span className="field__label">单Slot最低(元)</span>
-                <input className="input" min={20000} step={1000} type="number" value={capitalSlotMinCash} onChange={(event) => setCapitalSlotMinCash(Math.max(20000, Number(event.target.value) || 20000))} />
-              </label>
               <label className="field">
                 <span className="field__label">最大Slot数</span>
                 <input className="input" min={1} step={1} type="number" value={capitalMaxSlots} onChange={(event) => setCapitalMaxSlots(Number(event.target.value) || 25)} />
-              </label>
-              <label className="field">
-                <span className="field__label">弱BUY最小Slot比例</span>
-                <input className="input" min={0} max={1} step={0.05} type="number" value={capitalMinBuySlotFraction} onChange={(event) => setCapitalMinBuySlotFraction(Number(event.target.value) || 0.25)} />
               </label>
               <label className="field">
                 <span className="field__label">满Slot分数边际</span>
@@ -645,13 +594,6 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
               <label className="field">
                 <span className="field__label">高价股最大Slot</span>
                 <input className="input" min={1} max={5} step={0.5} type="number" value={capitalHighPriceMaxSlotUnits} onChange={(event) => setCapitalHighPriceMaxSlotUnits(Number(event.target.value) || 2)} />
-              </label>
-              <label className="field">
-                <span className="field__label">卖出资金复用</span>
-                <select className="input" value={capitalSellCashReusePolicy} onChange={(event) => setCapitalSellCashReusePolicy(event.target.value)}>
-                  <option value="next_batch">下一批次可用</option>
-                  <option value="same_batch">同批次可用</option>
-                </select>
               </label>
             </div>
             <div className="card-divider" />

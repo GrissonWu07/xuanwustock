@@ -52,4 +52,9 @@ def _replay_table_query_from_request(request: Request | None) -> dict[str, Any]:
         "signal_page": _normalize_replay_table_page(params.get("signalPage") or params.get("signal_page")),
         "signal_action": params.get("signalAction") or params.get("signal_action") or "ALL",
         "signal_stock": params.get("signalStock") or params.get("signal_stock") or "",
+        "run_id": params.get("runId") or params.get("run_id") or "",
+        "checkpoint_at": params.get("checkpointAt") or params.get("checkpoint_at") or "",
+        "checkpoint_page": _normalize_replay_table_page(params.get("checkpointPage") or params.get("checkpoint_page")),
+        "checkpoint_page_size": _normalize_replay_table_page_size(params.get("checkpointPageSize") or params.get("checkpoint_page_size"), default=50),
+        "checkpoint_search": params.get("checkpointSearch") or params.get("checkpoint_search") or "",
     }
