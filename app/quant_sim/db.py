@@ -1390,6 +1390,13 @@ class QuantSimDB:
         conn = self._connect()
         try:
             cursor = conn.cursor()
+            if status == "running":
+                cursor.execute("SELECT status, cancel_requested FROM sim_runs WHERE id = ?", (run_id,))
+                row = cursor.fetchone()
+                current_status = str(row["status"] or "").lower() if row is not None else ""
+                cancel_requested = bool(row["cancel_requested"]) if row is not None else False
+                if cancel_requested or current_status in {"cancel_requested", "cancelled", "completed", "failed"}:
+                    return
             if metadata is not None:
                 cursor.execute("SELECT metadata_json FROM sim_runs WHERE id = ?", (run_id,))
                 row = cursor.fetchone()
@@ -1499,11 +1506,15 @@ class QuantSimDB:
             """
             UPDATE sim_runs
             SET cancel_requested = 1,
+                status = CASE
+                    WHEN status IN ('queued', 'running') THEN 'cancel_requested'
+                    ELSE status
+                END,
                 status_message = ?,
                 updated_at = ?
             WHERE id = ?
             """,
-            ("已请求取消，正在尽快停止当前回放", self._now(), run_id),
+            ("已请求取消，可开始新的回放任务；后台会在安全点停止。", self._now(), run_id),
         )
         conn.commit()
         conn.close()

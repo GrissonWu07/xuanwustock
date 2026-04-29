@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import re
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -79,4 +80,22 @@ def test_current_technical_docs_match_gateway_spa_architecture():
         assert "app/gateway_api.py" in text or "gateway_api.py" in text
         assert "/main" in text
         assert "/live-sim" in text or "/api/v1/quant/live-sim" in text
+
+
+def _css_block(css: str, selector: str) -> str:
+    match = re.search(rf"{re.escape(selector)}\s*\{{(?P<body>.*?)\n\}}", css, re.S)
+    assert match, f"Missing CSS selector: {selector}"
+    return match.group("body")
+
+
+def test_research_intelligence_text_is_not_line_clamped():
+    css = (PROJECT_ROOT / "ui" / "src" / "styles" / "globals.css").read_text(encoding="utf-8")
+
+    output_block = _css_block(css, ".research-module-list__output")
+    assert "-webkit-line-clamp" not in output_block
+    assert "overflow: hidden" not in output_block
+
+    for selector in [".research-module-card__insight-item-body", ".research-module-card__detail-body"]:
+        block = _css_block(css, selector)
+        assert "-webkit-line-clamp" not in block
 

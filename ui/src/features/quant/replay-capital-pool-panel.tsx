@@ -4,6 +4,7 @@ import { WorkbenchCard } from "../../components/ui/workbench-card";
 import type { ReplayCapitalLot, ReplayCapitalPool, ReplayCapitalPoolSnapshot } from "../../lib/page-models";
 
 const CHECKPOINT_PAGE_SIZE = 50;
+const SLOT_PAGE_SIZE = 6;
 type CheckpointQuery = Record<string, string | number>;
 
 function localizeSlotStatus(status: string) {
@@ -128,6 +129,7 @@ export function ReplayCapitalPoolPanel({
   const [checkpointLoading, setCheckpointLoading] = useState(false);
   const [checkpointError, setCheckpointError] = useState("");
   const [showAllLots, setShowAllLots] = useState(false);
+  const [slotPage, setSlotPage] = useState(1);
 
   useEffect(() => {
     setSelectedSlotIndex(defaultSlotIndex);
@@ -138,6 +140,7 @@ export function ReplayCapitalPoolPanel({
     setCheckpointPage(1);
     setCheckpointError("");
     setShowAllLots(false);
+    setSlotPage(1);
   }, [capitalPool.task.runId]);
 
   const loadCheckpointPage = async (page: number, checkpointAt?: string) => {
@@ -175,6 +178,33 @@ export function ReplayCapitalPoolPanel({
   const checkpointItems = checkpointSnapshot?.checkpoints.items ?? [];
   const checkpointPagination = checkpointSnapshot?.checkpoints.pagination;
   const selectedCheckpointAt = checkpointSnapshot?.selectedCheckpointAt ?? viewCapitalPool.task.checkpoint ?? "";
+  const slotTotal = viewCapitalPool.slots.length;
+  const slotTotalPages = Math.max(1, Math.ceil(slotTotal / SLOT_PAGE_SIZE));
+  const currentSlotPage = Math.min(slotPage, slotTotalPages);
+  const slotPageStart = (currentSlotPage - 1) * SLOT_PAGE_SIZE;
+  const visibleSlots = viewCapitalPool.slots.slice(slotPageStart, slotPageStart + SLOT_PAGE_SIZE);
+  const slotRangeStart = slotTotal ? slotPageStart + 1 : 0;
+  const slotRangeEnd = Math.min(slotPageStart + visibleSlots.length, slotTotal);
+  const visibleSlotIndexes = visibleSlots.map((slot) => slot.index).join(",");
+
+  useEffect(() => {
+    if (slotPage > slotTotalPages) {
+      setSlotPage(slotTotalPages);
+    }
+  }, [slotPage, slotTotalPages]);
+
+  useEffect(() => {
+    setSlotPage(1);
+  }, [selectedCheckpointAt]);
+
+  useEffect(() => {
+    if (!visibleSlots.length) {
+      return;
+    }
+    if (!visibleSlots.some((slot) => slot.index === selectedSlotIndex)) {
+      setSelectedSlotIndex(visibleSlots[0].index);
+    }
+  }, [selectedSlotIndex, visibleSlotIndexes, visibleSlots]);
 
   return (
     <WorkbenchCard>
@@ -295,8 +325,33 @@ export function ReplayCapitalPoolPanel({
       ) : (
         <div className="replay-capital-layout">
           <div className="replay-capital-pool-board">
+            {slotTotal > SLOT_PAGE_SIZE ? (
+              <div className="replay-capital-slot-toolbar">
+                <span>{`Slot ${slotRangeStart}-${slotRangeEnd} / ${slotTotal}`}</span>
+                <div>
+                  <button
+                    type="button"
+                    className="icon-button icon-button--neutral"
+                    aria-label="上一组 Slot"
+                    disabled={currentSlotPage <= 1}
+                    onClick={() => setSlotPage((page) => Math.max(1, page - 1))}
+                  >
+                    ←
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button icon-button--neutral"
+                    aria-label="下一组 Slot"
+                    disabled={currentSlotPage >= slotTotalPages}
+                    onClick={() => setSlotPage((page) => Math.min(slotTotalPages, page + 1))}
+                  >
+                    →
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="replay-capital-slot-grid">
-              {viewCapitalPool.slots.map((slot) => (
+              {visibleSlots.map((slot) => (
                 <button
                   type="button"
                   key={slot.id}

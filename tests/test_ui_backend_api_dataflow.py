@@ -7,6 +7,7 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 import app.gateway_api as gateway_api
+from app.notification_service import notification_service
 from app.selector_result_store import save_latest_result
 
 
@@ -760,6 +761,16 @@ def test_backend_api_research_run_module_persists_real_snapshot(tmp_path, monkey
     monkeypatch.setattr(gateway_api, "NewsFlowEngine", FakeNewsFlowEngine)
     monkeypatch.setattr(gateway_api, "MacroAnalysisEngine", FakeMacroAnalysisEngine)
     monkeypatch.setattr(gateway_api, "MacroCycleEngine", FakeMacroCycleEngine)
+    sent_notifications: list[dict] = []
+    monkeypatch.setattr(
+        notification_service,
+        "send_research_notification",
+        lambda result, *, task_id=None, selected_modules=None: sent_notifications.append(
+            {"result": result, "task_id": task_id, "selected_modules": selected_modules}
+        )
+        or True,
+        raising=False,
+    )
 
     context = module.UIApiContext(
         data_dir=tmp_path,
@@ -791,4 +802,7 @@ def test_backend_api_research_run_module_persists_real_snapshot(tmp_path, monkey
     snapshot = client.get("/api/v1/research").json()
     assert snapshot["outputTable"]["rows"] == payload["outputTable"]["rows"]
     assert snapshot["modules"][3]["note"] == payload["modules"][3]["note"]
+    assert len(sent_notifications) == 1
+    assert sent_notifications[0]["selected_modules"] == ["sector", "longhubang", "news", "macro", "cycle"]
+    assert sent_notifications[0]["result"]["summary"]["title"] == "研究情报已更新"
 

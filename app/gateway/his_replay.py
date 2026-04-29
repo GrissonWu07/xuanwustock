@@ -323,23 +323,74 @@ def _calculate_replay_equity_metrics(initial_cash: float, equity_values: list[fl
     return final_equity, total_return_pct, max_drawdown_pct
 
 
+def _his_replay_run_has_live_worker(run: dict[str, Any]) -> bool:
+    from app.quant_sim.replay_runner import _is_pid_running
+
+    worker_pid = int(_float(run.get("worker_pid"), 0.0) or 0.0)
+    return worker_pid > 0 and _is_pid_running(worker_pid)
+
+
+def _finalize_cancelled_his_replay_run(
+    db: QuantSimDB,
+    run: dict[str, Any],
+    *,
+    stale_worker: bool,
+) -> None:
+    run_id = int(run.get("id") or 0)
+    if run_id <= 0:
+        return
+    status = _txt(run.get("status")).lower()
+    if status in {"cancelled", "completed", "failed"}:
+        return
+
+    checkpoints = db.get_sim_run_checkpoints(run_id)
+    trades = db.get_sim_run_trades(run_id)
+    snapshots = db.get_sim_run_snapshots(run_id)
+    checkpoint_equity = [float(item.get("total_equity") or 0) for item in checkpoints if item.get("total_equity") is not None]
+    snapshot_equity = [float(item.get("total_equity") or 0) for item in snapshots if item.get("total_equity") is not None]
+    initial_cash = float(run.get("initial_cash") or 0)
+    final_equity, total_return_pct, max_drawdown_pct = _calculate_replay_equity_metrics(initial_cash, snapshot_equity or checkpoint_equity)
+    sell_trades = [trade for trade in trades if _txt(trade.get("action")).upper() == "SELL"]
+    wins = [trade for trade in sell_trades if float(trade.get("realized_pnl") or 0) > 0]
+    win_rate = (len(wins) / len(sell_trades) * 100) if sell_trades else 0.0
+
+    db.finalize_sim_run(
+        run_id,
+        status="cancelled",
+        final_equity=final_equity,
+        total_return_pct=total_return_pct,
+        max_drawdown_pct=max_drawdown_pct,
+        win_rate=win_rate,
+        trade_count=len(trades),
+        status_message="回放任务已取消，可开始新的回放任务。",
+        metadata={
+            "cancelled_by_user": True,
+            "stale_worker_cancel": stale_worker,
+            "checkpoint_count": len(checkpoints),
+        },
+    )
+    db.append_sim_run_event(run_id, "回放任务已取消，可开始新的回放任务。", level="warning")
+
+
 def _his_replay_database_busy(exc: BaseException) -> HTTPException:
     return HTTPException(status_code=503, detail="历史回放正在写入数据库，请稍后刷新。")
 
 
 def _reconcile_stale_his_replay_runs(db: QuantSimDB) -> None:
-    from app.quant_sim.replay_runner import _is_pid_running
-
     for run in db.get_sim_runs(limit=20):
         status = _txt(run.get("status")).lower()
+        cancel_requested = bool(run.get("cancel_requested"))
+        if status == "cancel_requested" or (status in {"queued", "running"} and cancel_requested):
+            if not _his_replay_run_has_live_worker(run):
+                _finalize_cancelled_his_replay_run(db, run, stale_worker=True)
+            continue
         if status not in {"queued", "running"}:
             continue
         progress_total = int(_float(run.get("progress_total"), 0.0) or 0.0)
         progress_current = int(_float(run.get("progress_current"), 0.0) or 0.0)
         if progress_total <= 0 or progress_current < progress_total:
             continue
-        worker_pid = int(_float(run.get("worker_pid"), 0.0) or 0.0)
-        if worker_pid > 0 and _is_pid_running(worker_pid):
+        if _his_replay_run_has_live_worker(run):
             continue
 
         run_id = int(run.get("id") or 0)
@@ -769,7 +820,13 @@ def _action_his_replay_cancel(context: UIApiContext, payload: Any) -> dict[str, 
         latest = next(iter(context.quant_db().get_sim_runs(limit=1)), None)
         run_id = _int(latest.get("id")) if latest else None
     if run_id is not None:
-        context.quant_db().request_sim_run_cancel(run_id)
+        db = context.quant_db()
+        db.request_sim_run_cancel(run_id)
+        run = db.get_sim_run(run_id)
+        if run is not None and not _his_replay_run_has_live_worker(run):
+            _finalize_cancelled_his_replay_run(db, run, stale_worker=True)
+        else:
+            db.append_sim_run_event(run_id, "已请求取消回放任务，可开始新的回放任务。", level="warning")
     return _snapshot_his_replay(context)
 
 

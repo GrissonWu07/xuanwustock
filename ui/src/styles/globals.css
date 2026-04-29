@@ -2789,10 +2789,30 @@ a {
   font-size: 1.02rem;
 }
 
+.replay-capital-slot-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  color: var(--text-soft);
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.replay-capital-slot-toolbar > div {
+  display: flex;
+  gap: 8px;
+}
+
 .replay-capital-slot-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  max-height: 640px;
+  overflow-y: auto;
+  padding-right: 4px;
+  align-content: start;
 }
 
 .replay-capital-slot {
@@ -3613,10 +3633,9 @@ a {
 .research-module-list__output {
   color: var(--text-soft);
   font-size: 0.82rem;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .research-module-detail {

@@ -23,6 +23,7 @@ from app.gateway.common import (
     txt as _txt,
 )
 from app.i18n import t
+from app.notification_service import notification_service
 from app.research_watchlist_integration import add_research_stock_to_watchlist, add_research_stocks_to_watchlist
 from app.sector_strategy_engine import SectorStrategyEngine
 from app.selector_result_store import delete_latest_result, load_latest_result, save_latest_result
@@ -550,6 +551,30 @@ def _append_research_task_log(
     )
 
 
+def _send_research_task_notification(task_id: str, result: dict[str, Any], selected: list[str]) -> None:
+    try:
+        sent = notification_service.send_research_notification(
+            result,
+            task_id=task_id,
+            selected_modules=selected,
+        )
+        _append_research_task_log(
+            task_id,
+            stage="notification",
+            message=t("Research completion notification sent.") if sent else t("Research completion notification was not sent."),
+            progress=100,
+            status="completed",
+        )
+    except Exception as exc:
+        _append_research_task_log(
+            task_id,
+            stage="notification",
+            message=t("Research completion notification failed: {reason}", reason=exc),
+            progress=100,
+            status="completed",
+        )
+
+
 def _run_research_task(context: Any, task_id: str, payload: dict[str, Any]) -> None:
     try:
         if getattr(context, "config_manager", None):
@@ -587,6 +612,7 @@ def _run_research_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
         )
         output_rows = ((result.get("outputTable") or {}).get("rows") or []) if isinstance(result, dict) else []
         final_message = t("Research task completed. Stock outputs: {count}.", count=len(output_rows))
+        _send_research_task_notification(task_id, result, selected)
         _append_research_task_log(
             task_id,
             stage="completed",

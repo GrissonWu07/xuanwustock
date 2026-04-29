@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sqlite3
 import threading
@@ -1557,6 +1558,61 @@ def test_his_replay_actions_enqueue_cancel_delete_and_rerun(tmp_path, monkeypatc
     delete_resp = client.post("/api/v1/quant/his-replay/actions/delete", json={"id": run_id})
     assert delete_resp.status_code == 200
     assert all(int(item["id"]) != run_id for item in context.quant_db().get_sim_runs(limit=20))
+
+
+def test_his_replay_cancel_stale_running_run_clears_active_lock(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-10 15:00:00",
+        initial_cash=100000,
+        status="running",
+        progress_current=5,
+        progress_total=100,
+        metadata={"selected_strategy_mode": "auto"},
+    )
+
+    client = TestClient(create_app(context=context))
+    cancel_resp = client.post("/api/v1/quant/his-replay/actions/cancel", json={"id": run_id})
+
+    assert cancel_resp.status_code == 200
+    run = context.quant_db().get_sim_run(run_id)
+    assert run is not None
+    assert run["status"] == "cancelled"
+    assert run["cancel_requested"] == 1
+    assert context.quant_db().get_active_sim_run() is None
+
+
+def test_his_replay_cancel_live_running_run_releases_active_lock(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-10 15:00:00",
+        initial_cash=100000,
+        status="running",
+        progress_current=5,
+        progress_total=100,
+        metadata={"selected_strategy_mode": "auto"},
+    )
+    db.set_sim_run_worker_pid(run_id, os.getpid())
+
+    client = TestClient(create_app(context=context))
+    cancel_resp = client.post("/api/v1/quant/his-replay/actions/cancel", json={"id": run_id})
+
+    assert cancel_resp.status_code == 200
+    run = context.quant_db().get_sim_run(run_id)
+    assert run is not None
+    assert run["status"] == "cancel_requested"
+    assert run["cancel_requested"] == 1
+    assert context.quant_db().get_active_sim_run() is None
 
 
 def test_his_replay_progress_endpoint_returns_lightweight_task_progress(tmp_path):

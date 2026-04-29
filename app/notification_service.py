@@ -561,7 +561,24 @@ _此消息由AI股票分析系统自动发送_"""
             'webhook_url': self.config['webhook_url'][:50] + '...' if self.config['webhook_url'] else '未配置',
             'configured': bool(self.config['webhook_url'])
         }
-    
+
+    def send_research_notification(
+        self,
+        result: dict,
+        *,
+        task_id: str | None = None,
+        selected_modules: list[str] | None = None,
+    ) -> bool:
+        """发送研究情报完成通知。"""
+        from app.notification_research import send_research_notification
+
+        return send_research_notification(
+            self,
+            result,
+            task_id=task_id,
+            selected_modules=selected_modules,
+        )
+
     def send_portfolio_analysis_notification(self, analysis_results: dict, sync_result: dict = None) -> bool:
         """
         发送持仓分析完成通知
