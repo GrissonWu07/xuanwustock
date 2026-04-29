@@ -206,6 +206,7 @@
   "Batch analysis generated separate outputs per symbol. Click any symbol to view full details below.": "Batch analysis generated separate outputs per symbol. Click any symbol to view full details below.",
   "Decision: {decision}": "Decision: {decision}",
   "Language": "Language",
+  "Version": "Version",
   "Chinese": "中文",
   "English": "EN",
   "Current analysis progress": "Current analysis progress",

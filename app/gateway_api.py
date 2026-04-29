@@ -33,6 +33,7 @@ from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.db import is_sqlite_locked_error
 from app.stock_analysis_daily_scheduler import get_stock_analysis_daily_scheduler
 from app.stock_refresh_scheduler import get_unified_stock_refresh_scheduler
+from app.version_info import get_version_info
 from app.workbench_analysis_tasks import analysis_task_manager
 
 MainForceStockSelector = _gateway_discover_module.MainForceStockSelector
@@ -194,7 +195,14 @@ TASK_MANAGERS = [analysis_task_manager, discover_task_manager, research_task_man
 
 
 def _health(path: str) -> dict[str, str]:
-    return {"status": "ok", "service": SERVICE_NAME, "path": path}
+    version = get_version_info()
+    return {
+        "status": "ok",
+        "service": SERVICE_NAME,
+        "path": path,
+        "version": str(version.get("version") or ""),
+        "revision": str(version.get("revision") or ""),
+    }
 
 
 def _resolve_task_manager(task_id: str):
@@ -248,6 +256,14 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, str]:
         return _health("/health")
+
+    @app.get("/api/version")
+    def api_version() -> dict[str, Any]:
+        return get_version_info()
+
+    @app.get("/api/v1/version")
+    def api_v1_version() -> dict[str, Any]:
+        return get_version_info()
 
     @app.get("/api/v1/tasks/{task_id}")
     def get_analysis_task(task_id: str) -> dict[str, Any]:

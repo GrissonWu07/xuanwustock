@@ -185,9 +185,8 @@ def _build_slot_lot_groups(
                 continue
             slot_index = max(_safe_int(allocation.get("slot_index"), 1), 1)
             allocated_cash = _float(allocation.get("allocated_cash"), 0.0) or 0.0
-            ratio = allocated_cash / total_allocated if total_allocated > 0 else 1.0
-            group_quantity = max(1, int(round(quantity * ratio))) if quantity > 0 else 0
-            group_lot_count = max(1, int(round(max(_safe_int(lot.get("lot_count")), 1) * ratio)))
+            group_quantity = quantity
+            group_lot_count = max(_safe_int(lot.get("lot_count")), 1)
             stock_code = _txt(lot.get("stock_code"))
             position = positions_by_code.get(stock_code, {})
             position_quantity = max(_safe_int(position.get("quantity")), 0)
@@ -236,6 +235,60 @@ def _build_slot_lot_groups(
     return groups
 
 
+def _open_lots_from_live_positions(db: QuantSimDB, positions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    allocations_by_lot: dict[str, list[dict[str, Any]]] = {}
+    for position in positions:
+        stock_code = _txt(position.get("stock_code"))
+        if not stock_code:
+            continue
+        for allocation in db.get_lot_slot_allocations(stock_code):
+            lot_id = _txt(allocation.get("lot_id"))
+            if not lot_id or _txt(allocation.get("status"), "open").lower() != "open":
+                continue
+            allocated_cash = _float(allocation.get("allocated_cash"), 0.0) or 0.0
+            released_cash = _float(allocation.get("released_cash"), 0.0) or 0.0
+            open_cash = max(round(allocated_cash - released_cash, 4), 0.0)
+            if open_cash <= 0:
+                continue
+            allocations_by_lot.setdefault(lot_id, []).append(
+                {
+                    "slot_index": _safe_int(allocation.get("slot_index"), 1),
+                    "allocated_cash": open_cash,
+                    "slot_units": None,
+                }
+            )
+
+    open_lots: dict[str, dict[str, Any]] = {}
+    for index, position in enumerate(positions):
+        stock_code = _txt(position.get("stock_code"))
+        if not stock_code:
+            continue
+        lots = db.get_position_lots(stock_code)
+        for lot in lots:
+            lot_id = _txt(lot.get("lot_id")) or f"{stock_code}-{_txt(lot.get('id'), str(index))}"
+            remaining_quantity = max(_safe_int(lot.get("remaining_quantity")), 0)
+            if remaining_quantity <= 0:
+                continue
+            entry_price = _float(lot.get("entry_price"), 0.0) or 0.0
+            fallback_cash = round(entry_price * remaining_quantity, 4)
+            allocations = allocations_by_lot.get(lot_id)
+            if not allocations:
+                allocations = [{"slot_index": (index % max(len(positions), 1)) + 1, "allocated_cash": fallback_cash, "slot_units": 1.0}]
+            open_lots[lot_id] = {
+                "lot_id": lot_id,
+                "stock_code": stock_code,
+                "stock_name": _txt(position.get("stock_name"), stock_code),
+                "entry_price": entry_price,
+                "quantity": max(_safe_int(lot.get("quantity")), remaining_quantity),
+                "remaining_quantity": remaining_quantity,
+                "lot_count": max(1, (remaining_quantity + 99) // 100),
+                "unlock_date": _txt(lot.get("unlock_date")),
+                "is_add": False,
+                "allocations": allocations,
+            }
+    return open_lots
+
+
 def _capital_lot_card(group: dict[str, Any]) -> dict[str, Any]:
     prices = [float(price) for price in group.get("entry_prices", []) if float(price or 0) > 0]
     cost_band = "--"
@@ -269,6 +322,87 @@ def _capital_lot_card(group: dict[str, Any]) -> dict[str, Any]:
         "isStack": max(_safe_int(group.get("lot_count")), 0) > 1 or len(lot_ids) > 1,
         "lotIds": lot_ids[:8],
         "hiddenLotCount": max(len(lot_ids) - 8, 0),
+    }
+
+
+def build_live_sim_capital_pool(db: QuantSimDB) -> dict[str, Any]:
+    account = db.get_account_summary()
+    scheduler_config = db.get_scheduler_config()
+    positions = db.get_positions()
+    positions_by_code = {_txt(position.get("stock_code")): position for position in positions if _txt(position.get("stock_code"))}
+    slot_rows = db.get_capital_slots()
+    slot_by_index = {_safe_int(slot.get("slot_index")): slot for slot in slot_rows}
+    plan = calculate_slot_plan(float(account.get("total_equity") or 0.0), normalize_capital_slot_config(scheduler_config))
+    open_lots = _open_lots_from_live_positions(db, positions)
+    groups = _build_slot_lot_groups(open_lots, positions_by_code)
+    max_group_slot = max((slot_index for slot_index, _ in groups.keys()), default=0)
+    slot_count = max(len(slot_rows), _safe_int(plan.get("slot_count")), max_group_slot)
+    slot_budget = _float((slot_rows[0] if slot_rows else {}).get("budget_cash"), _float(plan.get("slot_budget"), 0.0)) or 0.0
+
+    lots_by_slot: dict[int, list[dict[str, Any]]] = {}
+    fallback_occupied_by_slot: dict[int, float] = {}
+    for (slot_index, _stock_code), group in groups.items():
+        lot_card = _capital_lot_card(group)
+        lots_by_slot.setdefault(slot_index, []).append(lot_card)
+        fallback_occupied_by_slot[slot_index] = round(
+            fallback_occupied_by_slot.get(slot_index, 0.0) + (_float(group.get("allocated_cash"), 0.0) or 0.0),
+            4,
+        )
+
+    slots: list[dict[str, Any]] = []
+    for index in range(1, max(slot_count, 0) + 1):
+        slot_row = slot_by_index.get(index, {})
+        budget_cash = _float(slot_row.get("budget_cash"), slot_budget) or slot_budget
+        occupied_cash = _float(slot_row.get("occupied_cash"), fallback_occupied_by_slot.get(index, 0.0)) or 0.0
+        available_cash = _float(slot_row.get("available_cash"), max(budget_cash - occupied_cash, 0.0)) or 0.0
+        settling_cash = _float(slot_row.get("settling_cash"), 0.0) or 0.0
+        lots = sorted(lots_by_slot.get(index, []), key=lambda item: (-_safe_int(item.get("lotCount")), _txt(item.get("stockCode"))))
+        usage_pct = round(min(max((occupied_cash / budget_cash * 100) if budget_cash > 0 else 0.0, 0.0), 100.0), 1)
+        status = "occupied" if occupied_cash > 0.01 or lots else ("settling" if settling_cash > 0.01 else "free")
+        slots.append(
+            {
+                "id": f"slot-{index}",
+                "index": index,
+                "title": f"Slot {index:02d}",
+                "status": status,
+                "budgetCash": _num(budget_cash),
+                "availableCash": _num(available_cash),
+                "occupiedCash": _num(occupied_cash),
+                "settlingCash": _num(settling_cash),
+                "usagePct": usage_pct,
+                "lots": lots,
+                "hiddenLotGroups": max(len(lots) - 3, 0),
+            }
+        )
+
+    selected_slot = next((slot for slot in slots if slot["status"] == "occupied"), slots[0] if slots else None)
+    return {
+        "task": {
+            "runId": "live",
+            "status": "live",
+            "checkpoint": _now(),
+            "timeframe": _txt(scheduler_config.get("analysis_timeframe"), "30m"),
+            "range": "实时模拟当前快照",
+            "strategy": _txt(scheduler_config.get("strategy_profile_id") or scheduler_config.get("strategy_mode"), "--"),
+        },
+        "pool": {
+            "initialCash": _num(account.get("initial_cash")),
+            "cashValue": _num(account.get("available_cash")),
+            "marketValue": _num(account.get("market_value")),
+            "totalEquity": _num(account.get("total_equity")),
+            "realizedPnl": _num(account.get("realized_pnl")),
+            "unrealizedPnl": _num(account.get("unrealized_pnl")),
+            "slotCount": slot_count,
+            "slotBudget": _num(slot_budget),
+            "availableCash": _num(sum(_float(slot.get("availableCash"), 0.0) or 0.0 for slot in slots)),
+            "occupiedCash": _num(sum(_float(slot.get("occupiedCash"), 0.0) or 0.0 for slot in slots)),
+            "settlingCash": _num(sum(_float(slot.get("settlingCash"), 0.0) or 0.0 for slot in slots)),
+            "poolReady": bool(plan.get("pool_ready") or slot_count > 0),
+        },
+        "slots": slots,
+        "selectedSlotIndex": selected_slot.get("index") if selected_slot else None,
+        "taskMetrics": [],
+        "notes": [],
     }
 
 

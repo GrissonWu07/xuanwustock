@@ -19,8 +19,10 @@ type QuantTableSectionProps = {
   emptyDescription: string;
   meta?: string[];
   actionsHead?: string;
+  actionsColumnSize?: "default" | "icon";
   actionVariant?: "icon" | "chip";
   tableLayout?: "fixed" | "auto";
+  shellClassName?: string;
   toolbar?: ReactNode;
   onRowAction?: (row: TableRow, action: TableAction) => void;
   compactConfig?: CompactConfig;
@@ -83,8 +85,10 @@ export function QuantTableSectionCard({
   emptyDescription,
   meta = [],
   actionsHead,
+  actionsColumnSize = "default",
   actionVariant = "icon",
   tableLayout = "fixed",
+  shellClassName = "",
   toolbar,
   onRowAction,
   compactConfig,
@@ -208,7 +212,11 @@ export function QuantTableSectionCard({
         {toolbar ? <span className="toolbar__spacer" /> : null}
         {toolbar}
       </div>
-      <div className={`table-shell${compactEnabled ? " table-shell--compact" : ""}`}>
+      <div
+        className={`table-shell${compactEnabled ? " table-shell--compact" : ""}${
+          actionsColumnSize === "icon" ? " table-shell--icon-actions" : ""
+        }${shellClassName ? ` ${shellClassName}` : ""}`}
+      >
         <table className={tableClassName}>
           <thead>
             <tr>

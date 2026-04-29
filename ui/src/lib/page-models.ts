@@ -339,6 +339,7 @@ export type LiveSimSnapshot = {
   trades: TableSection;
   tradeCostSummary?: SummaryMetric[];
   capitalSlots?: TableSection;
+  capitalPool?: ReplayCapitalPool;
   curve: ChartPoint[];
 };
 

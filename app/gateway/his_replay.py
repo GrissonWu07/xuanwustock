@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.gateway.deps import *
 from app.gateway.context import UIApiContext
 from app.gateway.scheduler_config import _enabled_strategy_profile_id, _fee_rate_pct_text, _latest_replay_defaults, _normalize_dynamic_lookback, _normalize_dynamic_strength, _normalize_fee_rate, _payload_fee_rate
+from app.gateway.signal_table import build_signal_summary_row, build_signal_summary_table
 from app.gateway.table_query import _normalize_replay_table_page, _normalize_replay_table_page_size, _replay_actions_for_filter, _replay_table_pagination
 from app.gateway.trades import (
     _replay_execution_summary_metrics,
@@ -257,37 +258,14 @@ def _build_his_replay_signal_table(db: QuantSimDB, run_id: int, table_query: dic
             offset=(pagination["page"] - 1) * page_size,
             actions=actions,
             stock_keyword=stock_keyword,
-            include_strategy_profile=False,
+            include_strategy_profile=True,
         )
     ):
-        signal_id = _txt(item.get("id"), str(i))
         checkpoint_at = _txt(item.get("checkpoint_at") or item.get("created_at"), "--")
-        action_text = _txt(item.get("action"), "HOLD").upper()
-        signal_rows.append(
-            {
-                "id": signal_id,
-                "cells": [
-                    f"#{signal_id}",
-                    checkpoint_at,
-                    _txt(item.get("stock_code")),
-                    action_text,
-                    _txt(item.get("decision_type"), "自动"),
-                    _txt(item.get("signal_status") or item.get("execution_note"), "待处理"),
-                ],
-                "actions": [{"label": "详情", "icon": "🔎", "tone": "accent", "action": "show-signal-detail"}],
-                "analysis": _txt(item.get("reasoning"), "暂无分析数据"),
-                "votes": "暂无投票数据",
-                "decisionType": _txt(item.get("decision_type"), "自动"),
-                "signalStatus": _txt(item.get("signal_status") or item.get("execution_note"), "待处理"),
-                "confidence": _txt(item.get("confidence"), "0"),
-                "techScore": _txt(item.get("tech_score"), "0"),
-                "contextScore": _txt(item.get("context_score"), "0"),
-                "checkpointAt": checkpoint_at,
-                "code": _txt(item.get("stock_code")),
-                "name": _txt(item.get("stock_name")),
-            }
-        )
-    table = _table(["信号ID", "时间", "代码", "动作", "策略", "执行结果"], signal_rows, "暂无信号")
+        row = build_signal_summary_row(item, i, time_key="checkpoint_at", status_key="signal_status")
+        row["checkpointAt"] = checkpoint_at
+        signal_rows.append(row)
+    table = build_signal_summary_table(signal_rows)
     table["pagination"] = pagination
     return table
 
@@ -607,7 +585,7 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
                 [],
                 "暂无交易记录",
             ),
-            "signals": _table(["信号ID", "时间", "代码", "动作", "策略", "执行结果"], [], "暂无信号"),
+            "signals": build_signal_summary_table([], "暂无信号"),
             "tradeCostSummary": _trade_cost_summary_metrics({}),
             "curve": [],
         }

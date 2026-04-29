@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { apiClient, type ApiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
-import { Sparkline } from "../../components/ui/sparkline";
 import { usePageData } from "../../lib/use-page-data";
-import type { ReplayCapitalPoolSnapshot, ReplaySnapshot, SummaryMetric, TableAction, TableRow, TableSection } from "../../lib/page-models";
+import type { ReplayCapitalPoolSnapshot, ReplaySnapshot, SummaryMetric, TableRow, TableSection } from "../../lib/page-models";
 import { summarizeTaskStatuses, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
 import { ReplayCapitalPoolPanel } from "./replay-capital-pool-panel";
@@ -236,6 +234,12 @@ function normalizeAction(cell: string) {
   return String(cell || "").trim().toUpperCase();
 }
 
+function findColumnIndex(table: TableSection, candidates: string[], fallback: number) {
+  const normalizedCandidates = candidates.map((item) => item.trim().toLowerCase());
+  const index = table.columns.findIndex((column) => normalizedCandidates.includes(String(column ?? "").trim().toLowerCase()));
+  return index >= 0 ? index : fallback;
+}
+
 function withCodeName(rows: TableRow[], codeColumnIndex: number): TableRow[] {
   return rows.map((row) => {
     const code = String(row.code ?? row.cells[codeColumnIndex] ?? "").trim();
@@ -265,7 +269,6 @@ function removeExecutionResultColumn(table: TableSection): TableSection {
 }
 
 export function HisReplayPage({ client }: HisReplayPageProps) {
-  const navigate = useNavigate();
   const activeClient = client ?? apiClient;
   const loadReplayCapitalPool = useCallback(
     (query: Record<string, string | number>) => activeClient.getReplayCapitalPool<ReplayCapitalPoolSnapshot>(query),
@@ -559,7 +562,8 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   };
   const tradeRows = withCodeName(snapshot.trades.rows, 2);
   const signalTable = removeExecutionResultColumn(snapshot.signals);
-  const signalRows = withCodeName(signalTable.rows, 2);
+  const signalRows = signalTable.rows;
+  const signalActionColumnIndex = findColumnIndex(signalTable, ["动作", "action"], 4);
   const tradeActionOptions = Array.from(
     new Set(
       snapshot.trades.rows
@@ -570,7 +574,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const signalActionOptions = Array.from(
     new Set(
       signalTable.rows
-        .map((row) => normalizeAction(String(row.cells[3] ?? "")))
+        .map((row) => normalizeAction(String(row.cells[signalActionColumnIndex] ?? "")))
         .filter(Boolean),
     ),
   );
@@ -670,14 +674,6 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
       </span>
     </div>
   );
-  const handleSignalRowAction = (row: TableRow, action: TableAction) => {
-    const actionKey = String(action.action ?? "").trim().toLowerCase();
-    const actionLabel = String(action.label ?? "").trim().toLowerCase();
-    if (!(actionKey === "show-signal-detail" || actionLabel === "详情" || actionLabel === "detail")) {
-      return;
-    }
-    navigate(`/signal-detail/${encodeURIComponent(row.id)}?source=replay`);
-  };
   const handleReplayStart = async () => {
     setIsReplayStarting(true);
     setReplayStartStatus("submitting");
@@ -1183,20 +1179,13 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             )}
           />
 
-          <WorkbenchCard>
-            <h2 className="section-card__title">资金曲线</h2>
-            <Sparkline points={snapshot.curve} />
-          </WorkbenchCard>
-
           <QuantTableSectionCard
             title="信号记录"
             table={pagedSignals}
             emptyTitle={snapshot.signals.emptyLabel ?? "信号记录暂无数据"}
             emptyDescription={snapshot.signals.emptyMessage ?? "回放过程中生成的信号会展示在这里，便于快速核对执行结果。"}
-            actionsHead="操作"
-            actionVariant="chip"
             tableLayout="auto"
-            compactConfig={{ coreColumnIndexes: [0, 2, 3, 4], detailColumnIndexes: [1, 5] }}
+            compactConfig={{ coreColumnIndexes: [0, 2, 3, 4], detailColumnIndexes: [1, 5, 6, 7, 8, 9, 10, 11, 12] }}
             toolbar={renderFilterToolbar(
               signalStockFilter,
               setSignalStockFilter,
@@ -1209,7 +1198,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               `DB筛选 ${signalTotalRows} 条`,
               true,
             )}
-            onRowAction={handleSignalRowAction}
+            signalDetailSource="replay"
           />
         </div>
       </div>

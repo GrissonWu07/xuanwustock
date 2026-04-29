@@ -4,7 +4,9 @@ from app.gateway.deps import *
 from app.gateway.constants import REPLAY_TABLE_PAGE_SIZE
 from app.gateway.context import UIApiContext
 from app.gateway.portfolio import _candidate_rows
+from app.gateway.replay_capital_pool import build_live_sim_capital_pool
 from app.gateway.scheduler_config import _fee_rate_pct_text, _normalize_dynamic_lookback, _normalize_dynamic_strength, _scheduler_update_kwargs
+from app.gateway.signal_table import build_signal_summary_row, build_signal_summary_table
 from app.gateway.table_query import _normalize_replay_table_page, _normalize_replay_table_page_size, _replay_actions_for_filter, _replay_table_pagination
 from app.gateway.trades import (
     _trade_commission_fee,
@@ -23,6 +25,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
     db = context.quant_db()
     scheduler = context.scheduler().get_status()
     account = db.get_account_summary()
+    trade_cost_summary = db.get_trade_cost_summary()
     page_size = _normalize_replay_table_page_size((table_query or {}).get("pageSize"), default=20)
     page = _normalize_replay_table_page((table_query or {}).get("page"))
     search = _txt((table_query or {}).get("search"))
@@ -82,10 +85,15 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
             "candidateCount": _txt(context.candidate_pool().count_candidates(status="active"), "0"),
         },
         "metrics": [
-            _metric("账户结果", account.get("total_equity", 0)),
+            _metric("总权益", account.get("total_equity", 0)),
             _metric("当前持仓", account.get("position_count", 0)),
-            _metric("总收益率", _pct(account.get("total_return_pct"))),
-            _metric("可用现金", account.get("available_cash")),
+            _metric("持仓市值", account.get("market_value", 0)),
+            _metric("现金值", account.get("available_cash")),
+            _metric("总费用", _num(trade_cost_summary.get("fee_total"))),
+            _metric("已实现盈亏", _num(account.get("realized_pnl"))),
+            _metric("浮动盈亏", _num(account.get("unrealized_pnl"))),
+            _metric("交易笔数", _txt(account.get("trade_count"), "0")),
+            _metric("收益率", _pct(account.get("total_return_pct"))),
         ],
         "capitalSlots": _table(
             ["Slot", "预算", "可用", "占用", "待结算"],
@@ -104,6 +112,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
             ],
             "暂无资金槽",
         ),
+        "capitalPool": build_live_sim_capital_pool(db),
         "candidatePool": candidate_table,
         "pendingSignals": [
             _insight(
@@ -140,7 +149,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
             "暂无持仓",
         ),
         "trades": _live_trade_table(context, table_query),
-        "tradeCostSummary": _trade_cost_summary_metrics(db.get_trade_cost_summary()),
+        "tradeCostSummary": _trade_cost_summary_metrics(trade_cost_summary),
         "curve": [
             {"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
             for i, item in enumerate(db.get_account_snapshots(limit=20))
@@ -168,27 +177,11 @@ def _live_signal_table(
             stock_keyword=stock,
         )
     ):
-        signal_id = _txt(item.get("id"), str(i))
-        rows.append(
-            {
-                "id": signal_id,
-                "cells": [
-                    f"#{signal_id}",
-                    _txt(item.get("updated_at") or item.get("created_at"), "--"),
-                    _txt(item.get("stock_code")),
-                    _txt(item.get("action"), "HOLD").upper(),
-                    _txt(item.get("decision_type"), "auto"),
-                    _txt(item.get("status"), "observed"),
-                ],
-                "actions": [{"label": "详情", "icon": "🔎", "tone": "accent", "action": "show-signal-detail"}],
-                "code": _txt(item.get("stock_code")),
-                "name": _txt(item.get("stock_name")),
-            }
-        )
+        rows.append(build_signal_summary_row(item, i, time_key="updated_at", status_key="status"))
     return {
         "updatedAt": _now(),
         "table": {
-            **_table(["信号ID", "时间", "代码", "动作", "策略", "状态"], rows, "暂无信号"),
+            **build_signal_summary_table(rows),
             "pagination": pagination,
         },
     }
@@ -243,7 +236,20 @@ def _live_trade_table(context: UIApiContext, table_query: dict[str, Any] | None 
     )
     table["pagination"] = pagination
     return table
+
+
+def _configure_live_initial_cash_if_present(context: UIApiContext, payload: Any) -> None:
+    body = _payload_dict(payload)
+    if "initialCash" not in body and "initial_cash" not in body:
+        return
+    initial_cash = _float(body.get("initialCash") if "initialCash" in body else body.get("initial_cash"))
+    if initial_cash is None or initial_cash <= 0:
+        raise ValueError("initialCash must be positive")
+    context.portfolio().configure_account(initial_cash=float(initial_cash))
+
+
 def _action_live_sim_save(context: UIApiContext, payload: Any) -> dict[str, Any]:
+    _configure_live_initial_cash_if_present(context, payload)
     updates = _scheduler_update_kwargs(payload)
     if updates:
         context.scheduler().update_config(**updates)
@@ -252,6 +258,7 @@ def _action_live_sim_save(context: UIApiContext, payload: Any) -> dict[str, Any]
 
 def _action_live_sim_start(context: UIApiContext, payload: Any) -> dict[str, Any]:
     scheduler = context.scheduler()
+    _configure_live_initial_cash_if_present(context, payload)
     updates = _scheduler_update_kwargs(payload)
     updates["enabled"] = True
     scheduler.update_config(**updates)

@@ -1465,9 +1465,10 @@ def test_live_sim_actions_use_scheduler_and_candidate_pool(tmp_path, monkeypatch
 
     client = TestClient(create_app(context=context))
 
-    save_resp = client.post("/api/v1/quant/live-sim/actions/save", json={"strategyMode": "defensive"})
+    save_resp = client.post("/api/v1/quant/live-sim/actions/save", json={"strategyMode": "defensive", "initialCash": 500000})
     assert save_resp.status_code == 200
     assert any(call[0] == "update_config" for call in fake_scheduler.calls)
+    assert save_resp.json()["config"]["initialCapital"] == "500000.0"
 
     start_resp = client.post("/api/v1/quant/live-sim/actions/start", json={})
     assert start_resp.status_code == 200
@@ -1778,6 +1779,10 @@ def test_live_sim_snapshot_exposes_trade_cost_ledger(tmp_path):
     assert summary_by_label["买入lot"] == "1"
     assert summary_by_label["占用slot"] == "1"
     assert summary_by_label["剩余lot"] == "1"
+    capital_pool = payload["capitalPool"]
+    assert capital_pool["pool"]["slotCount"] >= 1
+    lot_cards = [lot for slot in capital_pool["slots"] for lot in slot["lots"]]
+    assert any(lot["stockCode"] == "600519" and lot["quantity"] == 100 for lot in lot_cards)
 
 
 def test_his_replay_snapshot_exposes_trade_cost_ledger(tmp_path):
@@ -2261,6 +2266,108 @@ def test_his_replay_capital_pool_endpoint_rebuilds_lots_at_selected_checkpoint(t
     assert visible_lot["priceBasis"] == "market"
 
 
+def test_his_replay_capital_pool_keeps_board_lot_quantity_when_split_across_slots(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-01-01 09:30:00",
+        end_datetime="2026-01-01 15:00:00",
+        initial_cash=50000,
+        status="completed",
+        progress_current=1,
+        progress_total=1,
+        metadata={"selected_strategy_mode": "auto"},
+    )
+    db.add_sim_run_checkpoint(
+        run_id,
+        checkpoint_at="2026-01-01 15:00:00",
+        candidates_scanned=1,
+        positions_checked=1,
+        signals_created=1,
+        auto_executed=1,
+        available_cash=47999,
+        market_value=10583,
+        total_equity=58582,
+        metadata={
+            "positions": [
+                {
+                    "stock_code": "301662",
+                    "stock_name": "宏工科技",
+                    "quantity": 100,
+                    "avg_price": 55.92,
+                    "latest_price": 105.83,
+                    "market_value": 10583,
+                    "unrealized_pnl": 4991,
+                    "sellable_quantity": 100,
+                    "locked_quantity": 0,
+                }
+            ]
+        },
+    )
+    db.replace_sim_run_results(
+        run_id,
+        trades=[
+            {
+                "signal_id": 9,
+                "stock_code": "301662",
+                "stock_name": "宏工科技",
+                "action": "BUY",
+                "price": 55.92,
+                "quantity": 100,
+                "gross_amount": 5592,
+                "commission_fee": 1.68,
+                "sell_tax_fee": 0,
+                "fee_total": 1.68,
+                "net_amount": 5593.68,
+                "amount": 5593.68,
+                "trade_metadata_json": json.dumps(
+                    {
+                        "side": "BUY",
+                        "lot": {
+                            "lot_id": "301662-lot-1",
+                            "lot_count": 1,
+                            "quantity": 100,
+                            "remaining_quantity": 100,
+                            "entry_price": 55.9368,
+                            "unlock_date": "2026-01-02",
+                        },
+                        "slot_allocations": [
+                            {"slot_index": 1, "allocated_cash": 913.2, "slot_units": 0.04},
+                            {"slot_index": 2, "allocated_cash": 1347.53, "slot_units": 0.06},
+                            {"slot_index": 3, "allocated_cash": 3332.95, "slot_units": 0.16},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                "executed_at": "2026-01-01 10:00:00",
+                "created_at": "2026-01-01 10:00:00",
+            }
+        ],
+        snapshots=[],
+        positions=[],
+        signals=[],
+    )
+
+    response = TestClient(create_app(context=context)).get(
+        f"/api/v1/quant/his-replay/capital-pool?runId={run_id}&checkpointAt=2026-01-01%2015:00:00"
+    )
+
+    assert response.status_code == 200
+    lot_cards = [
+        lot
+        for slot in response.json()["capitalPool"]["slots"]
+        for lot in slot["lots"]
+        if lot["stockCode"] == "301662"
+    ]
+    assert len(lot_cards) == 3
+    assert {lot["quantity"] for lot in lot_cards} == {100}
+    assert {lot["sellableQuantity"] for lot in lot_cards} == {100}
+    assert {lot["lockedQuantity"] for lot in lot_cards} == {0}
+
+
 def test_his_replay_snapshot_returns_only_first_page_for_heavy_tables(tmp_path):
     context = _make_context(tmp_path)
     db = context.quant_db()
@@ -2460,8 +2567,8 @@ def test_his_replay_signal_filters_are_applied_by_database(tmp_path):
     filtered = client.get("/api/v1/quant/his-replay?signalAction=TRADE&signalPageSize=1").json()
     buy_only = client.get("/api/v1/quant/his-replay/progress?signalAction=BUY").json()
 
-    assert {row["cells"][3] for row in unfiltered["signals"]["rows"]} == {"HOLD"}
-    assert [row["cells"][3] for row in filtered["signals"]["rows"]] == ["BUY"]
+    assert {row["cells"][4] for row in unfiltered["signals"]["rows"]} == {"HOLD"}
+    assert [row["cells"][4] for row in filtered["signals"]["rows"]] == ["BUY"]
     assert filtered["signals"]["pagination"]["totalRows"] == 2
     assert filtered["signals"]["pagination"]["pageSize"] == 1
     assert filtered["signals"]["pagination"]["totalPages"] == 2

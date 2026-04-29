@@ -205,6 +205,7 @@
   "Batch analysis generated separate outputs per symbol. Click any symbol to view full details below.": "批量分析会为每只股票生成独立结果，点击任一股票可查看下方完整详情。",
   "Decision: {decision}": "决策：{decision}",
   "Language": "语言",
+  "Version": "版本",
   "Chinese": "中文",
   "English": "EN",
   "Current analysis progress": "本轮分析进度",

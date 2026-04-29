@@ -36,6 +36,12 @@ def test_backend_api_exposes_fastapi_app_and_health_routes():
     assert root.status_code == 200
     assert root.json()["status"] == "ok"
 
+    version = client.get("/api/v1/version")
+    assert version.status_code == 200
+    version_payload = version.json()
+    assert version_payload["revision"]
+    assert version_payload["display"]
+
 
 def test_backend_api_serves_spa_entry_for_root_and_client_routes():
     module = _load_backend_api_module()
@@ -56,7 +62,7 @@ def test_backend_api_serves_spa_entry_for_root_and_client_routes():
         ("/api/v1/discover", {"updatedAt", "metrics", "strategies", "summary", "candidateTable", "recommendation"}),
         ("/api/v1/research", {"updatedAt", "modules", "marketView", "outputTable", "summary"}),
         ("/api/v1/portfolio", {"updatedAt", "metrics", "holdings", "attribution", "curve", "actions"}),
-        ("/api/v1/quant/live-sim", {"updatedAt", "config", "status", "metrics", "candidatePool", "pendingSignals", "executionCenter", "holdings", "trades", "tradeCostSummary", "curve"}),
+        ("/api/v1/quant/live-sim", {"updatedAt", "config", "status", "metrics", "candidatePool", "pendingSignals", "executionCenter", "holdings", "trades", "tradeCostSummary", "capitalPool", "curve"}),
         ("/api/v1/quant/his-replay", {"updatedAt", "config", "metrics", "candidatePool", "tasks", "tradingAnalysis", "holdings", "trades", "signals", "tradeCostSummary", "curve"}),
         ("/api/v1/monitor/ai", {"updatedAt", "metrics", "queue", "signals", "timeline"}),
         ("/api/v1/monitor/real", {"updatedAt", "metrics", "rules", "triggers", "notificationStatus"}),

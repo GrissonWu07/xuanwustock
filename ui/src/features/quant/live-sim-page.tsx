@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import type { ApiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
 import { usePageData } from "../../lib/use-page-data";
-import type { TableSection } from "../../lib/page-models";
+import type { SummaryMetric, TableSection } from "../../lib/page-models";
 import { toDisplayCount, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
+import { ReplayCapitalPoolPanel } from "./replay-capital-pool-panel";
 
 const ANALYSIS_TIMEFRAME_OPTIONS = [
   { value: "30m", label: "30分钟" },
@@ -22,6 +22,13 @@ const AI_DYNAMIC_STRATEGY_OPTIONS = [
 
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
 const SIGNAL_PAGE_SIZE = 20;
+const EXECUTION_HERO_METRIC_LABELS = ["交易笔数", "买入总成本", "卖出到账", "总费用", "实现盈亏"];
+const EXECUTION_STAT_GROUPS = [
+  { title: "交易结构", labels: ["买入笔数", "卖出笔数", "加仓次数"] },
+  { title: "资金流", labels: ["买入毛额", "卖出毛额", "买入总成本", "卖出到账"] },
+  { title: "成本费用", labels: ["手续费", "印花税", "总费用"] },
+  { title: "Lot / Slot", labels: ["买入lot", "卖出lot", "剩余lot", "占用slot", "释放slot", "最大占用slot", "平均占用slot"] },
+];
 
 function parseIntervalMinutes(value: string) {
   const match = String(value).match(/(\d+)/);
@@ -77,8 +84,34 @@ function parseNumberConfig(value: string | number | undefined, fallback: number)
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function pickMetrics(metrics: SummaryMetric[], labels: string[]) {
+  const byLabel = new Map(metrics.map((metric) => [metric.label, metric]));
+  return labels.map((label) => byLabel.get(label)).filter((metric): metric is SummaryMetric => Boolean(metric));
+}
+
+function withoutTableColumns(table: TableSection, shouldOmit: (column: string) => boolean): TableSection {
+  const visibleIndexes = table.columns
+    .map((column, index) => ({ column, index }))
+    .filter(({ column }) => !shouldOmit(String(column)))
+    .map(({ index }) => index);
+  return {
+    ...table,
+    columns: visibleIndexes.map((index) => table.columns[index]),
+    rows: table.rows.map((row) => ({
+      ...row,
+      cells: visibleIndexes.map((index) => row.cells[index] ?? ""),
+    })),
+  };
+}
+
 function normalizeSignalAction(value: string) {
   return String(value ?? "").trim().toUpperCase();
+}
+
+function findColumnIndex(table: TableSection, candidates: string[], fallback: number) {
+  const normalizedCandidates = candidates.map((item) => item.trim().toLowerCase());
+  const index = table.columns.findIndex((column) => normalizedCandidates.includes(String(column ?? "").trim().toLowerCase()));
+  return index >= 0 ? index : fallback;
 }
 
 function removeStrategyColumn(table: TableSection): TableSection {
@@ -101,12 +134,37 @@ function removeStrategyColumn(table: TableSection): TableSection {
   };
 }
 
+function mergeTradeRemarksIntoDetails(table: TableSection): TableSection {
+  const remarkIndex = table.columns.findIndex((column) => {
+    const normalized = String(column ?? "").trim().toLowerCase();
+    return normalized === "备注" || normalized === "note";
+  });
+  if (remarkIndex < 0) {
+    return table;
+  }
+  const detailIndex = table.columns.findIndex((column) => String(column ?? "").includes("执行明细"));
+  return {
+    ...table,
+    columns: table.columns.filter((_, index) => index !== remarkIndex),
+    rows: table.rows.map((row) => {
+      const cells = [...row.cells];
+      const remark = String(cells[remarkIndex] ?? "").trim();
+      if (detailIndex >= 0 && remark && remark !== "--") {
+        cells[detailIndex] = [cells[detailIndex], remark].filter(Boolean).join(" · ");
+      }
+      return {
+        ...row,
+        cells: cells.filter((_, index) => index !== remarkIndex),
+      };
+    }),
+  };
+}
+
 type LiveSimPageProps = {
   client?: ApiClient;
 };
 
 export function LiveSimPage({ client }: LiveSimPageProps) {
-  const navigate = useNavigate();
   const resource = usePageData("live-sim", client);
   const snapshot = resource.data;
   const snapshotVersion = snapshot?.updatedAt ?? "loading";
@@ -127,7 +185,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const [capitalHighPriceMaxSlotUnits, setCapitalHighPriceMaxSlotUnits] = useState(2);
   const [actionPending, setActionPending] = useState<"save" | "reset" | "start" | "stop" | null>(null);
   const [signalTable, setSignalTable] = useState<TableSection>({
-    columns: ["信号ID", "时间", "代码", "动作", "状态"],
+    columns: ["信号ID", "时间", "股票代码", "股票名称", "动作", "执行状态"],
     rows: [],
     emptyLabel: "暂无信号",
   });
@@ -232,7 +290,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         }
         const payload = (await response.json()) as { table?: TableSection };
         if (mounted && payload.table) {
-          setTradeTable(removeStrategyColumn(payload.table));
+          setTradeTable(mergeTradeRemarksIntoDetails(removeStrategyColumn(payload.table)));
         }
       } catch {
         if (mounted) {
@@ -278,12 +336,24 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     return <PageEmptyState title="实时模拟暂无数据" description="后台尚未返回实时模拟快照。" actionLabel="刷新" onAction={resource.refresh} />;
   }
 
-  const candidateCodes = snapshot.candidatePool.rows.map((row) => row.id);
   const candidateCount = toDisplayCount(snapshot.status.candidateCount, snapshot.candidatePool.rows.length);
   const runningState = toDisplayText(snapshot.status.running, "未知");
   const runningNormalized = String(snapshot.status.running ?? "").trim().toLowerCase();
   const isRunning = runningNormalized.includes("运行中") || runningNormalized.includes("running");
-  const signalActionOptions = Array.from(new Set(signalTable.rows.map((row) => normalizeSignalAction(String(row.cells[3] ?? ""))).filter(Boolean)));
+  const candidatePoolBaseTable = withoutTableColumns(snapshot.candidatePool, (column) => {
+    const normalized = column.trim().toLowerCase();
+    return normalized === "来源" || normalized === "source";
+  });
+  const candidatePoolTable: TableSection = {
+    ...candidatePoolBaseTable,
+    rows: snapshot.candidatePool.rows.map((row) => ({
+      ...row,
+      cells: candidatePoolBaseTable.rows.find((candidateRow) => candidateRow.id === row.id)?.cells ?? row.cells,
+      actions: (row.actions ?? []).filter((action) => action.action === "delete-candidate"),
+    })),
+  };
+  const signalActionColumnIndex = findColumnIndex(signalTable, ["动作", "action"], 4);
+  const signalActionOptions = Array.from(new Set(signalTable.rows.map((row) => normalizeSignalAction(String(row.cells[signalActionColumnIndex] ?? ""))).filter(Boolean)));
   const tradeActionOptions = Array.from(new Set(tradeTable.rows.map((row) => normalizeSignalAction(String(row.cells[2] ?? ""))).filter(Boolean)));
   const signalPages = Math.max(1, Number(signalTable.pagination?.totalPages ?? 1));
   const currentSignalPage = Math.min(Number(signalTable.pagination?.page ?? signalPage), signalPages);
@@ -295,6 +365,19 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const tradePages = Math.max(1, Number(tradeTable.pagination?.totalPages ?? 1));
   const currentTradePage = Math.min(Number(tradeTable.pagination?.page ?? tradePage), tradePages);
   const tradeTotalRows = Number(tradeTable.pagination?.totalRows ?? tradeTable.rows.length);
+  const tradeCostSummary = snapshot.tradeCostSummary ?? [];
+  const executionHeroMetrics = pickMetrics(tradeCostSummary, EXECUTION_HERO_METRIC_LABELS);
+  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === "交易笔数");
+  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== "交易笔数");
+  const executionHeroMetricLabels = new Set(executionHeroMetrics.map((metric) => metric.label));
+  const executionGroupMetricLabels = new Set(EXECUTION_STAT_GROUPS.flatMap((group) => group.labels));
+  const executionStatGroups = EXECUTION_STAT_GROUPS.map((group) => ({
+    ...group,
+    metrics: pickMetrics(tradeCostSummary, group.labels).filter((metric) => !executionHeroMetricLabels.has(metric.label)),
+  })).filter((group) => group.metrics.length > 0);
+  const executionOtherMetrics = tradeCostSummary.filter(
+    (metric) => !executionHeroMetricLabels.has(metric.label) && !executionGroupMetricLabels.has(metric.label),
+  );
   const toolbarControlHeight = "40px";
   const renderSignalPager = () => (
     <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", flexWrap: "nowrap", whiteSpace: "nowrap" }}>
@@ -423,6 +506,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     aiDynamicStrength,
     aiDynamicLookback,
     market,
+    initialCash,
     autoExecute: true,
     commissionRatePct,
     sellTaxRatePct,
@@ -442,14 +526,14 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   return (
     <div>
       <PageHeader
-        eyebrow="Quant"
-        title="实时模拟"
-        description="围绕共享量化候选池运行模拟账户、策略信号、自动执行和账户结果。"
+        eyebrow="实时模拟"
+        title={`运行状态：${runningState}`}
+        description={`最近执行：${snapshot.status.lastRun}；下次执行：${snapshot.status.nextRun}。`}
         actions={
           <div className="chip-row">
             <span className="badge badge--neutral">快照 {snapshot.updatedAt}</span>
             <span className="badge badge--accent">候选 {candidateCount}</span>
-            <span className="badge badge--success">{runningState}</span>
+            <span className={isRunning ? "badge badge--success" : "badge badge--neutral"}>{runningState}</span>
           </div>
         }
       />
@@ -662,14 +746,27 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             </div>
           </WorkbenchCard>
 
-          <WorkbenchCard>
-            <h2 className="section-card__title">运行状态</h2>
-            <p className="section-card__description">{`定时状态：${snapshot.status.running}；最近执行：${snapshot.status.lastRun}；下次执行：${snapshot.status.nextRun}。`}</p>
-          </WorkbenchCard>
+          <QuantTableSectionCard
+            title="量化候选池"
+            description="实时模拟和历史回放共用同一批量化候选池，因此这里看到的股票就是后续扫描对象。"
+            table={candidatePoolTable}
+            emptyTitle={candidatePoolTable.emptyLabel ?? "候选池暂无数据"}
+            emptyDescription={candidatePoolTable.emptyMessage ?? "先从我的关注或发现 / 研究页补入候选，再启动实时模拟。"}
+            meta={[`表内 ${candidatePoolTable.rows.length} 只`, `待量化 ${candidateCount}`]}
+            actionsHead="操作"
+            actionsColumnSize="icon"
+            compactConfig={{ coreColumnIndexes: [0, 1, 2], detailColumnIndexes: [] }}
+            onRowAction={(row, action) => {
+              if (action.action !== "delete-candidate") {
+                return;
+              }
+              void resource.runAction("delete-candidate", row.id);
+            }}
+          />
         </div>
 
         <div className="stack">
-          <div className="metric-grid">
+          <div className="metric-grid live-sim-metric-grid">
             {snapshot.metrics.map((metric) => (
               <WorkbenchCard className="metric-card" key={metric.label}>
                 <div className="metric-card__label">{metric.label}</div>
@@ -678,115 +775,84 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             ))}
           </div>
 
-          {snapshot.tradeCostSummary?.length ? (
-            <WorkbenchCard>
-              <h2 className="section-card__title">交易成本汇总</h2>
-              <p className="section-card__description">实时模拟成交按A股手续费、印花税、lot和slot账本计算，净额才是实际现金变化。</p>
-              <div className="mini-metric-grid">
-                {snapshot.tradeCostSummary.map((metric) => (
-                  <div className="mini-metric" key={metric.label}>
-                    <div className="mini-metric__label">{metric.label}</div>
-                    <div className="mini-metric__value">{metric.value}</div>
-                  </div>
-                ))}
-              </div>
-            </WorkbenchCard>
-          ) : null}
-
-          {snapshot.capitalSlots ? (
-            <QuantTableSectionCard
-              title="Slot资金池"
-              description="Slot只控制每次自动买入的预算，实际持仓和T+1仍以lot为准。"
-              table={snapshot.capitalSlots}
-              emptyTitle={snapshot.capitalSlots.emptyLabel ?? "暂无资金槽"}
-              emptyDescription={snapshot.capitalSlots.emptyMessage ?? "资金池低于最低额度或尚未同步slot账本。"}
-              compactConfig={{ coreColumnIndexes: [0, 1, 2], detailColumnIndexes: [3, 4] }}
-            />
-          ) : null}
-
           <QuantTableSectionCard
-            title="量化候选池"
-            description="候选池由“我的关注”人工推进到这里，再进入实时模拟和历史回放。"
-            table={snapshot.candidatePool}
-            emptyTitle={snapshot.candidatePool.emptyLabel ?? "候选池暂无数据"}
-            emptyDescription={
-              snapshot.candidatePool.emptyMessage ?? "先从我的关注加入股票，或者等待定时任务把新的候选推进到这里。"
-            }
-            meta={[`表内 ${snapshot.candidatePool.rows.length} 只`, `待量化 ${candidateCount}`]}
-            actionsHead="操作"
-            compactConfig={{ coreColumnIndexes: [0, 1, 3], detailColumnIndexes: [2] }}
-            onRowAction={(row, action) => {
-              void resource.runAction(action.action ?? "analyze-candidate", row.id);
-            }}
+            title="信号记录"
+            description="点击信号ID进入统一信号详情页，股票代码和名称进入股票详情。"
+            table={pagedSignalTable}
+            emptyTitle={signalTable.emptyLabel ?? "暂无信号"}
+            emptyDescription={signalTable.emptyMessage ?? "当前没有可查看的信号记录。"}
+            tableLayout="auto"
+            compactConfig={{ coreColumnIndexes: [0, 2, 3, 4], detailColumnIndexes: [1, 5, 6, 7, 8, 9, 10, 11, 12] }}
+            signalDetailSource="live"
+            toolbar={renderSignalToolbar()}
           />
 
-          <QuantTableSectionCard
-            title="当前持仓"
-            table={snapshot.holdings}
-            emptyTitle={snapshot.holdings.emptyLabel ?? "当前持仓暂无数据"}
-            emptyDescription={snapshot.holdings.emptyMessage ?? "模拟账户当前还没有形成持仓，待下一轮信号触发后会在这里补充。"}
-            actionsHead="操作"
-            compactConfig={{ coreColumnIndexes: [0, 1, 4], detailColumnIndexes: [2, 3, 5, 6] }}
-            onRowAction={(row, action) => {
-              void resource.runAction(action.action ?? "delete-position", row.id);
-            }}
-          />
+          {snapshot.capitalPool ? <ReplayCapitalPoolPanel capitalPool={snapshot.capitalPool} showPositionSummary /> : null}
+
           <QuantTableSectionCard
             title="成交记录"
             table={tradeTable}
             emptyTitle={tradeTable.emptyLabel ?? "成交记录暂无数据"}
             emptyDescription={tradeTable.emptyMessage ?? "如果调度还没有生成新的成交，这里会先保持为空。"}
-            compactConfig={{ coreColumnIndexes: [0, 1, 2, 10], detailColumnIndexes: [3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15] }}
+            compactConfig={{ coreColumnIndexes: [0, 1, 2, 10], detailColumnIndexes: [3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14] }}
+            shellClassName="table-shell--trade-details"
             toolbar={renderTradeToolbar()}
           />
 
-          <WorkbenchCard>
-            <h2 className="section-card__title">{snapshot.executionCenter.title}</h2>
-            <p className="section-card__description">{snapshot.executionCenter.body}</p>
-            <div className="chip-row">
-              {snapshot.executionCenter.chips.map((chip) => (
-                <span className="chip chip--active" key={chip}>
-                  {chip}
-                </span>
-              ))}
-            </div>
-            {snapshot.pendingSignals.length > 0 ? (
-              <div className="summary-list" style={{ marginTop: "16px" }}>
-                {snapshot.pendingSignals.map((item) => (
-                  <div className="summary-item" key={item.title}>
-                    <div className="summary-item__title">{item.title}</div>
-                    <div className="summary-item__body">{item.body}</div>
+          {tradeCostSummary.length ? (
+            <WorkbenchCard>
+              <h2 className="section-card__title">费用与执行统计</h2>
+              <p className="section-card__description">实时模拟成交按A股手续费、印花税、lot和slot账本计算，净额才是实际现金变化。</p>
+              <div className="execution-summary" aria-label="费用与执行统计">
+                {executionHeroMetrics.length ? (
+                  <div className="execution-summary__hero">
+                    {primaryExecutionMetric ? (
+                      <div className="execution-summary__hero-card execution-summary__hero-card--primary" key={primaryExecutionMetric.label}>
+                        <span>关键成交</span>
+                        <strong>{primaryExecutionMetric.value}</strong>
+                        <em>{primaryExecutionMetric.label}</em>
+                      </div>
+                    ) : null}
+                    {secondaryExecutionHeroMetrics.map((metric) => (
+                      <div className="execution-summary__hero-card" key={metric.label}>
+                        <span>{metric.label}</span>
+                        <strong>{metric.value}</strong>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                ) : null}
+                <div className="execution-summary__groups">
+                  {executionStatGroups.map((group) => (
+                    <section className="execution-summary__group" key={group.title}>
+                      <h3>{group.title}</h3>
+                      <div className="execution-summary__rows">
+                        {group.metrics.map((metric) => (
+                          <div className="execution-summary__row" key={metric.label}>
+                            <span>{metric.label}</span>
+                            <strong>{metric.value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                  {executionOtherMetrics.length ? (
+                    <section className="execution-summary__group">
+                      <h3>其他</h3>
+                      <div className="execution-summary__rows">
+                        {executionOtherMetrics.map((metric) => (
+                          <div className="execution-summary__row" key={metric.label}>
+                            <span>{metric.label}</span>
+                            <strong>{metric.value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                </div>
               </div>
-            ) : (
-              <div className="summary-item summary-item--accent" style={{ marginTop: "16px" }}>
-                <div className="summary-item__title">暂无待执行信号</div>
-                <div className="summary-item__body">当前没有新的 BUY / SELL 信号，系统会继续观察候选池并等待下一轮调度。</div>
-              </div>
-            )}
-          </WorkbenchCard>
+            </WorkbenchCard>
+          ) : null}
 
-          <QuantTableSectionCard
-            title="信号记录"
-            description="点击详情进入统一信号详情页，查看投票、决策依据和技术指标快照。"
-            table={pagedSignalTable}
-            emptyTitle={signalTable.emptyLabel ?? "暂无信号"}
-            emptyDescription={signalTable.emptyMessage ?? "当前没有可查看的信号记录。"}
-            actionsHead="操作"
-            actionVariant="chip"
-            tableLayout="auto"
-            compactConfig={{ coreColumnIndexes: [1, 2, 3, 4], detailColumnIndexes: [0] }}
-            toolbar={renderSignalToolbar()}
-            onRowAction={(row, action) => {
-              const actionKey = String(action.action ?? "").trim().toLowerCase();
-              const actionLabel = String(action.label ?? "").trim().toLowerCase();
-              if (!(actionKey === "show-signal-detail" || actionLabel === "详情" || actionLabel === "detail")) {
-                return;
-              }
-              navigate(`/signal-detail/${encodeURIComponent(row.id)}?source=live`);
-            }}
-          />
         </div>
       </div>
     </div>

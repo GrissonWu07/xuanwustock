@@ -44,6 +44,20 @@ type LotWithSlot = ReplayCapitalLot & {
   slotIndex: number;
 };
 
+type StockLotGroup = {
+  stockCode: string;
+  stockName: string;
+  lotCount: number;
+  quantity: number;
+  sellableQuantity: number;
+  lockedQuantity: number;
+  allocatedCash: number;
+  marketValue: number;
+  costBasis: number;
+  slots: string[];
+  status: string;
+};
+
 function flattenLots(capitalPool: ReplayCapitalPool): LotWithSlot[] {
   return capitalPool.slots.flatMap((slot) =>
     slot.lots.map((lot) => ({
@@ -63,6 +77,10 @@ function parseDisplayNumber(value: unknown) {
 
 function formatPrice(value: number | null) {
   return value === null ? "--" : value.toFixed(2);
+}
+
+function formatMoney(value: number) {
+  return Number.isFinite(value) ? value.toFixed(2) : "--";
 }
 
 function lotPriceInfo(lot: ReplayCapitalLot) {
@@ -114,12 +132,79 @@ function renderLotPriceLine(lot: ReplayCapitalLot) {
   );
 }
 
+function groupLotsByStock(lots: LotWithSlot[]): StockLotGroup[] {
+  const groups = new Map<string, StockLotGroup>();
+  for (const lot of lots) {
+    const key = lot.stockCode;
+    const current = groups.get(key) ?? {
+      stockCode: lot.stockCode,
+      stockName: lot.stockName ?? "",
+      lotCount: 0,
+      quantity: 0,
+      sellableQuantity: 0,
+      lockedQuantity: 0,
+      allocatedCash: 0,
+      marketValue: 0,
+      costBasis: 0,
+      slots: [],
+      status: "available",
+    };
+    const quantity = Number(lot.quantity || 0);
+    const allocatedCash = parseDisplayNumber(lot.allocatedCash) ?? 0;
+    const marketValue = parseDisplayNumber(lot.marketValue) ?? 0;
+    const cost = parseDisplayNumber(lot.costBand);
+    current.lotCount += Number(lot.lotCount || 0);
+    current.quantity += quantity;
+    current.sellableQuantity += Number(lot.sellableQuantity || 0);
+    current.lockedQuantity += Number(lot.lockedQuantity || 0);
+    current.allocatedCash += allocatedCash;
+    current.marketValue += marketValue;
+    current.costBasis += cost !== null ? cost * quantity : allocatedCash;
+    if (!current.slots.includes(lot.slotTitle)) {
+      current.slots.push(lot.slotTitle);
+    }
+    if (lot.status === "locked") {
+      current.status = current.status === "available" ? "locked" : "mixed";
+    } else if (lot.status === "mixed" || current.status === "locked") {
+      current.status = "mixed";
+    }
+    groups.set(key, current);
+  }
+  return Array.from(groups.values()).sort((left, right) => right.marketValue - left.marketValue);
+}
+
+function stockGroupPriceLine(group: StockLotGroup) {
+  const cost = group.quantity > 0 ? group.costBasis / group.quantity : null;
+  const current = group.quantity > 0 ? group.marketValue / group.quantity : null;
+  if (cost === null || current === null || cost <= 0) {
+    return {
+      priceText: `成本 ${formatPrice(cost)} · 现价 ${formatPrice(current)}`,
+      trendText: "",
+      trendClass: "is-flat",
+    };
+  }
+  const pct = ((current - cost) / cost) * 100;
+  if (Math.abs(pct) < 0.005) {
+    return {
+      priceText: `成本 ${formatPrice(cost)} · 现价 ${formatPrice(current)}`,
+      trendText: "平 0.00%",
+      trendClass: "is-flat",
+    };
+  }
+  return {
+    priceText: `成本 ${formatPrice(cost)} · 现价 ${formatPrice(current)}`,
+    trendText: pct > 0 ? `涨 +${pct.toFixed(2)}%` : `跌 ${pct.toFixed(2)}%`,
+    trendClass: pct > 0 ? "is-up" : "is-down",
+  };
+}
+
 export function ReplayCapitalPoolPanel({
   capitalPool,
   loadCheckpoint,
 }: {
   capitalPool: ReplayCapitalPool;
   loadCheckpoint?: (query: CheckpointQuery) => Promise<ReplayCapitalPoolSnapshot>;
+  showPositionSummary?: boolean;
 }) {
   const [checkpointSnapshot, setCheckpointSnapshot] = useState<ReplayCapitalPoolSnapshot | null>(null);
   const viewCapitalPool = checkpointSnapshot?.capitalPool ?? capitalPool;
@@ -130,6 +215,7 @@ export function ReplayCapitalPoolPanel({
   const [checkpointError, setCheckpointError] = useState("");
   const [showAllLots, setShowAllLots] = useState(false);
   const [slotPage, setSlotPage] = useState(1);
+  const [selectedStockCode, setSelectedStockCode] = useState("");
 
   useEffect(() => {
     setSelectedSlotIndex(defaultSlotIndex);
@@ -141,6 +227,7 @@ export function ReplayCapitalPoolPanel({
     setCheckpointError("");
     setShowAllLots(false);
     setSlotPage(1);
+    setSelectedStockCode("");
   }, [capitalPool.task.runId]);
 
   const loadCheckpointPage = async (page: number, checkpointAt?: string) => {
@@ -186,6 +273,12 @@ export function ReplayCapitalPoolPanel({
   const slotRangeStart = slotTotal ? slotPageStart + 1 : 0;
   const slotRangeEnd = Math.min(slotPageStart + visibleSlots.length, slotTotal);
   const visibleSlotIndexes = visibleSlots.map((slot) => slot.index).join(",");
+  const stockLotGroups = groupLotsByStock(allLots);
+  const selectedStockGroup =
+    stockLotGroups.find((group) => group.stockCode === selectedStockCode) ?? stockLotGroups[0];
+  const selectedStockLots = selectedStockGroup
+    ? allLots.filter((lot) => lot.stockCode === selectedStockGroup.stockCode).sort((left, right) => left.slotIndex - right.slotIndex)
+    : [];
 
   useEffect(() => {
     if (slotPage > slotTotalPages) {
@@ -293,8 +386,89 @@ export function ReplayCapitalPoolPanel({
         <div className="replay-capital-all-lots" aria-label="全部 Lot 明细">
           <div className="replay-capital-all-lots__head">
             <strong>全部 Lot 明细</strong>
-            <span>{`${allLots.length} 个lot组 · ${totalLots} lots`}</span>
+            <span>{`${stockLotGroups.length} 只股票 · ${allLots.length} 个lot组 · ${totalLots} lots`}</span>
           </div>
+          <div className="live-position-lot-summary live-position-lot-summary--embedded" aria-label="按股票持仓">
+            <div className="live-position-lot-summary__head">
+              <strong>按股票汇总</strong>
+              <span>{`${stockLotGroups.length} 只股票 · ${totalLots} lots`}</span>
+            </div>
+            <div className="live-position-lot-summary__grid">
+              {stockLotGroups.map((group) => {
+                const price = stockGroupPriceLine(group);
+                return (
+                  <div
+                    className={`live-position-lot-card live-position-lot-card--selectable ${
+                      selectedStockGroup?.stockCode === group.stockCode ? "is-selected" : ""
+                    }`}
+                    key={group.stockCode}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedStockCode(group.stockCode)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedStockCode(group.stockCode);
+                      }
+                    }}
+                  >
+                    <div className="live-position-lot-card__top">
+                      <Link
+                        className="replay-capital-stock-link"
+                        to={`/portfolio/position/${group.stockCode}`}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {`${group.stockCode} ${group.stockName || ""}`.trim()}
+                      </Link>
+                      <em>{localizeLotStatus(group.status)}</em>
+                    </div>
+                    <div className="replay-capital-lot-price">
+                      <span>{price.priceText}</span>
+                      {price.trendText ? <em className={price.trendClass}>{price.trendText}</em> : null}
+                    </div>
+                    <div className="live-position-lot-card__facts">
+                      <span>{`${group.lotCount} lots`}</span>
+                      <span>{`${group.quantity}股`}</span>
+                      <span>{`可卖 ${group.sellableQuantity} · 锁定 ${group.lockedQuantity}`}</span>
+                    </div>
+                    <div className="live-position-lot-card__money">
+                      <span>{`市值 ${formatMoney(group.marketValue)}`}</span>
+                      <span>{`占用 ${formatMoney(group.allocatedCash)}`}</span>
+                    </div>
+                    <div className="live-position-lot-card__slots">{group.slots.join(" / ")}</div>
+                  </div>
+                );
+              })}
+              {!stockLotGroups.length ? <div className="summary-item__body">当前没有持仓lot。</div> : null}
+            </div>
+          </div>
+          {selectedStockGroup ? (
+            <div className="live-position-stock-detail" aria-label="选中股票 Slot 和 Lot 明细">
+              <div className="live-position-lot-summary__head">
+                <strong>{`按股票汇总 · ${selectedStockGroup.stockCode} ${selectedStockGroup.stockName || ""}`.trim()}</strong>
+                <span>{`${selectedStockGroup.slots.length} 个slot · ${selectedStockLots.length} 个lot组 · ${selectedStockGroup.lotCount} lots`}</span>
+              </div>
+              <div className="replay-capital-all-lots__grid replay-capital-all-lots__grid--stock-detail">
+                {selectedStockLots.map((lot) => (
+                  <div className="replay-capital-inspector__lot" key={`${lot.slotIndex}-${lot.id}`}>
+                    <div>
+                      <Link className="replay-capital-stock-link" to={`/portfolio/position/${lot.stockCode}`}>
+                        {`${lot.stockCode} ${lot.stockName || ""}`.trim()}
+                      </Link>
+                      <strong>{lot.slotTitle}</strong>
+                    </div>
+                    {renderLotPriceLine(lot)}
+                    <div>
+                      <span>{`${lot.lotCount} lot · ${lot.quantity}股 · ${localizeLotStatus(lot.status)}`}</span>
+                      <span>{`占用 ${lot.allocatedCash}`}</span>
+                      <span>{`可卖 ${lot.sellableQuantity ?? 0} · 锁定 ${lot.lockedQuantity ?? 0}`}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="replay-capital-all-lots__section-title">Slot / Lot 分布</div>
           <div className="replay-capital-all-lots__grid">
             {allLots.map((lot) => (
               <div className="replay-capital-inspector__lot" key={`${lot.slotIndex}-${lot.id}`}>

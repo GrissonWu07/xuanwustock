@@ -132,6 +132,34 @@ a {
   gap: 10px;
 }
 
+.app-version-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 260px;
+  padding: 7px 11px;
+  border: 1px solid var(--soft-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1;
+  box-shadow: 0 10px 24px rgba(31, 45, 78, 0.06);
+}
+
+.app-version-pill strong {
+  overflow: hidden;
+  color: var(--text-main);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-version-pill--dirty {
+  border-color: rgba(245, 158, 11, 0.36);
+  background: rgba(255, 251, 235, 0.86);
+}
+
 .locale-switch {
   display: inline-flex;
   align-items: center;
@@ -216,6 +244,31 @@ a {
 
 .metric-card--compact .metric-card__value {
   font-size: 1.35rem;
+}
+
+.live-sim-metric-grid {
+  grid-template-columns: repeat(9, minmax(86px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.live-sim-metric-grid .metric-card {
+  padding: 8px 10px;
+  min-height: 58px;
+}
+
+.live-sim-metric-grid .metric-card__label {
+  font-size: 0.72rem;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+
+.live-sim-metric-grid .metric-card__value {
+  font-size: 1.05rem;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .workbench-layout {
@@ -2242,6 +2295,10 @@ a {
   text-align: center !important;
 }
 
+.table-shell--icon-actions .table__actions-head {
+  width: 64px;
+}
+
 .table__compact-actions-head {
   width: 96px;
   text-align: center !important;
@@ -2254,6 +2311,119 @@ a {
   align-items: center;
   flex-wrap: nowrap;
   white-space: nowrap;
+}
+
+.table-shell--icon-actions .table__actions {
+  gap: 0;
+}
+
+.table-shell--trade-details .table th:last-child,
+.table-shell--trade-details .table td:last-child {
+  width: 240px;
+}
+
+.live-position-lot-summary {
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid var(--soft-line);
+  border-radius: 18px;
+  background: rgba(248, 251, 255, 0.72);
+}
+
+.live-position-lot-summary--embedded {
+  margin-bottom: 4px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.live-position-lot-summary__head,
+.live-position-lot-card__top,
+.live-position-lot-card__facts,
+.live-position-lot-card__money {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.live-position-lot-summary__head {
+  margin-bottom: 12px;
+  color: var(--text-soft);
+}
+
+.live-position-lot-summary__head strong {
+  color: var(--text-strong);
+  font-size: 1rem;
+}
+
+.live-position-lot-summary__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  max-height: 292px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.live-position-lot-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(202, 216, 243, 0.82);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.live-position-lot-card--selectable {
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.live-position-lot-card--selectable:hover,
+.live-position-lot-card--selectable:focus-visible,
+.live-position-lot-card--selectable.is-selected {
+  border-color: rgba(77, 134, 247, 0.58);
+  box-shadow: 0 10px 24px rgba(45, 84, 160, 0.12);
+}
+
+.live-position-lot-card--selectable.is-selected {
+  background: linear-gradient(180deg, rgba(247, 250, 255, 0.96), rgba(255, 255, 255, 0.94));
+}
+
+.live-position-lot-card__top em {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(21, 153, 104, 0.1);
+  color: var(--success);
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.live-position-lot-card__facts,
+.live-position-lot-card__money,
+.live-position-lot-card__slots {
+  color: var(--text-soft);
+  font-size: 0.86rem;
+}
+
+.live-position-lot-card__slots {
+  padding-top: 8px;
+  border-top: 1px dashed rgba(202, 216, 243, 0.9);
+}
+
+.live-position-stock-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(77, 134, 247, 0.26);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(77, 134, 247, 0.08), transparent 32%),
+    rgba(255, 255, 255, 0.86);
 }
 
 .table__actions .icon-button {
@@ -2735,6 +2905,12 @@ a {
 .replay-capital-all-lots__head span {
   color: var(--text-soft);
   font-size: 0.82rem;
+}
+
+.replay-capital-all-lots__section-title {
+  color: var(--text-strong);
+  font-size: 0.92rem;
+  font-weight: 850;
 }
 
 .replay-capital-all-lots__grid {
@@ -4293,6 +4469,15 @@ a {
   .app-header {
     padding-left: 18px;
     padding-right: 18px;
+  }
+
+  .app-header__actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .app-version-pill {
+    max-width: min(260px, 58vw);
   }
 
   .metric-grid,
