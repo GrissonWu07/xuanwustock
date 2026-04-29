@@ -226,3 +226,67 @@ def test_run_once_uses_last_trading_snapshot_when_market_closed(monkeypatch, tmp
     assert updates[0]["stock_name"] == "平安银行"
     assert entries["000001"]["latest_price"] == 12.3
     assert entries["000001"]["price_as_of"] == "2026-04-24 15:00:00"
+
+
+def test_run_once_repairs_quant_candidate_name_when_refresh_resolves_it(monkeypatch, tmp_path):
+    candidate_updates: list[dict[str, object]] = []
+
+    class FakeWatchlistService:
+        def list_watches(self):
+            return []
+
+        def quote_fetcher(self, code, preferred_name=None):
+            return {"current_price": 70.98, "name": "和顺电气"}
+
+        def basic_info_fetcher(self, code):
+            return {"industry": "电力设备"}
+
+    class FakeQuantDB:
+        def get_candidates(self, status=None):
+            return [{"stock_code": "301217", "stock_name": "301217", "latest_price": 70.0}]
+
+        def get_positions(self):
+            return []
+
+        def update_candidate_latest_price(self, code, price):
+            candidate_updates.append({"method": "price", "code": code, "price": price})
+
+        def update_candidate_snapshot(self, code, *, latest_price=None, stock_name=None, metadata=None):
+            candidate_updates.append(
+                {
+                    "method": "snapshot",
+                    "code": code,
+                    "latest_price": latest_price,
+                    "stock_name": stock_name,
+                    "metadata": metadata,
+                }
+            )
+
+        def update_position_market_price(self, code, price):
+            return None
+
+    class FakePortfolioManager:
+        db = SimpleNamespace(update_stock=lambda *args, **kwargs: None)
+
+        def get_all_stocks(self):
+            return []
+
+    context = SimpleNamespace(
+        selector_result_dir=tmp_path,
+        research_result_key="research",
+        watchlist=lambda: FakeWatchlistService(),
+        portfolio_manager=lambda: FakePortfolioManager(),
+        quant_db=lambda: FakeQuantDB(),
+        scheduler=lambda: SimpleNamespace(get_status=lambda: {"market": "CN"}),
+    )
+    monkeypatch.setattr(UnifiedStockRefreshScheduler, "_is_trading_time", staticmethod(lambda market: True))
+
+    UnifiedStockRefreshScheduler(lambda: context).run_once(context=context, run_reason="scheduled")
+
+    assert {
+        "method": "snapshot",
+        "code": "301217",
+        "latest_price": 70.98,
+        "stock_name": "和顺电气",
+        "metadata": {"industry": "电力设备", "sector": "电力设备"},
+    } in candidate_updates

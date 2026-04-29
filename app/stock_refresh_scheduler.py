@@ -309,7 +309,8 @@ class UnifiedStockRefreshScheduler:
             updated += 1
 
             latest_price = _price(entry.get("latest_price"))
-            stock_name = _valid_name(entry.get("stock_name")) or code
+            resolved_name = _valid_name(entry.get("stock_name"))
+            stock_name = resolved_name or code
             sector = _valid_sector(entry.get("sector"))
 
             if code in watchlist_codes:
@@ -324,8 +325,21 @@ class UnifiedStockRefreshScheduler:
                     metadata=metadata or None,
                 )
 
-            if latest_price is not None:
+            candidate_metadata: dict[str, Any] = {}
+            if sector:
+                candidate_metadata["industry"] = sector
+                candidate_metadata["sector"] = sector
+            candidate_name = resolved_name if resolved_name and resolved_name.upper() != code.upper() else None
+            if hasattr(quant_db, "update_candidate_snapshot"):
+                quant_db.update_candidate_snapshot(
+                    code,
+                    latest_price=latest_price,
+                    stock_name=candidate_name,
+                    metadata=candidate_metadata or None,
+                )
+            elif latest_price is not None:
                 quant_db.update_candidate_latest_price(code, latest_price)
+            if latest_price is not None:
                 quant_db.update_position_market_price(code, latest_price)
 
             portfolio_item = portfolio_map.get(code)

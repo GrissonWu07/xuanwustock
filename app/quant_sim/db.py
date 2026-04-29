@@ -3288,6 +3288,60 @@ class QuantSimDB:
         conn.commit()
         conn.close()
 
+    def update_candidate_snapshot(
+        self,
+        stock_code: str,
+        *,
+        latest_price: float | None = None,
+        stock_name: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        normalized_code = str(stock_code or "").strip()
+        if not normalized_code:
+            return
+
+        resolved_name = str(stock_name or "").strip()
+        if resolved_name.upper() in {normalized_code.upper(), "N/A", "-", "--", "UNKNOWN", "未知"}:
+            resolved_name = ""
+
+        resolved_price = 0.0
+        try:
+            resolved_price = float(latest_price or 0)
+        except (TypeError, ValueError):
+            resolved_price = 0.0
+
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM candidate_pool WHERE stock_code = ?", (normalized_code,))
+        existing = cursor.fetchone()
+        if existing is None:
+            conn.close()
+            return
+
+        next_metadata = self._loads_metadata(existing["metadata_json"])
+        if isinstance(metadata, dict):
+            next_metadata.update({key: value for key, value in metadata.items() if value not in (None, "")})
+
+        cursor.execute(
+            """
+            UPDATE candidate_pool
+            SET stock_name = ?,
+                latest_price = ?,
+                metadata_json = ?,
+                updated_at = ?
+            WHERE stock_code = ?
+            """,
+            (
+                resolved_name or existing["stock_name"],
+                resolved_price if resolved_price > 0 else float(existing["latest_price"] or 0),
+                json.dumps(next_metadata, ensure_ascii=False),
+                self._now(),
+                normalized_code,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
     def get_capital_slots(self) -> list[dict[str, Any]]:
         conn = self._connect()
         cursor = conn.cursor()
