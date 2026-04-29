@@ -446,11 +446,13 @@ def test_historical_replay_persists_signals_incrementally_per_checkpoint(tmp_pat
 
     visible_signal_counts: list[int] = []
     visible_trade_counts: list[int] = []
+    checkpoint_position_snapshots: list[list[dict]] = []
     original_add_checkpoint = replay_service.db.add_sim_run_checkpoint
 
     def recording_add_checkpoint(run_id, *args, **kwargs):
         visible_signal_counts.append(len(replay_service.db.get_sim_run_signals(run_id)))
         visible_trade_counts.append(len(replay_service.db.get_sim_run_trades(run_id)))
+        checkpoint_position_snapshots.append((kwargs.get("metadata") or {}).get("positions") or [])
         return original_add_checkpoint(run_id, *args, **kwargs)
 
     monkeypatch.setattr(replay_service.db, "add_sim_run_checkpoint", recording_add_checkpoint)
@@ -466,6 +468,11 @@ def test_historical_replay_persists_signals_incrementally_per_checkpoint(tmp_pat
     assert visible_signal_counts
     assert visible_signal_counts[0] > 0
     assert any(count > 0 for count in visible_trade_counts)
+    assert any(
+        position.get("stock_code") == "300390" and float(position.get("latest_price") or 0) > 0
+        for positions in checkpoint_position_snapshots
+        for position in positions
+    )
 
 
 def test_historical_replay_persists_selected_strategy_mode(tmp_path):

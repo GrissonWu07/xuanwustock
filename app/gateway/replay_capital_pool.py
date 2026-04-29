@@ -40,6 +40,22 @@ def _capital_slot_allocations(metadata: dict[str, Any], fallback_slot: int, fall
     return allocations
 
 
+def _checkpoint_metadata(checkpoint: dict[str, Any] | None) -> dict[str, Any]:
+    if not checkpoint:
+        return {}
+    metadata = checkpoint.get("metadata")
+    if isinstance(metadata, dict):
+        return metadata
+    metadata_json = checkpoint.get("metadata_json")
+    if isinstance(metadata_json, str) and metadata_json.strip():
+        try:
+            parsed = json.loads(metadata_json)
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+    return {}
+
+
 def _consume_open_lot(open_lots: dict[str, dict[str, Any]], lot_id: str, quantity: int) -> int:
     if not lot_id or lot_id not in open_lots or quantity <= 0:
         return quantity
@@ -277,13 +293,20 @@ def build_his_replay_capital_pool(
     if cash_value is None:
         cash_value = _float(slot_summary.get("available_cash"), 0.0) or 0.0
     market_value = _float(source_snapshot.get("market_value"), 0.0) or 0.0
-    checkpoint_metadata = checkpoint.get("metadata") if isinstance((checkpoint or {}).get("metadata"), dict) else {}
+    checkpoint_metadata = _checkpoint_metadata(checkpoint)
     realized_pnl = _float(source_snapshot.get("realized_pnl"), _float(checkpoint_metadata.get("realized_pnl"), 0.0)) or 0.0
     unrealized_pnl = _float(source_snapshot.get("unrealized_pnl"), _float(checkpoint_metadata.get("unrealized_pnl"), 0.0)) or 0.0
     plan = calculate_slot_plan(float(total_equity or 0.0), normalize_capital_slot_config(metadata))
     slot_count = _safe_int(slot_summary.get("slot_count"), _safe_int(plan.get("slot_count")))
     slot_budget = _float(slot_summary.get("slot_budget"), _float(plan.get("slot_budget"), 0.0)) or 0.0
-    positions = [] if is_checkpoint_view else (db.get_sim_run_positions(run_id) if run_id else [])
+    checkpoint_positions = checkpoint_metadata.get("positions") if isinstance(checkpoint_metadata.get("positions"), list) else []
+    is_latest_checkpoint = _txt((checkpoint or {}).get("checkpoint_at")) == _txt(run.get("latest_checkpoint_at"))
+    if is_checkpoint_view and checkpoint_positions:
+        positions = checkpoint_positions
+    elif is_checkpoint_view and is_latest_checkpoint:
+        positions = db.get_sim_run_positions(run_id) if run_id else []
+    else:
+        positions = [] if is_checkpoint_view else (db.get_sim_run_positions(run_id) if run_id else [])
     positions_by_code = {_txt(position.get("stock_code")): position for position in positions if _txt(position.get("stock_code"))}
     open_lots = _reconstruct_open_lots_from_trades(
         db,

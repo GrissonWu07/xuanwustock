@@ -2136,6 +2136,23 @@ def test_his_replay_capital_pool_endpoint_rebuilds_lots_at_selected_checkpoint(t
             available_cash=cash,
             market_value=market_value,
             total_equity=total_equity,
+            metadata={
+                "positions": [
+                    {
+                        "stock_code": "301381",
+                        "stock_name": "宏工科技",
+                        "quantity": 100,
+                        "avg_price": 20,
+                        "latest_price": 21,
+                        "market_value": 2100,
+                        "unrealized_pnl": 100,
+                        "sellable_quantity": 100,
+                        "locked_quantity": 0,
+                    }
+                ]
+            }
+            if checkpoint_at == "2026-01-02 10:00:00"
+            else None,
         )
     db.replace_sim_run_results(
         run_id,
@@ -2240,8 +2257,8 @@ def test_his_replay_capital_pool_endpoint_rebuilds_lots_at_selected_checkpoint(t
         if lot["stockCode"] == "301381"
     )
     assert visible_lot["costBand"] == "20.00"
-    assert visible_lot["marketValue"] == "2000.00"
-    assert visible_lot["priceBasis"] == "entry"
+    assert visible_lot["marketValue"] == "2100.00"
+    assert visible_lot["priceBasis"] == "market"
 
 
 def test_his_replay_snapshot_returns_only_first_page_for_heavy_tables(tmp_path):

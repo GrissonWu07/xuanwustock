@@ -720,6 +720,12 @@ class QuantSimReplayService:
                     available_cash=float(checkpoint_summary["available_cash"]),
                     market_value=float(checkpoint_summary["market_value"]),
                     total_equity=float(checkpoint_summary["total_equity"]),
+                    metadata={
+                        "positions": checkpoint_summary.get("positions") or [],
+                        "realized_pnl": checkpoint_summary.get("realized_pnl") or 0,
+                        "unrealized_pnl": checkpoint_summary.get("unrealized_pnl") or 0,
+                        "slot_summary": checkpoint_summary.get("slot_summary") or {},
+                    },
                 )
                 self.db.update_sim_run_progress(
                     run_id,
@@ -1084,6 +1090,7 @@ class QuantSimReplayService:
         )
         portfolio.db.add_account_snapshot(run_reason=f"historical_range@{self._format_datetime(checkpoint)}")
         account_summary = portfolio.get_account_summary()
+        positions = portfolio.list_positions()
         return {
             "cancelled": False,
             "candidates_scanned": candidates_scanned,
@@ -1093,6 +1100,10 @@ class QuantSimReplayService:
             "available_cash": account_summary["available_cash"],
             "market_value": account_summary["market_value"],
             "total_equity": account_summary["total_equity"],
+            "realized_pnl": account_summary.get("realized_pnl", 0),
+            "unrealized_pnl": account_summary.get("unrealized_pnl", 0),
+            "positions": self._collect_position_snapshot(positions),
+            "slot_summary": self._collect_slot_summary(portfolio.db),
             "signals": checkpoint_signals,
         }
 
@@ -1121,6 +1132,29 @@ class QuantSimReplayService:
                 continue
             lots.extend(temp_db.get_position_lots(stock_code, as_of=as_of))
         return lots
+
+    @staticmethod
+    def _collect_position_snapshot(positions: list[dict]) -> list[dict]:
+        snapshot: list[dict] = []
+        for position in positions:
+            stock_code = str(position.get("stock_code") or "").strip()
+            quantity = int(position.get("quantity") or 0)
+            if not stock_code or quantity <= 0:
+                continue
+            snapshot.append(
+                {
+                    "stock_code": stock_code,
+                    "stock_name": str(position.get("stock_name") or stock_code),
+                    "quantity": quantity,
+                    "avg_price": float(position.get("avg_price") or 0),
+                    "latest_price": float(position.get("latest_price") or 0),
+                    "market_value": float(position.get("market_value") or 0),
+                    "unrealized_pnl": float(position.get("unrealized_pnl") or 0),
+                    "sellable_quantity": int(position.get("sellable_quantity") or 0),
+                    "locked_quantity": int(position.get("locked_quantity") or 0),
+                }
+            )
+        return snapshot
 
     @staticmethod
     def _collect_slot_summary(temp_db: QuantSimDB) -> dict:

@@ -304,6 +304,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [replayStartStatus, setReplayStartStatus] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
   const selectedTaskForCheckpoint = snapshot?.tasks.find((task) => task.id === selectedTaskId) ?? snapshot?.tasks[0] ?? null;
   const selectedTaskRunId = selectedTaskForCheckpoint?.runId ?? "";
+  const checkpointTaskLatestCheckpointAt = selectedTaskForCheckpoint?.latestCheckpointAt ?? "";
   const hasReplayCheckpointLoader = Boolean(selectedTaskRunId && typeof activeClient.getReplayCapitalPool === "function");
   const [checkpointSnapshot, setCheckpointSnapshot] = useState<ReplayCapitalPoolSnapshot | null>(null);
   const [checkpointPage, setCheckpointPage] = useState(1);
@@ -383,8 +384,9 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     if (!hasReplayCheckpointLoader || !selectedTaskRunId) {
       return;
     }
-    void loadReplayCheckpointPage(1);
-  }, [hasReplayCheckpointLoader, loadReplayCheckpointPage, selectedTaskRunId]);
+    const checkpointAt = checkpointTaskLatestCheckpointAt && checkpointTaskLatestCheckpointAt !== "--" ? checkpointTaskLatestCheckpointAt : undefined;
+    void loadReplayCheckpointPage(1, checkpointAt);
+  }, [checkpointTaskLatestCheckpointAt, hasReplayCheckpointLoader, loadReplayCheckpointPage, selectedTaskRunId]);
 
   useEffect(() => {
     if (!rawSnapshot || typeof activeClient.getReplayProgress !== "function") {
