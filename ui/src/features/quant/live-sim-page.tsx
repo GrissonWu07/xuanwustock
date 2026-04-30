@@ -22,11 +22,11 @@ const AI_DYNAMIC_STRATEGY_OPTIONS = [
 
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
 const SIGNAL_PAGE_SIZE = 20;
-const EXECUTION_HERO_METRIC_LABELS = ["交易笔数", "买入总成本", "卖出到账", "总费用", "实现盈亏"];
+const EXECUTION_HERO_METRIC_LABELS = ["实现盈亏", "买入总成本", "卖出到账", "总费用"];
 const EXECUTION_STAT_GROUPS = [
-  { title: "交易结构", labels: ["买入笔数", "卖出笔数", "加仓次数"] },
-  { title: "资金流", labels: ["买入毛额", "卖出毛额", "买入总成本", "卖出到账"] },
-  { title: "成本费用", labels: ["手续费", "印花税", "总费用"] },
+  { title: "成本拆解", labels: ["买入毛额", "手续费"] },
+  { title: "收入拆解", labels: ["卖出毛额", "印花税"] },
+  { title: "交易背景", labels: ["交易笔数", "胜率", "买入笔数", "卖出笔数", "加仓次数"] },
   { title: "Lot / Slot", labels: ["买入lot", "卖出lot", "剩余lot", "占用slot", "释放slot", "最大占用slot", "平均占用slot"] },
 ];
 
@@ -367,8 +367,10 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const tradeTotalRows = Number(tradeTable.pagination?.totalRows ?? tradeTable.rows.length);
   const tradeCostSummary = snapshot.tradeCostSummary ?? [];
   const executionHeroMetrics = pickMetrics(tradeCostSummary, EXECUTION_HERO_METRIC_LABELS);
-  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === "交易笔数");
-  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== "交易笔数");
+  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === "实现盈亏");
+  const executionTradeCountMetric = tradeCostSummary.find((metric) => metric.label === "交易笔数");
+  const executionWinRateMetric = tradeCostSummary.find((metric) => metric.label === "胜率");
+  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== "实现盈亏");
   const executionHeroMetricLabels = new Set(executionHeroMetrics.map((metric) => metric.label));
   const executionGroupMetricLabels = new Set(EXECUTION_STAT_GROUPS.flatMap((group) => group.labels));
   const executionStatGroups = EXECUTION_STAT_GROUPS.map((group) => ({
@@ -802,15 +804,19 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           {tradeCostSummary.length ? (
             <WorkbenchCard>
               <h2 className="section-card__title">费用与执行统计</h2>
-              <p className="section-card__description">实时模拟成交按A股手续费、印花税、lot和slot账本计算，净额才是实际现金变化。</p>
-              <div className="execution-summary" aria-label="费用与执行统计">
+              <p className="section-card__description">按买入成本、卖出到账、费用和实现盈亏归集，成交笔数仅作为执行背景。</p>
+              <div className="execution-summary execution-summary--finance" aria-label="费用与执行统计">
                 {executionHeroMetrics.length ? (
                   <div className="execution-summary__hero">
                     {primaryExecutionMetric ? (
                       <div className="execution-summary__hero-card execution-summary__hero-card--primary" key={primaryExecutionMetric.label}>
-                        <span>关键成交</span>
+                        <span>收益结果</span>
                         <strong>{primaryExecutionMetric.value}</strong>
-                        <em>{primaryExecutionMetric.label}</em>
+                        <em>
+                          已扣手续费与印花税
+                          {executionTradeCountMetric ? ` · ${executionTradeCountMetric.label} ${executionTradeCountMetric.value}` : ""}
+                          {executionWinRateMetric ? ` · 胜率 ${executionWinRateMetric.value}` : ""}
+                        </em>
                       </div>
                     ) : null}
                     {secondaryExecutionHeroMetrics.map((metric) => (

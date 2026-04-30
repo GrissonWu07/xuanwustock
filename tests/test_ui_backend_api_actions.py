@@ -1670,6 +1670,97 @@ def test_his_replay_progress_endpoint_returns_lightweight_task_progress(tmp_path
     assert "curve" not in payload
 
 
+def test_his_replay_progress_endpoint_uses_requested_run_for_tables_and_liquidation(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.quant_db()
+    completed_run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2025-12-01 09:30:00",
+        end_datetime="2026-01-06 15:00:00",
+        initial_cash=100000,
+        status="completed",
+        metadata={"selected_strategy_mode": "auto", "commission_rate": 0.0003, "sell_tax_rate": 0.001},
+    )
+    running_run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-10 15:00:00",
+        initial_cash=100000,
+        status="running",
+        metadata={"selected_strategy_mode": "auto"},
+    )
+    db.replace_sim_run_results(
+        completed_run_id,
+        trades=[
+            {
+                "stock_code": "300857",
+                "stock_name": "协创数据",
+                "action": "BUY",
+                "price": 100,
+                "quantity": 100,
+                "amount": 10000,
+                "executed_at": "2026-01-02 10:00:00",
+            }
+        ],
+        snapshots=[
+            {
+                "initial_cash": 100000,
+                "available_cash": 90000,
+                "market_value": 12000,
+                "total_equity": 102000,
+                "realized_pnl": 0,
+                "unrealized_pnl": 2000,
+                "created_at": "2026-01-06 15:00:00",
+            }
+        ],
+        positions=[
+            {
+                "stock_code": "300857",
+                "stock_name": "协创数据",
+                "quantity": 100,
+                "avg_price": 100,
+                "latest_price": 120,
+                "market_value": 12000,
+                "unrealized_pnl": 2000,
+                "sellable_quantity": 100,
+                "locked_quantity": 0,
+                "status": "holding",
+            }
+        ],
+        signals=[
+            {
+                "id": 1,
+                "stock_code": "300857",
+                "stock_name": "协创数据",
+                "action": "BUY",
+                "confidence": 80,
+                "reasoning": "selected run signal",
+                "checkpoint_at": "2026-01-02 10:00:00",
+            }
+        ],
+    )
+    db.replace_sim_run_results(running_run_id, trades=[], snapshots=[], positions=[], signals=[])
+
+    payload = TestClient(create_app(context=context)).get(
+        f"/api/v1/quant/his-replay/progress?runId={completed_run_id}"
+    ).json()
+
+    selected_task = next(task for task in payload["tasks"] if task["runId"] == str(completed_run_id))
+    assert payload["trades"]["pagination"]["totalRows"] == 1
+    assert payload["trades"]["rows"][0]["code"] == "300857"
+    assert payload["signals"]["pagination"]["totalRows"] == 1
+    assert payload["holdings"]["rows"][0]["code"] == "300857"
+    assert selected_task["terminalLiquidation"]["position_count"] == 1
+    assert selected_task["profitLossByStock"][0]["code"] == "300857"
+    assert selected_task["profitLossByStock"][0]["cells"][2] == "2000.00"
+    assert selected_task["profitLossByStock"][0]["cells"][4] == "2000.00"
+    assert any(row["cells"][1] == "期末清算" for row in selected_task["topWinningTrades"])
+
+
 def test_his_replay_progress_endpoint_does_not_read_full_trade_cost_summary(tmp_path, monkeypatch):
     context = _make_context(tmp_path)
     db = context.quant_db()

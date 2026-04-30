@@ -60,12 +60,93 @@ def _build_his_replay_ranked_trade_rows(
     return [_build_his_replay_ranked_trade_row(item, index) for index, item in enumerate(items[:limit])]
 
 
+def _build_his_replay_profit_loss_by_stock_rows(db: QuantSimDB, run_id: int) -> list[dict[str, Any]]:
+    by_code: dict[str, dict[str, Any]] = {}
+    for trade in db.get_sim_run_trades(run_id):
+        code = _txt(trade.get("stock_code"))
+        if not code:
+            continue
+        item = by_code.setdefault(
+            code,
+            {
+                "stock_code": code,
+                "stock_name": _txt(trade.get("stock_name")),
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "buy_net_amount": 0.0,
+                "sell_net_amount": 0.0,
+                "fee_total": 0.0,
+                "trade_count": 0,
+            },
+        )
+        if not item.get("stock_name"):
+            item["stock_name"] = _txt(trade.get("stock_name"))
+        action = _txt(trade.get("action")).upper()
+        if action in {"BUY", "SELL"}:
+            item["trade_count"] += 1
+        if action == "BUY":
+            item["buy_net_amount"] += _float(_trade_net_amount(trade), 0.0) or 0.0
+        elif action == "SELL":
+            item["sell_net_amount"] += _float(_trade_net_amount(trade), 0.0) or 0.0
+        item["fee_total"] += _float(_trade_fee_total(trade), 0.0) or 0.0
+        item["realized_pnl"] += _float(trade.get("realized_pnl"), 0.0) or 0.0
+
+    for position in db.get_sim_run_positions(run_id):
+        code = _txt(position.get("stock_code"))
+        if not code:
+            continue
+        item = by_code.setdefault(
+            code,
+            {
+                "stock_code": code,
+                "stock_name": _txt(position.get("stock_name")),
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "buy_net_amount": 0.0,
+                "sell_net_amount": 0.0,
+                "fee_total": 0.0,
+                "trade_count": 0,
+            },
+        )
+        if not item.get("stock_name"):
+            item["stock_name"] = _txt(position.get("stock_name"))
+        item["unrealized_pnl"] += _float(position.get("unrealized_pnl"), 0.0) or 0.0
+
+    items = list(by_code.values())
+    items.sort(key=lambda item: abs((_float(item.get("realized_pnl"), 0.0) or 0.0) + (_float(item.get("unrealized_pnl"), 0.0) or 0.0)), reverse=True)
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        realized_pnl = _float(item.get("realized_pnl"), 0.0) or 0.0
+        unrealized_pnl = _float(item.get("unrealized_pnl"), 0.0) or 0.0
+        total_pnl = realized_pnl + unrealized_pnl
+        rows.append(
+            {
+                "id": _txt(item.get("stock_code"), str(index)),
+                "cells": [
+                    _txt(item.get("stock_code")),
+                    _txt(item.get("stock_name"), "--"),
+                    _num(total_pnl),
+                    _num(realized_pnl),
+                    _num(unrealized_pnl),
+                    _num(item.get("buy_net_amount")),
+                    _num(item.get("sell_net_amount")),
+                    _num(item.get("fee_total")),
+                    _txt(item.get("trade_count"), "0"),
+                ],
+                "code": _txt(item.get("stock_code")),
+                "name": _txt(item.get("stock_name")),
+            }
+        )
+    return rows
+
+
 def _build_his_replay_task_items(
     db: QuantSimDB,
     runs: list[dict[str, Any]],
     *,
     include_positions: bool = True,
     include_terminal_limit: int = 0,
+    terminal_run_id: int | None = None,
 ) -> list[dict[str, Any]]:
     task_items: list[dict[str, Any]] = []
     for task_index, item in enumerate(runs[:10]):
@@ -161,7 +242,10 @@ def _build_his_replay_task_items(
             task["holdings"] = position_rows
             task["capitalPool"] = build_his_replay_capital_pool(db, item, latest_snapshot)
 
-        if task_index < include_terminal_limit:
+        include_terminal_liquidation = task_index < include_terminal_limit or (
+            terminal_run_id is not None and run_id == int(terminal_run_id)
+        )
+        if include_terminal_liquidation:
             run_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             terminal_liquidation = build_terminal_liquidation(
                 db,
@@ -187,6 +271,8 @@ def _build_his_replay_task_items(
             limit=5,
             extra_items=terminal_liquidation_items,
         )
+        if include_terminal_liquidation:
+            task["profitLossByStock"] = _build_his_replay_profit_loss_by_stock_rows(db, run_id)
 
         task_items.append(task)
     return task_items
@@ -417,13 +503,24 @@ def _reconcile_stale_his_replay_runs(db: QuantSimDB) -> None:
 def _snapshot_his_replay_progress(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     db = context.quant_db()
     _reconcile_stale_his_replay_runs(db)
+    query = table_query or {}
     runs = db.get_sim_runs(limit=20)
+    requested_run_id = _int(query.get("run_id"))
+    selected_run = db.get_sim_run(requested_run_id) if requested_run_id is not None else None
+    if selected_run is None:
+        selected_run = runs[0] if runs else None
+    selected_run_id = int(selected_run.get("id") or 0) if selected_run else 0
     payload: dict[str, Any] = {
         "updatedAt": _now(),
-        "tasks": _build_his_replay_task_items(db, runs, include_positions=False),
+        "tasks": _build_his_replay_task_items(
+            db,
+            runs,
+            include_positions=False,
+            terminal_run_id=selected_run_id or None,
+        ),
     }
-    if runs:
-        run_id = int(runs[0].get("id") or 0)
+    if selected_run_id:
+        run_id = selected_run_id
         payload.update(
             {
                 "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], _build_his_replay_holdings_rows(db, run_id), "暂无持仓"),
@@ -522,7 +619,11 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
         for item in db.list_strategy_profiles(include_disabled=False)
     ]
     runs = db.get_sim_runs(limit=20)
-    run = runs[0] if runs else None
+    query = table_query or {}
+    requested_run_id = _int(query.get("run_id"))
+    run = db.get_sim_run(requested_run_id) if requested_run_id is not None else None
+    if run is None:
+        run = runs[0] if runs else None
     candidate_page_size = _normalize_replay_table_page_size((table_query or {}).get("candidate_page_size") or (table_query or {}).get("pageSize"), default=20)
     candidate_page = _normalize_replay_table_page((table_query or {}).get("candidate_page") or (table_query or {}).get("page"))
     candidate_search = _txt((table_query or {}).get("candidate_search") or (table_query or {}).get("search"))
@@ -596,7 +697,7 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
     trade_table = _build_his_replay_trade_table(db, rid, table_query)
     trade_count = db.count_sim_run_trades(rid)
 
-    task_items = _build_his_replay_task_items(db, runs, include_positions=False, include_terminal_limit=1)
+    task_items = _build_his_replay_task_items(db, runs, include_positions=False, terminal_run_id=rid)
 
     run_metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
     replay_commission_rate = _normalize_fee_rate(

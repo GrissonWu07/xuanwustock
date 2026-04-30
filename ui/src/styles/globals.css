@@ -2903,6 +2903,23 @@ a {
   background: linear-gradient(135deg, rgba(77, 134, 247, 0.13), rgba(103, 209, 179, 0.12));
 }
 
+.execution-summary--finance .execution-summary__hero {
+  grid-template-columns: minmax(240px, 1.4fr) repeat(3, minmax(150px, 1fr));
+}
+
+.execution-summary--finance .execution-summary__hero-card {
+  min-height: 108px;
+}
+
+.execution-summary--finance .execution-summary__hero-card--primary {
+  border-color: rgba(20, 114, 92, 0.3);
+  background: linear-gradient(135deg, rgba(20, 114, 92, 0.12), rgba(77, 134, 247, 0.08));
+}
+
+.execution-summary--finance .execution-summary__groups {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .execution-summary__hero-card span,
 .execution-summary__row span {
   color: var(--text-soft);

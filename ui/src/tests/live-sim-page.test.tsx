@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../lib/api-client";
@@ -122,6 +122,23 @@ const snapshot = {
   },
   holdings: emptyTable,
   trades: emptyTable,
+  tradeCostSummary: [
+    { label: "交易笔数", value: "2" },
+    { label: "胜率", value: "50.0%" },
+    { label: "买入笔数", value: "1" },
+    { label: "卖出笔数", value: "1" },
+    { label: "买入毛额", value: "145396.00" },
+    { label: "卖出毛额", value: "148000.00" },
+    { label: "买入总成本", value: "145439.62" },
+    { label: "卖出到账", value: "147808.38" },
+    { label: "手续费", value: "88.02" },
+    { label: "印花税", value: "148.00" },
+    { label: "总费用", value: "236.02" },
+    { label: "实现盈亏", value: "2368.76" },
+    { label: "买入lot", value: "2" },
+    { label: "卖出lot", value: "1" },
+    { label: "剩余lot", value: "1" },
+  ],
   curve: [],
 };
 
@@ -237,7 +254,7 @@ describe("LiveSimPage", () => {
     renderLiveSimPage(client);
 
     await screen.findByText("信号记录");
-    fireEvent.change(screen.getByLabelText("初始资金池(元)"), { target: { value: "500000" } });
+    fireEvent.change(screen.getByDisplayValue("100000"), { target: { value: "500000" } });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => {
       expect(client.runPageAction).toHaveBeenCalledWith("live-sim", "save", expect.objectContaining({ initialCash: 500000 }));
@@ -255,7 +272,7 @@ describe("LiveSimPage", () => {
     expect(screen.queryByText("执行中心")).not.toBeInTheDocument();
     expect(screen.queryByText("类别不应展示")).not.toBeInTheDocument();
     expect(screen.getAllByText("600519 贵州茅台").length).toBeGreaterThan(0);
-    expect(screen.getByText("2 lots")).toBeInTheDocument();
+    expect(screen.getAllByText(/2 lot/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Slot 01").length).toBeGreaterThan(0);
     expect(screen.getAllByText("成本 240.00 · 现价 250.00").length).toBeGreaterThan(0);
     expect(screen.queryByRole("columnheader", { name: "备注" })).not.toBeInTheDocument();
@@ -274,5 +291,14 @@ describe("LiveSimPage", () => {
     expect(screen.queryByText("Slot下限")).not.toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "策略" })).not.toBeInTheDocument();
     expect(await screen.findByRole("columnheader", { name: "状态" })).toBeInTheDocument();
+    const executionSection = screen.getByLabelText("费用与执行统计");
+    expect(within(executionSection).getByText("收益结果")).toBeInTheDocument();
+    expect(within(executionSection).getByText("2368.76")).toBeInTheDocument();
+    expect(within(executionSection).getByText("买入总成本")).toBeInTheDocument();
+    expect(within(executionSection).getByText("卖出到账")).toBeInTheDocument();
+    expect(within(executionSection).getByText("已扣手续费与印花税 · 交易笔数 2 · 胜率 50.0%")).toBeInTheDocument();
+    expect(within(executionSection).getByText("成本拆解")).toBeInTheDocument();
+    expect(within(executionSection).getByText("收入拆解")).toBeInTheDocument();
+    expect(within(executionSection).getByText("交易背景")).toBeInTheDocument();
   });
 });

@@ -76,6 +76,14 @@ const initialSnapshot = {
         liquidation_total_pnl: 453.56,
         liquidation_return_pct: 0.91,
       },
+      profitLossByStock: [
+        {
+          id: "301381",
+          cells: ["301381", "宏工科技", "1048.52", "568.52", "480.00", "23807.14", "24375.66", "18.20", "14"],
+          code: "301381",
+          name: "宏工科技",
+        },
+      ],
       capitalPool: {
         task: {
           runId: "101",
@@ -452,11 +460,14 @@ describe("HisReplayPage", () => {
     renderHisReplayPage(client);
 
     const section = await screen.findByLabelText("费用与执行统计");
-    expect(within(section).getByText("关键成交")).toBeInTheDocument();
-    expect(within(section).getByText("14")).toBeInTheDocument();
-    expect(within(section).getByText("交易笔数 · 胜率 57.1%")).toBeInTheDocument();
-    expect(within(section).getByText("交易结构")).toBeInTheDocument();
-    expect(within(section).getByText("资金与费用")).toBeInTheDocument();
+    expect(within(section).getByText("收益结果")).toBeInTheDocument();
+    expect(within(section).getByText("568.52")).toBeInTheDocument();
+    expect(within(section).getByText("买入总成本")).toBeInTheDocument();
+    expect(within(section).getByText("卖出到账")).toBeInTheDocument();
+    expect(within(section).getByText("已扣手续费与印花税 · 交易笔数 14 · 胜率 57.1%")).toBeInTheDocument();
+    expect(within(section).getByText("成本拆解")).toBeInTheDocument();
+    expect(within(section).getByText("收入拆解")).toBeInTheDocument();
+    expect(within(section).getByText("交易背景")).toBeInTheDocument();
     expect(within(section).getByText("Lot / Slot")).toBeInTheDocument();
     expect(within(section).getByText("期末资金")).toBeInTheDocument();
     expect(within(section).getAllByText("总费用")).toHaveLength(1);
@@ -464,6 +475,11 @@ describe("HisReplayPage", () => {
     expect(within(section).getByText("手续费")).toBeInTheDocument();
     expect(within(section).queryByText("其他")).not.toBeInTheDocument();
     expect(within(section).queryByText("清算后现金")).not.toBeInTheDocument();
+    expect(screen.getByText("盈亏构成")).toBeInTheDocument();
+    expect(screen.getByText("按股票归集本次任务的已实现盈亏、期末浮动盈亏、成本、到账和费用，用来判断收益主要来自哪些标的。")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "301381 宏工科技" }).length).toBeGreaterThan(0);
+    expect(screen.getByText("1048.52")).toBeInTheDocument();
+    expect(screen.getAllByText("480.00").length).toBeGreaterThan(0);
   });
 
   it("opens all lot details from the capital pool slot summary", async () => {
@@ -479,10 +495,10 @@ describe("HisReplayPage", () => {
 
     const allLotsPanel = await screen.findByLabelText("全部 Lot 明细");
     expect(within(allLotsPanel).getByText("全部 Lot 明细")).toBeInTheDocument();
-    expect(within(allLotsPanel).getByText("Slot 01")).toBeInTheDocument();
-    expect(within(allLotsPanel).getByText("占用 24961.00")).toBeInTheDocument();
-    expect(within(allLotsPanel).getByText("可卖 0 · 锁定 1200")).toBeInTheDocument();
-    expect(within(allLotsPanel).getByRole("link", { name: "301381 宏工科技" })).toHaveAttribute("href", "/portfolio/position/301381");
+    expect(within(allLotsPanel).getAllByText("Slot 01").length).toBeGreaterThan(0);
+    expect(within(allLotsPanel).getAllByText("占用 24961.00").length).toBeGreaterThan(0);
+    expect(within(allLotsPanel).getAllByText("可卖 0 · 锁定 1200").length).toBeGreaterThan(0);
+    expect(within(allLotsPanel).getAllByRole("link", { name: "301381 宏工科技" })[0]).toHaveAttribute("href", "/portfolio/position/301381");
   });
 
   it("loads capital pool lots for a selected replay checkpoint page", async () => {
@@ -569,6 +585,7 @@ describe("HisReplayPage", () => {
     expect(intervalCallbacks).toHaveLength(1);
     expect(await within(taskDetails).findByText("检查点进度：1497/1992 · 75%")).toBeInTheDocument();
     expect(client.getReplayProgress).toHaveBeenCalledWith({
+      runId: "102",
       pageSize: 20,
       tradePageSize: 20,
       tradePage: 1,
@@ -589,7 +606,6 @@ describe("HisReplayPage", () => {
     expect(within(updatedTaskDetails).getByText("检查点 2026-01-06 10:30:00")).toBeInTheDocument();
     expect(within(updatedTaskDetails).getByText("分析候选股 1/9 002463")).toBeInTheDocument();
     expect(screen.getByText("分析候选股 1/9 002463").closest(".replay-task-stage")).toBeTruthy();
-    expect(screen.getByText("002463 沪电股份")).toBeInTheDocument();
     expect(client.getReplayProgress).toHaveBeenCalledTimes(2);
     expect(client.getPageSnapshot).toHaveBeenCalledTimes(1);
     expect(await screen.findByRole("link", { name: /002463/ })).toHaveAttribute("href", "/portfolio/position/002463");

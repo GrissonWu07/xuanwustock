@@ -57,10 +57,11 @@ const REPLAY_SUMMARY_METRIC_LABELS = new Set([
   "清算后总盈亏",
   "清算后收益率",
 ]);
-const EXECUTION_HERO_METRIC_LABELS = ["交易笔数", "胜率", "买入总成本", "卖出到账", "总费用", "实现盈亏"];
+const EXECUTION_HERO_METRIC_LABELS = ["实现盈亏", "买入总成本", "卖出到账", "总费用"];
 const EXECUTION_STAT_GROUPS = [
-  { title: "交易结构", labels: ["买入笔数", "卖出笔数", "加仓次数"] },
-  { title: "资金与费用", labels: ["买入毛额", "卖出毛额", "手续费", "印花税"] },
+  { title: "成本拆解", labels: ["买入毛额", "手续费"] },
+  { title: "收入拆解", labels: ["卖出毛额", "印花税"] },
+  { title: "交易背景", labels: ["交易笔数", "胜率", "买入笔数", "卖出笔数", "加仓次数"] },
   { title: "Lot / Slot", labels: ["买入lot", "卖出lot", "剩余lot", "占用slot", "释放slot", "最大占用slot", "平均占用slot"] },
   { title: "期末资金", labels: ["Slot数量", "单Slot预算", "最大Slot", "高价双Slot线", "最终空闲", "最终占用", "最终待结算"] },
 ];
@@ -397,6 +398,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
 
     let cancelled = false;
     const replayQuery = {
+      runId: selectedTaskRunId,
       pageSize: TRADE_PAGE_SIZE,
       tradePageSize: TRADE_PAGE_SIZE,
       tradePage,
@@ -434,6 +436,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     activeClient,
     snapshotVersion,
     rawSnapshot,
+    selectedTaskRunId,
     tradePage,
     tradeActionFilter,
     tradeStockFilter,
@@ -531,9 +534,10 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     : [];
   const executionCostSummary = (snapshot.tradeCostSummary ?? []).filter((metric) => !REPLAY_SUMMARY_METRIC_LABELS.has(metric.label));
   const executionHeroMetrics = pickMetrics(executionCostSummary, EXECUTION_HERO_METRIC_LABELS);
-  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === "交易笔数");
-  const executionWinRateMetric = executionHeroMetrics.find((metric) => metric.label === "胜率");
-  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== "交易笔数" && metric.label !== "胜率");
+  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === "实现盈亏");
+  const executionWinRateMetric = executionCostSummary.find((metric) => metric.label === "胜率");
+  const executionTradeCountMetric = executionCostSummary.find((metric) => metric.label === "交易笔数");
+  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== "实现盈亏");
   const executionHeroMetricLabels = new Set(executionHeroMetrics.map((metric) => metric.label));
   const executionGroupMetricLabels = new Set(EXECUTION_STAT_GROUPS.flatMap((group) => group.labels));
   const executionStatGroups = EXECUTION_STAT_GROUPS.map((group) => ({
@@ -554,6 +558,12 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     rows: withCodeName(selectedTask?.topLosingTrades ?? [], 2),
     emptyLabel: "暂无亏损交易",
     emptyMessage: "选中任务里还没有已兑现的亏损卖出交易。",
+  };
+  const selectedTaskProfitLossByStock: TableSection = {
+    columns: ["代码", "名称", "合计盈亏", "已实现", "浮动盈亏", "买入成本", "卖出到账", "费用", "成交"],
+    rows: selectedTask?.profitLossByStock ?? [],
+    emptyLabel: "暂无盈亏构成",
+    emptyMessage: "选中任务还没有可归集到股票的成交或期末持仓。",
   };
   const tradeRows = withCodeName(snapshot.trades.rows, 2);
   const signalTable = removeExecutionResultColumn(snapshot.signals);
@@ -1056,16 +1066,17 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
           {executionCostSummary.length ? (
             <WorkbenchCard>
               <h2 className="section-card__title">费用与执行统计</h2>
-              <p className="section-card__description">回放成交按每笔毛额、手续费、印花税、净额、lot和slot归集，避免只看买卖价格误判收益。</p>
-              <div className="execution-summary" aria-label="费用与执行统计">
+              <p className="section-card__description">按买入成本、卖出到账、费用和实现盈亏归集，成交笔数仅作为执行背景。</p>
+              <div className="execution-summary execution-summary--finance" aria-label="费用与执行统计">
                 {executionHeroMetrics.length ? (
                   <div className="execution-summary__hero">
                     {primaryExecutionMetric ? (
                       <div className="execution-summary__hero-card execution-summary__hero-card--primary" key={primaryExecutionMetric.label}>
-                        <span>关键成交</span>
+                        <span>收益结果</span>
                         <strong>{primaryExecutionMetric.value}</strong>
                         <em>
-                          {primaryExecutionMetric.label}
+                          已扣手续费与印花税
+                          {executionTradeCountMetric ? ` · ${executionTradeCountMetric.label} ${executionTradeCountMetric.value}` : ""}
                           {executionWinRateMetric ? ` · 胜率 ${executionWinRateMetric.value}` : ""}
                         </em>
                       </div>
@@ -1109,6 +1120,17 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               </div>
             </WorkbenchCard>
           ) : null}
+
+          <QuantTableSectionCard
+            title="盈亏构成"
+            description="按股票归集本次任务的已实现盈亏、期末浮动盈亏、成本、到账和费用，用来判断收益主要来自哪些标的。"
+            table={selectedTaskProfitLossByStock}
+            emptyTitle={selectedTaskProfitLossByStock.emptyLabel ?? "暂无盈亏构成"}
+            emptyDescription={selectedTaskProfitLossByStock.emptyMessage ?? "选中任务还没有可归集到股票的成交或期末持仓。"}
+            tableLayout="auto"
+            compactConfig={{ coreColumnIndexes: [0, 2, 3, 4], detailColumnIndexes: [1, 5, 6, 7, 8] }}
+            signalDetailSource="replay"
+          />
 
           <div className="section-grid">
             <QuantTableSectionCard
