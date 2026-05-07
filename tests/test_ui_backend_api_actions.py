@@ -3110,6 +3110,115 @@ def test_his_replay_signal_filters_are_applied_by_database(tmp_path):
     assert buy_only["signals"]["pagination"]["totalRows"] == 1
 
 
+def test_his_replay_snapshot_counts_ignored_trade_signals(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.replay_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2025-12-01 09:30:00",
+        end_datetime="2026-01-06 15:00:00",
+        initial_cash=100000,
+        status="completed",
+        metadata={"selected_strategy_mode": "auto"},
+    )
+    db.replace_sim_run_results(
+        run_id,
+        trades=[],
+        snapshots=[],
+        positions=[],
+        signals=[
+            {
+                "id": 101,
+                "stock_code": "300684",
+                "stock_name": "中石科技",
+                "action": "BUY",
+                "status": "executed",
+                "confidence": 82,
+                "position_size_pct": 50,
+                "reasoning": "buy executed",
+                "checkpoint_at": "2026-01-06 10:00:00",
+            },
+            {
+                "id": 102,
+                "stock_code": "301662",
+                "stock_name": "宏工科技",
+                "action": "BUY",
+                "status": "ignored",
+                "confidence": 84,
+                "position_size_pct": 50,
+                "reasoning": "涨停不可买入",
+                "checkpoint_at": "2026-01-06 10:30:00",
+            },
+            {
+                "id": 103,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "status": "ignored",
+                "confidence": 81,
+                "position_size_pct": 35,
+                "reasoning": "涨停不可买入",
+                "checkpoint_at": "2026-01-06 11:00:00",
+            },
+            {
+                "id": 104,
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "action": "SELL",
+                "status": "ignored",
+                "confidence": 79,
+                "position_size_pct": 100,
+                "reasoning": "跌停不可卖出",
+                "checkpoint_at": "2026-01-06 11:30:00",
+            },
+            {
+                "id": 105,
+                "stock_code": "000001",
+                "stock_name": "平安银行",
+                "action": "HOLD",
+                "status": "observed",
+                "confidence": 60,
+                "reasoning": "hold",
+                "checkpoint_at": "2026-01-06 13:00:00",
+            },
+        ],
+    )
+    db.finalize_sim_run(
+        run_id,
+        status="completed",
+        final_equity=100000,
+        total_return_pct=0,
+        max_drawdown_pct=0,
+        win_rate=0,
+        trade_count=0,
+        status_message="完成",
+    )
+
+    client = TestClient(create_app(context=context))
+    payload = client.get("/api/v1/quant/his-replay").json()
+    progress_payload = client.get(f"/api/v1/quant/his-replay/progress?runId={run_id}").json()
+
+    task = payload["tasks"][0]
+    assert task["buySignalCount"] == 3
+    assert task["sellSignalCount"] == 1
+    assert task["ignoredSignalCount"] == 3
+    assert task["ignoredBuySignalCount"] == 2
+    assert task["ignoredSellSignalCount"] == 1
+    summary_by_label = {item["label"]: item["value"] for item in payload["tradeCostSummary"]}
+    assert summary_by_label["交易信号"] == "4"
+    assert summary_by_label["BUY信号"] == "3"
+    assert summary_by_label["SELL信号"] == "1"
+    assert summary_by_label["已执行信号"] == "1"
+    assert summary_by_label["忽略信号"] == "3"
+    assert summary_by_label["忽略BUY"] == "2"
+    assert summary_by_label["忽略SELL"] == "1"
+    progress_summary_by_label = {item["label"]: item["value"] for item in progress_payload["tradeCostSummary"]}
+    assert progress_summary_by_label["忽略BUY"] == "2"
+    assert progress_summary_by_label["忽略SELL"] == "1"
+
+
 def test_his_replay_snapshot_keeps_stale_completed_run_read_only(tmp_path):
     context = _make_context(tmp_path)
     db = context.replay_db()

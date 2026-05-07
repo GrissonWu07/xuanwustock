@@ -62,6 +62,7 @@ const EXECUTION_STAT_GROUPS = [
   { title: "成本拆解", labels: ["买入毛额", "手续费"] },
   { title: "收入拆解", labels: ["卖出毛额", "印花税"] },
   { title: "交易背景", labels: ["交易笔数", "胜率", "买入笔数", "卖出笔数", "加仓次数"] },
+  { title: "信号执行", labels: ["交易信号", "BUY信号", "SELL信号", "已执行信号", "忽略信号", "忽略BUY", "忽略SELL", "待执行信号"] },
   { title: "Lot / Slot", labels: ["买入lot", "卖出lot", "剩余lot", "占用slot", "释放slot", "最大占用slot", "平均占用slot"] },
   { title: "期末资金", labels: ["Slot数量", "单Slot预算", "最大Slot", "高价双Slot线", "最终空闲", "最终占用", "最终待结算"] },
 ];
@@ -529,6 +530,9 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         { label: "持仓市值", value: selectedTask.marketValue || "--" },
         { label: "已实现", value: selectedTask.realizedPnl || "--" },
         { label: "浮动盈亏", value: selectedTask.unrealizedPnl || "--" },
+        { label: "BUY信号", value: toDisplayText(selectedTask.buySignalCount, "0") },
+        { label: "忽略BUY", value: toDisplayText(selectedTask.ignoredBuySignalCount, "0") },
+        { label: "忽略SELL", value: toDisplayText(selectedTask.ignoredSellSignalCount, "0") },
         ...selectedTaskLiquidationMetrics,
       ]
     : [];

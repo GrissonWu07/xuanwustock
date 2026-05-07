@@ -140,6 +140,20 @@ def _build_his_replay_profit_loss_by_stock_rows(db: QuantSimDB, run_id: int) -> 
     return rows
 
 
+def _replay_signal_execution_metrics(summary: dict[str, Any] | None) -> list[dict[str, Any]]:
+    item = summary or {}
+    return [
+        _metric("交易信号", _txt(item.get("trade_signal_count"), "0")),
+        _metric("BUY信号", _txt(item.get("buy_signal_count"), "0")),
+        _metric("SELL信号", _txt(item.get("sell_signal_count"), "0")),
+        _metric("已执行信号", _txt(item.get("executed_signal_count"), "0")),
+        _metric("忽略信号", _txt(item.get("ignored_signal_count"), "0")),
+        _metric("忽略BUY", _txt(item.get("ignored_buy_signal_count"), "0")),
+        _metric("忽略SELL", _txt(item.get("ignored_sell_signal_count"), "0")),
+        _metric("待执行信号", _txt(item.get("pending_signal_count"), "0")),
+    ]
+
+
 def _build_his_replay_task_items(
     db: QuantSimDB,
     runs: list[dict[str, Any]],
@@ -154,6 +168,7 @@ def _build_his_replay_task_items(
         trade_count = db.count_sim_run_trades(run_id) if run_id else int(_float(item.get("trade_count"), 0.0) or 0.0)
         latest_snapshot = db.get_latest_sim_run_snapshot(run_id) if run_id else None
         trade_quality = db.get_sim_run_trade_quality(run_id) if run_id else {}
+        signal_summary = db.get_sim_run_signal_execution_summary(run_id) if run_id else {}
         buy_trade_count = int(_float(trade_quality.get("buy_count"), 0.0) or 0.0)
         sell_trade_count = int(_float(trade_quality.get("sell_count"), 0.0) or 0.0)
         winning_sell_count = int(_float(trade_quality.get("winning_sell_count"), 0.0) or 0.0)
@@ -205,6 +220,14 @@ def _build_his_replay_task_items(
             "sellWinRate": _pct(sell_win_rate, default="--"),
             "buyTradeCount": buy_trade_count,
             "sellTradeCount": sell_trade_count,
+            "tradeSignalCount": int(_float(signal_summary.get("trade_signal_count"), 0.0) or 0.0),
+            "buySignalCount": int(_float(signal_summary.get("buy_signal_count"), 0.0) or 0.0),
+            "sellSignalCount": int(_float(signal_summary.get("sell_signal_count"), 0.0) or 0.0),
+            "executedSignalCount": int(_float(signal_summary.get("executed_signal_count"), 0.0) or 0.0),
+            "ignoredSignalCount": int(_float(signal_summary.get("ignored_signal_count"), 0.0) or 0.0),
+            "ignoredBuySignalCount": int(_float(signal_summary.get("ignored_buy_signal_count"), 0.0) or 0.0),
+            "ignoredSellSignalCount": int(_float(signal_summary.get("ignored_sell_signal_count"), 0.0) or 0.0),
+            "pendingSignalCount": int(_float(signal_summary.get("pending_signal_count"), 0.0) or 0.0),
             "winningSellCount": winning_sell_count,
             "losingSellCount": losing_sell_count,
             "avgWin": _num(avg_win, 0, default="--"),
@@ -575,7 +598,8 @@ def _snapshot_his_replay_progress(context: UIApiContext, table_query: dict[str, 
                 "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], _build_his_replay_holdings_rows(db, run_id), "暂无持仓"),
                 "trades": _build_his_replay_trade_table(db, run_id, table_query),
                 "signals": _build_his_replay_signal_table(db, run_id, table_query),
-                "tradeCostSummary": _trade_cost_summary_metrics(db.get_sim_run_trade_cost_summary_lightweight(run_id)),
+                "tradeCostSummary": _trade_cost_summary_metrics(db.get_sim_run_trade_cost_summary_lightweight(run_id))
+                + _replay_signal_execution_metrics(db.get_sim_run_signal_execution_summary(run_id)),
             }
         )
     return payload
@@ -891,6 +915,7 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
             db.get_sim_run_trade_cost_summary(rid),
             scheduler_status,
         )
+        + _replay_signal_execution_metrics(db.get_sim_run_signal_execution_summary(rid))
         + terminal_liquidation_metrics(terminal_liquidation),
         "curve": [
             {"label": _system_time_text(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}

@@ -2666,6 +2666,34 @@ class QuantSimDB:
         conn.close()
         return self._row_to_dict(row) if row else {}
 
+    def get_sim_run_signal_execution_summary(self, run_id: int) -> dict[str, int]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                COALESCE(COUNT(*), 0) AS signal_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) IN ('BUY', 'SELL') THEN 1 ELSE 0 END), 0) AS trade_signal_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'BUY' THEN 1 ELSE 0 END), 0) AS buy_signal_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' THEN 1 ELSE 0 END), 0) AS sell_signal_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'HOLD' THEN 1 ELSE 0 END), 0) AS hold_signal_count,
+                COALESCE(SUM(CASE WHEN LOWER(COALESCE(status, '')) = 'executed' THEN 1 ELSE 0 END), 0) AS executed_signal_count,
+                COALESCE(SUM(CASE WHEN LOWER(COALESCE(status, '')) = 'ignored' THEN 1 ELSE 0 END), 0) AS ignored_signal_count,
+                COALESCE(SUM(CASE WHEN LOWER(COALESCE(status, '')) = 'pending' THEN 1 ELSE 0 END), 0) AS pending_signal_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'BUY' AND LOWER(COALESCE(status, '')) = 'executed' THEN 1 ELSE 0 END), 0) AS executed_buy_signal_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' AND LOWER(COALESCE(status, '')) = 'executed' THEN 1 ELSE 0 END), 0) AS executed_sell_signal_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'BUY' AND LOWER(COALESCE(status, '')) = 'ignored' THEN 1 ELSE 0 END), 0) AS ignored_buy_signal_count,
+                COALESCE(SUM(CASE WHEN UPPER(action) = 'SELL' AND LOWER(COALESCE(status, '')) = 'ignored' THEN 1 ELSE 0 END), 0) AS ignored_sell_signal_count
+            FROM sim_run_signals
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        summary = self._row_to_dict(row) if row else {}
+        return {key: int(value or 0) for key, value in summary.items()}
+
     def get_sim_run_ranked_trades(
         self,
         run_id: int,

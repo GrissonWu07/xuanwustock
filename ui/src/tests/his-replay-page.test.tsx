@@ -61,6 +61,14 @@ const initialSnapshot = {
       sellWinRate: "57.1%",
       buyTradeCount: 7,
       sellTradeCount: 7,
+      tradeSignalCount: 17,
+      buySignalCount: 10,
+      sellSignalCount: 7,
+      executedSignalCount: 14,
+      ignoredSignalCount: 3,
+      ignoredBuySignalCount: 2,
+      ignoredSellSignalCount: 1,
+      pendingSignalCount: 0,
       winningSellCount: 4,
       losingSellCount: 3,
       avgWin: "1800",
@@ -186,6 +194,14 @@ const initialSnapshot = {
     { label: "买入笔数", value: "7" },
     { label: "卖出笔数", value: "7" },
     { label: "加仓次数", value: "2" },
+    { label: "交易信号", value: "17" },
+    { label: "BUY信号", value: "10" },
+    { label: "SELL信号", value: "7" },
+    { label: "已执行信号", value: "14" },
+    { label: "忽略信号", value: "3" },
+    { label: "忽略BUY", value: "2" },
+    { label: "忽略SELL", value: "1" },
+    { label: "待执行信号", value: "0" },
     { label: "买入毛额", value: "23800.00" },
     { label: "卖出毛额", value: "24400.00" },
     { label: "买入总成本", value: "23807.14" },
@@ -468,11 +484,15 @@ describe("HisReplayPage", () => {
     expect(within(section).getByText("成本拆解")).toBeInTheDocument();
     expect(within(section).getByText("收入拆解")).toBeInTheDocument();
     expect(within(section).getByText("交易背景")).toBeInTheDocument();
+    expect(within(section).getByText("信号执行")).toBeInTheDocument();
     expect(within(section).getByText("Lot / Slot")).toBeInTheDocument();
     expect(within(section).getByText("期末资金")).toBeInTheDocument();
     expect(within(section).getAllByText("总费用")).toHaveLength(1);
     expect(within(section).getByText("买入毛额")).toBeInTheDocument();
     expect(within(section).getByText("手续费")).toBeInTheDocument();
+    expect(within(section).getByText("忽略BUY")).toBeInTheDocument();
+    expect(within(section).getAllByText("2").length).toBeGreaterThan(0);
+    expect(within(section).getByText("忽略SELL")).toBeInTheDocument();
     expect(within(section).queryByText("其他")).not.toBeInTheDocument();
     expect(within(section).queryByText("清算后现金")).not.toBeInTheDocument();
     expect(screen.getByText("盈亏构成")).toBeInTheDocument();

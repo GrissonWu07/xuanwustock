@@ -505,6 +505,14 @@ export type ReplaySnapshot = {
     sellWinRate?: string;
     buyTradeCount?: number;
     sellTradeCount?: number;
+    tradeSignalCount?: number;
+    buySignalCount?: number;
+    sellSignalCount?: number;
+    executedSignalCount?: number;
+    ignoredSignalCount?: number;
+    ignoredBuySignalCount?: number;
+    ignoredSellSignalCount?: number;
+    pendingSignalCount?: number;
     winningSellCount?: number;
     losingSellCount?: number;
     avgWin?: string;
