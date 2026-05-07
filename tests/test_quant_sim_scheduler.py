@@ -198,6 +198,65 @@ def test_scheduler_run_once_uses_configured_analysis_timeframe(tmp_path, monkeyp
     assert captured["analysis_timeframe"] == "1d+30m"
 
 
+def test_scheduler_run_once_passes_one_live_current_time_to_candidate_and_position_analysis(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
+    candidate_service.add_manual_candidate("300750", "宁德时代", "main_force")
+    held_candidate = next(item for item in candidate_service.list_candidates() if item["stock_code"] == "300750")
+    buy_signal = signal_service.create_signal(
+        held_candidate,
+        {
+            "action": "BUY",
+            "confidence": 82,
+            "reasoning": "建仓",
+            "position_size_pct": 20,
+        },
+    )
+    portfolio_service.confirm_buy(
+        buy_signal["id"],
+        price=201.5,
+        quantity=100,
+        note="已买入",
+        executed_at="2026-04-07 10:00:00",
+    )
+    scheduler = QuantSimScheduler(db_file=db_file)
+    scheduler.update_config(enabled=True, analysis_timeframe="30m")
+    current_time = datetime(2026, 5, 8, 10, 30)
+    captured = {"candidate": [], "position": []}
+
+    monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
+    monkeypatch.setattr(scheduler, "_decision_time", lambda: current_time)
+
+    def fake_analyze_candidate(payload, **kwargs):
+        captured["candidate"].append(kwargs.get("current_time"))
+        return {
+            "action": "HOLD",
+            "confidence": 61,
+            "reasoning": "等待确认",
+            "position_size_pct": 0,
+        }
+
+    def fake_analyze_position(candidate, position, **kwargs):
+        del candidate, position
+        captured["position"].append(kwargs.get("current_time"))
+        return {
+            "action": "HOLD",
+            "confidence": 63,
+            "reasoning": "继续观察",
+            "position_size_pct": 0,
+        }
+
+    monkeypatch.setattr(scheduler.engine.adapter, "analyze_candidate", fake_analyze_candidate)
+    monkeypatch.setattr(scheduler.engine.adapter, "analyze_position", fake_analyze_position)
+
+    scheduler.run_once()
+
+    assert captured == {"candidate": [current_time], "position": [current_time]}
+
+
 def test_scheduled_cycle_skips_before_start_date(tmp_path, monkeypatch):
     candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
     candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
@@ -240,7 +299,9 @@ def test_scheduled_cycle_always_skips_outside_trading_time(tmp_path, monkeypatch
 def test_scheduler_run_once_passes_strategy_mode_to_engine(tmp_path, monkeypatch):
     scheduler = QuantSimScheduler(db_file=tmp_path / "app.quant_sim.db")
     scheduler.db.update_scheduler_config(strategy_mode="neutral")
+    current_time = datetime(2026, 5, 8, 10, 30)
     monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
+    monkeypatch.setattr(scheduler, "_decision_time", lambda: current_time)
 
     scheduler.engine.analyze_active_candidates = Mock(return_value=[])
     scheduler.engine.analyze_positions = Mock(return_value=[])
@@ -254,6 +315,7 @@ def test_scheduler_run_once_passes_strategy_mode_to_engine(tmp_path, monkeypatch
         ai_dynamic_strategy="off",
         ai_dynamic_strength=0.5,
         ai_dynamic_lookback=48,
+        current_time=current_time,
     )
     scheduler.engine.analyze_positions.assert_called_once_with(
         analysis_timeframe="30m",
@@ -261,6 +323,7 @@ def test_scheduler_run_once_passes_strategy_mode_to_engine(tmp_path, monkeypatch
         ai_dynamic_strategy="off",
         ai_dynamic_strength=0.5,
         ai_dynamic_lookback=48,
+        current_time=current_time,
     )
 
 

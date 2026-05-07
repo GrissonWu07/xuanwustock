@@ -73,6 +73,7 @@ class QuantSimScheduler:
         analysis_timeframe = str(config["analysis_timeframe"])
         strategy_mode = str(config["strategy_mode"])
         market = str(config["market"])
+        current_time = self._decision_time()
         if hasattr(self.engine.adapter, "set_market"):
             self.engine.adapter.set_market(market)
         configured_profile_id = str(config.get("strategy_profile_id") or "").strip()
@@ -94,6 +95,7 @@ class QuantSimScheduler:
             "ai_dynamic_strategy": ai_dynamic_strategy,
             "ai_dynamic_strength": ai_dynamic_strength,
             "ai_dynamic_lookback": ai_dynamic_lookback,
+            "current_time": current_time,
         }
         if strategy_profile_id:
             candidate_kwargs["strategy_profile_id"] = strategy_profile_id
@@ -108,6 +110,7 @@ class QuantSimScheduler:
             "ai_dynamic_strategy": ai_dynamic_strategy,
             "ai_dynamic_strength": ai_dynamic_strength,
             "ai_dynamic_lookback": ai_dynamic_lookback,
+            "current_time": current_time,
         }
         if strategy_profile_id:
             position_kwargs["strategy_profile_id"] = strategy_profile_id
@@ -317,6 +320,10 @@ class QuantSimScheduler:
                 if current_time >= start_time or current_time <= end_time:
                     return True
         return False
+
+    @staticmethod
+    def _decision_time() -> datetime:
+        return datetime.now().replace(microsecond=0)
 
     @staticmethod
     def _now() -> str:

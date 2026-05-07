@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Any
+
 from app.gateway.deps import *
 from app.gateway.constants import REPLAY_TABLE_PAGE_SIZE
 from app.gateway.context import UIApiContext
@@ -21,6 +24,15 @@ from app.gateway.trades import (
     _trade_slot_units,
 )
 from app.quant_sim.time_utils import format_market_iso, market_timezone_name, system_timezone_name, utc_now_iso_z
+
+
+def _live_current_time(scheduler: Any) -> datetime:
+    decision_time = getattr(scheduler, "_decision_time", None)
+    if callable(decision_time):
+        value = decision_time()
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None, microsecond=0)
+    return datetime.now().replace(microsecond=0)
 
 
 def _market_time_context(market: str, *, updated_at_utc: str, last_run_at: Any = None, next_run_at: Any = None) -> dict[str, Any]:
@@ -328,7 +340,8 @@ def _action_live_sim_analyze_candidate(context: UIApiContext, payload: Any) -> d
     code = _code_from_payload(payload)
     if not code:
         raise HTTPException(status_code=400, detail="Missing candidate code")
-    scheduler_state = context.scheduler().get_status()
+    scheduler = context.scheduler()
+    scheduler_state = scheduler.get_status()
     candidate = next((item for item in context.candidate_pool().list_candidates(status="active") if normalize_stock_code(item.get("stock_code")) == code), None)
     if not candidate:
         raise HTTPException(status_code=404, detail=f"Candidate not found: {code}")
@@ -343,6 +356,7 @@ def _action_live_sim_analyze_candidate(context: UIApiContext, payload: Any) -> d
     ai_dynamic_strategy = _txt(scheduler_state.get("ai_dynamic_strategy"), DEFAULT_AI_DYNAMIC_STRATEGY)
     ai_dynamic_strength = _normalize_dynamic_strength(scheduler_state.get("ai_dynamic_strength"), DEFAULT_AI_DYNAMIC_STRENGTH)
     ai_dynamic_lookback = _normalize_dynamic_lookback(scheduler_state.get("ai_dynamic_lookback"), DEFAULT_AI_DYNAMIC_LOOKBACK)
+    current_time = _live_current_time(scheduler)
     try:
         engine.analyze_candidate(
             candidate,
@@ -352,6 +366,7 @@ def _action_live_sim_analyze_candidate(context: UIApiContext, payload: Any) -> d
             ai_dynamic_strategy=ai_dynamic_strategy,
             ai_dynamic_strength=ai_dynamic_strength,
             ai_dynamic_lookback=ai_dynamic_lookback,
+            current_time=current_time,
         )
     except TypeError as exc:
         message = str(exc)

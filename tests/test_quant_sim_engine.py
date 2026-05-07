@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.portfolio_service import PortfolioService
@@ -61,6 +63,30 @@ def test_engine_injects_account_context_for_candidate_analysis(tmp_path, monkeyp
     engine.analyze_candidate(candidate)
 
     assert captured["account_context"]["cash_ratio"] == 1.0
+
+
+def test_engine_passes_live_current_time_to_candidate_analysis(tmp_path, monkeypatch):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
+    candidate = candidate_service.list_candidates()[0]
+    engine = QuantSimEngine(db_file=tmp_path / "app.quant_sim.db")
+    current_time = datetime(2026, 5, 8, 10, 30)
+    captured = {}
+
+    def fake_analyze_candidate(payload, **kwargs):
+        captured["current_time"] = kwargs.get("current_time")
+        return {
+            "action": "HOLD",
+            "confidence": 61,
+            "reasoning": "等待确认",
+            "position_size_pct": 0,
+        }
+
+    monkeypatch.setattr(engine.adapter, "analyze_candidate", fake_analyze_candidate)
+
+    engine.analyze_candidate(candidate, current_time=current_time)
+
+    assert captured["current_time"] == current_time
 
 
 def test_engine_records_hold_as_observed_signal(tmp_path, monkeypatch):
@@ -177,6 +203,58 @@ def test_engine_resolves_dynamic_binding_per_candidate(tmp_path, monkeypatch):
     ])
 
 
+def test_engine_uses_live_current_time_for_batch_candidate_analysis_and_dynamic_binding(tmp_path, monkeypatch):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
+    candidate_service.add_manual_candidate("000001", "平安银行", "value_stock")
+    engine = QuantSimEngine(db_file=tmp_path / "app.quant_sim.db")
+    current_time = datetime(2026, 5, 8, 10, 30)
+    binding_times = []
+    decision_times = []
+
+    def fake_resolve(
+        *,
+        strategy_profile_id,
+        ai_dynamic_strategy=None,
+        ai_dynamic_strength=None,
+        ai_dynamic_lookback=None,
+        stock_code=None,
+        stock_name=None,
+        as_of=None,
+    ):
+        del strategy_profile_id, ai_dynamic_strategy, ai_dynamic_strength, ai_dynamic_lookback, stock_code, stock_name
+        binding_times.append(as_of)
+        return {
+            "profile_id": "aggressive",
+            "profile_name": "积极",
+            "version_id": 1,
+            "version": 1,
+            "config": {},
+        }
+
+    def fake_analyze_candidate(payload, **kwargs):
+        decision_times.append(kwargs.get("current_time"))
+        return {
+            "action": "HOLD",
+            "confidence": 61,
+            "reasoning": "等待确认",
+            "position_size_pct": 0,
+        }
+
+    monkeypatch.setattr(engine, "_resolve_strategy_binding", fake_resolve)
+    monkeypatch.setattr(engine.adapter, "analyze_candidate", fake_analyze_candidate)
+
+    engine.analyze_active_candidates(
+        ai_dynamic_strategy="hybrid",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
+        current_time=current_time,
+    )
+
+    assert binding_times == [current_time, current_time]
+    assert decision_times == [current_time, current_time]
+
+
 def test_engine_resolves_dynamic_binding_per_position(tmp_path, monkeypatch):
     candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
     signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
@@ -242,3 +320,75 @@ def test_engine_resolves_dynamic_binding_per_position(tmp_path, monkeypatch):
     assert captured == [
         ("300750", "宁德时代", "hybrid", 0.5, 48),
     ]
+
+
+def test_engine_uses_live_current_time_for_position_analysis_and_dynamic_binding(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+    candidate_service.add_manual_candidate("300750", "宁德时代", "main_force")
+    candidate = candidate_service.list_candidates()[0]
+    buy_signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 82,
+            "reasoning": "建仓",
+            "position_size_pct": 20,
+        },
+    )
+    portfolio_service.confirm_buy(
+        buy_signal["id"],
+        price=201.5,
+        quantity=100,
+        note="已买入",
+        executed_at="2026-04-07 10:00:00",
+    )
+    engine = QuantSimEngine(db_file=db_file)
+    current_time = datetime(2026, 5, 8, 10, 30)
+    binding_times = []
+    decision_times = []
+
+    def fake_resolve(
+        *,
+        strategy_profile_id,
+        ai_dynamic_strategy=None,
+        ai_dynamic_strength=None,
+        ai_dynamic_lookback=None,
+        stock_code=None,
+        stock_name=None,
+        as_of=None,
+    ):
+        del strategy_profile_id, ai_dynamic_strategy, ai_dynamic_strength, ai_dynamic_lookback, stock_code, stock_name
+        binding_times.append(as_of)
+        return {
+            "profile_id": "aggressive",
+            "profile_name": "积极",
+            "version_id": 1,
+            "version": 1,
+            "config": {},
+        }
+
+    def fake_analyze_position(candidate, position, **kwargs):
+        del candidate, position
+        decision_times.append(kwargs.get("current_time"))
+        return {
+            "action": "HOLD",
+            "confidence": 63,
+            "reasoning": "继续观察",
+            "position_size_pct": 0,
+        }
+
+    monkeypatch.setattr(engine, "_resolve_strategy_binding", fake_resolve)
+    monkeypatch.setattr(engine.adapter, "analyze_position", fake_analyze_position)
+
+    engine.analyze_positions(
+        ai_dynamic_strategy="hybrid",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
+        current_time=current_time,
+    )
+
+    assert binding_times == [current_time]
+    assert decision_times == [current_time]

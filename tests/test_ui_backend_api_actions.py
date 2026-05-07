@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 import re
 import sqlite3
@@ -1528,12 +1529,17 @@ def test_live_sim_actions_use_scheduler_and_candidate_pool(tmp_path, monkeypatch
 
     fake_scheduler = FakeQuantScheduler()
     analyzed_codes: list[str] = []
+    analyzed_times: list[datetime | None] = []
 
     monkeypatch.setattr(UIApiContext, "scheduler", lambda self: fake_scheduler, raising=False)
-    monkeypatch.setattr(
-        "app.gateway_api.QuantSimEngine.analyze_candidate",
-        lambda self, candidate, analysis_timeframe="1d", strategy_mode="auto": analyzed_codes.append(candidate["stock_code"]) or {"action": "HOLD"},
-    )
+
+    def fake_analyze_candidate(self, candidate, analysis_timeframe="1d", strategy_mode="auto", **kwargs):
+        del self, analysis_timeframe, strategy_mode
+        analyzed_codes.append(candidate["stock_code"])
+        analyzed_times.append(kwargs.get("current_time"))
+        return {"action": "HOLD"}
+
+    monkeypatch.setattr("app.gateway_api.QuantSimEngine.analyze_candidate", fake_analyze_candidate)
 
     client = TestClient(create_app(context=context))
 
@@ -1553,6 +1559,7 @@ def test_live_sim_actions_use_scheduler_and_candidate_pool(tmp_path, monkeypatch
     analyze_resp = client.post("/api/v1/quant/live-sim/actions/analyze-candidate", json="600519")
     assert analyze_resp.status_code == 200
     assert analyzed_codes == ["600519"]
+    assert isinstance(analyzed_times[0], datetime)
 
     delete_resp = client.post("/api/v1/quant/live-sim/actions/delete-candidate", json={"code": "000001"})
     assert delete_resp.status_code == 200

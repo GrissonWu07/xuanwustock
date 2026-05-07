@@ -65,24 +65,29 @@ class QuantSimEngine:
         ai_dynamic_strategy: str | None = None,
         ai_dynamic_strength: float | None = None,
         ai_dynamic_lookback: int | None = None,
+        current_time: datetime | None = None,
     ) -> dict:
+        resolve_kwargs = {
+            "strategy_profile_id": strategy_profile_id,
+            "ai_dynamic_strategy": ai_dynamic_strategy,
+            "ai_dynamic_strength": ai_dynamic_strength,
+            "ai_dynamic_lookback": ai_dynamic_lookback,
+            "stock_code": str(candidate.get("stock_code") or ""),
+            "stock_name": str(candidate.get("stock_name") or ""),
+        }
+        if current_time is not None:
+            resolve_kwargs["as_of"] = current_time
         profile_binding = (
             dict(strategy_profile_binding)
             if isinstance(strategy_profile_binding, dict)
-            else self._resolve_strategy_binding(
-                strategy_profile_id=strategy_profile_id,
-                ai_dynamic_strategy=ai_dynamic_strategy,
-                ai_dynamic_strength=ai_dynamic_strength,
-                ai_dynamic_lookback=ai_dynamic_lookback,
-                stock_code=str(candidate.get("stock_code") or ""),
-                stock_name=str(candidate.get("stock_name") or ""),
-            )
+            else self._resolve_strategy_binding(**resolve_kwargs)
         )
         decision = self._evaluate_candidate_decision(
             candidate,
             analysis_timeframe=analysis_timeframe,
             strategy_mode=strategy_mode,
             strategy_profile_binding=profile_binding,
+            current_time=current_time,
         )
         decision_price = self._extract_decision_price(decision)
         if decision_price > 0:
@@ -100,6 +105,7 @@ class QuantSimEngine:
         ai_dynamic_strength: float | None = None,
         ai_dynamic_lookback: int | None = None,
         exclude_codes: set[str] | None = None,
+        current_time: datetime | None = None,
     ) -> list[dict]:
         dynamic_mode = (
             str(ai_dynamic_strategy).strip().lower()
@@ -108,12 +114,15 @@ class QuantSimEngine:
         )
         profile_binding = None
         if dynamic_mode == DEFAULT_AI_DYNAMIC_STRATEGY:
-            profile_binding = self._resolve_strategy_binding(
-                strategy_profile_id=strategy_profile_id,
-                ai_dynamic_strategy=ai_dynamic_strategy,
-                ai_dynamic_strength=ai_dynamic_strength,
-                ai_dynamic_lookback=ai_dynamic_lookback,
-            )
+            resolve_kwargs = {
+                "strategy_profile_id": strategy_profile_id,
+                "ai_dynamic_strategy": ai_dynamic_strategy,
+                "ai_dynamic_strength": ai_dynamic_strength,
+                "ai_dynamic_lookback": ai_dynamic_lookback,
+            }
+            if current_time is not None:
+                resolve_kwargs["as_of"] = current_time
+            profile_binding = self._resolve_strategy_binding(**resolve_kwargs)
         signals = []
         blocked = {str(code).strip() for code in (exclude_codes or set()) if str(code).strip()}
         for candidate in self.candidate_pool.list_candidates(status="active"):
@@ -124,6 +133,8 @@ class QuantSimEngine:
                 "analysis_timeframe": analysis_timeframe,
                 "strategy_mode": strategy_mode,
             }
+            if current_time is not None:
+                candidate_kwargs["current_time"] = current_time
             if dynamic_mode == DEFAULT_AI_DYNAMIC_STRATEGY:
                 candidate_kwargs["strategy_profile_binding"] = profile_binding
             else:
@@ -142,6 +153,7 @@ class QuantSimEngine:
         ai_dynamic_strategy: str | None = None,
         ai_dynamic_strength: float | None = None,
         ai_dynamic_lookback: int | None = None,
+        current_time: datetime | None = None,
     ) -> list[dict]:
         dynamic_mode = (
             str(ai_dynamic_strategy).strip().lower()
@@ -150,12 +162,15 @@ class QuantSimEngine:
         )
         profile_binding = None
         if dynamic_mode == DEFAULT_AI_DYNAMIC_STRATEGY:
-            profile_binding = self._resolve_strategy_binding(
-                strategy_profile_id=strategy_profile_id,
-                ai_dynamic_strategy=ai_dynamic_strategy,
-                ai_dynamic_strength=ai_dynamic_strength,
-                ai_dynamic_lookback=ai_dynamic_lookback,
-            )
+            resolve_kwargs = {
+                "strategy_profile_id": strategy_profile_id,
+                "ai_dynamic_strategy": ai_dynamic_strategy,
+                "ai_dynamic_strength": ai_dynamic_strength,
+                "ai_dynamic_lookback": ai_dynamic_lookback,
+            }
+            if current_time is not None:
+                resolve_kwargs["as_of"] = current_time
+            profile_binding = self._resolve_strategy_binding(**resolve_kwargs)
         signals = []
         for position in self.portfolio.list_positions():
             candidate = self.candidate_pool.db.get_candidate(position["stock_code"]) or {
@@ -166,20 +181,24 @@ class QuantSimEngine:
             }
             effective_binding = profile_binding
             if dynamic_mode != DEFAULT_AI_DYNAMIC_STRATEGY:
-                effective_binding = self._resolve_strategy_binding(
-                    strategy_profile_id=strategy_profile_id,
-                    ai_dynamic_strategy=ai_dynamic_strategy,
-                    ai_dynamic_strength=ai_dynamic_strength,
-                    ai_dynamic_lookback=ai_dynamic_lookback,
-                    stock_code=str(candidate.get("stock_code") or ""),
-                    stock_name=str(candidate.get("stock_name") or position.get("stock_name") or ""),
-                )
+                resolve_kwargs = {
+                    "strategy_profile_id": strategy_profile_id,
+                    "ai_dynamic_strategy": ai_dynamic_strategy,
+                    "ai_dynamic_strength": ai_dynamic_strength,
+                    "ai_dynamic_lookback": ai_dynamic_lookback,
+                    "stock_code": str(candidate.get("stock_code") or ""),
+                    "stock_name": str(candidate.get("stock_name") or position.get("stock_name") or ""),
+                }
+                if current_time is not None:
+                    resolve_kwargs["as_of"] = current_time
+                effective_binding = self._resolve_strategy_binding(**resolve_kwargs)
             decision = self._evaluate_position_decision(
                 candidate,
                 position,
                 analysis_timeframe=analysis_timeframe,
                 strategy_mode=strategy_mode,
                 strategy_profile_binding=effective_binding,
+                current_time=current_time,
             )
             decision_price = self._extract_decision_price(decision)
             if decision_price > 0:
@@ -231,7 +250,7 @@ class QuantSimEngine:
         analysis_timeframe: str = "1d",
         strategy_mode: str = "auto",
         strategy_profile_binding: dict | None = None,
-        current_time=None,
+        current_time: datetime | None = None,
     ):
         candidate_payload = self._with_account_context(
             candidate,
@@ -240,6 +259,7 @@ class QuantSimEngine:
                 strategy_profile_binding,
                 profile_kind="candidate",
             ),
+            current_time=current_time,
         )
         base_attempts = [
             {
@@ -296,7 +316,7 @@ class QuantSimEngine:
         analysis_timeframe: str = "1d",
         strategy_mode: str = "auto",
         strategy_profile_binding: dict | None = None,
-        current_time=None,
+        current_time: datetime | None = None,
     ):
         stock_analysis_policy = self._stock_analysis_policy_from_binding(
             strategy_profile_binding,
@@ -306,11 +326,13 @@ class QuantSimEngine:
             candidate,
             profile_kind="position",
             stock_analysis_policy=stock_analysis_policy,
+            current_time=current_time,
         )
         position_payload = self._with_account_context(
             position,
             profile_kind="position",
             stock_analysis_policy=stock_analysis_policy,
+            current_time=current_time,
         )
         base_attempts = [
             {
@@ -364,6 +386,7 @@ class QuantSimEngine:
         *,
         profile_kind: str = "candidate",
         stock_analysis_policy: dict[str, Any] | None = None,
+        current_time: datetime | None = None,
     ) -> dict:
         enriched = dict(payload)
         enriched["_quant_account_context"] = self._build_account_context()
@@ -371,6 +394,7 @@ class QuantSimEngine:
             payload,
             profile_kind=profile_kind,
             policy=stock_analysis_policy,
+            current_time=current_time,
         )
         return enriched
 
@@ -380,6 +404,7 @@ class QuantSimEngine:
         *,
         profile_kind: str = "candidate",
         policy: dict[str, Any] | None = None,
+        current_time: datetime | None = None,
     ) -> dict[str, Any] | None:
         if not self.stock_analysis_context_enabled:
             return None
@@ -397,7 +422,7 @@ class QuantSimEngine:
         min_confidence = self._safe_float(resolved_policy.get("min_confidence"), 0.45)
         context = self.stock_analysis_context.get_latest_valid(
             code,
-            as_of=datetime.now(),
+            as_of=current_time or datetime.now(),
             mode="realtime",
             ttl_hours=ttl_hours,
             min_confidence=min_confidence,
