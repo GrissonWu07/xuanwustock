@@ -7,6 +7,7 @@ from typing import Any
 from app.gateway.common import first_non_empty as _first_non_empty
 from app.gateway.common import float_value as _float
 from app.gateway.common import num as _num
+from app.gateway.common import system_time_text as _system_time_text
 from app.gateway.common import table as _table
 from app.gateway.common import txt as _txt
 
@@ -131,7 +132,7 @@ def build_signal_summary_row(item: dict[str, Any], index: int, *, time_key: str,
         "id": signal_id,
         "cells": [
             f"#{signal_id}",
-            _txt(item.get(time_key) or item.get("updated_at") or item.get("created_at"), "--"),
+            _system_time_text(item.get(time_key) or item.get("updated_at") or item.get("created_at"), "--"),
             _txt(item.get("stock_code")),
             _txt(item.get("stock_name")),
             _txt(item.get("action"), "HOLD").upper(),

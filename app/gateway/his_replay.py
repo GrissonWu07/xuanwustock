@@ -28,7 +28,7 @@ def _build_his_replay_ranked_trade_row(item: dict[str, Any], index: int) -> dict
     return {
         "id": _txt(item.get("id"), str(index)),
         "cells": [
-            _txt(item.get("executed_at") or item.get("created_at"), "--"),
+            _system_time_text(item.get("executed_at") or item.get("created_at"), "--"),
             "期末清算" if metadata.get("terminal_liquidation") else (f"#{signal_id}" if signal_id else "--"),
             _txt(item.get("stock_code")),
             _num(item.get("price")),
@@ -186,10 +186,10 @@ def _build_his_replay_task_items(
             "progressCurrent": progress_current,
             "progressTotal": progress_total,
             "checkpointCount": int(_float(item.get("checkpoint_count"), 0.0) or 0.0),
-            "latestCheckpointAt": _txt(item.get("latest_checkpoint_at"), "--"),
-            "startAt": _txt(item.get("start_datetime"), "--"),
-            "endAt": _txt(item.get("end_datetime"), "--"),
-            "range": f"{_txt(item.get('start_datetime'), '--')} -> {_txt(item.get('end_datetime'), 'now')}",
+            "latestCheckpointAt": _system_time_text(item.get("latest_checkpoint_at"), "--"),
+            "startAt": _system_time_text(item.get("start_datetime"), "--"),
+            "endAt": _system_time_text(item.get("end_datetime"), "--"),
+            "range": f"{_system_time_text(item.get('start_datetime'), '--')} -> {_system_time_text(item.get('end_datetime'), 'now')}",
             "mode": _txt(item.get("mode"), "historical_range"),
             "timeframe": _txt(item.get("timeframe"), "30m"),
             "market": _txt(item.get("market"), "CN"),
@@ -290,7 +290,7 @@ def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict
         {
             "id": _txt(item.get("id"), str(i)),
             "cells": [
-                _txt(item.get("executed_at") or item.get("created_at"), "--"),
+                _system_time_text(item.get("executed_at") or item.get("created_at"), "--"),
                 f"#{_txt(item.get('signal_id'))}" if _txt(item.get("signal_id")) else "--",
                 _txt(item.get("stock_code")),
                 _txt(item.get("action"), "HOLD").upper(),
@@ -347,8 +347,10 @@ def _build_his_replay_signal_table(db: QuantSimDB, run_id: int, table_query: dic
             include_strategy_profile=True,
         )
     ):
-        checkpoint_at = _txt(item.get("checkpoint_at") or item.get("created_at"), "--")
+        checkpoint_at = _system_time_text(item.get("checkpoint_at") or item.get("created_at"), "--")
         row = build_signal_summary_row(item, i, time_key="checkpoint_at", status_key="status")
+        if len(row.get("cells", [])) > 1:
+            row["cells"][1] = checkpoint_at
         row["checkpointAt"] = checkpoint_at
         signal_rows.append(row)
     table = build_signal_summary_table(signal_rows)
@@ -459,7 +461,7 @@ def _finalize_failed_his_replay_run_from_stale_worker(
     win_rate = (len(wins) / len(sell_trades) * 100) if sell_trades else 0.0
     progress_current = int(_float(run.get("progress_current"), 0.0) or 0.0)
     progress_total = int(_float(run.get("progress_total"), 0.0) or 0.0)
-    latest_checkpoint = _txt(run.get("latest_checkpoint_at"))
+    latest_checkpoint = _system_time_text(run.get("latest_checkpoint_at"), "")
     detail = f"已完成 {progress_current}/{progress_total} 个检查点"
     if latest_checkpoint:
         detail = f"{detail}，最后检查点 {latest_checkpoint}"
@@ -580,7 +582,7 @@ def _snapshot_his_replay_progress(context: UIApiContext, table_query: dict[str, 
 
 
 def _build_checkpoint_selector_item(item: dict[str, Any]) -> dict[str, Any]:
-    checkpoint_at = _txt(item.get("checkpoint_at"), "--")
+    checkpoint_at = _system_time_text(item.get("checkpoint_at"), "--")
     return {
         "id": _txt(item.get("id"), checkpoint_at),
         "checkpointAt": checkpoint_at,
@@ -591,6 +593,60 @@ def _build_checkpoint_selector_item(item: dict[str, Any]) -> dict[str, Any]:
         "signalsCreated": int(_float(item.get("signals_created"), 0.0) or 0),
         "autoExecuted": int(_float(item.get("auto_executed"), 0.0) or 0),
     }
+
+
+def _checkpoint_matches_system_search(item: dict[str, Any], keyword: str) -> bool:
+    search = _txt(keyword).lower()
+    if not search:
+        return True
+    values = [
+        _txt(item.get("id")),
+        _txt(item.get("checkpoint_at")),
+        _system_time_text(item.get("checkpoint_at"), ""),
+    ]
+    return any(search in value.lower() for value in values if value)
+
+
+def _get_checkpoint_selector_page(
+    db: QuantSimDB,
+    run_id: int,
+    *,
+    page: int,
+    page_size: int,
+    keyword: str,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if not _txt(keyword):
+        total = db.count_sim_run_checkpoints(run_id)
+        pagination = _replay_table_pagination(page, page_size, total)
+        rows = db.get_sim_run_checkpoints(
+            run_id,
+            limit=page_size,
+            offset=(pagination["page"] - 1) * page_size,
+            order="desc",
+        )
+        return rows, pagination
+
+    matched = [
+        item
+        for item in db.get_sim_run_checkpoints(run_id, order="desc")
+        if _checkpoint_matches_system_search(item, keyword)
+    ]
+    pagination = _replay_table_pagination(page, page_size, len(matched))
+    start = (pagination["page"] - 1) * page_size
+    return matched[start : start + page_size], pagination
+
+
+def _get_sim_run_checkpoint_by_system_time(db: QuantSimDB, run_id: int, checkpoint_at: str) -> dict[str, Any] | None:
+    selected = db.get_sim_run_checkpoint_at(run_id, checkpoint_at)
+    if selected is not None:
+        return selected
+    target = _system_time_text(checkpoint_at, "")
+    if not target:
+        return None
+    for item in db.get_sim_run_checkpoints(run_id):
+        if _system_time_text(item.get("checkpoint_at"), "") == target:
+            return item
+    return None
 
 
 def _snapshot_his_replay_capital_pool(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -607,20 +663,18 @@ def _snapshot_his_replay_capital_pool(context: UIApiContext, table_query: dict[s
     page_size = _normalize_replay_table_page_size(query.get("checkpoint_page_size"), default=50)
     requested_page = _normalize_replay_table_page(query.get("checkpoint_page"))
     checkpoint_search = _txt(query.get("checkpoint_search"))
-    checkpoint_total = db.count_sim_run_checkpoints(run_id, keyword=checkpoint_search)
-    pagination = _replay_table_pagination(requested_page, page_size, checkpoint_total)
-    checkpoint_rows = db.get_sim_run_checkpoints(
+    checkpoint_rows, pagination = _get_checkpoint_selector_page(
+        db,
         run_id,
-        limit=page_size,
-        offset=(pagination["page"] - 1) * page_size,
+        page=requested_page,
+        page_size=page_size,
         keyword=checkpoint_search,
-        order="desc",
     )
 
     selected_checkpoint = None
     checkpoint_at = _txt(query.get("checkpoint_at"))
     if checkpoint_at:
-        selected_checkpoint = db.get_sim_run_checkpoint_at(run_id, checkpoint_at)
+        selected_checkpoint = _get_sim_run_checkpoint_by_system_time(db, run_id, checkpoint_at)
     if selected_checkpoint is None:
         selected_checkpoint = checkpoint_rows[0] if checkpoint_rows else None
     if selected_checkpoint is None:
@@ -637,7 +691,7 @@ def _snapshot_his_replay_capital_pool(context: UIApiContext, table_query: dict[s
     return {
         "updatedAt": _now(),
         "runId": _txt(run_id),
-        "selectedCheckpointAt": _txt(selected_checkpoint.get("checkpoint_at")),
+        "selectedCheckpointAt": _system_time_text(selected_checkpoint.get("checkpoint_at"), "--"),
         "checkpoints": {
             "items": [_build_checkpoint_selector_item(item) for item in checkpoint_rows],
             "pagination": pagination,
@@ -780,7 +834,7 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
         "updatedAt": _now(),
         "config": {
             "mode": _txt(run.get("mode"), "historical_range"),
-            "range": f"{_txt(run.get('start_datetime'), '--')} -> {_txt(run.get('end_datetime'), 'now')}",
+            "range": f"{_system_time_text(run.get('start_datetime'), '--')} -> {_system_time_text(run.get('end_datetime'), 'now')}",
             "timeframe": _txt(run.get("timeframe"), "30m"),
             "market": _txt(run.get("market"), "CN"),
             "strategyMode": _txt(run.get("selected_strategy_mode") or run.get("strategy_mode"), "auto"),
@@ -839,7 +893,7 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
         )
         + terminal_liquidation_metrics(terminal_liquidation),
         "curve": [
-            {"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
+            {"label": _system_time_text(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
             for i, item in enumerate(db.get_sim_run_snapshots(rid))
         ],
     }

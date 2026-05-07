@@ -142,7 +142,7 @@ def _build_parameter_details(
                     ),
                     _item(
                         "股票分析数据时点",
-                        stock_analysis_context.get("data_as_of") or "--",
+                        _system_time_text(stock_analysis_context.get("data_as_of")),
                         "explainability.stock_analysis_context.data_as_of",
                         "股票分析所依据的数据截止时间，必须早于等于决策点。",
                     ),

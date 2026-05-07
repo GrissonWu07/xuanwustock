@@ -79,6 +79,7 @@ class StockPolicyAdapter:
         analysis_timeframe: str = "1d",
         strategy_mode: str = "auto",
         strategy_profile_binding: Optional[dict[str, Any]] = None,
+        current_time: Optional[datetime] = None,
     ) -> Decision:
         preferred_name = candidate.get("stock_name") or candidate.get("name")
         live_fetched = market_snapshot is None
@@ -89,12 +90,13 @@ class StockPolicyAdapter:
         if live_fetched:
             snapshot = self._mark_live_snapshot(snapshot)
         snapshot = self._merge_account_context(snapshot, candidate)
+        evaluation_time = current_time or self.now()
         return self._call_with_signature_fallback(
             self.runtime.evaluate_candidate,
             {
                 "candidate": candidate,
                 "market_snapshot": snapshot,
-                "current_time": self.now(),
+                "current_time": evaluation_time,
                 "analysis_timeframe": analysis_timeframe,
                 "strategy_mode": strategy_mode,
                 "strategy_profile_binding": strategy_profile_binding,
@@ -109,6 +111,7 @@ class StockPolicyAdapter:
         analysis_timeframe: str = "1d",
         strategy_mode: str = "auto",
         strategy_profile_binding: Optional[dict[str, Any]] = None,
+        current_time: Optional[datetime] = None,
     ) -> Decision:
         preferred_name = position.get("stock_name") or candidate.get("stock_name") or candidate.get("name")
         live_fetched = market_snapshot is None
@@ -119,13 +122,14 @@ class StockPolicyAdapter:
         if live_fetched:
             snapshot = self._mark_live_snapshot(snapshot)
         snapshot = self._merge_account_context(snapshot, position, candidate)
+        evaluation_time = current_time or self.now()
         return self._call_with_signature_fallback(
             self.runtime.evaluate_position,
             {
                 "candidate": candidate,
                 "position": position,
                 "market_snapshot": snapshot,
-                "current_time": self.now(),
+                "current_time": evaluation_time,
                 "analysis_timeframe": analysis_timeframe,
                 "strategy_mode": strategy_mode,
                 "strategy_profile_binding": strategy_profile_binding,

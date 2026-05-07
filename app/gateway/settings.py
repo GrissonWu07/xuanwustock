@@ -42,7 +42,7 @@ def _snapshot_settings(context: UIApiContext) -> dict[str, Any]:
                 "description": _txt(row.get("description")),
                 "enabled": bool(row.get("enabled", True)),
                 "isDefault": bool(row.get("is_default", False)),
-                "updatedAt": _txt(row.get("updated_at")),
+                "updatedAt": _system_time_text(row.get("updated_at"), ""),
                 "latestVersionId": _txt((latest_version or {}).get("id"), "--"),
                 "latestVersion": _txt((latest_version or {}).get("version"), "--"),
                 "config": (latest_version or {}).get("config") if isinstance((latest_version or {}).get("config"), dict) else {},

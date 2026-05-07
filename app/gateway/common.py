@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from app.quant_sim.time_utils import format_system_short_time, format_system_time, system_now_text
 from app.watchlist_selector_integration import normalize_stock_code
 
 
@@ -15,7 +16,15 @@ RESEARCH_MODULE_MAX_PARALLEL = max(1, int(os.getenv("RESEARCH_MODULE_MAX_PARALLE
 
 
 def now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return system_now_text()
+
+
+def system_time_text(value: Any, default: str = "--") -> str:
+    return format_system_time(value, default=default)
+
+
+def short_system_time_text(value: Any, default: str = "--") -> str:
+    return format_system_short_time(value, default=default)
 
 
 def p(value: str | Path) -> Path:
@@ -166,6 +175,8 @@ __all__ = [
     "payload_dict",
     "pct",
     "snippet",
+    "short_system_time_text",
+    "system_time_text",
     "table",
     "timeline",
     "txt",

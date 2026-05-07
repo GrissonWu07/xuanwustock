@@ -373,7 +373,7 @@ def _build_cached_workbench_analysis_payload(
         selected=_normalize_workbench_selected(selected),
         mode=mode,
         cycle=cycle,
-        generated_at=_txt(record.get("analysis_date") or record.get("created_at"), _now()),
+        generated_at=_system_time_text(record.get("analysis_date") or record.get("created_at") or _now()),
         stock_info=stock_info,
         indicators=indicators,
         discussion_result=record.get("discussion_result"),

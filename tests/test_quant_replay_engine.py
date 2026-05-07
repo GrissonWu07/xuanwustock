@@ -119,6 +119,109 @@ class FakeAdapter:
         )
 
 
+class CurrentTimeRecordingAdapter:
+    def __init__(self):
+        self.candidate_calls = []
+
+    def analyze_candidate(
+        self,
+        candidate,
+        market_snapshot=None,
+        analysis_timeframe="1d",
+        strategy_mode="auto",
+        current_time=None,
+    ):
+        self.candidate_calls.append(
+            {
+                "stock_code": candidate["stock_code"],
+                "current_time": current_time,
+                "analysis_timeframe": analysis_timeframe,
+                "strategy_mode": strategy_mode,
+            }
+        )
+        price = float((market_snapshot or {}).get("current_price") or 0)
+        return Decision(
+            code=candidate["stock_code"],
+            action="HOLD",
+            confidence=0.6,
+            price=price,
+            timestamp=current_time,
+            reason="checkpoint time probe",
+            tech_score=0.1,
+            context_score=0.0,
+            position_ratio=0.0,
+            decision_type="test",
+            strategy_profile={},
+        )
+
+    def analyze_position(self, candidate, position, market_snapshot=None, analysis_timeframe="1d", strategy_mode="auto", current_time=None):
+        raise AssertionError("position analysis should not be reached")
+
+
+class StalePendingSnapshotProvider:
+    def prepare(self, stock_codes, start_datetime, end_datetime, timeframe):
+        del stock_codes, start_datetime, end_datetime, timeframe
+
+    def get_snapshot(self, stock_code, checkpoint, timeframe, stock_name=None):
+        del stock_code, timeframe, stock_name
+        price = 1001.0 if checkpoint == datetime(2026, 1, 5, 10, 0) else 900.0
+        return {
+            "current_price": price,
+            "latest_price": price,
+            "ma5": price,
+            "ma20": price,
+            "ma60": price,
+            "macd": 0.1,
+            "rsi12": 50.0,
+            "volume_ratio": 1.0,
+            "trend": "sideways",
+        }
+
+
+class BuyThenHoldAdapter:
+    def analyze_candidate(self, candidate, market_snapshot=None, analysis_timeframe="1d", strategy_mode="auto", current_time=None):
+        del analysis_timeframe, strategy_mode
+        price = float((market_snapshot or {}).get("current_price") or 0)
+        action = "BUY" if current_time == datetime(2026, 1, 5, 10, 0) else "HOLD"
+        return Decision(
+            code=candidate["stock_code"],
+            action=action,
+            confidence=0.9,
+            price=price,
+            timestamp=current_time,
+            reason=f"{action} at checkpoint",
+            tech_score=0.8 if action == "BUY" else 0.0,
+            context_score=0.1,
+            position_ratio=1.0 if action == "BUY" else 0.0,
+            decision_type="test",
+            strategy_profile={},
+        )
+
+    def analyze_position(self, candidate, position, market_snapshot=None, analysis_timeframe="1d", strategy_mode="auto", current_time=None):
+        raise AssertionError("position analysis should not be reached")
+
+
+class AlwaysBuyAdapter:
+    def analyze_candidate(self, candidate, market_snapshot=None, analysis_timeframe="1d", strategy_mode="auto", current_time=None):
+        price = float((market_snapshot or {}).get("current_price") or 0)
+        return Decision(
+            code=candidate["stock_code"],
+            action="BUY",
+            confidence=0.9,
+            price=price,
+            timestamp=current_time,
+            reason="repeated buy probe",
+            tech_score=0.8,
+            context_score=0.1,
+            position_ratio=1.0,
+            decision_type="test",
+            strategy_profile={},
+        )
+
+    def analyze_position(self, candidate, position, market_snapshot=None, analysis_timeframe="1d", strategy_mode="auto", current_time=None):
+        raise AssertionError("position analysis should not be reached")
+
+
 class SplitSnapshotProvider:
     def prepare(self, stock_codes, start_datetime, end_datetime, timeframe):
         del stock_codes, start_datetime, end_datetime, timeframe
@@ -632,6 +735,40 @@ def test_historical_replay_passes_requested_timeframe_to_adapter(tmp_path):
     assert adapter.candidate_calls[0]["analysis_timeframe"] == "30m"
 
 
+def test_run_checkpoint_passes_checkpoint_time_to_adapter(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=10.0,
+        notes="回放时间测试",
+    )
+
+    adapter = CurrentTimeRecordingAdapter()
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=FakeSnapshotProvider(),
+        adapter=adapter,
+    )
+    engine = QuantSimEngine(db_file=db_file, adapter=replay_service.adapter)
+    portfolio = PortfolioService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    checkpoint = datetime(2026, 1, 5, 10, 0)
+
+    summary = replay_service._run_checkpoint(  # noqa: SLF001 - validates replay decision-time contract
+        checkpoint=checkpoint,
+        timeframe="30m",
+        engine=engine,
+        portfolio=portfolio,
+        signal_service=signal_service,
+    )
+
+    assert summary["cancelled"] is False
+    assert adapter.candidate_calls[0]["current_time"] == checkpoint
+
+
 def test_historical_replay_supports_resonance_timeframe(tmp_path):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
@@ -725,7 +862,11 @@ def test_historical_replay_persists_signals_incrementally_per_checkpoint(tmp_pat
         checkpoint_position_snapshots.append((kwargs.get("metadata") or {}).get("positions") or [])
         return original_add_checkpoint(run_id, *args, **kwargs)
 
+    def fail_full_signal_replace(*args, **kwargs):
+        raise AssertionError("completed replay must not rewrite already persisted checkpoint signals")
+
     monkeypatch.setattr(replay_service.db, "add_sim_run_checkpoint", recording_add_checkpoint)
+    monkeypatch.setattr(replay_service.db, "replace_sim_run_results", fail_full_signal_replace)
 
     summary = replay_service.run_historical_range(
         start_datetime=datetime(2026, 1, 5, 0, 0),
@@ -889,12 +1030,11 @@ def test_run_checkpoint_logs_signal_execution_error_and_continues(tmp_path, monk
         progress_total=1,
     )
 
-    monkeypatch.setattr(signal_service, "list_pending_signals", lambda: [{"id": 99, "stock_code": "301291", "action": "SELL"}])
-
-    def fake_auto_execute_signal(signal, note=None, executed_at=None):
+    def fake_auto_execute_pending_signals(signals, note=None, executed_at=None):
+        del signals, note, executed_at
         raise ValueError("sell quantity exceeds sellable quantity")
 
-    monkeypatch.setattr(portfolio, "auto_execute_signal", fake_auto_execute_signal)
+    monkeypatch.setattr(portfolio, "auto_execute_pending_signals", fake_auto_execute_pending_signals)
 
     summary = replay_service._run_checkpoint(  # noqa: SLF001 - targeted replay resilience coverage
         run_id=run_id,
@@ -986,7 +1126,115 @@ def test_run_checkpoint_persists_trade_execution_time_as_utc_for_market_checkpoi
     trades = QuantSimDB(db_file).get_trade_history(limit=5)
 
     assert summary["auto_executed"] == 1
+    assert summary["signals"][0]["status"] == "executed"
     assert trades[0]["executed_at"] == "2026-01-05T02:00:00Z"
+
+
+def test_run_checkpoint_keeps_distinct_replay_signals_for_repeated_pending_actions(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=1001.0,
+        notes="回放重复pending测试",
+    )
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=StalePendingSnapshotProvider(),
+        adapter=AlwaysBuyAdapter(),
+    )
+    engine = QuantSimEngine(db_file=db_file, adapter=replay_service.adapter)
+    portfolio = PortfolioService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    captured_batches = []
+
+    def skip_auto_execute(signals, note=None, executed_at=None):
+        del note, executed_at
+        captured_batches.append([signal["id"] for signal in signals])
+        return 0
+
+    portfolio.auto_execute_pending_signals = skip_auto_execute
+
+    first = replay_service._run_checkpoint(  # noqa: SLF001 - validates replay signal audit trail
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        timeframe="30m",
+        engine=engine,
+        portfolio=portfolio,
+        signal_service=signal_service,
+    )
+    second = replay_service._run_checkpoint(  # noqa: SLF001 - repeated BUY must not overwrite prior checkpoint
+        checkpoint=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        engine=engine,
+        portfolio=portfolio,
+        signal_service=signal_service,
+    )
+
+    assert first["signals"][0]["id"] != second["signals"][0]["id"]
+    assert first["signals"][0]["status"] == "ignored"
+    assert second["signals"][0]["status"] == "ignored"
+    assert captured_batches == [[first["signals"][0]["id"]], [second["signals"][0]["id"]]]
+    assert SignalCenterService(db_file=db_file).list_pending_signals() == []
+
+
+def test_run_checkpoint_does_not_execute_stale_pending_signal_from_previous_checkpoint(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_candidate(
+        stock_code="300390",
+        stock_name="天华新能",
+        source="main_force",
+        latest_price=1001.0,
+        notes="回放旧信号测试",
+    )
+    replay_service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=StalePendingSnapshotProvider(),
+        adapter=BuyThenHoldAdapter(),
+    )
+    engine = QuantSimEngine(db_file=db_file, adapter=replay_service.adapter)
+    portfolio = PortfolioService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    stale_signal = signal_service.create_signal(
+        {"stock_code": "300390", "stock_name": "天华新能", "source": "main_force", "latest_price": 1001.0},
+        Decision(
+            code="300390",
+            action="BUY",
+            confidence=0.9,
+            price=1001.0,
+            timestamp=datetime(2026, 1, 5, 10, 0),
+            reason="previous checkpoint buy",
+            tech_score=0.8,
+            context_score=0.1,
+            position_ratio=1.0,
+            decision_type="test",
+            strategy_profile={},
+        ),
+        notify=False,
+        mirror_to_ai=False,
+    )
+    captured_batches = []
+
+    def record_auto_execute(signals, note=None, executed_at=None):
+        del note, executed_at
+        captured_batches.append([signal["id"] for signal in signals])
+        return 0
+
+    portfolio.auto_execute_pending_signals = record_auto_execute
+
+    summary = replay_service._run_checkpoint(  # noqa: SLF001 - current HOLD must not execute prior pending BUY
+        checkpoint=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        engine=engine,
+        portfolio=portfolio,
+        signal_service=signal_service,
+    )
+
+    assert summary["auto_executed"] == 0
+    assert captured_batches == [[]]
+    assert stale_signal["id"] not in captured_batches[0]
 
 
 def test_run_checkpoint_excludes_held_codes_from_candidate_scan(tmp_path):

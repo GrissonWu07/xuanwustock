@@ -231,6 +231,7 @@ class QuantSimEngine:
         analysis_timeframe: str = "1d",
         strategy_mode: str = "auto",
         strategy_profile_binding: dict | None = None,
+        current_time=None,
     ):
         candidate_payload = self._with_account_context(
             candidate,
@@ -240,7 +241,7 @@ class QuantSimEngine:
                 profile_kind="candidate",
             ),
         )
-        attempts = [
+        base_attempts = [
             {
                 "market_snapshot": market_snapshot,
                 "analysis_timeframe": analysis_timeframe,
@@ -266,6 +267,11 @@ class QuantSimEngine:
             },
             {},
         ]
+        attempts = []
+        for kwargs in base_attempts:
+            if current_time is not None:
+                attempts.append({**kwargs, "current_time": current_time})
+            attempts.append(kwargs)
         last_error: TypeError | None = None
         for kwargs in attempts:
             kwargs = {key: value for key, value in kwargs.items() if value is not None}
@@ -290,6 +296,7 @@ class QuantSimEngine:
         analysis_timeframe: str = "1d",
         strategy_mode: str = "auto",
         strategy_profile_binding: dict | None = None,
+        current_time=None,
     ):
         stock_analysis_policy = self._stock_analysis_policy_from_binding(
             strategy_profile_binding,
@@ -305,7 +312,7 @@ class QuantSimEngine:
             profile_kind="position",
             stock_analysis_policy=stock_analysis_policy,
         )
-        attempts = [
+        base_attempts = [
             {
                 "market_snapshot": market_snapshot,
                 "analysis_timeframe": analysis_timeframe,
@@ -331,6 +338,11 @@ class QuantSimEngine:
             },
             {},
         ]
+        attempts = []
+        for kwargs in base_attempts:
+            if current_time is not None:
+                attempts.append({**kwargs, "current_time": current_time})
+            attempts.append(kwargs)
         last_error: TypeError | None = None
         for kwargs in attempts:
             kwargs = {key: value for key, value in kwargs.items() if value is not None}

@@ -48,6 +48,7 @@ class SignalCenterService:
         *,
         notify: bool = True,
         mirror_to_ai: bool | None = None,
+        dedupe_pending: bool = True,
     ) -> dict[str, Any]:
         if mirror_to_ai is None:
             mirror_to_ai = notify
@@ -85,7 +86,8 @@ class SignalCenterService:
                 "context_score": float(payload.get("context_score", 0)),
                 "strategy_profile": payload.get("strategy_profile"),
                 "status": status,
-            }
+            },
+            dedupe_pending=dedupe_pending,
         )
         if mirror_to_ai and self.external_side_effects_enabled:
             self._mirror_signal_to_ai_decision(candidate, payload)

@@ -7,6 +7,7 @@ from pathlib import Path
 from app.db.runtime.legacy_dbapi import legacy_dbapi_connection
 from app.db.runtime.legacy_sqlite import resolve_legacy_sqlite_db_path
 from app.db.runtime.registry import DatabaseRuntime
+from app.quant_sim.time_utils import ensure_utc_datetime_from_system_time, format_system_time, format_utc_iso_z
 from app.runtime_paths import default_db_path
 
 
@@ -111,8 +112,8 @@ class StockAnalysisDatabase:
         cursor = conn.cursor()
 
         # 准备数据
-        analysis_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        created_at = datetime.now().isoformat()
+        created_at = format_utc_iso_z()
+        analysis_date = created_at
 
         # 将复杂对象转换为JSON字符串
         stock_info_json = json.dumps(stock_info, ensure_ascii=False, default=str)
@@ -121,8 +122,17 @@ class StockAnalysisDatabase:
         final_decision_json = json.dumps(final_decision, ensure_ascii=False, default=str)
         indicators_json = json.dumps(indicators or {}, ensure_ascii=False, default=str)
         historical_data_json = json.dumps(historical_data or [], ensure_ascii=False, default=str)
+        data_as_of_utc = self._system_timestamp_to_utc_text(data_as_of)
+        valid_until_utc = self._system_timestamp_to_utc_text(valid_until)
         if analysis_context_json is None:
-            analysis_context_json = json.dumps(analysis_context or {}, ensure_ascii=False, default=str)
+            analysis_context_payload = dict(analysis_context or {})
+            if data_as_of_utc is not None:
+                analysis_context_payload["data_as_of"] = data_as_of_utc
+            if data_as_of_quality is not None:
+                analysis_context_payload["data_as_of_quality"] = data_as_of_quality
+            if valid_until_utc is not None:
+                analysis_context_payload["valid_until"] = valid_until_utc
+            analysis_context_json = json.dumps(analysis_context_payload, ensure_ascii=False, default=str)
 
         if replace_same_day:
             self._delete_symbol_day_records(cursor, symbol, created_at)
@@ -143,9 +153,9 @@ class StockAnalysisDatabase:
             indicators_json,
             historical_data_json,
             created_at,
-            data_as_of,
+            data_as_of_utc,
             data_as_of_quality,
-            valid_until,
+            valid_until_utc,
             analysis_context_json,
             formula_profile,
             indicator_version,
@@ -157,26 +167,64 @@ class StockAnalysisDatabase:
         return cursor.lastrowid
 
     @staticmethod
+    def _system_timestamp_to_utc_text(value) -> str | None:
+        if value is None or str(value).strip() == "":
+            return None
+        try:
+            return format_utc_iso_z(ensure_utc_datetime_from_system_time(value))
+        except (TypeError, ValueError):
+            return str(value).strip()
+
+    @staticmethod
     def _day_text(value=None) -> str:
         if value is None:
             return datetime.now().date().isoformat()
         if isinstance(value, datetime):
-            return value.date().isoformat()
+            return format_system_time(value)[:10]
         if isinstance(value, date):
             return value.isoformat()
         text = str(value).strip()
-        return text[:10]
+        if not text:
+            return datetime.now().date().isoformat()
+        try:
+            return format_system_time(text)[:10]
+        except (TypeError, ValueError):
+            return text[:10]
+
+    @staticmethod
+    def _row_value(row, key: str, index: int):
+        return row[key] if isinstance(row, sqlite3.Row) else row[index]
+
+    @staticmethod
+    def _record_day_text(row, *, created_at_index: int, analysis_date_index: int) -> str:
+        return StockAnalysisDatabase._day_text(
+            StockAnalysisDatabase._row_value(row, "created_at", created_at_index)
+            or StockAnalysisDatabase._row_value(row, "analysis_date", analysis_date_index)
+        )
 
     @staticmethod
     def _delete_symbol_day_records(cursor: sqlite3.Cursor, symbol: str, day_value=None) -> int:
         day_text = StockAnalysisDatabase._day_text(day_value)
         cursor.execute(
             """
-            DELETE FROM analysis_records
+            SELECT id, created_at, analysis_date
+            FROM analysis_records
             WHERE symbol = ?
-              AND date(COALESCE(created_at, analysis_date)) = date(?)
             """,
-            (symbol, day_text),
+            (symbol,),
+        )
+        rows = cursor.fetchall()
+        ids = [
+            int(StockAnalysisDatabase._row_value(row, "id", 0))
+            for row in rows
+            if StockAnalysisDatabase._record_day_text(row, created_at_index=1, analysis_date_index=2) == day_text
+        ]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        cursor.execute(
+            f"DELETE FROM analysis_records WHERE id IN ({placeholders})",
+            tuple(ids),
         )
         return int(cursor.rowcount or 0)
 
@@ -194,17 +242,18 @@ class StockAnalysisDatabase:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT 1
+            SELECT created_at, analysis_date
             FROM analysis_records
             WHERE symbol = ?
-              AND date(COALESCE(created_at, analysis_date)) = date(?)
-            LIMIT 1
             """,
-            (symbol, day_text),
+            (symbol,),
         )
-        row = cursor.fetchone()
+        rows = cursor.fetchall()
         conn.close()
-        return row is not None
+        return any(
+            self._record_day_text(row, created_at_index=0, analysis_date_index=1) == day_text
+            for row in rows
+        )
 
     def _build_record_filters(self, search: str | None = None) -> tuple[str, list[str]]:
         keyword = str(search or "").strip()

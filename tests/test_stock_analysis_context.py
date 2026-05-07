@@ -5,6 +5,7 @@ import json
 import sqlite3
 
 from app.database import StockAnalysisDatabase
+from app.quant_sim.time_utils import ensure_utc_datetime_from_system_time, format_utc_iso_z
 
 
 def test_stock_analysis_context_repository_filters_quality_for_replay(tmp_path) -> None:
@@ -103,6 +104,53 @@ def test_stock_analysis_policy_is_resolved_from_strategy_profile(tmp_path) -> No
     assert context is not None
     assert context["used"] is True
     assert context["policy"]["ttl_hours"] == 12.0
+
+
+def test_stock_analysis_context_persists_utc_and_matches_system_as_of(tmp_path) -> None:
+    from app.data.analysis_context.repository import StockAnalysisContextRepository
+
+    db = StockAnalysisDatabase(tmp_path / "analysis.db")
+    data_as_of = "2026-03-12 15:00:00"
+    valid_until = "2026-03-13 15:00:00"
+    expected_data_as_of = format_utc_iso_z(ensure_utc_datetime_from_system_time(data_as_of))
+    expected_valid_until = format_utc_iso_z(ensure_utc_datetime_from_system_time(valid_until))
+
+    record_id = db.save_analysis(
+        symbol="002518",
+        stock_name="科士达",
+        period="1y",
+        stock_info={"symbol": "002518"},
+        agents_results={},
+        discussion_result="讨论",
+        final_decision={"rating": "买入", "confidence": 0.8},
+        indicators={},
+        historical_data=[],
+        data_as_of=data_as_of,
+        data_as_of_quality="exact",
+        valid_until=valid_until,
+        analysis_context={"score": 0.5, "effective_score": 0.4, "confidence": 0.8, "summary": "可用"},
+    )
+
+    with sqlite3.connect(tmp_path / "analysis.db") as conn:
+        conn.execute(
+            "UPDATE analysis_records SET created_at = ?, analysis_date = ? WHERE id = ?",
+            (expected_data_as_of, expected_data_as_of, record_id),
+        )
+        row = conn.execute(
+            "SELECT data_as_of, valid_until, analysis_context_json FROM analysis_records WHERE symbol = ?",
+            ("002518",),
+        ).fetchone()
+    context_json = json.loads(row[2])
+    assert row[0] == expected_data_as_of
+    assert row[1] == expected_valid_until
+    assert context_json["data_as_of"] == expected_data_as_of
+    assert context_json["valid_until"] == expected_valid_until
+
+    repo = StockAnalysisContextRepository(db_path=tmp_path / "analysis.db")
+    context = repo.get_latest_valid("002518", as_of=data_as_of, mode="realtime", ttl_hours=24, min_confidence=0.45)
+
+    assert context is not None
+    assert context["data_as_of"] == expected_data_as_of
 
 
 def test_default_stock_analysis_policy_keeps_context_for_one_day(tmp_path) -> None:

@@ -847,12 +847,11 @@ class QuantSimReplayService:
             if cancelled:
                 completed_checkpoints = len(self.db.get_sim_run_checkpoints(run_id))
                 with self.db.write_batch():
-                    self.db.replace_sim_run_results(
+                    self.db.replace_sim_run_runtime_results(
                         run_id,
                         trades=trades,
                         snapshots=snapshots,
                         positions=positions,
-                        signals=replay_signals,
                     )
                     self.db.finalize_sim_run(
                         run_id,
@@ -879,12 +878,11 @@ class QuantSimReplayService:
                 }
 
             with self.db.write_batch():
-                self.db.replace_sim_run_results(
+                self.db.replace_sim_run_runtime_results(
                     run_id,
                     trades=trades,
                     snapshots=snapshots,
                     positions=positions,
-                    signals=replay_signals,
                 )
                 self.db.finalize_sim_run(
                     run_id,
@@ -1058,12 +1056,13 @@ class QuantSimReplayService:
                 analysis_timeframe=timeframe,
                 strategy_mode=strategy_mode,
                 strategy_profile_binding=candidate_binding,
+                current_time=checkpoint,
             )
             decision = self._with_replay_decision_time(decision, checkpoint)
             decision_price = engine._extract_decision_price(decision)
             if decision_price > 0:
                 engine.candidate_pool.db.update_candidate_latest_price(candidate["stock_code"], decision_price)
-            signal = signal_service.create_signal(candidate, decision, notify=False, mirror_to_ai=False)
+            signal = signal_service.create_signal(candidate, decision, notify=False, mirror_to_ai=False, dedupe_pending=False)
             signal["checkpoint_at"] = self._format_datetime(checkpoint)
             checkpoint_signals.append(signal)
             signals_created += 1
@@ -1115,18 +1114,24 @@ class QuantSimReplayService:
                 analysis_timeframe=timeframe,
                 strategy_mode=strategy_mode,
                 strategy_profile_binding=position_binding,
+                current_time=checkpoint,
             )
             decision = self._with_replay_decision_time(decision, checkpoint)
             decision_price = engine._extract_decision_price(decision)
             if decision_price > 0:
                 portfolio.db.update_position_market_price(position["stock_code"], decision_price)
                 portfolio.db.update_candidate_latest_price(position["stock_code"], decision_price)
-            signal = signal_service.create_signal(candidate, decision, notify=False, mirror_to_ai=False)
+            signal = signal_service.create_signal(candidate, decision, notify=False, mirror_to_ai=False, dedupe_pending=False)
             signal["checkpoint_at"] = self._format_datetime(checkpoint)
             checkpoint_signals.append(signal)
             signals_created += 1
 
-        pending_signals = signal_service.list_pending_signals()
+        pending_signals = [
+            signal
+            for signal in checkpoint_signals
+            if str(signal.get("status") or "").lower() == "pending"
+            and str(signal.get("action") or "").upper() in {"BUY", "SELL"}
+        ]
         auto_executed = 0
         try:
             auto_executed = portfolio.auto_execute_pending_signals(
@@ -1142,6 +1147,11 @@ class QuantSimReplayService:
                     level="error",
                 )
 
+        checkpoint_signals = self._finalize_checkpoint_signals(
+            signal_service.db,
+            checkpoint_signals,
+            checkpoint_at=checkpoint_text,
+        )
         portfolio.db.add_account_snapshot(run_reason=f"historical_range@{self._format_datetime(checkpoint)}")
         account_summary = portfolio.get_account_summary()
         positions = portfolio.list_positions()
@@ -1160,6 +1170,29 @@ class QuantSimReplayService:
             "slot_summary": self._collect_slot_summary(portfolio.db),
             "signals": checkpoint_signals,
         }
+
+    @staticmethod
+    def _finalize_checkpoint_signals(
+        db: QuantSimDB,
+        checkpoint_signals: list[dict],
+        *,
+        checkpoint_at: str,
+    ) -> list[dict]:
+        refreshed: list[dict] = []
+        for signal in checkpoint_signals:
+            signal_id = signal.get("id")
+            current = db.get_signal(int(signal_id)) if signal_id not in (None, "") else None
+            if current is None:
+                current = dict(signal)
+            if str(current.get("status") or "").lower() == "pending":
+                note = str(current.get("execution_note") or "").strip()
+                if not note:
+                    note = "历史回放本检查点未执行，信号已过期。"
+                db.update_signal_state(int(current["id"]), status="ignored", execution_note=note)
+                current = db.get_signal(int(current["id"])) or current
+            current["checkpoint_at"] = checkpoint_at
+            refreshed.append(current)
+        return refreshed
 
     def _with_replay_decision_time(self, decision: dict | Decision, checkpoint: datetime) -> dict | Decision:
         if isinstance(decision, Decision):

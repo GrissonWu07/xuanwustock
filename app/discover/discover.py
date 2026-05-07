@@ -25,6 +25,7 @@ from app.gateway.common import (
     txt as _txt,
 )
 from app.i18n import t
+from app.quant_sim.time_utils import format_system_time, parse_system_datetime
 from app.selector_ui_state import (
     load_main_force_state,
     load_simple_selector_state,
@@ -124,15 +125,14 @@ def _parse_selector_timestamp(value: Any) -> datetime | None:
     text = _txt(value)
     if not text:
         return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            return datetime.strptime(text[:19], fmt)
-        except ValueError:
-            continue
     try:
-        return datetime.fromisoformat(text)
-    except ValueError:
+        return parse_system_datetime(text)
+    except (TypeError, ValueError):
         return None
+
+
+def _system_time(value: Any, default: str = "--") -> str:
+    return format_system_time(value, default=default)
 
 
 def _num_or_dash(value: Any, digits: int = 2) -> str:
@@ -269,7 +269,7 @@ def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at:
         "source": source,
         "latestPrice": latest_price,
         "reason": reason,
-        "selectedAt": _txt(selected_at),
+        "selectedAt": _system_time(selected_at, ""),
     }
 
 
@@ -432,8 +432,9 @@ def _discover_rows(context: Any) -> list[dict[str, Any]]:
             row["source"] = _txt(row.get("source") or snapshot.get("name"))
             row["strategyKey"] = _txt(snapshot.get("key"))
             row["strategyName"] = _txt(snapshot.get("name"))
-            row["selectedAt"] = _txt(snapshot.get("selected_at") or row.get("selectedAt"))
-            row["_selected_dt"] = _parse_selector_timestamp(row.get("selectedAt")) or datetime.min
+            selected_at_raw = snapshot.get("selected_at") or row.get("selectedAt")
+            row["selectedAt"] = _system_time(selected_at_raw, "")
+            row["_selected_dt"] = _parse_selector_timestamp(selected_at_raw) or datetime.min
             row["_strategy_priority"] = {
                 "ai_scanner": 6,
                 "main_force": 5,
@@ -729,7 +730,7 @@ def _snapshot_discover(context: Any, *, task_job: dict[str, Any] | None = None, 
     page_rows, pagination = _db_page_table_rows(context, "discover.candidates", rows, table_query)
     latest_snapshot = snapshots[0] if snapshots else {}
     latest_row = rows[0] if rows else {}
-    latest_selected_at = _txt(latest_snapshot.get("selected_at") or latest_row.get("selectedAt") or _now())
+    latest_selected_at = _system_time(latest_snapshot.get("selected_at") or latest_row.get("selectedAt") or _now())
     latest_count = len(rows)
     top_names = "、".join(_txt(row.get("name")) for row in rows[:3] if _txt(row.get("name")))
     strategy_lookup = {str(snapshot.get("key")): snapshot for snapshot in snapshots}
@@ -738,7 +739,7 @@ def _snapshot_discover(context: Any, *, task_job: dict[str, Any] | None = None, 
     for strategy_key, strategy_name, strategy_note in strategy_defs:
         snapshot = strategy_lookup.get(strategy_key)
         snapshot_rows = snapshot.get("rows", []) if snapshot else []
-        selected_at = _txt(snapshot.get("selected_at"), "--") if snapshot else "--"
+        selected_at = _system_time(snapshot.get("selected_at"), "--") if snapshot else "--"
         strategy_cards.append(
             {
                 "key": strategy_key,

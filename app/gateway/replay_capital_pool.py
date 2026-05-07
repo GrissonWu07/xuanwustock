@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from app.gateway.deps import *
 from app.gateway.trades import _run_metadata, _trade_metadata, _trade_net_amount
+from app.quant_sim.time_utils import system_timezone
+
+from datetime import datetime, timezone
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -12,7 +15,33 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def _sort_trade_chronologically(item: dict[str, Any]) -> tuple[str, int]:
-    return (_txt(item.get("executed_at") or item.get("created_at")), _safe_int(item.get("id")))
+    parsed = _parse_replay_time(item.get("executed_at") or item.get("created_at"))
+    return ((parsed or datetime.min.replace(tzinfo=timezone.utc)).isoformat(), _safe_int(item.get("id")))
+
+
+def _parse_replay_time(value: Any) -> datetime | None:
+    text = _txt(value)
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    if "T" not in normalized and " " in normalized:
+        normalized = normalized.replace(" ", "T", 1)
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=system_timezone())
+    return parsed.astimezone(timezone.utc).replace(microsecond=0)
+
+
+def _trade_is_at_or_before_checkpoint(trade: dict[str, Any], cutoff_utc: datetime | None) -> bool:
+    if cutoff_utc is None:
+        return True
+    trade_time = _parse_replay_time(trade.get("executed_at") or trade.get("created_at"))
+    if trade_time is None:
+        return True
+    return trade_time <= cutoff_utc
 
 
 def _capital_slot_allocations(metadata: dict[str, Any], fallback_slot: int, fallback_cash: float) -> list[dict[str, Any]]:
@@ -85,7 +114,15 @@ def _reconstruct_open_lots_from_trades(
     executed_to: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     open_lots: dict[str, dict[str, Any]] = {}
-    trades = sorted(db.get_sim_run_trades(run_id, executed_to=executed_to), key=_sort_trade_chronologically)
+    cutoff_utc = _parse_replay_time(executed_to) if executed_to else None
+    trades = sorted(
+        [
+            trade
+            for trade in db.get_sim_run_trades(run_id)
+            if _trade_is_at_or_before_checkpoint(trade, cutoff_utc)
+        ],
+        key=_sort_trade_chronologically,
+    )
     for trade in trades:
         action = _txt(trade.get("action")).upper()
         metadata = _trade_metadata(trade)
@@ -439,7 +476,7 @@ def build_his_replay_capital_pool(
     slot_count = _safe_int(slot_summary.get("slot_count"), _safe_int(plan.get("slot_count")))
     slot_budget = _float(slot_summary.get("slot_budget"), _float(plan.get("slot_budget"), 0.0)) or 0.0
     checkpoint_positions = checkpoint_metadata.get("positions") if isinstance(checkpoint_metadata.get("positions"), list) else []
-    is_latest_checkpoint = _txt((checkpoint or {}).get("checkpoint_at")) == _txt(run.get("latest_checkpoint_at"))
+    is_latest_checkpoint = _system_time_text((checkpoint or {}).get("checkpoint_at"), "") == _system_time_text(run.get("latest_checkpoint_at"), "")
     if is_checkpoint_view and checkpoint_positions:
         positions = checkpoint_positions
     elif is_checkpoint_view and is_latest_checkpoint:
@@ -505,9 +542,9 @@ def build_his_replay_capital_pool(
             "runId": _txt(run_id),
             "status": _txt(run.get("status"), "completed"),
             "progress": max(0, min(progress, 100)),
-            "checkpoint": _txt((checkpoint or {}).get("checkpoint_at") or run.get("latest_checkpoint_at"), "--"),
+            "checkpoint": _system_time_text((checkpoint or {}).get("checkpoint_at") or run.get("latest_checkpoint_at"), "--"),
             "timeframe": _txt(run.get("timeframe"), "30m"),
-            "range": f"{_txt(run.get('start_datetime'), '--')} -> {_txt(run.get('end_datetime'), 'now')}",
+            "range": f"{_system_time_text(run.get('start_datetime'), '--')} -> {_system_time_text(run.get('end_datetime'), 'now')}",
             "strategy": _txt(run.get("selected_strategy_profile_name") or run.get("selected_strategy_profile_id") or run.get("selected_strategy_mode"), "--"),
         },
         "pool": {
@@ -529,7 +566,7 @@ def build_his_replay_capital_pool(
         "taskMetrics": [
             _metric("任务", f"#{_txt(run_id)}"),
             _metric("状态", _txt(run.get("status"), "--")),
-            _metric("检查点", _txt((checkpoint or {}).get("checkpoint_at") or run.get("latest_checkpoint_at"), "--")),
+            _metric("检查点", _system_time_text((checkpoint or {}).get("checkpoint_at") or run.get("latest_checkpoint_at"), "--")),
             _metric("成交", _txt(run.get("trade_count"), "0")),
         ],
         "notes": [

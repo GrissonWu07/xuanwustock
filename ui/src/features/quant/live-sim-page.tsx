@@ -528,21 +528,22 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     capitalHighPriceMaxSlotUnits,
     capitalSellCashReusePolicy: "next_batch",
   };
+  const systemTimezone = snapshot.timeContext?.systemTimezone ?? "system";
   const marketTimezone = snapshot.timeContext?.marketTimezone ?? snapshot.config.market;
-  const snapshotTimeLabel = snapshot.timeContext?.updatedAtMarket ?? snapshot.updatedAt;
-  const lastRunLabel = snapshot.status.lastRunMarket ?? snapshot.status.lastRun;
-  const nextRunLabel = snapshot.status.nextRunMarket ?? snapshot.status.nextRun;
+  const snapshotTimeLabel = snapshot.timeContext?.updatedAtSystem ?? snapshot.updatedAt;
+  const lastRunLabel = snapshot.status.lastRunSystem ?? snapshot.status.lastRun;
+  const nextRunLabel = snapshot.status.nextRunSystem ?? snapshot.status.nextRun;
 
   return (
     <div>
       <PageHeader
         eyebrow="实时模拟"
         title={`运行状态：${runningState}`}
-        description={`最近执行：${lastRunLabel}；下次执行：${nextRunLabel}。交易时间按 ${marketTimezone} 判断。`}
+        description={`最近执行：${lastRunLabel}；下次执行：${nextRunLabel}。交易时间按 ${marketTimezone} 判断，页面显示按 ${systemTimezone}。`}
         actions={
           <div className="chip-row">
             <span className="badge badge--neutral">快照 {snapshotTimeLabel}</span>
-            <span className="badge badge--neutral">市场时区 {marketTimezone}</span>
+            <span className="badge badge--neutral">系统时区 {systemTimezone}</span>
             <span className="badge badge--accent">候选 {candidateCount}</span>
             <span className={isRunning ? "badge badge--success" : "badge badge--neutral"}>{runningState}</span>
           </div>

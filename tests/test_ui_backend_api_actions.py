@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import threading
 import time
@@ -15,7 +16,11 @@ from fastapi.testclient import TestClient
 import app.gateway_api as gateway_api
 import app.discover.discover as discover_gateway
 from app.gateway_api import UIApiContext, create_app
+from app.quant_sim.time_utils import format_system_time
 from app.selector_result_store import save_latest_result
+
+
+UTC_TABLE_TIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})")
 
 
 def _make_context(tmp_path: Path) -> UIApiContext:
@@ -71,6 +76,32 @@ def _seed_simple_selector_result(base_dir: Path, strategy_key: str, rows: list[d
         },
         base_dir=base_dir,
     )
+
+
+def _iter_table_row_values(node: Any, path: str = "$"):
+    if isinstance(node, dict):
+        rows = node.get("rows")
+        if isinstance(rows, list):
+            for row_index, row in enumerate(rows):
+                yield from _iter_primitive_values(row, f"{path}.rows[{row_index}]")
+        for key, value in node.items():
+            if key == "rows":
+                continue
+            yield from _iter_table_row_values(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _iter_table_row_values(value, f"{path}[{index}]")
+
+
+def _iter_primitive_values(node: Any, path: str):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _iter_primitive_values(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _iter_primitive_values(value, f"{path}[{index}]")
+    elif isinstance(node, (str, int, float, bool)) or node is None:
+        yield path, node
 
 
 def test_ai_scanner_strategy_uses_project_internal_scanner(tmp_path, monkeypatch):
@@ -1597,11 +1628,176 @@ def test_live_sim_snapshot_includes_market_time_context(tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["updatedAt"].endswith("Z")
+    assert payload["updatedAt"] == format_system_time(payload["timeContext"]["updatedAtUtc"])
     assert payload["timeContext"]["storageTimezone"] == "UTC"
+    assert payload["timeContext"]["systemTimezone"]
+    assert payload["timeContext"]["updatedAtSystem"] == payload["updatedAt"]
     assert payload["timeContext"]["marketTimezone"] == "America/New_York"
     assert payload["timeContext"]["updatedAtUtc"].endswith("Z")
     assert payload["timeContext"]["updatedAtMarketTimezone"] == "America/New_York"
+
+
+def test_page_tables_render_system_time_instead_of_utc_strings(tmp_path):
+    context = _make_context(tmp_path)
+    context.watchlist().add_manual_stock("600519")
+
+    live_db = context.quant_db()
+    live_db.add_signal(
+        {
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "action": "BUY",
+            "confidence": 70,
+            "reasoning": "UTC regression seed",
+            "position_size_pct": 10,
+            "status": "pending",
+        }
+    )
+
+    _seed_simple_selector_result(
+        context.selector_result_dir,
+        "low_price_bull",
+        [
+            {
+                "股票代码": "000001",
+                "股票简称": "平安银行",
+                "所属行业": "银行",
+                "最新价": 10.12,
+                "理由": "UTC selectedAt regression seed",
+            }
+        ],
+        "2026-03-12T07:00:00Z",
+    )
+
+    replay_db = context.replay_db()
+    run_id = replay_db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-03-12T01:30:00Z",
+        end_datetime="2026-03-12T07:00:00Z",
+        initial_cash=100000,
+        status="completed",
+        progress_current=1,
+        progress_total=1,
+        metadata={"selected_strategy_mode": "auto"},
+    )
+    replay_db.update_sim_run_progress(
+        run_id,
+        progress_current=1,
+        progress_total=1,
+        latest_checkpoint_at="2026-03-12T07:00:00Z",
+        status_message="UTC checkpoint regression seed",
+    )
+    replay_db.add_sim_run_checkpoint(
+        run_id,
+        checkpoint_at="2026-03-12T07:00:00Z",
+        candidates_scanned=1,
+        positions_checked=0,
+        signals_created=1,
+        auto_executed=1,
+        available_cash=90000,
+        market_value=10000,
+        total_equity=100000,
+    )
+    replay_db.replace_sim_run_results(
+        run_id,
+        trades=[
+            {
+                "signal_id": 1,
+                "stock_code": "000938",
+                "stock_name": "紫光股份",
+                "action": "BUY",
+                "price": 25,
+                "quantity": 100,
+                "gross_amount": 2500,
+                "commission_fee": 1,
+                "sell_tax_fee": 0,
+                "fee_total": 1,
+                "net_amount": 2501,
+                "amount": 2501,
+                "executed_at": "2026-03-12T07:00:00Z",
+                "created_at": "2026-03-12T07:00:00Z",
+            }
+        ],
+        snapshots=[{"created_at": "2026-03-12T07:00:00Z", "total_equity": 100000}],
+        positions=[],
+        signals=[
+            {
+                "stock_code": "000938",
+                "stock_name": "紫光股份",
+                "action": "BUY",
+                "confidence": 80,
+                "reasoning": "UTC checkpoint regression seed",
+                "status": "executed",
+                "checkpoint_at": "2026-03-12T07:00:00Z",
+                "created_at": "2026-03-12T07:00:00Z",
+                "updated_at": "2026-03-12T07:00:00Z",
+            }
+        ],
+    )
+
+    client = TestClient(create_app(context=context))
+    endpoints = [
+        "/api/v1/workbench",
+        "/api/v1/discover",
+        "/api/v1/portfolio",
+        "/api/v1/portfolio_v2/positions/600519",
+        "/api/v1/quant/live-sim/signals",
+        f"/api/v1/quant/his-replay?runId={run_id}",
+        "/api/v1/history",
+    ]
+
+    bad_values: list[tuple[str, str]] = []
+    for endpoint in endpoints:
+        response = client.get(endpoint)
+        assert response.status_code == 200
+        for path, value in _iter_table_row_values(response.json()):
+            if isinstance(value, str) and UTC_TABLE_TIME_RE.search(value):
+                bad_values.append((f"{endpoint}:{path}", value))
+
+    assert bad_values == []
+
+    expected_checkpoint_at = format_system_time("2026-03-12T07:00:00Z")
+    checkpoint_response = client.get(
+        "/api/v1/quant/his-replay/capital-pool",
+        params={"runId": run_id, "checkpointSearch": expected_checkpoint_at},
+    )
+    assert checkpoint_response.status_code == 200
+    checkpoint_payload = checkpoint_response.json()
+    assert checkpoint_payload["checkpoints"]["pagination"]["totalRows"] == 1
+    assert checkpoint_payload["checkpoints"]["items"][0]["checkpointAt"] == expected_checkpoint_at
+
+
+def test_stock_analysis_records_persist_utc_and_render_system_time(tmp_path):
+    context = _make_context(tmp_path)
+    record_id = context.stock_analysis_db().save_analysis(
+        symbol="600519",
+        stock_name="贵州茅台",
+        period="1y",
+        stock_info={"name": "贵州茅台"},
+        agents_results={},
+        discussion_result={},
+        final_decision={"rating": "持有"},
+        indicators={},
+        historical_data=[],
+    )
+
+    conn = sqlite3.connect(context.stock_analysis_db_file)
+    created_at, analysis_date = conn.execute(
+        "SELECT created_at, analysis_date FROM analysis_records WHERE id = ?",
+        (record_id,),
+    ).fetchone()
+    conn.close()
+
+    assert created_at.endswith("Z")
+    assert analysis_date.endswith("Z")
+
+    response = TestClient(create_app(context=context)).get("/api/v1/history")
+    assert response.status_code == 200
+    rendered_time = response.json()["records"]["rows"][0]["cells"][0]
+    assert rendered_time == format_system_time(created_at)
+    assert UTC_TABLE_TIME_RE.search(rendered_time) is None
 
 
 def test_his_replay_actions_enqueue_cancel_delete_and_rerun(tmp_path, monkeypatch):
@@ -2501,6 +2697,100 @@ def test_his_replay_capital_pool_endpoint_rebuilds_lots_at_selected_checkpoint(t
     assert visible_lot["costBand"] == "20.00"
     assert visible_lot["marketValue"] == "2100.00"
     assert visible_lot["priceBasis"] == "market"
+
+
+def test_his_replay_capital_pool_includes_utc_trade_at_same_market_checkpoint(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.replay_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-03-12 09:30:00",
+        end_datetime="2026-03-12 15:00:00",
+        initial_cash=100000,
+        status="completed",
+        progress_current=1,
+        progress_total=1,
+        metadata={"selected_strategy_mode": "auto"},
+    )
+    db.add_sim_run_checkpoint(
+        run_id,
+        checkpoint_at="2026-03-12 15:00:00",
+        candidates_scanned=2,
+        positions_checked=0,
+        signals_created=1,
+        auto_executed=1,
+        available_cash=89388.8176,
+        market_value=10608,
+        total_equity=99996.8176,
+        metadata={
+            "positions": [
+                {
+                    "stock_code": "000938",
+                    "stock_name": "紫光股份",
+                    "quantity": 400,
+                    "avg_price": 26.528,
+                    "latest_price": 26.52,
+                    "market_value": 10608,
+                    "unrealized_pnl": 0,
+                    "sellable_quantity": 0,
+                    "locked_quantity": 400,
+                }
+            ]
+        },
+    )
+    db.replace_sim_run_results(
+        run_id,
+        trades=[
+            {
+                "signal_id": 11,
+                "stock_code": "000938",
+                "stock_name": "紫光股份",
+                "action": "BUY",
+                "price": 26.52,
+                "quantity": 400,
+                "gross_amount": 10608,
+                "commission_fee": 3.1824,
+                "sell_tax_fee": 0,
+                "fee_total": 3.1824,
+                "net_amount": 10611.1824,
+                "amount": 10611.1824,
+                "trade_metadata_json": json.dumps(
+                    {
+                        "side": "BUY",
+                        "lot": {
+                            "lot_id": "000938-utc-same-checkpoint",
+                            "lot_count": 4,
+                            "quantity": 400,
+                            "remaining_quantity": 400,
+                            "entry_price": 26.528,
+                            "unlock_date": "2026-03-13",
+                        },
+                        "slot_allocations": [{"slot_index": 1, "allocated_cash": 10611.1824, "slot_units": 0.25}],
+                    },
+                    ensure_ascii=False,
+                ),
+                "executed_at": "2026-03-12T07:00:00Z",
+                "created_at": "2026-03-12T07:00:00Z",
+            }
+        ],
+        snapshots=[],
+        positions=[],
+        signals=[],
+    )
+
+    response = TestClient(create_app(context=context)).get(
+        f"/api/v1/quant/his-replay/capital-pool?runId={run_id}&checkpointAt=2026-03-12%2015:00:00"
+    )
+
+    assert response.status_code == 200
+    lot_cards = [
+        lot
+        for slot in response.json()["capitalPool"]["slots"]
+        for lot in slot["lots"]
+    ]
+    assert [(lot["stockCode"], lot["lotCount"], lot["quantity"]) for lot in lot_cards] == [("000938", 4, 400)]
 
 
 def test_his_replay_capital_pool_keeps_board_lot_quantity_when_split_across_slots(tmp_path):

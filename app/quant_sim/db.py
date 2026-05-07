@@ -1186,14 +1186,14 @@ class QuantSimDB:
         finally:
             conn.close()
 
-    def add_signal(self, signal: dict[str, Any]) -> int:
+    def add_signal(self, signal: dict[str, Any], *, dedupe_pending: bool = True) -> int:
         conn = self._connect()
         cursor = conn.cursor()
         status = signal.get("status", "observed")
         action = str(signal["action"]).upper()
         now_text = self._now()
 
-        if status == "pending":
+        if status == "pending" and dedupe_pending:
             cursor.execute(
                 """
                 UPDATE strategy_signals

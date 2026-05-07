@@ -20,7 +20,7 @@ from app.gateway.trades import (
     _trade_sell_tax_fee,
     _trade_slot_units,
 )
-from app.quant_sim.time_utils import format_market_iso, market_timezone_name, utc_now_iso_z
+from app.quant_sim.time_utils import format_market_iso, market_timezone_name, system_timezone_name, utc_now_iso_z
 
 
 def _market_time_context(market: str, *, updated_at_utc: str, last_run_at: Any = None, next_run_at: Any = None) -> dict[str, Any]:
@@ -38,11 +38,15 @@ def _market_time_context(market: str, *, updated_at_utc: str, last_run_at: Any =
     return {
         "storageTimezone": "UTC",
         "storageFormat": "ISO-8601 UTC",
+        "systemTimezone": system_timezone_name(),
         "market": _txt(market, "CN"),
         "marketTimezone": timezone_name,
         "updatedAtUtc": updated_at_utc,
+        "updatedAtSystem": _system_time_text(updated_at_utc),
         "updatedAtMarket": market_text(updated_at_utc),
         "updatedAtMarketTimezone": timezone_name,
+        "lastRunSystem": _system_time_text(last_run_at, "--"),
+        "nextRunSystem": _system_time_text(next_run_at, "--"),
         "lastRunMarket": market_text(last_run_at),
         "nextRunMarket": market_text(next_run_at),
     }
@@ -86,7 +90,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
         for item in db.list_strategy_profiles(include_disabled=False)
     ]
     return {
-        "updatedAt": updated_at_utc,
+        "updatedAt": _system_time_text(updated_at_utc),
         "timeContext": time_context,
         "config": {
             "interval": f"{scheduler.get('interval_minutes', 0)} 分钟",
@@ -116,8 +120,10 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
         },
         "status": {
             "running": "运行中" if scheduler.get("running") else "已停止",
-            "lastRun": _txt(scheduler.get("last_run_at"), "--"),
-            "nextRun": _txt(scheduler.get("next_run"), "--"),
+            "lastRun": _system_time_text(scheduler.get("last_run_at"), "--"),
+            "nextRun": _system_time_text(scheduler.get("next_run"), "--"),
+            "lastRunSystem": time_context["lastRunSystem"],
+            "nextRunSystem": time_context["nextRunSystem"],
             "lastRunMarket": time_context["lastRunMarket"],
             "nextRunMarket": time_context["nextRunMarket"],
             "candidateCount": _txt(context.candidate_pool().count_candidates(status="active"), "0"),
@@ -189,7 +195,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
         "trades": _live_trade_table(context, table_query),
         "tradeCostSummary": _trade_cost_summary_metrics(trade_cost_summary),
         "curve": [
-            {"label": _txt(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
+            {"label": _system_time_text(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
             for i, item in enumerate(db.get_account_snapshots(limit=20))
         ],
     }
@@ -217,7 +223,7 @@ def _live_signal_table(
     ):
         rows.append(build_signal_summary_row(item, i, time_key="updated_at", status_key="status"))
     return {
-        "updatedAt": utc_now_iso_z(),
+        "updatedAt": _system_time_text(utc_now_iso_z()),
         "table": {
             **build_signal_summary_table(rows),
             "pagination": pagination,
@@ -238,7 +244,7 @@ def _live_trade_table(context: UIApiContext, table_query: dict[str, Any] | None 
         {
             "id": _txt(item.get("id"), str(i)),
             "cells": [
-                _txt(item.get("executed_at") or item.get("created_at"), "--"),
+                _system_time_text(item.get("executed_at") or item.get("created_at"), "--"),
                 _txt(item.get("stock_code")),
                 _txt(item.get("action")),
                 _trade_kind(item),

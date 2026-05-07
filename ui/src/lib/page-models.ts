@@ -293,11 +293,15 @@ export type LiveSimSnapshot = {
   timeContext?: {
     storageTimezone?: string;
     storageFormat?: string;
+    systemTimezone?: string;
     market?: string;
     marketTimezone?: string;
     updatedAtUtc?: string;
+    updatedAtSystem?: string;
     updatedAtMarket?: string;
     updatedAtMarketTimezone?: string;
+    lastRunSystem?: string;
+    nextRunSystem?: string;
     lastRunMarket?: string;
     nextRunMarket?: string;
   };
@@ -336,6 +340,8 @@ export type LiveSimSnapshot = {
     running: string;
     lastRun: string;
     nextRun: string;
+    lastRunSystem?: string;
+    nextRunSystem?: string;
     lastRunMarket?: string;
     nextRunMarket?: string;
     candidateCount: string;

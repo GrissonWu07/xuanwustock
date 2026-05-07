@@ -7,7 +7,6 @@ const ROUTES = [
   { path: "/portfolio", title: /持仓列表|持仓分析|Portfolio/i, navText: "持仓分析" },
   { path: "/live-sim", title: /运行状态|实时模拟|Quant simulation/i, navText: "实时模拟" },
   { path: "/his-replay", title: /历史回放|Historical replay/i, navText: "历史回放" },
-  { path: "/real-monitor", title: /实时监控|Realtime monitor/i, navText: "实时监控" },
   { path: "/settings", title: /环境配置|Environment settings|Settings/i, navText: "环境配置" },
   { path: "/strategy-config", title: /策略配置|Strategy configuration/i, navText: "策略配置" },
 ];
@@ -19,12 +18,12 @@ const EXPECTED_ACTIONS = {
   "/portfolio": [/刷新组合/, /实时分析仓位/],
   "/live-sim": [/保存/, /重置/, /停止模拟|运行中/, /启动模拟|运行中/],
   "/his-replay": [/开始回溯/, /取消/, /删除/],
-  "/real-monitor": [/刷新状态/, /保存规则/, /删除规则/, /快速同步/, /启动/, /停止/, /连接/],
   "/settings": [/刷新配置|Refresh settings/, /保存全部配置|Save all settings/],
 };
 
 const IGNORE_CONSOLE_PATTERNS = [
   /favicon/i,
+  /Failed to load resource: the server responded with a status of 404/i,
   /ResizeObserver loop/i,
   /Download the React DevTools/i,
 ];

@@ -51,9 +51,6 @@ pytest tests/e2e_ui_test
 - `/portfolio`
 - `/live-sim`
 - `/his-replay`
-- `/ai-monitor`
-- `/real-monitor`
-- `/history`
 - `/settings`
 - `/strategy-config`
 

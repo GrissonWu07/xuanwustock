@@ -3,24 +3,15 @@ from __future__ import annotations
 from app.gateway.deps import *
 from app.gateway.context import UIApiContext
 from app.gateway.signal_indicators import _profile_text, _safe_json_load
+from app.quant_sim.time_utils import parse_system_datetime
 
 def _parse_signal_time(raw: Any) -> datetime | None:
     text = _txt(raw).strip()
     if not text or text == "--":
         return None
-    normalized = text.replace("T", " ").replace("Z", "")
-    for fmt in (
-        "%Y-%m-%d %H:%M:%S.%f",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
-    ):
-        try:
-            return datetime.strptime(normalized, fmt)
-        except ValueError:
-            continue
     try:
-        return datetime.fromisoformat(text)
-    except ValueError:
+        return parse_system_datetime(text)
+    except (TypeError, ValueError):
         return None
 
 
@@ -249,7 +240,7 @@ def _build_signal_ai_monitor_payload(
         history_rows.append(
             {
                 "id": _txt(item.get("id")),
-                "decisionTime": _txt(item.get("decision_time"), "--"),
+                "decisionTime": _system_time_text(item.get("decision_time"), "--"),
                 "action": _txt(item.get("action"), "HOLD").upper(),
                 "confidence": _txt(item.get("confidence"), "--"),
                 "riskLevel": _txt(item.get("risk_level"), "--"),
@@ -268,7 +259,7 @@ def _build_signal_ai_monitor_payload(
         trades.append(
             {
                 "id": _txt(item.get("id")),
-                "tradeTime": _txt(item.get("trade_time"), "--"),
+                "tradeTime": _system_time_text(item.get("trade_time"), "--"),
                 "tradeType": _txt(item.get("trade_type"), "--").upper(),
                 "quantity": _txt(item.get("quantity"), "--"),
                 "price": _txt(item.get("price"), "--"),
@@ -282,7 +273,7 @@ def _build_signal_ai_monitor_payload(
 
     decision_payload = {
         "id": _txt(selected.get("id")),
-        "decisionTime": _txt(selected.get("decision_time"), "--"),
+        "decisionTime": _system_time_text(selected.get("decision_time"), "--"),
         "action": _txt(selected.get("action"), "HOLD").upper(),
         "confidence": _txt(selected.get("confidence"), "--"),
         "riskLevel": _txt(selected.get("risk_level"), "--"),

@@ -221,7 +221,7 @@ def _market_snapshot_from_watchlist(
         "latestPrice": _num(latest_price, default="--") if latest_price is not None and latest_price > 0 else "--",
         "latestSignal": _txt(watch.get("latest_signal"), "--") if watch else "--",
         "source": source,
-        "updatedAt": _txt(watch.get("updated_at"), "--") if watch else "--",
+        "updatedAt": _system_time_text(watch.get("updated_at"), "--") if watch else "--",
         "inQuantPool": bool(watch.get("in_quant_pool")) if watch else False,
     }
 
@@ -283,7 +283,7 @@ def _portfolio_pending_signal_rows(context: "UIApiContext", symbol: str | None =
             {
                 "id": _txt(item.get("id"), f"pending-{i}"),
                 "cells": [
-                    _txt(item.get("created_at") or item.get("updated_at"), "--"),
+                    _system_time_text(item.get("created_at") or item.get("updated_at"), "--"),
                     code,
                     _txt(item.get("action"), "HOLD").upper(),
                     _txt(item.get("strategy_mode") or item.get("decision_type"), "--"),
@@ -330,7 +330,7 @@ def _load_market_focus_news(context: "UIApiContext", limit: int = 8) -> list[dic
                     "title": title,
                     "body": body or "暂无摘要",
                     "source": _txt(item.get("source"), "market"),
-                    "time": _txt(item.get("news_date"), "--"),
+                    "time": _system_time_text(item.get("news_date"), "--"),
                     "url": _txt(item.get("url")),
                 }
             )

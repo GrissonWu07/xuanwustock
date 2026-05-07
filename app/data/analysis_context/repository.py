@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,23 +14,28 @@ from app.db.runtime.registry import DatabaseRuntime
 from app.runtime_paths import default_db_path
 
 
-def _parse_dt(value: Any) -> datetime | None:
+def _parse_persisted_dt(value: Any) -> datetime | None:
     if value is None:
         return None
-    if isinstance(value, datetime):
-        return value
-    text = str(value).strip()
-    if not text:
-        return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(text[: len(fmt)], fmt)
-        except ValueError:
-            continue
     try:
-        return datetime.fromisoformat(text)
-    except ValueError:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            text = str(value).strip()
+            if text.endswith("Z"):
+                text = f"{text[:-1]}+00:00"
+            elif "T" not in text and " " in text:
+                text = text.replace(" ", "T", 1)
+            parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo or timezone.utc)
+        return parsed.astimezone(timezone.utc).replace(microsecond=0)
+    except (TypeError, ValueError):
         return None
+
+
+def _row_value(row: sqlite3.Row, key: str) -> Any:
+    return row[key] if key in row.keys() else None
 
 
 def _load_json(value: Any, default: Any) -> Any:
@@ -75,7 +80,7 @@ class StockAnalysisContextRepository:
         code = str(symbol or "").strip()
         if not code:
             return None
-        as_of_dt = _parse_dt(as_of) or datetime.now()
+        as_of_dt = _parse_persisted_dt(as_of) or _parse_persisted_dt(datetime.now()) or datetime.now(timezone.utc).replace(microsecond=0)
         fallback_start = as_of_dt - timedelta(hours=max(float(ttl_hours), 0.0))
         conn = legacy_dbapi_connection(
             db_path=self.db_path,
@@ -90,20 +95,9 @@ class StockAnalysisContextRepository:
                 SELECT *
                 FROM analysis_records
                 WHERE symbol = ?
-                  AND datetime(COALESCE(data_as_of, created_at, analysis_date)) <= datetime(?)
-                  AND datetime(COALESCE(valid_until, datetime(COALESCE(data_as_of, created_at, analysis_date), '+48 hours'))) >= datetime(?)
-                  AND datetime(COALESCE(created_at, analysis_date)) <= datetime(?)
-                  AND datetime(COALESCE(created_at, analysis_date)) >= datetime(?)
-                ORDER BY datetime(COALESCE(data_as_of, created_at, analysis_date)) DESC, id DESC
-                LIMIT 20
+                ORDER BY id DESC
                 """,
-                (
-                    code,
-                    as_of_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                    as_of_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                    as_of_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                    fallback_start.strftime("%Y-%m-%d %H:%M:%S"),
-                ),
+                (code,),
             )
             rows = cursor.fetchall()
         except sqlite3.OperationalError:
@@ -112,11 +106,31 @@ class StockAnalysisContextRepository:
             conn.close()
 
         replay_mode = str(mode or "").lower() == "replay"
+        candidates: list[tuple[datetime, int, sqlite3.Row, dict[str, Any], str]] = []
         for row in rows:
-            context = _load_json(row["analysis_context_json"] if "analysis_context_json" in row.keys() else None, {})
+            data_as_of_dt = (
+                _parse_persisted_dt(_row_value(row, "data_as_of"))
+                or _parse_persisted_dt(_row_value(row, "created_at"))
+                or _parse_persisted_dt(_row_value(row, "analysis_date"))
+            )
+            created_at_dt = _parse_persisted_dt(_row_value(row, "created_at")) or _parse_persisted_dt(_row_value(row, "analysis_date"))
+            if data_as_of_dt is None or created_at_dt is None:
+                continue
+            valid_until_dt = _parse_persisted_dt(_row_value(row, "valid_until")) or (data_as_of_dt + timedelta(hours=48))
+            if data_as_of_dt > as_of_dt:
+                continue
+            if valid_until_dt < as_of_dt:
+                continue
+            if created_at_dt > as_of_dt or created_at_dt < fallback_start:
+                continue
+            context = _load_json(_row_value(row, "analysis_context_json"), {})
             if not isinstance(context, dict) or not context:
                 continue
-            quality = str(row["data_as_of_quality"] if "data_as_of_quality" in row.keys() and row["data_as_of_quality"] else "").strip()
+            quality = str(_row_value(row, "data_as_of_quality") or "").strip()
+            candidates.append((data_as_of_dt, int(row["id"]), row, context, quality))
+
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        for _, _, row, context, quality in candidates[:20]:
             if replay_mode and quality not in self.REPLAY_ALLOWED_QUALITY:
                 continue
             confidence = self._to_float(context.get("confidence"), 0.0)
@@ -133,9 +147,9 @@ class StockAnalysisContextRepository:
                 "effective_score": round(effective_score, 6),
                 "confidence": round(confidence, 6),
                 "summary": str(context.get("summary") or ""),
-                "data_as_of": row["data_as_of"] if "data_as_of" in row.keys() else None,
+                "data_as_of": _row_value(row, "data_as_of"),
                 "data_as_of_quality": quality or "unknown",
-                "valid_until": row["valid_until"] if "valid_until" in row.keys() else None,
+                "valid_until": _row_value(row, "valid_until"),
                 "generated_at": row["created_at"],
                 "normalizer_version": context.get("normalizer_version"),
             }

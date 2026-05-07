@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from app import stock_analysis_service
+from app.quant_sim.time_utils import format_system_short_time, format_system_time, parse_system_datetime, system_now_text
 from app.i18n import t
 from app.watchlist_integration import add_watchlist_rows_to_quant_pool
 from app.watchlist_selector_integration import normalize_stock_code
@@ -19,7 +20,7 @@ from app.workbench_analysis_tasks import analysis_task_manager
 
 
 def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return system_now_text()
 
 
 def _txt(value: Any, default: str = "") -> str:
@@ -106,24 +107,18 @@ def _parse_datetime(value: Any) -> datetime | None:
     text = _txt(value)
     if not text:
         return None
-    for candidate in (text, text.replace("T", " ")):
-        try:
-            return datetime.fromisoformat(candidate)
-        except ValueError:
-            pass
-    for fmt, length in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d", 10)):
-        try:
-            return datetime.strptime(text[:length], fmt)
-        except ValueError:
-            pass
-    return None
+    try:
+        return parse_system_datetime(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def _short_time(value: Any) -> str:
-    parsed = _parse_datetime(value)
-    if not parsed:
-        return _txt(value, "--")
-    return parsed.strftime("%m-%d %H:%M")
+    return format_system_short_time(value, default=_txt(value, "--"))
+
+
+def _system_time(value: Any) -> str:
+    return format_system_time(value, default=_txt(value, "--"))
 
 
 def _normalize_codes(payload: Any) -> list[str]:
@@ -361,7 +356,7 @@ def build_workbench_snapshot(
             selected=None,
             mode=t("Single analysis"),
             cycle=_txt(latest_record.get("period"), "1y"),
-            generated_at=_txt(latest_record.get("analysis_date") or latest_record.get("created_at"), _now()),
+            generated_at=_system_time(latest_record.get("analysis_date") or latest_record.get("created_at") or _now()),
             stock_info=record_stock_info,
             indicators=record_indicators,
             discussion_result=record_discussion,
@@ -452,7 +447,7 @@ def build_workbench_snapshot(
                     "inputHint": t("Example: 600519 / 300390 / AAPL"),
                     "summaryTitle": f"{code} {'分析中' if code not in failed_by_symbol else '分析失败'}",
                     "summaryBody": message,
-                    "generatedAt": _txt(latest_task.get("updated_at") or latest_task.get("updatedAt"), _now()),
+                    "generatedAt": _system_time(latest_task.get("updated_at") or latest_task.get("updatedAt") or _now()),
                     "indicators": [],
                     "decision": t("Waiting for analysis result"),
                     "finalDecisionText": t("Waiting for analysis result"),

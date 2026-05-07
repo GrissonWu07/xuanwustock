@@ -4,6 +4,31 @@ from app.gateway.deps import *
 from app.gateway.context import UIApiContext
 
 
+def _strategy_profile_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(row, dict):
+        return None
+    payload = dict(row)
+    if "created_at" in payload:
+        payload["created_at"] = _system_time_text(payload.get("created_at"), "")
+    if "updated_at" in payload:
+        payload["updated_at"] = _system_time_text(payload.get("updated_at"), "")
+    return payload
+
+
+def _strategy_profile_response(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    for key in ("profile", "version", "latestVersion"):
+        if key in result:
+            result[key] = _strategy_profile_view(result.get(key))
+    if isinstance(result.get("versions"), list):
+        result["versions"] = [
+            item
+            for item in (_strategy_profile_view(row) for row in result["versions"])
+            if item is not None
+        ]
+    return result
+
+
 def list_strategy_profiles(context: UIApiContext, *, include_disabled: bool = False) -> dict[str, Any]:
     db = context.quant_db()
     scheduler_cfg = db.get_scheduler_config()
@@ -11,7 +36,7 @@ def list_strategy_profiles(context: UIApiContext, *, include_disabled: bool = Fa
     items: list[dict[str, Any]] = []
     for row in rows:
         profile_id = _txt(row.get("id")).strip()
-        latest = db.get_latest_strategy_profile_version(profile_id) if profile_id else None
+        latest = _strategy_profile_view(db.get_latest_strategy_profile_version(profile_id) if profile_id else None)
         items.append(
             {
                 "id": profile_id,
@@ -19,8 +44,8 @@ def list_strategy_profiles(context: UIApiContext, *, include_disabled: bool = Fa
                 "description": _txt(row.get("description")),
                 "enabled": bool(row.get("enabled", True)),
                 "isDefault": bool(row.get("is_default", False)),
-                "createdAt": _txt(row.get("created_at")),
-                "updatedAt": _txt(row.get("updated_at")),
+                "createdAt": _system_time_text(row.get("created_at"), ""),
+                "updatedAt": _system_time_text(row.get("updated_at"), ""),
                 "latestVersion": latest,
             }
         )
@@ -38,9 +63,13 @@ def get_strategy_profile(context: UIApiContext, profile_id: str, *, versions_lim
         raise HTTPException(status_code=404, detail=f"Strategy profile not found: {profile_id}")
     return {
         "updatedAt": _now(),
-        "profile": profile,
-        "latestVersion": db.get_latest_strategy_profile_version(profile_id),
-        "versions": db.list_strategy_profile_versions(profile_id, limit=versions_limit),
+        "profile": _strategy_profile_view(profile),
+        "latestVersion": _strategy_profile_view(db.get_latest_strategy_profile_version(profile_id)),
+        "versions": [
+            item
+            for item in (_strategy_profile_view(row) for row in db.list_strategy_profile_versions(profile_id, limit=versions_limit))
+            if item is not None
+        ],
     }
 
 
@@ -58,7 +87,7 @@ def create_strategy_profile(context: UIApiContext, body: dict[str, Any]) -> dict
             set_default=bool(body.get("setDefault", False) or body.get("set_default", False)),
             note=_txt(body.get("note")),
         )
-        return {"updatedAt": _now(), **created}
+        return {"updatedAt": _now(), **_strategy_profile_response(created)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -75,7 +104,7 @@ def update_strategy_profile(context: UIApiContext, profile_id: str, body: dict[s
             set_default=bool(body.get("setDefault") if "setDefault" in body else body.get("set_default")) if ("setDefault" in body or "set_default" in body) else None,
             note=_txt(body.get("note")) if "note" in body else None,
         )
-        return {"updatedAt": _now(), **updated}
+        return {"updatedAt": _now(), **_strategy_profile_response(updated)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -91,7 +120,7 @@ def clone_strategy_profile(context: UIApiContext, profile_id: str, body: dict[st
             profile_id=_txt(body.get("profileId") if "profileId" in body else body.get("id")).strip() or None,
             description=_txt(body.get("description")) if "description" in body else None,
         )
-        return {"updatedAt": _now(), **cloned}
+        return {"updatedAt": _now(), **_strategy_profile_response(cloned)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -116,7 +145,7 @@ def validate_strategy_profile(context: UIApiContext, profile_id: str, body: dict
 def set_default_strategy_profile(context: UIApiContext, profile_id: str) -> dict[str, Any]:
     try:
         profile = context.quant_db().set_default_strategy_profile(profile_id)
-        return {"updatedAt": _now(), "profile": profile}
+        return {"updatedAt": _now(), "profile": _strategy_profile_view(profile)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -130,6 +159,6 @@ def delete_strategy_profile(context: UIApiContext, profile_id: str) -> dict[str,
         raise HTTPException(status_code=400, detail="Default strategy profile cannot be deleted")
     try:
         updated = db.update_strategy_profile(profile_id, enabled=False, note="disabled_by_delete")
-        return {"updatedAt": _now(), "ok": True, **updated}
+        return {"updatedAt": _now(), "ok": True, **_strategy_profile_response(updated)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

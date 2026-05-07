@@ -182,6 +182,36 @@ def test_stockpolicy_adapter_passes_requested_timeframe_to_kernel_runtime():
     assert runtime.candidate_calls[0]["analysis_timeframe"] == "1d+30m"
 
 
+def test_stockpolicy_adapter_uses_supplied_current_time_for_replay_candidate_analysis():
+    snapshot = {
+        "current_price": 61.99,
+        "ma5": 58.7,
+        "ma20": 55.5,
+        "ma60": 51.37,
+        "macd": 0.534,
+        "rsi12": 70.6,
+        "volume_ratio": 2.26,
+        "trend": "up",
+    }
+    runtime = FakeRuntime()
+    adapter = StockPolicyAdapter(data_fetcher=FakeFetcher(snapshot), runtime=runtime)
+    checkpoint = datetime(2026, 4, 7, 10, 0)
+
+    decision = adapter.analyze_candidate(
+        {
+            "stock_code": "300390",
+            "stock_name": "天华新能",
+            "source": "main_force",
+            "sources": ["main_force"],
+        },
+        market_snapshot=snapshot,
+        current_time=checkpoint,
+    )
+
+    assert decision.timestamp == checkpoint
+    assert runtime.candidate_calls[0]["current_time"] == checkpoint
+
+
 def test_stockpolicy_adapter_delegates_position_analysis_to_kernel_runtime():
     snapshot = {
         "current_price": 52.96,
