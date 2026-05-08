@@ -25,6 +25,8 @@ type QuantTableSectionProps = {
   shellClassName?: string;
   toolbar?: ReactNode;
   onRowAction?: (row: TableRow, action: TableAction) => void;
+  renderCell?: (args: { row: TableRow; cell: string; column: string; index: number }) => ReactNode | undefined;
+  renderActions?: (row: TableRow) => ReactNode | undefined;
   compactConfig?: CompactConfig;
   signalDetailSource?: "live" | "replay";
 };
@@ -91,6 +93,8 @@ export function QuantTableSectionCard({
   shellClassName = "",
   toolbar,
   onRowAction,
+  renderCell: renderCustomCell,
+  renderActions,
   compactConfig,
   signalDetailSource,
 }: QuantTableSectionProps) {
@@ -154,6 +158,10 @@ export function QuantTableSectionCard({
   };
 
   const renderCell = (row: TableRow, cell: string, column: string, index: number) => {
+    const customCell = renderCustomCell?.({ row, cell, column, index });
+    if (customCell !== undefined) {
+      return <>{customCell}</>;
+    }
     const normalizedColumn = String(column).toLowerCase();
     const isActionColumn = normalizedColumn.includes("动作") || normalizedColumn === "action";
     const isStrategyColumn = normalizedColumn.includes("策略") || normalizedColumn === "strategy";
@@ -189,6 +197,59 @@ export function QuantTableSectionCard({
       return <>{localizeDecisionCode(String(cell))}</>;
     }
     return <>{cell}</>;
+  };
+
+  const renderActionControls = (row: TableRow) => {
+    const customActions = renderActions?.(row);
+    if (customActions !== undefined) {
+      return customActions;
+    }
+    return row.actions?.map((action) => {
+      const tone = action.tone ?? "neutral";
+      if (onRowAction) {
+        if (actionVariant === "chip") {
+          return (
+            <button
+              key={`${row.id}-${action.label}`}
+              className="chip chip--active"
+              type="button"
+              aria-label={action.label}
+              onClick={() => onRowAction(row, action)}
+            >
+              {action.icon ?? action.label}
+              <span>{action.label}</span>
+            </button>
+          );
+        }
+
+        return (
+          <button
+            key={`${row.id}-${action.label}`}
+            className={`icon-button icon-button--${tone}`}
+            type="button"
+            aria-label={action.label}
+            onClick={() => onRowAction(row, action)}
+          >
+            {action.icon ?? action.label}
+          </button>
+        );
+      }
+
+      if (actionVariant === "chip") {
+        return (
+          <span className="chip chip--active" key={`${row.id}-${action.label}`}>
+            {action.icon ?? action.label}
+            <span>{action.label}</span>
+          </span>
+        );
+      }
+
+      return (
+        <span className={`icon-button icon-button--${tone}`} key={`${row.id}-${action.label}`} aria-hidden="true">
+          {action.icon ?? action.label}
+        </span>
+      );
+    });
   };
 
   return (
@@ -284,27 +345,31 @@ export function QuantTableSectionCard({
                                 </button>
                                 {openMenuRowId === row.id ? (
                                   <div className="row-more__menu" role="menu">
-                                    {row.actions?.map((action) => {
-                                      const tone = action.tone ?? "neutral";
-                                      return (
-                                        <button
-                                          key={`${row.id}-${action.label}`}
-                                          className={`row-more__item row-more__item--${tone}`}
-                                          type="button"
-                                          role="menuitem"
-                                          disabled={!onRowAction}
-                                          onClick={() => {
-                                            setOpenMenuRowId(null);
-                                            if (onRowAction) {
-                                              onRowAction(row, action);
-                                            }
-                                          }}
-                                        >
-                                          <span aria-hidden="true">{action.icon ?? "•"}</span>
-                                          <span>{action.label}</span>
-                                        </button>
-                                      );
-                                    })}
+                                    {renderActions ? (
+                                      <div className="row-more__item">{renderActions(row)}</div>
+                                    ) : (
+                                      row.actions?.map((action) => {
+                                        const tone = action.tone ?? "neutral";
+                                        return (
+                                          <button
+                                            key={`${row.id}-${action.label}`}
+                                            className={`row-more__item row-more__item--${tone}`}
+                                            type="button"
+                                            role="menuitem"
+                                            disabled={!onRowAction}
+                                            onClick={() => {
+                                              setOpenMenuRowId(null);
+                                              if (onRowAction) {
+                                                onRowAction(row, action);
+                                              }
+                                            }}
+                                          >
+                                            <span aria-hidden="true">{action.icon ?? "•"}</span>
+                                            <span>{action.label}</span>
+                                          </button>
+                                        );
+                                      })
+                                    )}
                                   </div>
                                 ) : null}
                               </div>
@@ -346,52 +411,7 @@ export function QuantTableSectionCard({
                       {showActions ? (
                         <td>
                           <div className="table__actions">
-                            {row.actions?.map((action) => {
-                              const tone = action.tone ?? "neutral";
-                              if (onRowAction) {
-                                if (actionVariant === "chip") {
-                                  return (
-                                    <button
-                                      key={`${row.id}-${action.label}`}
-                                      className="chip chip--active"
-                                      type="button"
-                                      aria-label={action.label}
-                                      onClick={() => onRowAction(row, action)}
-                                    >
-                                      {action.icon ?? action.label}
-                                      <span>{action.label}</span>
-                                    </button>
-                                  );
-                                }
-
-                                return (
-                                  <button
-                                    key={`${row.id}-${action.label}`}
-                                    className={`icon-button icon-button--${tone}`}
-                                    type="button"
-                                    aria-label={action.label}
-                                    onClick={() => onRowAction(row, action)}
-                                  >
-                                    {action.icon ?? action.label}
-                                  </button>
-                                );
-                              }
-
-                              if (actionVariant === "chip") {
-                                return (
-                                  <span className="chip chip--active" key={`${row.id}-${action.label}`}>
-                                    {action.icon ?? action.label}
-                                    <span>{action.label}</span>
-                                  </span>
-                                );
-                              }
-
-                              return (
-                                <span className={`icon-button icon-button--${tone}`} key={`${row.id}-${action.label}`} aria-hidden="true">
-                                  {action.icon ?? action.label}
-                                </span>
-                              );
-                            })}
+                            {renderActionControls(row)}
                           </div>
                         </td>
                       ) : null}

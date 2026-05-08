@@ -41,6 +41,59 @@ const discoverSnapshot = {
   taskJob: null,
 };
 
+const lifecycleDiscoverSnapshot = {
+  ...discoverSnapshot,
+  candidateTable: {
+    ...discoverSnapshot.candidateTable,
+    rows: [
+      {
+        id: "600001",
+        cells: ["600001", "eligible 股", "行业A", "main_force", "10.00", "100", "20", "2"],
+        code: "600001",
+        name: "eligible 股",
+        eligible_status: "eligible",
+        blocking_reason: "",
+        candidate_score: 0.82,
+        already_in_quant: false,
+        actions: [{ label: "Add to watchlist", icon: "⭐", tone: "accent", action: "item-watchlist" }],
+      },
+      {
+        id: "600002",
+        cells: ["600002", "已入池股", "行业B", "main_force", "11.00", "100", "20", "2"],
+        code: "600002",
+        name: "已入池股",
+        eligible_status: "already_in_quant",
+        blocking_reason: "",
+        candidate_score: 0.72,
+        already_in_quant: true,
+        actions: [{ label: "Add to watchlist", icon: "⭐", tone: "accent", action: "item-watchlist" }],
+      },
+      {
+        id: "600003",
+        cells: ["600003", "跳过股", "行业C", "main_force", "12.00", "100", "20", "2"],
+        code: "600003",
+        name: "跳过股",
+        eligible_status: "skipped",
+        blocking_reason: "基础信息缺失",
+        candidate_score: 0.62,
+        already_in_quant: false,
+        actions: [{ label: "Add to watchlist", icon: "⭐", tone: "accent", action: "item-watchlist" }],
+      },
+      {
+        id: "600004",
+        cells: ["600004", "冷却股", "行业D", "main_force", "13.00", "100", "20", "2"],
+        code: "600004",
+        name: "冷却股",
+        eligible_status: "cooling_blocked",
+        blocking_reason: "冷却期未结束",
+        candidate_score: 0.70,
+        already_in_quant: false,
+        actions: [{ label: "Add to watchlist", icon: "⭐", tone: "accent", action: "item-watchlist" }],
+      },
+    ],
+  },
+};
+
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -76,6 +129,60 @@ function renderDiscoverPage(client: ApiClient) {
 }
 
 describe("DiscoverPage", () => {
+  it("shows lifecycle eligibility badges and promotes selected candidates with row-level partial results", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        success: [{ stock_code: "600001", new_status: "trial" }],
+        skipped: [{ stock_code: "600003", reason_text: "基础信息缺失" }],
+        failed: [],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(lifecycleDiscoverSnapshot),
+      runPageAction: vi.fn().mockResolvedValue(lifecycleDiscoverSnapshot),
+      getTaskStatus: vi.fn(),
+    } as unknown as ApiClient;
+
+    renderDiscoverPage(client);
+
+    expect(await screen.findByText("eligible")).toBeInTheDocument();
+    expect(screen.getByText("already_in_quant")).toBeInTheDocument();
+    expect(screen.getByText("skipped")).toBeInTheDocument();
+    expect(screen.getByText("cooling_blocked")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "仅看 eligible" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "纳入 trial" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "忽略自动纳入" }).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "仅看 eligible" }));
+    expect(screen.getByText("eligible 股")).toBeInTheDocument();
+    expect(screen.queryByText("已入池股")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "仅看 eligible" }));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select eligible 股" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select 跳过股" }));
+    fireEvent.click(screen.getByRole("button", { name: "纳入量化试运行" }));
+    expect(screen.getByRole("dialog", { name: "确认纳入量化试运行" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认纳入" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/quant/universe/actions/promote-to-trial",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ stock_codes: ["600001", "600003"], source_type: "discover" }),
+        }),
+      );
+    });
+    expect(screen.getByText("600001")).toBeInTheDocument();
+    expect(screen.getAllByText("already_in_quant").length).toBeGreaterThan(0);
+    expect(screen.getByText("基础信息缺失")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "仅看 eligible" }));
+    expect(screen.getByText("600001")).toBeInTheDocument();
+    expect(screen.getByText("600003")).toBeInTheDocument();
+  });
+
   it("supports row click selection and isolates single watchlist action", async () => {
     const runPageAction = vi.fn().mockResolvedValue(discoverSnapshot);
     const client = {

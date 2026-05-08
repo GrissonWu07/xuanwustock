@@ -348,6 +348,10 @@ export type LiveSimSnapshot = {
   };
   metrics: SummaryMetric[];
   candidatePool: TableSection;
+  quant_status_filters?: {
+    available?: string[];
+    selected?: string[];
+  };
   tradeCostSummary?: SummaryMetric[];
   capitalPool?: ReplayCapitalPool;
 };

@@ -1377,6 +1377,68 @@ def test_discover_snapshot_aggregates_selector_results(tmp_path):
     assert "已汇总 2 个发现策略的最新结果" in payload["summary"]["body"]
 
 
+def test_discover_snapshot_exposes_read_only_lifecycle_entry_fields(tmp_path):
+    context = _make_context(tmp_path)
+    selector_dir = tmp_path / "selector_results"
+    _seed_discover_result(selector_dir)
+    _seed_simple_selector_result(
+        selector_dir,
+        "low_price_bull",
+        [
+            {
+                "股票代码": "000001",
+                "股票简称": "平安银行",
+                "所属行业": "银行",
+                "最新价": 10.12,
+                "理由": "低价高弹性",
+            },
+            {
+                "股票代码": "300001",
+                "股票简称": "特锐德",
+                "所属行业": "电气设备",
+                "最新价": 18.5,
+                "理由": "基础信息待补全",
+            },
+        ],
+        "2026-04-13 15:00:00",
+    )
+    db = context.quant_db()
+    db.upsert_quant_universe_state("000001", {"quant_status": "trial", "candidate_score": 0.71})
+    db.add_watch(stock_code="300001", stock_name="特锐德", source="discover", metadata={"basic_info_missing": True})
+    db.add_candidate_event(
+        {
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "source_type": "discover",
+            "source_key": "main_force",
+            "source_score": 0.88,
+            "confidence": 0.79,
+            "trend": "up",
+            "status": "eligible",
+            "reason_text": "主力资金流入",
+        }
+    )
+    before_events = db.list_candidate_events(stock_code="600519", limit=20)
+    client = TestClient(create_app(context=context))
+
+    response = client.get("/api/v1/discover")
+
+    assert response.status_code == 200
+    rows = {row["code"]: row for row in response.json()["candidateTable"]["rows"]}
+    for field in ("eligible_status", "candidate_score", "blocking_reason", "already_in_quant"):
+        assert field in rows["000001"]
+        assert field in rows["600519"]
+    assert rows["000001"]["eligible_status"] == "already_in_quant"
+    assert rows["000001"]["already_in_quant"] is True
+    assert rows["000001"]["candidate_score"] == 0.71
+    assert rows["600519"]["eligible_status"] == "eligible"
+    assert rows["600519"]["already_in_quant"] is False
+    assert rows["600519"]["candidate_score"] == 0.88
+    assert rows["300001"]["eligible_status"] == "skipped"
+    assert rows["300001"]["blocking_reason"] == "basic_info_missing"
+    assert db.list_candidate_events(stock_code="600519", limit=20) == before_events
+
+
 def test_discover_run_strategy_executes_real_selector_runners_and_persists_results(tmp_path, monkeypatch):
     context = _make_context(tmp_path)
     selector_dir = tmp_path / "selector_results"

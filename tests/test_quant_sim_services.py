@@ -98,6 +98,36 @@ def test_signal_center_persists_canonical_scores_when_available(tmp_path):
     assert signal["confidence"] == 92
 
 
+def test_signal_center_blocks_buy_for_exit_only_stock(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    candidate_service.add_manual_candidate("600824", "益民集团", "main_force", latest_price=5.0)
+    signal_service.db.upsert_quant_universe_state("600824", {"quant_status": "exit_only", "health_score": 25})
+    candidate = candidate_service.list_candidates()[0]
+
+    signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 90,
+            "reasoning": "融合分达标",
+            "position_size_pct": 50,
+            "decision_type": "weighted_buy",
+            "strategy_profile": {"explainability": {}},
+        },
+        notify=False,
+    )
+
+    lifecycle = signal["strategy_profile"]["explainability"]["lifecycle"]
+    assert signal["action"] == "HOLD"
+    assert signal["status"] == "observed"
+    assert signal["position_size_pct"] == 0
+    assert signal["decision_type"] == "exit_only_blocked"
+    assert lifecycle["quant_status"] == "exit_only"
+    assert lifecycle["original_action"] == "BUY"
+
+
 def test_portfolio_service_confirm_buy_and_delay_signal(tmp_path):
     candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
     signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")

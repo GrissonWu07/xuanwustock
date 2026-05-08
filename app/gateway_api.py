@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import akshare_client, smart_monitor_tdx_data
@@ -16,6 +16,7 @@ from app.gateway.his_replay import _action_his_replay_cancel, _action_his_replay
 from app.gateway.history import _action_history_rerun, _snapshot_history
 from app.gateway.live_sim import _action_live_sim_analyze_candidate, _action_live_sim_bulk_quant, _action_live_sim_delete_candidate, _action_live_sim_delete_position, _action_live_sim_reset, _action_live_sim_save, _action_live_sim_start, _action_live_sim_stop, _live_signal_table, _live_trade_table, _snapshot_live_sim
 from app.gateway.monitor import _action_ai_monitor_analyze, _action_ai_monitor_delete, _action_ai_monitor_start, _action_ai_monitor_stop, _action_real_monitor_delete_rule, _action_real_monitor_refresh, _action_real_monitor_start, _action_real_monitor_stop, _action_real_monitor_update_rule, _snapshot_ai_monitor, _snapshot_real_monitor
+from app.gateway.quant_universe import QuantUniverseDomainError, ignore_auto_entry as _quant_universe_ignore_auto_entry, promote_to_trial as _quant_universe_promote_to_trial, quant_universe_overview as _quant_universe_overview, quant_universe_settings as _quant_universe_settings, quant_universe_state as _quant_universe_state, restore_to_trial as _quant_universe_restore_to_trial, set_override as _quant_universe_set_override, update_quant_universe_settings as _quant_universe_update_settings
 import app.gateway.portfolio as _gateway_portfolio_module
 from app.gateway.portfolio import _action_portfolio_analyze as _action_portfolio_analyze_impl, _action_portfolio_delete_position as _action_portfolio_delete_position_impl, _action_portfolio_refresh as _action_portfolio_refresh_impl, _action_portfolio_refresh_indicators as _action_portfolio_refresh_indicators_impl, _action_portfolio_schedule_save as _action_portfolio_schedule_save_impl, _action_portfolio_schedule_start as _action_portfolio_schedule_start_impl, _action_portfolio_schedule_stop as _action_portfolio_schedule_stop_impl, _action_portfolio_update_position as _action_portfolio_update_position_impl, _portfolio_technical_snapshot as _portfolio_technical_snapshot, _snapshot_portfolio as _snapshot_portfolio_impl
 from app.gateway.settings import _action_settings_save, _snapshot_settings
@@ -351,6 +352,58 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
     @app.get("/api/v1/quant/live-sim")
     def get_live_sim_snapshot(request: Request) -> dict[str, Any]:
         return _snapshot_live_sim(api_context, table_query=_replay_table_query_from_request(request))
+
+    @app.get("/api/v1/quant/universe/state")
+    def get_quant_universe_state(
+        status: str | None = None,
+        keyword: str | None = None,
+        page: int = 1,
+        pageSize: int = 50,
+    ) -> dict[str, Any]:
+        return _quant_universe_state(
+            api_context,
+            status=status,
+            keyword=keyword,
+            page=page,
+            page_size=pageSize,
+        )
+
+    @app.get("/api/v1/quant/universe/overview")
+    def get_quant_universe_overview() -> dict[str, Any]:
+        return _quant_universe_overview(api_context)
+
+    @app.get("/api/v1/quant/universe/settings")
+    def get_quant_universe_settings() -> dict[str, Any]:
+        return _quant_universe_settings(api_context)
+
+    @app.post("/api/v1/quant/universe/settings")
+    async def post_quant_universe_settings(request: Request) -> dict[str, Any]:
+        try:
+            return _quant_universe_update_settings(api_context, await _json(request))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/v1/quant/universe/actions/promote-to-trial")
+    async def post_quant_universe_promote_to_trial(request: Request) -> dict[str, Any]:
+        return _quant_universe_promote_to_trial(api_context, await _json(request))
+
+    @app.post("/api/v1/quant/universe/actions/ignore-auto-entry")
+    async def post_quant_universe_ignore_auto_entry(request: Request) -> dict[str, Any]:
+        return _quant_universe_ignore_auto_entry(api_context, await _json(request))
+
+    @app.post("/api/v1/quant/universe/actions/set-override")
+    async def post_quant_universe_set_override(request: Request) -> dict[str, Any]:
+        return _quant_universe_set_override(api_context, await _json(request))
+
+    @app.post("/api/v1/quant/universe/actions/restore-to-trial")
+    async def post_quant_universe_restore_to_trial(request: Request):
+        try:
+            return _quant_universe_restore_to_trial(api_context, await _json(request))
+        except QuantUniverseDomainError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error_code": exc.error_code, "error_message": exc.error_message},
+            )
 
     @app.get("/api/v1/quant/his-replay")
     def get_his_replay_snapshot(request: Request) -> dict[str, Any]:

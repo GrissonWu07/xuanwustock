@@ -6,6 +6,7 @@ import { PageEmptyState, PageErrorState, PageLoadingState } from "../../componen
 import { usePageData } from "../../lib/use-page-data";
 import { NextStepsPanel } from "./next-steps-panel";
 import { WatchlistPanel } from "./watchlist-panel";
+import { QuantOverviewCards } from "./quant-overview-cards";
 import { t } from "../../lib/i18n";
 import { useCompactLayout } from "../../lib/use-compact-layout";
 
@@ -95,6 +96,7 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
       </div>
       <div className="workbench-layout">
         <div className="stack">
+          <QuantOverviewCards baseUrl={activeClient.baseUrl} />
           <WatchlistPanel
             watchlist={snapshot.watchlist}
             onAddWatchlist={async (code) => {

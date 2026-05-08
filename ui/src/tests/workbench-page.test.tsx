@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { RouterProvider, createMemoryRouter, useParams } from "react-router-dom";
+import { RouterProvider, createMemoryRouter, useLocation, useParams } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../lib/api-client";
 import { WorkbenchPage } from "../features/workbench/workbench-page";
@@ -77,17 +77,109 @@ function PositionDetailStub() {
   return <div data-testid="position-detail">{symbol}</div>;
 }
 
+function RouteEcho({ testId }: { testId: string }) {
+  const location = useLocation();
+  return <div data-testid={testId}>{`${location.pathname}${location.search}`}</div>;
+}
+
 function renderWorkbenchPage(client: ApiClient) {
   const router = createMemoryRouter([
     { path: "/workbench", element: <WorkbenchPage client={client} /> },
     { path: "/portfolio/position/:symbol", element: <PositionDetailStub /> },
+    { path: "/discover", element: <RouteEcho testId="discover-route" /> },
+    { path: "/live-sim", element: <RouteEcho testId="live-sim-route" /> },
   ], {
     initialEntries: ["/workbench"],
   });
   render(<RouterProvider router={router} />);
 }
 
+const quantOverviewPayload = {
+  cards: {
+    pending_eligible: {
+      label: "待纳入量化",
+      count: 2,
+      top_items: [
+        { stock_code: "600001", stock_name: "候选A", latest_reason: "评分达标" },
+        { stock_code: "600002", stock_name: "候选B", latest_reason: "多来源发现" },
+      ],
+      latest_reason: "2 只候选待确认",
+    },
+    trial: {
+      label: "试运行股票",
+      count: 1,
+      top_items: [{ stock_code: "600003", stock_name: "试运行A", latest_reason: "观察中" }],
+      latest_reason: "轻仓试运行",
+    },
+    exit_only: {
+      label: "只出场管理",
+      count: 1,
+      top_items: [{ stock_code: "600004", stock_name: "出场A", latest_reason: "趋势转弱" }],
+      latest_reason: "禁止新买",
+    },
+    cooling: { label: "冷却中", count: 3, top_items: [], latest_reason: "等待重评估" },
+    retired: { label: "已退出待重评估", count: 4, top_items: [], latest_reason: "达到退出条件" },
+  },
+};
+
+const mockQuantOverviewFetch = () =>
+  vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => quantOverviewPayload,
+  });
+
 describe("WorkbenchPage", () => {
+  it("renders quant overview cards from the standalone lifecycle overview endpoint", async () => {
+    const fetchMock = mockQuantOverviewFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const getPageSnapshot = vi.fn().mockResolvedValue(workbenchSnapshot);
+    const client = {
+      getPageSnapshot,
+      runPageAction: vi.fn().mockResolvedValue(workbenchSnapshot),
+      baseUrl: "",
+    } as unknown as ApiClient;
+
+    renderWorkbenchPage(client);
+
+    expect(await screen.findByRole("button", { name: /待纳入量化/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /试运行股票/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /只出场管理/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /冷却中/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /已退出待重评估/ })).toBeInTheDocument();
+    expect(await screen.findByText(/600001 · 候选A/)).toBeInTheDocument();
+    expect(screen.getByText("评分达标")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/quant/universe/overview", expect.objectContaining({ method: "GET" }));
+    expect(getPageSnapshot).toHaveBeenCalledWith("workbench", { search: "", page: 1, pageSize: 20 });
+  });
+
+  it("navigates pending quant overview to discover eligible filter", async () => {
+    vi.stubGlobal("fetch", mockQuantOverviewFetch());
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(workbenchSnapshot),
+      runPageAction: vi.fn().mockResolvedValue(workbenchSnapshot),
+      baseUrl: "",
+    } as unknown as ApiClient;
+
+    renderWorkbenchPage(client);
+
+    fireEvent.click(await screen.findByRole("button", { name: /待纳入量化/ }));
+    expect(screen.getByTestId("discover-route")).toHaveTextContent("/discover?eligible=1");
+  });
+
+  it("navigates exit-only overview to live sim with status filter", async () => {
+    vi.stubGlobal("fetch", mockQuantOverviewFetch());
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(workbenchSnapshot),
+      runPageAction: vi.fn().mockResolvedValue(workbenchSnapshot),
+      baseUrl: "",
+    } as unknown as ApiClient;
+
+    renderWorkbenchPage(client);
+
+    fireEvent.click(await screen.findByRole("button", { name: /只出场管理/ }));
+    expect(screen.getByTestId("live-sim-route")).toHaveTextContent("/live-sim?quant_status=exit_only");
+  });
+
   it("requests watchlist table data with a maximum page size of 20", async () => {
     const getPageSnapshot = vi.fn().mockResolvedValue(workbenchSnapshot);
     const client = {

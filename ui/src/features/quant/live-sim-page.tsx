@@ -4,10 +4,28 @@ import { PageHeader } from "../../components/ui/page-header";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
 import { usePageData } from "../../lib/use-page-data";
-import type { SummaryMetric, TableSection } from "../../lib/page-models";
+import type { SummaryMetric, TableRow, TableSection } from "../../lib/page-models";
 import { toDisplayCount, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
 import { ReplayCapitalPoolPanel } from "./replay-capital-pool-panel";
+import {
+  AutoEntryModeSelect,
+  AutoExitSwitch,
+  AutoManageToggle,
+  DEFAULT_LIFECYCLE_SETTINGS,
+  DEFAULT_QUANT_STATUS_FILTERS,
+  HealthScoreBar,
+  LifecycleMasterSwitch,
+  LifecycleReason,
+  LifecycleSummaryBadgeGroup,
+  QUANT_STATUS_OPTIONS,
+  QuantStatusBadge,
+  RestoreToTrialButton,
+  StatusFilterChips,
+  normalizeLifecycleSettings,
+  type QuantLifecyclePayload,
+  type QuantLifecycleSettings,
+} from "./quant-lifecycle-controls";
 
 const ANALYSIS_TIMEFRAME_OPTIONS = [
   { value: "30m", label: "30分钟" },
@@ -178,6 +196,26 @@ function emptyLiveTradeTable(message = "暂无交易记录"): TableSection {
   };
 }
 
+type LifecycleTableRow = TableRow & {
+  lifecycle?: QuantLifecyclePayload;
+};
+
+const lifecycleOf = (row: TableRow): QuantLifecyclePayload => (row as LifecycleTableRow).lifecycle ?? {};
+const lifecycleStatusOf = (row: TableRow) => ((row as LifecycleTableRow).lifecycle ? String(lifecycleOf(row).quant_status || "active") : "active");
+const isLifecycleRestoreStatus = (status: string) => status === "cooling" || status === "manual_paused" || status === "retired";
+
+async function requestQuantUniverse<T>(path: string, payload?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: payload === undefined ? "GET" : "POST",
+    headers: { "Content-Type": "application/json" },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
 type LiveSimPageProps = {
   client?: ApiClient;
 };
@@ -201,6 +239,10 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const [capitalConfidenceWeight, setCapitalConfidenceWeight] = useState(0.35);
   const [capitalHighPriceThreshold, setCapitalHighPriceThreshold] = useState(100);
   const [capitalHighPriceMaxSlotUnits, setCapitalHighPriceMaxSlotUnits] = useState(2);
+  const [lifecycleSettings, setLifecycleSettings] = useState<QuantLifecycleSettings>(DEFAULT_LIFECYCLE_SETTINGS);
+  const [lifecycleSettingsPending, setLifecycleSettingsPending] = useState(false);
+  const [selectedQuantStatuses, setSelectedQuantStatuses] = useState<string[]>(DEFAULT_QUANT_STATUS_FILTERS);
+  const [lifecycleActionPending, setLifecycleActionPending] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState<"save" | "reset" | "start" | "stop" | null>(null);
   const [signalTable, setSignalTable] = useState<TableSection>(emptyLiveSignalTable());
   const [signalLoading, setSignalLoading] = useState(false);
@@ -237,6 +279,26 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     setCapitalConfidenceWeight(parseNumberConfig(snapshot.config.capitalConfidenceWeight, 0.35));
     setCapitalHighPriceThreshold(parseNumberConfig(snapshot.config.capitalHighPriceThreshold, 100));
     setCapitalHighPriceMaxSlotUnits(parseNumberConfig(snapshot.config.capitalHighPriceMaxSlotUnits, 2));
+  }, [snapshotVersion]);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadLifecycleSettings() {
+      try {
+        const payload = await requestQuantUniverse<Partial<QuantLifecycleSettings>>("/api/v1/quant/universe/settings");
+        if (mounted) {
+          setLifecycleSettings(normalizeLifecycleSettings(payload));
+        }
+      } catch {
+        if (mounted) {
+          setLifecycleSettings(DEFAULT_LIFECYCLE_SETTINGS);
+        }
+      }
+    }
+    void loadLifecycleSettings();
+    return () => {
+      mounted = false;
+    };
   }, [snapshotVersion]);
 
   useEffect(() => {
@@ -348,13 +410,26 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     const normalized = column.trim().toLowerCase();
     return normalized === "来源" || normalized === "source";
   });
+  const availableQuantStatuses = (snapshot.quant_status_filters?.available ?? QUANT_STATUS_OPTIONS).filter((status) => QUANT_STATUS_OPTIONS.includes(status));
   const candidatePoolTable: TableSection = {
     ...candidatePoolBaseTable,
-    rows: snapshot.candidatePool.rows.map((row) => ({
-      ...row,
-      cells: candidatePoolBaseTable.rows.find((candidateRow) => candidateRow.id === row.id)?.cells ?? row.cells,
-      actions: (row.actions ?? []).filter((action) => action.action === "delete-candidate"),
-    })),
+    columns: [...candidatePoolBaseTable.columns, "状态", "健康度", "生命周期原因"],
+    rows: snapshot.candidatePool.rows
+      .filter((row) => selectedQuantStatuses.includes(lifecycleStatusOf(row)))
+      .map((row) => {
+        const lifecycle = lifecycleOf(row);
+        const baseCells = candidatePoolBaseTable.rows.find((candidateRow) => candidateRow.id === row.id)?.cells ?? row.cells;
+        return {
+          ...row,
+          cells: [
+            ...baseCells,
+            lifecycleStatusOf(row),
+            `健康 ${Math.round(Number(lifecycle.health_score ?? 100))}`,
+            String(lifecycle.latest_reason || "--"),
+          ],
+          actions: (row.actions ?? []).filter((action) => action.action === "delete-candidate"),
+        };
+      }),
   };
   const signalActionColumnIndex = findColumnIndex(signalTable, ["动作", "action"], 4);
   const signalActionOptions = Array.from(new Set(signalTable.rows.map((row) => normalizeSignalAction(String(row.cells[signalActionColumnIndex] ?? ""))).filter(Boolean)));
@@ -528,6 +603,58 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     capitalHighPriceMaxSlotUnits,
     capitalSellCashReusePolicy: "next_batch",
   };
+  const updateLifecycleSettings = async (patch: Partial<QuantLifecycleSettings>) => {
+    const previous = lifecycleSettings;
+    const next = normalizeLifecycleSettings({ ...lifecycleSettings, ...patch });
+    setLifecycleSettings(next);
+    setLifecycleSettingsPending(true);
+    try {
+      const saved = await requestQuantUniverse<Partial<QuantLifecycleSettings>>("/api/v1/quant/universe/settings", patch);
+      setLifecycleSettings(normalizeLifecycleSettings(saved));
+    } catch {
+      setLifecycleSettings(previous);
+    } finally {
+      setLifecycleSettingsPending(false);
+    }
+  };
+  const toggleQuantStatus = (status: string) => {
+    setSelectedQuantStatuses((current) => {
+      if (current.includes(status)) {
+        const next = current.filter((item) => item !== status);
+        return next.length ? next : current;
+      }
+      return [...current, status];
+    });
+  };
+  const setLifecycleOverride = async (row: TableRow) => {
+    const code = row.code || row.id;
+    const lifecycle = lifecycleOf(row);
+    const autoManaged = lifecycle.quant_auto_managed !== false && lifecycle.quant_manual_override !== "manual_pause";
+    const overrideType = autoManaged ? "manual_pause" : "none";
+    if (!window.confirm(`${autoManaged ? "暂停" : "恢复"} ${code} 的自动生命周期管理？`)) {
+      return;
+    }
+    setLifecycleActionPending(`${code}:override`);
+    try {
+      await requestQuantUniverse("/api/v1/quant/universe/actions/set-override", { stock_code: code, override_type: overrideType });
+      await resource.refresh();
+    } finally {
+      setLifecycleActionPending(null);
+    }
+  };
+  const restoreToTrial = async (row: TableRow) => {
+    const code = row.code || row.id;
+    if (!window.confirm(`恢复 ${code} 到量化试运行？`)) {
+      return;
+    }
+    setLifecycleActionPending(`${code}:restore`);
+    try {
+      await requestQuantUniverse("/api/v1/quant/universe/actions/restore-to-trial", { stock_code: code });
+      await resource.refresh();
+    } finally {
+      setLifecycleActionPending(null);
+    }
+  };
   const systemTimezone = snapshot.timeContext?.systemTimezone ?? "system";
   const marketTimezone = snapshot.timeContext?.marketTimezone ?? snapshot.config.market;
   const snapshotTimeLabel = snapshot.timeContext?.updatedAtSystem ?? snapshot.updatedAt;
@@ -577,6 +704,25 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                 <div className="mini-metric__label">最大Slot</div>
                 <div className="mini-metric__value">{capitalMaxSlots}</div>
               </div>
+            </div>
+            <div className="card-divider" />
+            <LifecycleSummaryBadgeGroup settings={lifecycleSettings} />
+            <div className="summary-list">
+              <LifecycleMasterSwitch
+                checked={lifecycleSettings.quant_universe_lifecycle_enabled}
+                disabled={lifecycleSettingsPending}
+                onChange={(checked) => void updateLifecycleSettings({ quant_universe_lifecycle_enabled: checked })}
+              />
+              <AutoEntryModeSelect
+                value={lifecycleSettings.auto_entry_mode}
+                disabled={lifecycleSettingsPending}
+                onChange={(value) => void updateLifecycleSettings({ auto_entry_mode: value })}
+              />
+              <AutoExitSwitch
+                checked={lifecycleSettings.auto_exit_enabled}
+                disabled={lifecycleSettingsPending}
+                onChange={(checked) => void updateLifecycleSettings({ auto_exit_enabled: checked })}
+              />
             </div>
             <div className="card-divider" />
             <div className="summary-list">
@@ -772,6 +918,46 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             actionsHead="操作"
             actionsColumnSize="icon"
             compactConfig={{ coreColumnIndexes: [0, 1, 2], detailColumnIndexes: [] }}
+            toolbar={<StatusFilterChips available={availableQuantStatuses} selected={selectedQuantStatuses} onToggle={toggleQuantStatus} />}
+            renderCell={({ row, cell, column }) => {
+              if (column === "状态") {
+                return <QuantStatusBadge status={lifecycleStatusOf(row)} />;
+              }
+              if (column === "健康度") {
+                return <HealthScoreBar value={lifecycleOf(row).health_score} />;
+              }
+              if (column === "生命周期原因") {
+                return <LifecycleReason>{cell}</LifecycleReason>;
+              }
+              return undefined;
+            }}
+            renderActions={(row) => {
+              const lifecycle = lifecycleOf(row);
+              const status = lifecycleStatusOf(row);
+              const code = row.code || row.id;
+              const autoManaged = lifecycle.quant_auto_managed !== false && lifecycle.quant_manual_override !== "manual_pause";
+              return (
+                <>
+                  <AutoManageToggle
+                    autoManaged={autoManaged}
+                    stockCode={code}
+                    onToggle={() => void setLifecycleOverride(row)}
+                  />
+                  {isLifecycleRestoreStatus(status) ? (
+                    <RestoreToTrialButton stockCode={code} onRestore={() => void restoreToTrial(row)} />
+                  ) : null}
+                  <button
+                    className="icon-button icon-button--danger"
+                    type="button"
+                    aria-label="删除候选股"
+                    disabled={lifecycleActionPending !== null}
+                    onClick={() => void resource.runAction("delete-candidate", row.id)}
+                  >
+                    🗑
+                  </button>
+                </>
+              );
+            }}
             onRowAction={(row, action) => {
               if (action.action !== "delete-candidate") {
                 return;

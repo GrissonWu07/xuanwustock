@@ -59,6 +59,7 @@ class SignalCenterService:
         payload = self._apply_stock_execution_feedback(candidate, payload)
         payload = self._apply_portfolio_execution_guard(candidate, payload)
         payload = self._apply_transaction_cost_constraints(candidate, payload)
+        payload = self._apply_lifecycle_exit_only_guard(candidate, payload)
         action = str(payload.get("action", "HOLD")).upper()
         if action == "HOLD":
             payload["position_size_pct"] = 0
@@ -322,6 +323,42 @@ class SignalCenterService:
         normalized["reasoning"] = (
             f"{base_reasoning} 持仓加仓门控未通过：{'；'.join(reasons)}，转为HOLD。"
         ).strip()
+        return normalized
+
+    def _apply_lifecycle_exit_only_guard(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        action = str(normalized.get("action") or "HOLD").upper()
+        if action not in {"BUY", "ADD"}:
+            return normalized
+        quant_status = str(candidate.get("quant_status") or "").strip()
+        if quant_status != "exit_only":
+            stock_code = str(candidate.get("stock_code") or "").strip()
+            state = self.db.get_quant_universe_state(stock_code) if stock_code else None
+            quant_status = str((state or {}).get("quant_status") or "").strip()
+        if quant_status != "exit_only":
+            return normalized
+
+        strategy_profile = normalized.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            strategy_profile = {}
+        strategy_profile = dict(strategy_profile)
+        explainability = strategy_profile.get("explainability")
+        if not isinstance(explainability, dict):
+            explainability = {}
+        explainability = dict(explainability)
+        explainability["lifecycle"] = {
+            "quant_status": "exit_only",
+            "status": "blocked",
+            "original_action": action,
+            "reason": "exit_only 状态只允许 SELL/HOLD，禁止新 BUY 或加仓。",
+        }
+        strategy_profile["explainability"] = explainability
+        normalized["strategy_profile"] = strategy_profile
+        normalized["action"] = "HOLD"
+        normalized["position_size_pct"] = 0.0
+        normalized["decision_type"] = "exit_only_blocked"
+        base_reasoning = str(normalized.get("reasoning") or "").strip()
+        normalized["reasoning"] = f"{base_reasoning} 生命周期门控：exit_only 只出场管理，禁止新买入或加仓，转为HOLD。".strip()
         return normalized
 
     def _apply_transaction_cost_constraints(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:

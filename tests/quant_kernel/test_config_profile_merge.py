@@ -11,6 +11,7 @@ from app.quant_kernel.config import (
     QuantKernelConfig,
     StrategyScoringConfig,
 )
+from app.quant_sim.db import QuantSimDB
 
 
 def test_default_strategy_scoring_mode_is_rule_only() -> None:
@@ -74,3 +75,46 @@ def test_volatility_mode_sell_precedence_validation_is_enforced() -> None:
     strategy = StrategyScoringConfig(schema_version="quant_explain/v2.3", base=payload["base"], profiles=payload["profiles"])
     with pytest.raises(ValueError):
         strategy.resolve()
+
+
+def _builtin_profile_config(db: QuantSimDB, profile_id: str) -> dict:
+    latest = db.get_latest_strategy_profile_version(profile_id)
+    assert latest is not None
+    config = latest["config"]
+    assert isinstance(config, dict)
+    return config
+
+
+def _lifecycle_policy(config: dict) -> dict:
+    policy = config["base"]["context"]["quant_universe_lifecycle_policy"]
+    assert isinstance(policy, dict)
+    return policy
+
+
+def test_builtin_strategy_profiles_have_profile_specific_quant_lifecycle_policy(tmp_path) -> None:
+    db = QuantSimDB(tmp_path / "quant_sim.db")
+
+    aggressive = _lifecycle_policy(_builtin_profile_config(db, "aggressive"))
+    stable = _lifecycle_policy(_builtin_profile_config(db, "stable"))
+    conservative = _lifecycle_policy(_builtin_profile_config(db, "conservative"))
+
+    assert aggressive["trial_threshold"] != stable["trial_threshold"]
+    assert conservative["trial_threshold"] != stable["trial_threshold"]
+    assert aggressive["trial_position_multiplier"] > stable["trial_position_multiplier"] > conservative["trial_position_multiplier"]
+    assert "auto_exit_enabled" not in aggressive
+    assert "auto_entry_mode" not in stable
+
+
+def test_updating_stable_lifecycle_policy_does_not_overwrite_aggressive(tmp_path) -> None:
+    db = QuantSimDB(tmp_path / "quant_sim.db")
+    aggressive_before = _lifecycle_policy(_builtin_profile_config(db, "aggressive"))
+    stable_config = deepcopy(_builtin_profile_config(db, "stable"))
+
+    stable_config["base"]["context"]["quant_universe_lifecycle_policy"]["trial_threshold"] = 0.61
+    db.update_strategy_profile("stable", config=stable_config, note="test_lifecycle_update")
+
+    aggressive_after = _lifecycle_policy(_builtin_profile_config(db, "aggressive"))
+    stable_after = _lifecycle_policy(_builtin_profile_config(db, "stable"))
+
+    assert aggressive_after["trial_threshold"] == aggressive_before["trial_threshold"]
+    assert stable_after["trial_threshold"] == 0.61

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import asdict
 import json
 import sqlite3
 import threading
@@ -25,6 +26,7 @@ from app.quant_sim.capital_slots import (
 )
 from app.quant_sim.execution_constraints import trade_block_reason
 from app.quant_sim.portfolio_execution_guard import PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy
 from app.quant_sim.stock_execution_feedback import STOCK_EXECUTION_FEEDBACK_PROFILE_DEFAULTS
 from app.quant_sim.time_utils import ensure_utc_datetime, format_utc_iso_z
 from app.runtime_paths import default_db_path
@@ -281,6 +283,11 @@ class QuantSimDB:
                     market_technical_updated_at TEXT,
                     ai_analysis_updated_at TEXT,
                     basic_info_updated_at TEXT,
+                    quant_status TEXT DEFAULT 'inactive',
+                    quant_auto_managed INTEGER DEFAULT 1,
+                    quant_manual_override TEXT DEFAULT '',
+                    quant_entry_source TEXT,
+                    quant_entry_at TEXT,
                     created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                     updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
                 )
@@ -296,6 +303,105 @@ class QuantSimDB:
                     UNIQUE(stock_universe_id, source),
                     FOREIGN KEY(stock_universe_id) REFERENCES stock_universe(id)
                 )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_universe_quant_state (
+                    stock_code TEXT PRIMARY KEY,
+                    candidate_score REAL DEFAULT 0,
+                    candidate_confidence REAL DEFAULT 0,
+                    health_score REAL DEFAULT 100,
+                    downtrend_streak INTEGER DEFAULT 0,
+                    weakening_warning_streak INTEGER DEFAULT 0,
+                    blocked_streak INTEGER DEFAULT 0,
+                    no_buy_days INTEGER DEFAULT 0,
+                    cooling_until TEXT,
+                    retired_at TEXT,
+                    retire_reason TEXT,
+                    reentry_watch_until TEXT,
+                    last_status_changed_at TEXT,
+                    last_health_evaluated_at TEXT,
+                    snapshot_json TEXT,
+                    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_universe_candidate_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stock_code TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_key TEXT,
+                    source_score REAL DEFAULT 0,
+                    confidence REAL DEFAULT 0,
+                    trend TEXT,
+                    event_weight REAL DEFAULT 1,
+                    reason_text TEXT,
+                    occurred_at TEXT,
+                    expires_at TEXT,
+                    payload_json TEXT,
+                    status TEXT DEFAULT 'active',
+                    consumed_by_quant_manager_at TEXT,
+                    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_universe_quant_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stock_code TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    from_status TEXT,
+                    to_status TEXT,
+                    trigger_source TEXT,
+                    reason_code TEXT,
+                    reason_text TEXT,
+                    health_score_before REAL,
+                    health_score_after REAL,
+                    candidate_score REAL,
+                    evidence_json TEXT,
+                    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS quant_universe_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    quant_universe_lifecycle_enabled INTEGER DEFAULT 1,
+                    auto_exit_enabled INTEGER DEFAULT 1,
+                    auto_entry_mode TEXT DEFAULT 'confirm_first',
+                    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stock_universe_quant_status
+                ON stock_universe(quant_status, quant_enabled)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stock_universe_candidate_events_code_status
+                ON stock_universe_candidate_events(stock_code, status, occurred_at DESC, id DESC)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stock_universe_candidate_events_status
+                ON stock_universe_candidate_events(status, occurred_at DESC, id DESC)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stock_universe_quant_events_code_time
+                ON stock_universe_quant_events(stock_code, created_at DESC, id DESC)
                 """
             )
         cursor.execute(
@@ -570,6 +676,11 @@ class QuantSimDB:
             self._ensure_column(cursor, "sim_positions", "peak_unrealized_pnl_pct", "REAL DEFAULT 0")
             self._ensure_column(cursor, "sim_positions", "peak_at", "TEXT")
             self._ensure_column(cursor, "stock_universe_sources", "created_at", "TEXT")
+            self._ensure_column(cursor, "stock_universe", "quant_status", "TEXT DEFAULT 'inactive'")
+            self._ensure_column(cursor, "stock_universe", "quant_auto_managed", "INTEGER DEFAULT 1")
+            self._ensure_column(cursor, "stock_universe", "quant_manual_override", "TEXT DEFAULT ''")
+            self._ensure_column(cursor, "stock_universe", "quant_entry_source", "TEXT")
+            self._ensure_column(cursor, "stock_universe", "quant_entry_at", "TEXT")
             self._ensure_column(cursor, "sim_position_lots", "lot_id", "TEXT")
             self._ensure_column(cursor, "sim_position_lots", "entry_date", "TEXT")
             self._ensure_column(cursor, "sim_position_lots", "closed_at", "TEXT")
@@ -605,6 +716,7 @@ class QuantSimDB:
             self._backfill_lot_defaults(cursor)
             self._ensure_sim_account(cursor)
             self._ensure_scheduler_config(cursor)
+            self._ensure_quant_universe_settings(cursor)
             self._ensure_default_strategy_profile(cursor)
             conn.commit()
             conn.close()
@@ -812,6 +924,11 @@ class QuantSimDB:
             self._ensure_column(cursor, "stock_universe", "registered_take_profit", "REAL")
             self._ensure_column(cursor, "stock_universe", "registered_stop_loss", "REAL")
             self._ensure_column(cursor, "stock_universe", "registered_auto_monitor", "INTEGER DEFAULT 1")
+            self._ensure_column(cursor, "stock_universe", "quant_status", "TEXT DEFAULT 'inactive'")
+            self._ensure_column(cursor, "stock_universe", "quant_auto_managed", "INTEGER DEFAULT 1")
+            self._ensure_column(cursor, "stock_universe", "quant_manual_override", "TEXT DEFAULT ''")
+            self._ensure_column(cursor, "stock_universe", "quant_entry_source", "TEXT")
+            self._ensure_column(cursor, "stock_universe", "quant_entry_at", "TEXT")
             self._ensure_column(cursor, "stock_universe_sources", "created_at", "TEXT")
         self._ensure_column(cursor, "sim_position_lots", "lot_id", "TEXT")
         self._ensure_column(cursor, "sim_position_lots", "entry_date", "TEXT")
@@ -877,6 +994,8 @@ class QuantSimDB:
         self._backfill_lot_defaults(cursor)
         self._ensure_sim_account(cursor)
         self._ensure_scheduler_config(cursor)
+        if not self.include_replay_tables:
+            self._ensure_quant_universe_settings(cursor)
         self._ensure_default_strategy_profile(cursor)
 
         conn.commit()
@@ -897,6 +1016,7 @@ class QuantSimDB:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM stock_universe WHERE stock_code = ?", (payload["stock_code"],))
         existing = cursor.fetchone()
+        now_text = self._now()
 
         if existing:
             existing_metadata = self._loads_metadata(existing["metadata_json"])
@@ -907,7 +1027,14 @@ class QuantSimDB:
                 """
                 UPDATE stock_universe
                 SET stock_name = ?, latest_price = ?, notes = ?, metadata_json = ?, status = ?,
-                    quant_enabled = 1, updated_at = ?
+                    quant_enabled = 1,
+                    quant_status = CASE
+                        WHEN COALESCE(quant_status, 'inactive') IN ('trial', 'active', 'exit_only') THEN quant_status
+                        ELSE 'active'
+                    END,
+                    quant_entry_source = COALESCE(quant_entry_source, ?),
+                    quant_entry_at = COALESCE(quant_entry_at, ?),
+                    updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -916,18 +1043,23 @@ class QuantSimDB:
                     payload["notes"] or existing["notes"],
                     json.dumps(merged_metadata, ensure_ascii=False),
                     next_status,
-                    self._now(),
+                    payload["source"],
+                    now_text,
+                    now_text,
                     int(existing["id"]),
                 ),
             )
             candidate_id = int(existing["id"])
         else:
-            now_text = self._now()
             cursor.execute(
                 """
                 INSERT INTO stock_universe
-                (stock_code, stock_name, source, latest_price, notes, metadata_json, status, quant_enabled, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                (
+                    stock_code, stock_name, source, latest_price, notes, metadata_json,
+                    status, quant_enabled, quant_status, quant_entry_source, quant_entry_at,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?, ?, ?)
                 """,
                 (
                     payload["stock_code"],
@@ -937,6 +1069,8 @@ class QuantSimDB:
                     payload["notes"],
                     json.dumps(payload["metadata"], ensure_ascii=False),
                     payload["status"],
+                    payload["source"],
+                    now_text,
                     now_text,
                     now_text,
                 ),
@@ -954,6 +1088,7 @@ class QuantSimDB:
         *,
         status: Optional[str] = None,
         search: str | None = None,
+        quant_statuses: list[str] | tuple[str, ...] | None = None,
     ) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -961,6 +1096,11 @@ class QuantSimDB:
             clauses.append("status = ?")
             params.append(status)
         clauses.append("quant_enabled = 1")
+        normalized_statuses = [str(item).strip() for item in (quant_statuses or []) if str(item).strip()]
+        if normalized_statuses:
+            placeholders = ", ".join("?" for _ in normalized_statuses)
+            clauses.append(f"COALESCE(quant_status, 'inactive') IN ({placeholders})")
+            params.extend(normalized_statuses)
         keyword = str(search or "").strip()
         if keyword:
             like_keyword = f"%{keyword}%"
@@ -984,10 +1124,15 @@ class QuantSimDB:
         limit: int | None = None,
         offset: int = 0,
         search: str | None = None,
+        quant_statuses: list[str] | tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
         conn = self._connect()
         cursor = conn.cursor()
-        where_sql, params = self._build_candidate_filters(status=status, search=search)
+        where_sql, params = self._build_candidate_filters(
+            status=status,
+            search=search,
+            quant_statuses=quant_statuses,
+        )
         sql = f"""
             SELECT * FROM stock_universe
             {where_sql}
@@ -1002,14 +1147,77 @@ class QuantSimDB:
         conn.close()
         return rows
 
-    def count_candidates(self, status: Optional[str] = None, *, search: str | None = None) -> int:
+    def count_candidates(
+        self,
+        status: Optional[str] = None,
+        *,
+        search: str | None = None,
+        quant_statuses: list[str] | tuple[str, ...] | None = None,
+    ) -> int:
         conn = self._connect()
         cursor = conn.cursor()
-        where_sql, params = self._build_candidate_filters(status=status, search=search)
+        where_sql, params = self._build_candidate_filters(
+            status=status,
+            search=search,
+            quant_statuses=quant_statuses,
+        )
         cursor.execute(f"SELECT COUNT(*) AS total FROM stock_universe {where_sql}", tuple(params))
         row = cursor.fetchone()
         conn.close()
         return int(row["total"] or 0) if row else 0
+
+    def get_latest_quant_universe_event(self, stock_code: str) -> Optional[dict[str, Any]]:
+        normalized_code = str(stock_code or "").strip().upper()
+        if not normalized_code:
+            return None
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT *
+            FROM stock_universe_quant_events
+            WHERE stock_code = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (normalized_code,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._quant_universe_event_row_to_dict(row) if row is not None else None
+
+    def list_quant_universe_events(
+        self,
+        *,
+        created_at_gte: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if created_at_gte:
+            clauses.append("e.created_at >= ?")
+            params.append(created_at_gte)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        safe_limit = max(1, min(int(limit or 200), 1000))
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT
+                e.*,
+                COALESCE(NULLIF(su.stock_name, ''), e.stock_code) AS stock_name,
+                COALESCE(su.quant_manual_override, 'none') AS manual_override
+            FROM stock_universe_quant_events e
+            LEFT JOIN stock_universe su ON su.stock_code = e.stock_code
+            {where_sql}
+            ORDER BY e.created_at DESC, e.id DESC
+            LIMIT ?
+            """,
+            (*params, safe_limit),
+        )
+        rows = [self._quant_universe_event_row_to_dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
 
     def get_candidate(self, stock_code: str) -> Optional[dict[str, Any]]:
         conn = self._connect()
@@ -4065,6 +4273,371 @@ class QuantSimDB:
         conn.commit()
         conn.close()
 
+    def get_quant_universe_state(self, stock_code: str) -> Optional[dict[str, Any]]:
+        normalized_code = str(stock_code or "").strip().upper()
+        if not normalized_code:
+            return None
+        conn = self._connect()
+        cursor = conn.cursor()
+        row = self._fetch_quant_universe_state_row(cursor, normalized_code)
+        payload = self._quant_universe_state_row_to_dict(row) if row is not None else None
+        conn.close()
+        return payload
+
+    def upsert_quant_universe_state(self, stock_code: str, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized_code = str(stock_code or "").strip().upper()
+        if not normalized_code:
+            raise ValueError("stock_code is required")
+        now_text = self._now()
+        quant_status = str(payload.get("quant_status") or "").strip() or None
+        snapshot_json = payload.get("snapshot_json")
+        if snapshot_json is None:
+            snapshot_json = payload.get("snapshot")
+        snapshot_text = json.dumps(snapshot_json, ensure_ascii=False) if isinstance(snapshot_json, dict) else snapshot_json
+
+        conn = self._connect()
+        cursor = conn.cursor()
+        self._ensure_stock_universe_member(cursor, normalized_code, payload.get("stock_name"))
+        if quant_status is not None:
+            quant_enabled = self._quant_enabled_for_status(quant_status)
+            cursor.execute(
+                """
+                UPDATE stock_universe
+                SET quant_status = ?,
+                    quant_enabled = ?,
+                    quant_entry_source = COALESCE(?, quant_entry_source),
+                    quant_entry_at = CASE
+                        WHEN ? = 1 AND (quant_entry_at IS NULL OR quant_entry_at = '') THEN ?
+                        ELSE quant_entry_at
+                    END,
+                    updated_at = ?
+                WHERE stock_code = ?
+                """,
+                (
+                    quant_status,
+                    quant_enabled,
+                    payload.get("quant_entry_source"),
+                    quant_enabled,
+                    payload.get("quant_entry_at") or now_text,
+                    now_text,
+                    normalized_code,
+                ),
+            )
+
+        cursor.execute(
+            """
+            INSERT INTO stock_universe_quant_state
+            (
+                stock_code, candidate_score, candidate_confidence, health_score,
+                downtrend_streak, weakening_warning_streak, blocked_streak, no_buy_days,
+                cooling_until, retired_at, retire_reason, reentry_watch_until,
+                last_status_changed_at, last_health_evaluated_at, snapshot_json,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(stock_code) DO UPDATE SET
+                candidate_score = excluded.candidate_score,
+                candidate_confidence = excluded.candidate_confidence,
+                health_score = excluded.health_score,
+                downtrend_streak = excluded.downtrend_streak,
+                weakening_warning_streak = excluded.weakening_warning_streak,
+                blocked_streak = excluded.blocked_streak,
+                no_buy_days = excluded.no_buy_days,
+                cooling_until = excluded.cooling_until,
+                retired_at = excluded.retired_at,
+                retire_reason = excluded.retire_reason,
+                reentry_watch_until = excluded.reentry_watch_until,
+                last_status_changed_at = COALESCE(excluded.last_status_changed_at, last_status_changed_at),
+                last_health_evaluated_at = COALESCE(excluded.last_health_evaluated_at, last_health_evaluated_at),
+                snapshot_json = excluded.snapshot_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                normalized_code,
+                float(payload.get("candidate_score") or 0),
+                float(payload.get("candidate_confidence") or 0),
+                float(payload.get("health_score") if payload.get("health_score") is not None else 100),
+                int(payload.get("downtrend_streak") or 0),
+                int(payload.get("weakening_warning_streak") or 0),
+                int(payload.get("blocked_streak") or 0),
+                int(payload.get("no_buy_days") or 0),
+                payload.get("cooling_until"),
+                payload.get("retired_at"),
+                payload.get("retire_reason"),
+                payload.get("reentry_watch_until"),
+                payload.get("last_status_changed_at"),
+                payload.get("last_health_evaluated_at") or now_text,
+                snapshot_text,
+                now_text,
+                now_text,
+            ),
+        )
+        conn.commit()
+        row = self._fetch_quant_universe_state_row(cursor, normalized_code)
+        result = self._quant_universe_state_row_to_dict(row) if row is not None else {}
+        conn.close()
+        return result
+
+    def record_quant_universe_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized_code = str(payload.get("stock_code") or "").strip().upper()
+        if not normalized_code:
+            raise ValueError("stock_code is required")
+        evidence = payload.get("evidence_json")
+        if evidence is None:
+            evidence = payload.get("evidence")
+        evidence_text = json.dumps(evidence, ensure_ascii=False) if isinstance(evidence, dict) else evidence
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO stock_universe_quant_events
+            (
+                stock_code, event_type, from_status, to_status, trigger_source,
+                reason_code, reason_text, health_score_before, health_score_after,
+                candidate_score, evidence_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_code,
+                payload.get("event_type") or "state_changed",
+                payload.get("from_status"),
+                payload.get("to_status"),
+                payload.get("trigger_source"),
+                payload.get("reason_code"),
+                payload.get("reason_text"),
+                payload.get("health_score_before"),
+                payload.get("health_score_after"),
+                payload.get("candidate_score"),
+                evidence_text,
+                payload.get("created_at") or self._now(),
+            ),
+        )
+        event_id = int(cursor.lastrowid)
+        conn.commit()
+        cursor.execute("SELECT * FROM stock_universe_quant_events WHERE id = ?", (event_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return self._quant_universe_event_row_to_dict(row)
+
+    def add_candidate_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized_code = str(payload.get("stock_code") or "").strip().upper()
+        source_type = str(payload.get("source_type") or "").strip()
+        if not normalized_code:
+            raise ValueError("stock_code is required")
+        if not source_type:
+            raise ValueError("source_type is required")
+        payload_data = payload.get("payload_json")
+        if payload_data is None:
+            payload_data = payload.get("payload")
+        payload_text = json.dumps(payload_data, ensure_ascii=False) if isinstance(payload_data, dict) else payload_data
+        now_text = self._now()
+        conn = self._connect()
+        cursor = conn.cursor()
+        self._ensure_stock_universe_member(cursor, normalized_code, payload.get("stock_name"))
+        cursor.execute(
+            """
+            INSERT INTO stock_universe_candidate_events
+            (
+                stock_code, source_type, source_key, source_score, confidence,
+                trend, event_weight, reason_text, occurred_at, expires_at,
+                payload_json, status, consumed_by_quant_manager_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_code,
+                source_type,
+                payload.get("source_key"),
+                float(payload.get("source_score") or 0),
+                float(payload.get("confidence") or 0),
+                payload.get("trend"),
+                float(payload.get("event_weight") or 1),
+                payload.get("reason_text"),
+                payload.get("occurred_at") or now_text,
+                payload.get("expires_at"),
+                payload_text,
+                payload.get("status") or "active",
+                payload.get("consumed_by_quant_manager_at"),
+                now_text,
+                now_text,
+            ),
+        )
+        event_id = int(cursor.lastrowid)
+        conn.commit()
+        cursor.execute("SELECT * FROM stock_universe_candidate_events WHERE id = ?", (event_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return self._candidate_event_row_to_dict(row)
+
+    def list_candidate_events(
+        self,
+        *,
+        stock_code: str | None = None,
+        status: str | None = None,
+        source_type: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if stock_code:
+            clauses.append("stock_code = ?")
+            params.append(str(stock_code).strip().upper())
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if source_type:
+            clauses.append("source_type = ?")
+            params.append(source_type)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT * FROM stock_universe_candidate_events
+            {where_sql}
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, max(0, int(limit)), max(0, int(offset))),
+        )
+        rows = [self._candidate_event_row_to_dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def list_quant_universe_state(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        keyword: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        clauses = ["su.quant_status IS NOT NULL"]
+        params: list[Any] = []
+        status_values = [str(status).strip() for status in (statuses or []) if str(status).strip()]
+        if status_values:
+            placeholders = ", ".join("?" for _ in status_values)
+            clauses.append(f"su.quant_status IN ({placeholders})")
+            params.extend(status_values)
+        search = str(keyword or "").strip()
+        if search:
+            like_keyword = f"%{search}%"
+            clauses.append("(su.stock_code LIKE ? OR su.stock_name LIKE ?)")
+            params.extend([like_keyword, like_keyword])
+        where_sql = f"WHERE {' AND '.join(clauses)}"
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM stock_universe su
+            LEFT JOIN stock_universe_quant_state qs ON qs.stock_code = su.stock_code
+            {where_sql}
+            """,
+            tuple(params),
+        )
+        total_row = cursor.fetchone()
+        cursor.execute(
+            f"""
+            SELECT
+                su.stock_code AS stock_code,
+                su.stock_name AS stock_name,
+                su.quant_enabled AS quant_enabled,
+                su.quant_status AS quant_status,
+                su.quant_auto_managed AS quant_auto_managed,
+                su.quant_manual_override AS quant_manual_override,
+                su.quant_entry_source AS quant_entry_source,
+                su.quant_entry_at AS quant_entry_at,
+                su.basic_info_missing AS basic_info_missing,
+                qs.candidate_score AS candidate_score,
+                qs.candidate_confidence AS candidate_confidence,
+                qs.health_score AS health_score,
+                qs.downtrend_streak AS downtrend_streak,
+                qs.weakening_warning_streak AS weakening_warning_streak,
+                qs.blocked_streak AS blocked_streak,
+                qs.no_buy_days AS no_buy_days,
+                qs.cooling_until AS cooling_until,
+                qs.retired_at AS retired_at,
+                qs.retire_reason AS retire_reason,
+                qs.reentry_watch_until AS reentry_watch_until,
+                qs.last_status_changed_at AS last_status_changed_at,
+                qs.last_health_evaluated_at AS last_health_evaluated_at,
+                qs.snapshot_json AS snapshot_json,
+                qs.created_at AS state_created_at,
+                qs.updated_at AS state_updated_at
+            FROM stock_universe su
+            LEFT JOIN stock_universe_quant_state qs ON qs.stock_code = su.stock_code
+            {where_sql}
+            ORDER BY COALESCE(qs.updated_at, su.updated_at) DESC, su.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, max(0, int(limit)), max(0, int(offset))),
+        )
+        items = [self._quant_universe_state_row_to_dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return {"items": items, "total": int(total_row["total"] or 0) if total_row else 0}
+
+    def get_quant_universe_overview(self) -> dict[str, Any]:
+        overview: dict[str, Any] = {
+            "pending_eligible": self._build_pending_eligible_overview_card(),
+        }
+        for status in ("trial", "active", "exit_only", "cooling", "retired", "manual_paused"):
+            overview[status] = self._build_quant_status_overview_card(status)
+        return overview
+
+    def get_quant_universe_settings(self) -> dict[str, Any]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        self._ensure_quant_universe_settings(cursor)
+        conn.commit()
+        cursor.execute("SELECT * FROM quant_universe_settings WHERE id = 1")
+        row = cursor.fetchone()
+        conn.close()
+        return self._quant_universe_settings_row_to_dict(row)
+
+    def update_quant_universe_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        allowed_modes = {"manual_only", "confirm_first", "auto_trial"}
+        auto_entry_mode = payload.get("auto_entry_mode")
+        if auto_entry_mode is not None and auto_entry_mode not in allowed_modes:
+            raise ValueError(f"Unsupported auto_entry_mode: {auto_entry_mode}")
+        current = self.get_quant_universe_settings()
+        next_lifecycle_enabled = current["quant_universe_lifecycle_enabled"]
+        next_auto_exit_enabled = current["auto_exit_enabled"]
+        next_auto_entry_mode = current["auto_entry_mode"]
+        if "quant_universe_lifecycle_enabled" in payload:
+            next_lifecycle_enabled = bool(payload["quant_universe_lifecycle_enabled"])
+        if "auto_exit_enabled" in payload:
+            next_auto_exit_enabled = bool(payload["auto_exit_enabled"])
+        if auto_entry_mode is not None:
+            next_auto_entry_mode = str(auto_entry_mode)
+
+        conn = self._connect()
+        cursor = conn.cursor()
+        self._ensure_quant_universe_settings(cursor)
+        cursor.execute(
+            """
+            UPDATE quant_universe_settings
+            SET quant_universe_lifecycle_enabled = ?,
+                auto_exit_enabled = ?,
+                auto_entry_mode = ?,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (
+                1 if next_lifecycle_enabled else 0,
+                1 if next_auto_exit_enabled else 0,
+                next_auto_entry_mode,
+                self._now(),
+            ),
+        )
+        conn.commit()
+        cursor.execute("SELECT * FROM quant_universe_settings WHERE id = 1")
+        row = cursor.fetchone()
+        conn.close()
+        return self._quant_universe_settings_row_to_dict(row)
+
     def update_watch_snapshot(
         self,
         stock_code: str,
@@ -5241,6 +5814,195 @@ class QuantSimDB:
             ),
         )
 
+    def _ensure_stock_universe_member(
+        self,
+        cursor: sqlite3.Cursor,
+        stock_code: str,
+        stock_name: Any = None,
+    ) -> None:
+        normalized_code = str(stock_code or "").strip().upper()
+        if not normalized_code:
+            raise ValueError("stock_code is required")
+        cursor.execute("SELECT stock_name FROM stock_universe WHERE stock_code = ?", (normalized_code,))
+        row = cursor.fetchone()
+        now_text = self._now()
+        normalized_name = str(stock_name or "").strip()
+        if row is None:
+            cursor.execute(
+                """
+                INSERT INTO stock_universe
+                (
+                    stock_code, stock_name, source, quant_status,
+                    quant_auto_managed, created_at, updated_at
+                )
+                VALUES (?, ?, 'quant_lifecycle', 'inactive', 1, ?, ?)
+                """,
+                (normalized_code, normalized_name or normalized_code, now_text, now_text),
+            )
+            return
+        if normalized_name and not str(row["stock_name"] or "").strip():
+            cursor.execute(
+                """
+                UPDATE stock_universe
+                SET stock_name = ?, updated_at = ?
+                WHERE stock_code = ?
+                """,
+                (normalized_name, now_text, normalized_code),
+            )
+
+    def _fetch_quant_universe_state_row(
+        self,
+        cursor: sqlite3.Cursor,
+        stock_code: str,
+    ) -> sqlite3.Row | None:
+        cursor.execute(
+            """
+            SELECT
+                su.stock_code AS stock_code,
+                su.stock_name AS stock_name,
+                su.quant_enabled AS quant_enabled,
+                su.quant_status AS quant_status,
+                su.quant_auto_managed AS quant_auto_managed,
+                su.quant_manual_override AS quant_manual_override,
+                su.quant_entry_source AS quant_entry_source,
+                su.quant_entry_at AS quant_entry_at,
+                su.basic_info_missing AS basic_info_missing,
+                qs.candidate_score AS candidate_score,
+                qs.candidate_confidence AS candidate_confidence,
+                qs.health_score AS health_score,
+                qs.downtrend_streak AS downtrend_streak,
+                qs.weakening_warning_streak AS weakening_warning_streak,
+                qs.blocked_streak AS blocked_streak,
+                qs.no_buy_days AS no_buy_days,
+                qs.cooling_until AS cooling_until,
+                qs.retired_at AS retired_at,
+                qs.retire_reason AS retire_reason,
+                qs.reentry_watch_until AS reentry_watch_until,
+                qs.last_status_changed_at AS last_status_changed_at,
+                qs.last_health_evaluated_at AS last_health_evaluated_at,
+                qs.snapshot_json AS snapshot_json,
+                qs.created_at AS state_created_at,
+                qs.updated_at AS state_updated_at
+            FROM stock_universe su
+            LEFT JOIN stock_universe_quant_state qs ON qs.stock_code = su.stock_code
+            WHERE su.stock_code = ?
+            """,
+            (stock_code,),
+        )
+        return cursor.fetchone()
+
+    def _quant_universe_state_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = self._row_to_dict(row)
+        payload["quant_enabled"] = bool(payload.get("quant_enabled"))
+        payload["quant_auto_managed"] = bool(payload.get("quant_auto_managed"))
+        payload["candidate_score"] = float(payload.get("candidate_score") or 0)
+        payload["candidate_confidence"] = float(payload.get("candidate_confidence") or 0)
+        payload["health_score"] = float(payload.get("health_score") if payload.get("health_score") is not None else 100)
+        for key in ("downtrend_streak", "weakening_warning_streak", "blocked_streak", "no_buy_days"):
+            payload[key] = int(payload.get(key) or 0)
+        payload["snapshot_json"] = self._loads_metadata(payload.get("snapshot_json"))
+        payload["stock_name"] = payload.get("stock_name") or payload.get("stock_code")
+        payload["quant_status"] = payload.get("quant_status") or "inactive"
+        payload["quant_manual_override"] = payload.get("quant_manual_override") or ""
+        return payload
+
+    def _candidate_event_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = self._row_to_dict(row)
+        payload["source_score"] = float(payload.get("source_score") or 0)
+        payload["confidence"] = float(payload.get("confidence") or 0)
+        payload["event_weight"] = float(payload.get("event_weight") or 1)
+        payload["payload_json"] = self._loads_metadata(payload.get("payload_json"))
+        return payload
+
+    def _quant_universe_event_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = self._row_to_dict(row)
+        payload["evidence_json"] = self._loads_metadata(payload.get("evidence_json"))
+        return payload
+
+    def _quant_universe_settings_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "quant_universe_lifecycle_enabled": bool(row["quant_universe_lifecycle_enabled"]),
+            "auto_exit_enabled": bool(row["auto_exit_enabled"]),
+            "auto_entry_mode": row["auto_entry_mode"] or "confirm_first",
+            "updated_at": row["updated_at"],
+        }
+
+    def _build_pending_eligible_overview_card(self) -> dict[str, Any]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM (
+                SELECT e.stock_code
+                FROM stock_universe_candidate_events e
+                LEFT JOIN stock_universe su ON su.stock_code = e.stock_code
+                WHERE e.status = 'eligible'
+                  AND COALESCE(su.quant_status, 'inactive') IN ('inactive', 'retired', 'manual_paused')
+                GROUP BY e.stock_code
+            )
+            """
+        )
+        count_row = cursor.fetchone()
+        cursor.execute(
+            """
+            SELECT
+                e.stock_code AS stock_code,
+                COALESCE(NULLIF(su.stock_name, ''), e.stock_code) AS stock_name,
+                COALESCE(e.reason_text, '') AS latest_reason
+            FROM stock_universe_candidate_events e
+            LEFT JOIN stock_universe su ON su.stock_code = e.stock_code
+            WHERE e.status = 'eligible'
+              AND COALESCE(su.quant_status, 'inactive') IN ('inactive', 'retired', 'manual_paused')
+            GROUP BY e.stock_code
+            ORDER BY e.source_score DESC, e.confidence DESC, e.id DESC
+            LIMIT 3
+            """
+        )
+        top_items = [
+            {
+                "stock_code": row["stock_code"],
+                "stock_name": row["stock_name"],
+                "latest_reason": row["latest_reason"] or "",
+            }
+            for row in cursor.fetchall()
+        ]
+        conn.close()
+        return {"count": int(count_row["total"] or 0) if count_row else 0, "top_items": top_items}
+
+    def _build_quant_status_overview_card(self, quant_status: str) -> dict[str, Any]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) AS total FROM stock_universe WHERE quant_status = ?",
+            (quant_status,),
+        )
+        count_row = cursor.fetchone()
+        cursor.execute(
+            """
+            SELECT
+                su.stock_code AS stock_code,
+                COALESCE(NULLIF(su.stock_name, ''), su.stock_code) AS stock_name,
+                COALESCE(qs.retire_reason, '') AS latest_reason
+            FROM stock_universe su
+            LEFT JOIN stock_universe_quant_state qs ON qs.stock_code = su.stock_code
+            WHERE su.quant_status = ?
+            ORDER BY COALESCE(qs.health_score, 0) ASC, COALESCE(qs.updated_at, su.updated_at) DESC, su.id DESC
+            LIMIT 3
+            """,
+            (quant_status,),
+        )
+        top_items = [
+            {
+                "stock_code": row["stock_code"],
+                "stock_name": row["stock_name"],
+                "latest_reason": row["latest_reason"] or "",
+            }
+            for row in cursor.fetchall()
+        ]
+        conn.close()
+        return {"count": int(count_row["total"] or 0) if count_row else 0, "top_items": top_items}
+
     def _ensure_sim_account(self, cursor: sqlite3.Cursor) -> None:
         cursor.execute("SELECT 1 FROM sim_account WHERE id = 1")
         if cursor.fetchone() is None:
@@ -5400,6 +6162,21 @@ class QuantSimDB:
                 (DEFAULT_CAPITAL_POOL_MAX_CASH,),
             )
 
+    def _ensure_quant_universe_settings(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute("SELECT 1 FROM quant_universe_settings WHERE id = 1")
+        if cursor.fetchone() is None:
+            cursor.execute(
+                """
+                INSERT INTO quant_universe_settings
+                (
+                    id, quant_universe_lifecycle_enabled,
+                    auto_exit_enabled, auto_entry_mode, updated_at
+                )
+                VALUES (1, 1, 1, 'confirm_first', ?)
+                """,
+                (self._now(),),
+            )
+
     @staticmethod
     def _normalize_capital_slot_config_from_row(row: sqlite3.Row) -> dict[str, Any]:
         return normalize_capital_slot_config(
@@ -5532,6 +6309,12 @@ class QuantSimDB:
     def _deep_copy_json(value: Any) -> Any:
         return json.loads(json.dumps(value, ensure_ascii=False))
 
+    @staticmethod
+    def _quant_lifecycle_policy_payload(policy: QuantUniverseLifecyclePolicy) -> dict[str, Any]:
+        payload = asdict(policy)
+        payload.pop("profile_id", None)
+        return payload
+
     def _build_builtin_strategy_profile_configs(self) -> dict[str, dict[str, Any]]:
         payload = StrategyScoringConfig.default()
         base_config = {
@@ -5541,6 +6324,11 @@ class QuantSimDB:
         }
 
         aggressive_config = self._deep_copy_json(base_config)
+        lifecycle_policy_defaults = {
+            "aggressive": self._quant_lifecycle_policy_payload(QuantUniverseLifecyclePolicy.aggressive_defaults()),
+            "stable": self._quant_lifecycle_policy_payload(QuantUniverseLifecyclePolicy.stable_defaults()),
+            "conservative": self._quant_lifecycle_policy_payload(QuantUniverseLifecyclePolicy.conservative_defaults()),
+        }
         aggressive_profit_protection = {
             "tech_sell_enabled": True,
             "tech_sell_peak_pct": 50.0,
@@ -5616,6 +6404,9 @@ class QuantSimDB:
         )
         aggressive_config["base"]["context"]["portfolio_execution_guard_policy"] = self._deep_copy_json(
             PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS["aggressive"]
+        )
+        aggressive_config["base"]["context"]["quant_universe_lifecycle_policy"] = self._deep_copy_json(
+            lifecycle_policy_defaults["aggressive"]
         )
         aggressive_config["profiles"]["candidate"]["technical"]["group_weights"] = {
             "trend": 1.60,
@@ -5732,6 +6523,9 @@ class QuantSimDB:
         stable_config["base"]["context"]["portfolio_execution_guard_policy"] = self._deep_copy_json(
             PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS["stable"]
         )
+        stable_config["base"]["context"]["quant_universe_lifecycle_policy"] = self._deep_copy_json(
+            lifecycle_policy_defaults["stable"]
+        )
         stable_config["profiles"]["candidate"]["technical"]["group_weights"] = {
             "trend": 1.30,
             "momentum": 1.15,
@@ -5843,6 +6637,9 @@ class QuantSimDB:
         )
         conservative_config["base"]["context"]["portfolio_execution_guard_policy"] = self._deep_copy_json(
             PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS["conservative"]
+        )
+        conservative_config["base"]["context"]["quant_universe_lifecycle_policy"] = self._deep_copy_json(
+            lifecycle_policy_defaults["conservative"]
         )
         conservative_config["profiles"]["candidate"]["technical"]["group_weights"] = {
             "trend": 1.05,
@@ -6331,6 +7128,10 @@ class QuantSimDB:
         if existing_status == "holding" and new_status == "active":
             return existing_status
         return new_status or existing_status
+
+    @staticmethod
+    def _quant_enabled_for_status(quant_status: str) -> int:
+        return 1 if str(quant_status or "").strip() in {"trial", "active", "exit_only", "cooling"} else 0
 
     @staticmethod
     def _build_lot_id(stock_code: str) -> str:

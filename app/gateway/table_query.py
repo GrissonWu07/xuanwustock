@@ -51,6 +51,7 @@ def _replay_table_query_from_request(request: Request | None) -> dict[str, Any]:
     )
     return {
         "search": params.get("search") or "",
+        "quant_status": params.get("quant_status") or params.get("quantStatus") or "",
         "page": _normalize_replay_table_page(params.get("page")),
         "pageSize": page_size,
         "page_size": page_size,

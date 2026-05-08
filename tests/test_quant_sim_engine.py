@@ -255,6 +255,71 @@ def test_engine_uses_live_current_time_for_batch_candidate_analysis_and_dynamic_
     assert decision_times == [current_time, current_time]
 
 
+def test_engine_scans_only_lifecycle_main_scan_statuses(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    for code, quant_status in (
+        ("600001", "trial"),
+        ("600002", "active"),
+        ("600003", "exit_only"),
+        ("600004", "cooling"),
+        ("600005", "retired"),
+        ("600006", "manual_paused"),
+    ):
+        candidate_service.add_manual_candidate(code, code, "manual")
+        candidate_service.db.upsert_quant_universe_state(code, {"quant_status": quant_status, "health_score": 80})
+
+    engine = QuantSimEngine(db_file=db_file)
+    scanned: list[str] = []
+
+    def fake_analyze_candidate(payload, **kwargs):
+        del kwargs
+        scanned.append(payload["stock_code"])
+        return {
+            "action": "HOLD",
+            "confidence": 61,
+            "reasoning": "等待确认",
+            "position_size_pct": 0,
+        }
+
+    monkeypatch.setattr(engine.adapter, "analyze_candidate", fake_analyze_candidate)
+
+    engine.analyze_active_candidates()
+
+    assert scanned == ["600003", "600002", "600001"]
+
+
+def test_engine_updates_lifecycle_health_after_candidate_signal(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
+    candidate_service.db.upsert_quant_universe_state("600000", {"quant_status": "active", "health_score": 100})
+    candidate = candidate_service.list_candidates()[0]
+    engine = QuantSimEngine(db_file=db_file)
+
+    def fake_analyze_candidate(payload, **kwargs):
+        del payload, kwargs
+        return {
+            "action": "SELL",
+            "confidence": 55,
+            "reasoning": "跌破趋势结构",
+            "position_size_pct": 0,
+            "tech_score": -0.8,
+            "context_score": -0.6,
+            "fusion_score": 0.1,
+            "fusion_score_delta": -0.2,
+            "buy_strength_score": 0.1,
+        }
+
+    monkeypatch.setattr(engine.adapter, "analyze_candidate", fake_analyze_candidate)
+
+    engine.analyze_candidate(candidate)
+
+    state = candidate_service.db.get_quant_universe_state("600000")
+    assert state["health_score"] < 100
+    assert state["last_health_evaluated_at"]
+
+
 def test_engine_resolves_dynamic_binding_per_position(tmp_path, monkeypatch):
     candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
     signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")

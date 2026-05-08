@@ -368,6 +368,23 @@ const PORTFOLIO_EXECUTION_GUARD_FIELDS: ProfitProtectionField[] = [
   { key: "cold_start_normal_multiplier", label: { zh: "冷启动普通 BUY 倍率", en: "Cold-start normal multiplier" }, type: "number", path: ["cold_start_normal_multiplier"], step: 0.05 },
 ];
 
+const QUANT_UNIVERSE_LIFECYCLE_FIELDS: ProfitProtectionField[] = [
+  { key: "trial_threshold", label: { zh: "试运行准入阈值 trial_threshold", en: "Trial threshold trial_threshold" }, type: "number", path: ["trial_threshold"], step: 0.01 },
+  { key: "strong_candidate_threshold", label: { zh: "强候选阈值 strong_candidate_threshold", en: "Strong candidate threshold strong_candidate_threshold" }, type: "number", path: ["strong_candidate_threshold"], step: 0.01 },
+  { key: "high_reentry_threshold", label: { zh: "二次入池高门槛 high_reentry_threshold", en: "High reentry threshold high_reentry_threshold" }, type: "number", path: ["high_reentry_threshold"], step: 0.01 },
+  { key: "active_upgrade_threshold", label: { zh: "升级 active 健康分 active_upgrade_threshold", en: "Active upgrade health active_upgrade_threshold" }, type: "number", path: ["active_upgrade_threshold"], step: 1 },
+  { key: "health_score_lookback_checkpoints", label: { zh: "健康分回看检查点 health_score_lookback_checkpoints", en: "Health lookback health_score_lookback_checkpoints" }, type: "number", path: ["health_score_lookback_checkpoints"], step: 1 },
+  { key: "candidate_support_lookback_days", label: { zh: "候选支持回看天数 candidate_support_lookback_days", en: "Candidate support days candidate_support_lookback_days" }, type: "number", path: ["candidate_support_lookback_days"], step: 1 },
+  { key: "exit_only_threshold", label: { zh: "只出场阈值 exit_only_threshold", en: "Exit-only threshold exit_only_threshold" }, type: "number", path: ["exit_only_threshold"], step: 1 },
+  { key: "cooling_threshold", label: { zh: "冷却阈值 cooling_threshold", en: "Cooling threshold cooling_threshold" }, type: "number", path: ["cooling_threshold"], step: 1 },
+  { key: "retire_threshold", label: { zh: "退出阈值 retire_threshold", en: "Retire threshold retire_threshold" }, type: "number", path: ["retire_threshold"], step: 1 },
+  { key: "trial_min_dwell_checkpoints", label: { zh: "试运行最短停留 trial_min_dwell_checkpoints", en: "Trial min dwell trial_min_dwell_checkpoints" }, type: "number", path: ["trial_min_dwell_checkpoints"], step: 1 },
+  { key: "cooling_min_dwell_days", label: { zh: "冷却最短天数 cooling_min_dwell_days", en: "Cooling min days cooling_min_dwell_days" }, type: "number", path: ["cooling_min_dwell_days"], step: 1 },
+  { key: "cooling_review_interval_minutes", label: { zh: "冷却复评间隔 cooling_review_interval_minutes", en: "Cooling review minutes cooling_review_interval_minutes" }, type: "number", path: ["cooling_review_interval_minutes"], step: 5 },
+  { key: "trial_position_multiplier", label: { zh: "试运行仓位倍率 trial_position_multiplier", en: "Trial size multiplier trial_position_multiplier" }, type: "number", path: ["trial_position_multiplier"], step: 0.05 },
+  { key: "trial_max_position_pct", label: { zh: "试运行仓位上限 trial_max_position_pct", en: "Trial max position pct trial_max_position_pct" }, type: "number", path: ["trial_max_position_pct"], step: 0.5 },
+];
+
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const deepClone = <T,>(value: T): T => JSON.parse(JSON.stringify(value ?? {})) as T;
 const pickText = (text: LocaleText, locale: string) => (locale === "zh-CN" ? text.zh : text.en);
@@ -591,6 +608,67 @@ const ensurePortfolioExecutionGuardDefaults = (root: Record<string, unknown>, pa
   });
 };
 
+const ensureQuantUniverseLifecycleDefaults = (root: Record<string, unknown>, path: string[]) => {
+  const container = ensureObjectPath(root, path);
+  const defaults: Record<string, number | boolean> = {
+    trial_threshold: 0.55,
+    strong_candidate_threshold: 0.75,
+    high_reentry_threshold: 0.88,
+    active_upgrade_threshold: 68,
+    active_upgrade_confirm_checkpoints: 3,
+    max_auto_entries_per_batch: 4,
+    max_auto_entries_per_day: 12,
+    max_auto_entries_per_strategy_batch: 2,
+    max_same_industry_auto_entries_per_day: 2,
+    max_same_concept_auto_entries_per_day: 2,
+    exit_only_threshold: 45,
+    cooling_threshold: 36,
+    retire_threshold: 28,
+    exit_only_downtrend_streak: 3,
+    downtrend_cooling_streak: 3,
+    trial_no_buy_days_threshold: 10,
+    reentry_watch_hours: 96,
+    weak_warning_tech_threshold: 0.15,
+    warning_to_downtrend_threshold: 3,
+    health_score_lookback_checkpoints: 10,
+    candidate_support_lookback_days: 7,
+    trial_min_dwell_checkpoints: 4,
+    cooling_min_dwell_days: 3,
+    retired_min_dwell_days: 10,
+    cooling_review_interval_minutes: 60,
+    retired_reactivation_check_enabled: true,
+    trial_position_multiplier: 0.35,
+    trial_max_position_pct: 10,
+    source_score_weight: 0.35,
+    confidence_weight: 0.20,
+    trend_weight: 0.25,
+    multi_source_weight: 0.20,
+    liquidity_penalty_multiplier: 1,
+    cooldown_penalty_multiplier: 1,
+    manual_priority_bonus_multiplier: 1,
+    fusion_health_weight: 0.30,
+    buy_strength_health_weight: 0.25,
+    tech_health_weight: 0.25,
+    context_health_weight: 0.20,
+    candidate_support_bonus_multiplier: 1,
+    execution_penalty_multiplier: 1,
+    inactivity_penalty_multiplier: 1,
+    reentry_watch_penalty_multiplier: 1.10,
+  };
+  Object.entries(defaults).forEach(([key, value]) => {
+    if (!(key in container)) {
+      container[key] = value;
+      return;
+    }
+    if (typeof value === "boolean") {
+      container[key] = getBooleanAt(container, [key], value);
+      return;
+    }
+    const parsed = Number(container[key]);
+    container[key] = Number.isFinite(parsed) ? parsed : value;
+  });
+};
+
 const normalizeStrategyConfig = (raw: Record<string, unknown> | undefined): Record<string, unknown> => {
   const next = deepClone(raw ?? {});
   ensureWeightMap(next, ["base", "technical", "group_weights"], TECHNICAL_GROUPS, 1);
@@ -606,6 +684,7 @@ const normalizeStrategyConfig = (raw: Record<string, unknown> | undefined): Reco
   ensureProfitProtectionDefaults(next, ["base", "veto", "profit_protection"]);
   ensureStockExecutionFeedbackDefaults(next, ["base", "context", "stock_execution_feedback_policy"]);
   ensurePortfolioExecutionGuardDefaults(next, ["base", "context", "portfolio_execution_guard_policy"]);
+  ensureQuantUniverseLifecycleDefaults(next, ["base", "context", "quant_universe_lifecycle_policy"]);
 
   ensureWeightMap(next, ["profiles", "candidate", "technical", "group_weights"], TECHNICAL_GROUPS, 1);
   ensureWeightMap(next, ["profiles", "candidate", "technical", "dimension_weights"], TECHNICAL_DIMENSIONS, 1);
@@ -615,6 +694,7 @@ const normalizeStrategyConfig = (raw: Record<string, unknown> | undefined): Reco
   ensureProfitProtectionDefaults(next, ["profiles", "candidate", "veto", "profit_protection"]);
   ensureStockExecutionFeedbackDefaults(next, ["profiles", "candidate", "context", "stock_execution_feedback_policy"]);
   ensurePortfolioExecutionGuardDefaults(next, ["profiles", "candidate", "context", "portfolio_execution_guard_policy"]);
+  ensureQuantUniverseLifecycleDefaults(next, ["profiles", "candidate", "context", "quant_universe_lifecycle_policy"]);
 
   ensureWeightMap(next, ["profiles", "position", "technical", "group_weights"], TECHNICAL_GROUPS, 1);
   ensureWeightMap(next, ["profiles", "position", "technical", "dimension_weights"], TECHNICAL_DIMENSIONS, 1);
@@ -624,6 +704,7 @@ const normalizeStrategyConfig = (raw: Record<string, unknown> | undefined): Reco
   ensureProfitProtectionDefaults(next, ["profiles", "position", "veto", "profit_protection"]);
   ensureStockExecutionFeedbackDefaults(next, ["profiles", "position", "context", "stock_execution_feedback_policy"]);
   ensurePortfolioExecutionGuardDefaults(next, ["profiles", "position", "context", "portfolio_execution_guard_policy"]);
+  ensureQuantUniverseLifecycleDefaults(next, ["profiles", "position", "context", "quant_universe_lifecycle_policy"]);
   return next;
 };
 
@@ -1354,6 +1435,42 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                         onChange={(event) => updateNumberPath(fullPath, event.target.value, 4, `portfolio_execution_guard.${field.key}`)}
                       />
                     )}
+                  </div>
+                );
+              })}
+            </div>
+          </WorkbenchCard>
+
+          <WorkbenchCard className="strategy-config-card">
+            <div className="strategy-config-card__header">
+              <div>
+                <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "量化生命周期" : "Quant lifecycle"}</h2>
+                <div className="strategy-config-card__subtitle">
+                  {locale === "zh-CN"
+                    ? "控制候选股票从待纳入、试运行、只出场、冷却到退出的策略级阈值；全局自动入池/自动出池开关不属于本区块。"
+                    : "Profile-level thresholds for pending, trial, exit-only, cooling and retired states. Global auto-entry/auto-exit switches are configured elsewhere."}
+                </div>
+              </div>
+            </div>
+            <div className="strategy-config-dual-grid">
+              {QUANT_UNIVERSE_LIFECYCLE_FIELDS.map((field) => {
+                const fullPath = ["base", "context", "quant_universe_lifecycle_policy", ...field.path];
+                return (
+                  <div key={`quant-lifecycle-${field.key}`} className="strategy-config-dual-item">
+                    <label>
+                      <span>{pickText(field.label, locale)}</span>
+                    </label>
+                    <input
+                      className="input"
+                      type="number"
+                      step={field.step ?? 0.01}
+                      value={getNumberAt(editableConfig, fullPath, 0)}
+                      onFocus={() => {
+                        setFocusedFormulaSection(4);
+                        setFocusedParam(`quant_universe_lifecycle.${field.key}`);
+                      }}
+                      onChange={(event) => updateNumberPath(fullPath, event.target.value, 4, `quant_universe_lifecycle.${field.key}`)}
+                    />
                   </div>
                 );
               })}

@@ -22,6 +22,7 @@ from app.gateway.common import (
     table as _table,
     txt as _txt,
 )
+from app.gateway.quant_universe_entry import enrich_lifecycle_entry_rows
 from app.i18n import t
 from app.notification_service import notification_service
 from app.research_watchlist_integration import add_research_stock_to_watchlist, add_research_stocks_to_watchlist
@@ -136,7 +137,7 @@ def _research_rows(context: Any) -> list[dict[str, Any]]:
                 row["industry"] = runtime_sector
                 if len(row.get("cells", [])) > 2:
                     row["cells"][2] = runtime_sector
-    return rows
+    return enrich_lifecycle_entry_rows(context, rows)
 
 
 def _research_stock_row(stock: dict[str, Any], source: str, context: Any) -> dict[str, Any] | None:

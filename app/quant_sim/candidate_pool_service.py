@@ -66,11 +66,24 @@ class CandidatePoolService:
         limit: int | None = None,
         offset: int = 0,
         search: str | None = None,
+        quant_statuses: list[str] | tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
-        return self.db.get_candidates(status=status, limit=limit, offset=offset, search=search)
+        return self.db.get_candidates(
+            status=status,
+            limit=limit,
+            offset=offset,
+            search=search,
+            quant_statuses=quant_statuses,
+        )
 
-    def count_candidates(self, status: Optional[str] = None, *, search: str | None = None) -> int:
-        return self.db.count_candidates(status=status, search=search)
+    def count_candidates(
+        self,
+        status: Optional[str] = None,
+        *,
+        search: str | None = None,
+        quant_statuses: list[str] | tuple[str, ...] | None = None,
+    ) -> int:
+        return self.db.count_candidates(status=status, search=search, quant_statuses=quant_statuses)
 
     def delete_candidate(self, stock_code: str) -> None:
         self.db.delete_candidate(stock_code)
