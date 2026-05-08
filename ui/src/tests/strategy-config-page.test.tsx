@@ -118,6 +118,37 @@ describe("StrategyConfigPage config normalization", () => {
     expect(policy).not.toHaveProperty("auto_entry_mode");
   });
 
+  it("fills missing lifecycle policy with stable spec defaults", () => {
+    const config = buildUnifiedEditableConfig({
+      base: {
+        context: {
+          quant_universe_lifecycle_policy: {},
+        },
+      },
+      profiles: {
+        candidate: {
+          context: {},
+        },
+        position: {
+          context: {},
+        },
+      },
+    });
+
+    expect(getPolicy(config, ["base", "context", "quant_universe_lifecycle_policy"])).toMatchObject({
+      active_upgrade_threshold: 68,
+      exit_only_threshold: 45,
+      cooling_threshold: 36,
+      retire_threshold: 28,
+      exit_only_downtrend_streak: 3,
+      reentry_watch_hours: 96,
+      candidate_support_lookback_days: 7,
+      max_auto_entries_per_batch: 4,
+      max_auto_entries_per_day: 12,
+      max_auto_entries_per_strategy_batch: 2,
+    });
+  });
+
   it("renders a dedicated lifecycle policy section without system-level auto exit", async () => {
     const client = {
       getPageSnapshot: vi.fn().mockImplementation((page: string) => {

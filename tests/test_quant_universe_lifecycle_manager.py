@@ -79,6 +79,87 @@ def test_profile_defaults_keep_system_enums_distinct_from_profile_weights():
     ) == 1.0
 
 
+def test_profile_defaults_match_lifecycle_spec_19_9():
+    expected = {
+        "aggressive": {
+            "active_upgrade_threshold": 60,
+            "active_upgrade_confirm_checkpoints": 2,
+            "exit_only_threshold": 38,
+            "exit_only_downtrend_streak": 3,
+            "cooling_threshold": 30,
+            "retire_threshold": 22,
+            "downtrend_cooling_streak": 3,
+            "trial_no_buy_days_threshold": 12,
+            "reentry_watch_hours": 72,
+            "health_score_lookback_checkpoints": 8,
+            "candidate_support_lookback_days": 5,
+            "trial_min_dwell_checkpoints": 3,
+            "cooling_min_dwell_days": 2,
+            "retired_min_dwell_days": 7,
+            "cooling_review_interval_minutes": 30,
+            "max_auto_entries_per_batch": 6,
+            "max_auto_entries_per_day": 20,
+            "max_auto_entries_per_strategy_batch": 3,
+            "max_same_industry_auto_entries_per_day": 3,
+            "max_same_concept_auto_entries_per_day": 3,
+        },
+        "stable": {
+            "active_upgrade_threshold": 68,
+            "active_upgrade_confirm_checkpoints": 3,
+            "exit_only_threshold": 45,
+            "exit_only_downtrend_streak": 3,
+            "cooling_threshold": 36,
+            "retire_threshold": 28,
+            "downtrend_cooling_streak": 3,
+            "trial_no_buy_days_threshold": 10,
+            "reentry_watch_hours": 96,
+            "health_score_lookback_checkpoints": 10,
+            "candidate_support_lookback_days": 7,
+            "trial_min_dwell_checkpoints": 4,
+            "cooling_min_dwell_days": 3,
+            "retired_min_dwell_days": 10,
+            "cooling_review_interval_minutes": 60,
+            "max_auto_entries_per_batch": 4,
+            "max_auto_entries_per_day": 12,
+            "max_auto_entries_per_strategy_batch": 2,
+            "max_same_industry_auto_entries_per_day": 2,
+            "max_same_concept_auto_entries_per_day": 2,
+        },
+        "conservative": {
+            "active_upgrade_threshold": 75,
+            "active_upgrade_confirm_checkpoints": 4,
+            "exit_only_threshold": 52,
+            "exit_only_downtrend_streak": 2,
+            "cooling_threshold": 42,
+            "retire_threshold": 34,
+            "downtrend_cooling_streak": 2,
+            "trial_no_buy_days_threshold": 8,
+            "reentry_watch_hours": 120,
+            "health_score_lookback_checkpoints": 12,
+            "candidate_support_lookback_days": 10,
+            "trial_min_dwell_checkpoints": 5,
+            "cooling_min_dwell_days": 4,
+            "retired_min_dwell_days": 14,
+            "cooling_review_interval_minutes": 90,
+            "max_auto_entries_per_batch": 2,
+            "max_auto_entries_per_day": 6,
+            "max_auto_entries_per_strategy_batch": 1,
+            "max_same_industry_auto_entries_per_day": 1,
+            "max_same_concept_auto_entries_per_day": 1,
+        },
+    }
+    policies = {
+        "aggressive": QuantUniverseLifecyclePolicy.aggressive_defaults(),
+        "stable": QuantUniverseLifecyclePolicy.stable_defaults(),
+        "conservative": QuantUniverseLifecyclePolicy.conservative_defaults(),
+    }
+
+    for profile_id, profile_expected in expected.items():
+        policy = policies[profile_id]
+        for field, value in profile_expected.items():
+            assert getattr(policy, field) == value
+
+
 def test_detect_weakening_warning_and_downtrend_hit():
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
 
