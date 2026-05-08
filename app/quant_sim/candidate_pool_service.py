@@ -76,8 +76,14 @@ class CandidatePoolService:
             quant_statuses=quant_statuses,
         )
 
-    def count_candidates(self, status: Optional[str] = None, *, search: str | None = None) -> int:
-        return self.db.count_candidates(status=status, search=search)
+    def count_candidates(
+        self,
+        status: Optional[str] = None,
+        *,
+        search: str | None = None,
+        quant_statuses: list[str] | tuple[str, ...] | None = None,
+    ) -> int:
+        return self.db.count_candidates(status=status, search=search, quant_statuses=quant_statuses)
 
     def delete_candidate(self, stock_code: str) -> None:
         self.db.delete_candidate(stock_code)

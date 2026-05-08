@@ -1145,14 +1145,44 @@ class QuantSimDB:
         conn.close()
         return rows
 
-    def count_candidates(self, status: Optional[str] = None, *, search: str | None = None) -> int:
+    def count_candidates(
+        self,
+        status: Optional[str] = None,
+        *,
+        search: str | None = None,
+        quant_statuses: list[str] | tuple[str, ...] | None = None,
+    ) -> int:
         conn = self._connect()
         cursor = conn.cursor()
-        where_sql, params = self._build_candidate_filters(status=status, search=search)
+        where_sql, params = self._build_candidate_filters(
+            status=status,
+            search=search,
+            quant_statuses=quant_statuses,
+        )
         cursor.execute(f"SELECT COUNT(*) AS total FROM stock_universe {where_sql}", tuple(params))
         row = cursor.fetchone()
         conn.close()
         return int(row["total"] or 0) if row else 0
+
+    def get_latest_quant_universe_event(self, stock_code: str) -> Optional[dict[str, Any]]:
+        normalized_code = str(stock_code or "").strip().upper()
+        if not normalized_code:
+            return None
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT *
+            FROM stock_universe_quant_events
+            WHERE stock_code = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (normalized_code,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._quant_universe_event_row_to_dict(row) if row is not None else None
 
     def get_candidate(self, stock_code: str) -> Optional[dict[str, Any]]:
         conn = self._connect()

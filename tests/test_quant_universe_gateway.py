@@ -148,3 +148,47 @@ def test_quant_universe_restore_to_trial_returns_400_for_active_stock(tmp_path):
         "error_code": "invalid_restore_state",
         "error_message": "股票当前处于 active，无需恢复",
     }
+
+
+def test_live_sim_candidate_pool_supports_quant_status_filter_and_lifecycle_fields(tmp_path):
+    context = _context(tmp_path)
+    db = context.quant_db()
+    for code, name, status, health in (
+        ("600000", "浦发银行", "trial", 62),
+        ("600001", "邯郸钢铁", "active", 71),
+        ("600002", "冷却股票", "cooling", 22),
+    ):
+        context.candidate_pool().add_manual_candidate(code, name, "manual", latest_price=10)
+        db.upsert_quant_universe_state(
+            code,
+            {
+                "quant_status": status,
+                "candidate_score": 0.7,
+                "candidate_confidence": 0.8,
+                "health_score": health,
+            },
+        )
+    db.record_quant_universe_event(
+        {
+            "stock_code": "600000",
+            "event_type": "state_changed",
+            "from_status": "inactive",
+            "to_status": "trial",
+            "reason_code": "manual_promote_to_trial",
+            "reason_text": "用户纳入试运行",
+            "health_score_after": 62,
+            "candidate_score": 0.7,
+        }
+    )
+    client = TestClient(create_app(context=context))
+
+    payload = client.get("/api/v1/quant/live-sim?quant_status=trial,active").json()
+    rows = payload["candidatePool"]["rows"]
+
+    assert {row["code"] for row in rows} == {"600000", "600001"}
+    candidate = next(row for row in rows if row["code"] == "600000")
+    assert candidate["lifecycle"]["quant_status"] in {"trial", "active"}
+    assert candidate["lifecycle"]["health_score"] == 62
+    assert candidate["lifecycle"]["candidate_score"] == 0.7
+    assert candidate["lifecycle"]["latest_reason"] == "用户纳入试运行"
+    assert payload["quant_status_filters"]["selected"] == ["trial", "active"]
