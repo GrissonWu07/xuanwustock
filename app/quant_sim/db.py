@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import asdict
 import json
 import sqlite3
 import threading
@@ -25,6 +26,7 @@ from app.quant_sim.capital_slots import (
 )
 from app.quant_sim.execution_constraints import trade_block_reason
 from app.quant_sim.portfolio_execution_guard import PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy
 from app.quant_sim.stock_execution_feedback import STOCK_EXECUTION_FEEDBACK_PROFILE_DEFAULTS
 from app.quant_sim.time_utils import ensure_utc_datetime, format_utc_iso_z
 from app.runtime_paths import default_db_path
@@ -6274,6 +6276,12 @@ class QuantSimDB:
     def _deep_copy_json(value: Any) -> Any:
         return json.loads(json.dumps(value, ensure_ascii=False))
 
+    @staticmethod
+    def _quant_lifecycle_policy_payload(policy: QuantUniverseLifecyclePolicy) -> dict[str, Any]:
+        payload = asdict(policy)
+        payload.pop("profile_id", None)
+        return payload
+
     def _build_builtin_strategy_profile_configs(self) -> dict[str, dict[str, Any]]:
         payload = StrategyScoringConfig.default()
         base_config = {
@@ -6283,6 +6291,11 @@ class QuantSimDB:
         }
 
         aggressive_config = self._deep_copy_json(base_config)
+        lifecycle_policy_defaults = {
+            "aggressive": self._quant_lifecycle_policy_payload(QuantUniverseLifecyclePolicy.aggressive_defaults()),
+            "stable": self._quant_lifecycle_policy_payload(QuantUniverseLifecyclePolicy.stable_defaults()),
+            "conservative": self._quant_lifecycle_policy_payload(QuantUniverseLifecyclePolicy.conservative_defaults()),
+        }
         aggressive_profit_protection = {
             "tech_sell_enabled": True,
             "tech_sell_peak_pct": 50.0,
@@ -6358,6 +6371,9 @@ class QuantSimDB:
         )
         aggressive_config["base"]["context"]["portfolio_execution_guard_policy"] = self._deep_copy_json(
             PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS["aggressive"]
+        )
+        aggressive_config["base"]["context"]["quant_universe_lifecycle_policy"] = self._deep_copy_json(
+            lifecycle_policy_defaults["aggressive"]
         )
         aggressive_config["profiles"]["candidate"]["technical"]["group_weights"] = {
             "trend": 1.60,
@@ -6474,6 +6490,9 @@ class QuantSimDB:
         stable_config["base"]["context"]["portfolio_execution_guard_policy"] = self._deep_copy_json(
             PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS["stable"]
         )
+        stable_config["base"]["context"]["quant_universe_lifecycle_policy"] = self._deep_copy_json(
+            lifecycle_policy_defaults["stable"]
+        )
         stable_config["profiles"]["candidate"]["technical"]["group_weights"] = {
             "trend": 1.30,
             "momentum": 1.15,
@@ -6585,6 +6604,9 @@ class QuantSimDB:
         )
         conservative_config["base"]["context"]["portfolio_execution_guard_policy"] = self._deep_copy_json(
             PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS["conservative"]
+        )
+        conservative_config["base"]["context"]["quant_universe_lifecycle_policy"] = self._deep_copy_json(
+            lifecycle_policy_defaults["conservative"]
         )
         conservative_config["profiles"]["candidate"]["technical"]["group_weights"] = {
             "trend": 1.05,

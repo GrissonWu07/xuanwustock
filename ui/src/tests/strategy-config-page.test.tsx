@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { buildUnifiedEditableConfig } from "../features/settings/strategy-config-page";
+import { render, screen, within } from "@testing-library/react";
+import { RouterProvider, createMemoryRouter } from "react-router-dom";
+import { describe, expect, it, vi } from "vitest";
+import type { ApiClient } from "../lib/api-client";
+import { StrategyConfigPage, buildUnifiedEditableConfig } from "../features/settings/strategy-config-page";
 
 const getPolicy = (config: Record<string, unknown>, path: string[]) => {
   let value: unknown = config;
@@ -80,5 +83,91 @@ describe("StrategyConfigPage config normalization", () => {
       cooldown_size_multiplier: 0.5,
       max_new_buys_per_checkpoint: 2,
     });
+  });
+
+  it("keeps lifecycle policy profile-scoped and excludes system switches", () => {
+    const config = buildUnifiedEditableConfig({
+      base: {
+        context: {
+          quant_universe_lifecycle_policy: {
+            trial_threshold: 0.55,
+            strong_candidate_threshold: 0.75,
+            health_score_lookback_checkpoints: 10,
+            trial_position_multiplier: 0.35,
+          },
+        },
+      },
+      profiles: {
+        candidate: {
+          context: {},
+        },
+        position: {
+          context: {},
+        },
+      },
+    });
+
+    const policy = getPolicy(config, ["base", "context", "quant_universe_lifecycle_policy"]);
+    expect(policy).toMatchObject({
+      trial_threshold: 0.55,
+      strong_candidate_threshold: 0.75,
+      health_score_lookback_checkpoints: 10,
+      trial_position_multiplier: 0.35,
+    });
+    expect(policy).not.toHaveProperty("auto_exit_enabled");
+    expect(policy).not.toHaveProperty("auto_entry_mode");
+  });
+
+  it("renders a dedicated lifecycle policy section without system-level auto exit", async () => {
+    const client = {
+      getPageSnapshot: vi.fn().mockImplementation((page: string) => {
+        if (page === "settings") {
+          return Promise.resolve({
+            selectedStrategyProfileId: "stable",
+            strategyProfiles: [
+              {
+                id: "stable",
+                name: "中性",
+                enabled: true,
+                isDefault: true,
+                config: {
+                  base: {
+                    context: {
+                      quant_universe_lifecycle_policy: {
+                        trial_threshold: 0.55,
+                        strong_candidate_threshold: 0.75,
+                        health_score_lookback_checkpoints: 10,
+                        trial_position_multiplier: 0.35,
+                      },
+                    },
+                  },
+                  profiles: {
+                    candidate: { context: {} },
+                    position: { context: {} },
+                  },
+                },
+              },
+            ],
+          });
+        }
+        return Promise.resolve({ config: { aiDynamicStrategy: "off" } });
+      }),
+      runPageAction: vi.fn(),
+    } as unknown as ApiClient;
+    const router = createMemoryRouter([{ path: "/settings/strategy", element: <StrategyConfigPage client={client} /> }], {
+      initialEntries: ["/settings/strategy"],
+    });
+
+    render(<RouterProvider router={router} />);
+
+    const sectionTitle = await screen.findByText(/Quant lifecycle|量化生命周期/);
+    const section = sectionTitle.closest(".strategy-config-card");
+    expect(section).not.toBeNull();
+    const scoped = within(section as HTMLElement);
+    expect(scoped.getByText(/trial_threshold/)).toBeInTheDocument();
+    expect(scoped.getByText(/strong_candidate_threshold/)).toBeInTheDocument();
+    expect(scoped.getByText(/health_score_lookback_checkpoints/)).toBeInTheDocument();
+    expect(scoped.getByText(/trial_position_multiplier/)).toBeInTheDocument();
+    expect(scoped.queryByText(/auto_exit_enabled/)).not.toBeInTheDocument();
   });
 });
