@@ -151,65 +151,9 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
             _metric("交易笔数", _txt(account.get("trade_count"), "0")),
             _metric("收益率", _pct(account.get("total_return_pct"))),
         ],
-        "capitalSlots": _table(
-            ["Slot", "预算", "可用", "占用", "待结算"],
-            [
-                {
-                    "id": _txt(item.get("slot_index")),
-                    "cells": [
-                        _txt(item.get("slot_index")),
-                        _num(item.get("budget_cash")),
-                        _num(item.get("available_cash")),
-                        _num(item.get("occupied_cash")),
-                        _num(item.get("settling_cash")),
-                    ],
-                }
-                for item in db.get_capital_slots(sync=False)
-            ],
-            "暂无资金槽",
-        ),
         "capitalPool": build_live_sim_capital_pool(db, sync_slots=False),
         "candidatePool": candidate_table,
-        "pendingSignals": [
-            _insight(
-                _txt(item.get("stock_name") or item.get("stock_code") or "待执行信号"),
-                _txt(item.get("reasoning") or item.get("execution_note") or "待处理"),
-                "warning" if _txt(item.get("action")) in {"BUY", "SELL"} else "neutral",
-            )
-            for item in db.get_pending_signals()
-        ],
-        "executionCenter": {
-            "title": "执行中心",
-            "body": "待执行信号会放在最上方，重点解释为什么成交、为什么跳过。",
-            "chips": ["待执行", "信号列表", "详情"],
-        },
-        "holdings": _table(
-            ["代码", "名称", "数量", "成本", "现价", "浮盈亏"],
-            [
-                {
-                    "id": _txt(item.get("stock_code"), str(i)),
-                    "cells": [
-                        _txt(item.get("stock_code")),
-                        _txt(item.get("stock_name")),
-                        _txt(item.get("quantity"), "0"),
-                        _num(item.get("avg_price")),
-                        _num(item.get("latest_price")),
-                        _pct(item.get("unrealized_pnl_pct")),
-                    ],
-                    "code": _txt(item.get("stock_code")),
-                    "name": _txt(item.get("stock_name")),
-                    "actions": [{"label": "删除", "icon": "🗑", "tone": "danger", "action": "delete-position"}],
-                }
-                for i, item in enumerate(db.get_positions())
-            ],
-            "暂无持仓",
-        ),
-        "trades": _live_trade_table(context, table_query),
         "tradeCostSummary": _trade_cost_summary_metrics(trade_cost_summary),
-        "curve": [
-            {"label": _system_time_text(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
-            for i, item in enumerate(db.get_account_snapshots(limit=20))
-        ],
     }
 def _live_signal_table(
     context: UIApiContext,

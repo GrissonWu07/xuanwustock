@@ -1585,7 +1585,14 @@ def test_live_sim_snapshot_does_not_sync_capital_slots_on_get(tmp_path, monkeypa
     response = TestClient(create_app(context=context)).get("/api/v1/quant/live-sim")
 
     assert response.status_code == 200
-    assert "capitalSlots" in response.json()
+    payload = response.json()
+    assert "capitalPool" in payload
+    assert "capitalSlots" not in payload
+    assert "pendingSignals" not in payload
+    assert "executionCenter" not in payload
+    assert "holdings" not in payload
+    assert "trades" not in payload
+    assert "curve" not in payload
 
 
 def test_live_sim_reset_clears_signals_and_capital_pool_snapshot(tmp_path):
@@ -1620,8 +1627,8 @@ def test_live_sim_reset_clears_signals_and_capital_pool_snapshot(tmp_path):
     assert response.status_code == 200
     assert db.get_signals(limit=10) == []
     assert db.get_capital_slots(sync=False) == []
-    assert payload["pendingSignals"] == []
-    assert payload["capitalSlots"]["rows"] == []
+    assert "pendingSignals" not in payload
+    assert "capitalSlots" not in payload
     assert payload["capitalPool"]["slots"] == []
     assert payload["capitalPool"]["pool"]["slotCount"] == 0
     assert payload["capitalPool"]["pool"]["poolReady"] is False
@@ -2174,9 +2181,12 @@ def test_live_sim_snapshot_exposes_trade_cost_ledger(tmp_path):
         apply_trade_cost=True,
     )
 
-    payload = TestClient(create_app(context=context)).get("/api/v1/quant/live-sim").json()
+    client = TestClient(create_app(context=context))
+    payload = client.get("/api/v1/quant/live-sim").json()
+    trades_payload = client.get("/api/v1/quant/live-sim/trades").json()
 
-    assert payload["trades"]["columns"] == [
+    assert "trades" not in payload
+    assert trades_payload["table"]["columns"] == [
         "时间",
         "代码",
         "动作",
@@ -2194,7 +2204,7 @@ def test_live_sim_snapshot_exposes_trade_cost_ledger(tmp_path):
         "执行明细",
         "备注",
     ]
-    row = payload["trades"]["rows"][0]
+    row = trades_payload["table"]["rows"][0]
     assert row["cells"][3:16] == [
         "建仓",
         "100",

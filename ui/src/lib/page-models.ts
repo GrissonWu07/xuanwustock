@@ -348,18 +348,8 @@ export type LiveSimSnapshot = {
   };
   metrics: SummaryMetric[];
   candidatePool: TableSection;
-  pendingSignals: Insight[];
-  executionCenter: {
-    title: string;
-    body: string;
-    chips: string[];
-  };
-  holdings: TableSection;
-  trades: TableSection;
   tradeCostSummary?: SummaryMetric[];
-  capitalSlots?: TableSection;
   capitalPool?: ReplayCapitalPool;
-  curve: ChartPoint[];
 };
 
 export type ReplayCapitalLot = {

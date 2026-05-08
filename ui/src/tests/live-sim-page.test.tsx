@@ -4,13 +4,6 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../lib/api-client";
 import { LiveSimPage } from "../features/quant/live-sim-page";
 
-const emptyTable = {
-  columns: ["代码", "名称", "价格"],
-  rows: [],
-  emptyLabel: "暂无数据",
-  emptyMessage: "暂无数据",
-};
-
 const snapshot = {
   updatedAt: "2026-04-23 23:30:00",
   config: {
@@ -51,12 +44,6 @@ const snapshot = {
     ],
     emptyLabel: "暂无数据",
     emptyMessage: "暂无数据",
-  },
-  pendingSignals: [],
-  executionCenter: {
-    title: "执行中心",
-    body: "暂无待执行信号",
-    chips: ["类别不应展示"],
   },
   capitalPool: {
     task: {
@@ -120,8 +107,6 @@ const snapshot = {
       },
     ],
   },
-  holdings: emptyTable,
-  trades: emptyTable,
   tradeCostSummary: [
     { label: "交易笔数", value: "2" },
     { label: "胜率", value: "50.0%" },
@@ -139,7 +124,6 @@ const snapshot = {
     { label: "卖出lot", value: "1" },
     { label: "剩余lot", value: "1" },
   ],
-  curve: [],
 };
 
 beforeAll(() => {

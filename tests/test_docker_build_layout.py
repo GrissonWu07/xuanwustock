@@ -50,6 +50,12 @@ def test_nginx_conf_supports_spa_fallback_and_backend_proxy():
     assert "proxy_pass http://backend:8501" in nginx
     assert "proxy_pass http://backend:8503" not in nginx
     assert "/api/" in nginx
+    assert "gzip on;" in nginx
+    assert "gzip_vary on;" in nginx
+    assert "application/javascript" in nginx
+    assert "text/css" in nginx
+    assert "location /assets/" in nginx
+    assert "Cache-Control \"public, max-age=31536000, immutable\"" in nginx
 
 
 def test_backend_dockerfiles_point_to_api_server():
