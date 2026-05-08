@@ -288,8 +288,11 @@ def build_sizing_explainability(
     buy_budget: float,
     quantity: int,
     skip_reason: str | None = None,
+    target_position_pct: float | None = None,
+    target_position_budget: float | None = None,
+    slot_capacity_capped: bool | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "config": normalize_capital_slot_config(config),
         "slot_plan": slot_plan,
         "sizing": sizing,
@@ -299,3 +302,10 @@ def build_sizing_explainability(
         "quantity": int(quantity or 0),
         "skip_reason": skip_reason,
     }
+    if target_position_pct is not None:
+        payload["target_position_pct"] = round(float(target_position_pct or 0), 6)
+    if target_position_budget is not None:
+        payload["target_position_budget"] = round(float(target_position_budget or 0), 4)
+    if slot_capacity_capped is not None:
+        payload["slot_capacity_capped"] = bool(slot_capacity_capped)
+    return payload

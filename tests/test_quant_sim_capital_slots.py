@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 from app.quant_sim.candidate_pool_service import CandidatePoolService
@@ -273,6 +274,35 @@ def test_gate_size_multiplier_preserves_zero_multiplier():
     }
 
     assert gate_size_multiplier(signal) == 0.0
+
+
+def test_auto_execute_uses_position_budget_before_slot_allocation(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio = PortfolioService(db_file=db_file)
+    portfolio.configure_account(177003.52)
+
+    candidate_service.add_manual_candidate("603669", "灵康药业", "main_force", latest_price=4.56)
+    candidate = candidate_service.list_candidates()[0]
+    decision = _fusion_signal("603669", fusion_score=0.35454, buy_threshold=0.35, fusion_confidence=0.853971, price=4.56)
+    decision["strategy_profile"]["portfolio_execution_guard"] = {
+        "status": "downgraded",
+        "size_multiplier": 0.25,
+    }
+    signal = signal_service.create_signal(candidate, decision)
+
+    executed = portfolio.auto_execute_signal(signal, note="position first", executed_at="2026-03-30 10:00:00")
+
+    assert executed is True
+    position = portfolio.list_positions()[0]
+    assert position["quantity"] == 4800
+    metadata = json.loads(portfolio.db.get_trade_history(limit=1)[0]["trade_metadata_json"])
+    sizing = metadata["position_sizing"]
+    assert sizing["target_position_budget"] == 22125.44
+    assert sizing["buy_budget"] == 22125.44
+    assert sizing["sizing"]["slot_units"] == 0.25
+    assert sizing["sizing"]["slot_units_source"] == "position_budget"
 
 
 def test_auto_execute_high_price_strong_buy_uses_two_slots_and_records_slot_lot_allocation(tmp_path):

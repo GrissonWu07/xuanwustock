@@ -251,24 +251,41 @@ class PortfolioService:
             ),
         )
         slot_available_cash = sum(float(slot.get("available_cash") or 0) for slot in slots)
-        slot_unit_budget = float(slot_plan["slot_budget"] or 0) * float(sizing["slot_units"] or 0)
-        if self._is_position_add(signal):
-            position_size_pct = self._resolve_buy_position_pct(signal)
-            slot_unit_budget = float(slot_plan["slot_budget"] or 0)
-            buy_budget = min(
-                float(summary["available_cash"]),
-                slot_available_cash,
-                slot_unit_budget,
-                float(summary["total_equity"]) * position_size_pct / 100.0,
-            )
-        else:
-            buy_budget = min(
-                float(summary["available_cash"]),
-                slot_available_cash,
-                slot_unit_budget,
-            )
+        signal_position_pct = self._resolve_buy_position_pct(signal)
+        execution_multiplier = gate_size_multiplier(signal)
+        target_position_pct = signal_position_pct * execution_multiplier
+        target_position_budget = (
+            float(summary["total_equity"] or 0) * target_position_pct / 100.0
+            if target_position_pct > 0
+            else 0.0
+        )
         lot_cost_with_fee = price * self.A_SHARE_LOT_SIZE * (1 + commission_rate)
+        if bool(sizing.get("strong_buy")) and 0 < target_position_budget < lot_cost_with_fee:
+            target_position_budget = lot_cost_with_fee
+        buy_budget = min(
+            float(summary["available_cash"]),
+            slot_available_cash,
+            target_position_budget,
+        )
+        slot_budget = float(slot_plan["slot_budget"] or 0)
+        actual_slot_units = buy_budget / slot_budget if slot_budget > 0 else 0.0
+        sizing = {
+            **sizing,
+            "slot_units": round(actual_slot_units, 6),
+            "slot_units_source": "position_budget",
+            "target_position_pct": round(target_position_pct, 6),
+            "target_position_budget": round(target_position_budget, 4),
+            "execution_multiplier": round(execution_multiplier, 6) if signal_position_pct > 0 else 0.0,
+        }
         if buy_budget < lot_cost_with_fee:
+            if target_position_budget <= 0:
+                skip_reason = "信号仓位或执行倍率为0"
+            elif float(summary["available_cash"] or 0) < lot_cost_with_fee:
+                skip_reason = "账户可用现金不足买入一手"
+            elif slot_available_cash < lot_cost_with_fee:
+                skip_reason = "slot可用容量不足买入一手"
+            else:
+                skip_reason = "目标仓位预算不足买入一手"
             return 0, build_sizing_explainability(
                 config=capital_config,
                 slot_plan=slot_plan,
@@ -277,7 +294,10 @@ class PortfolioService:
                 slot_available_cash=slot_available_cash,
                 buy_budget=buy_budget,
                 quantity=0,
-                skip_reason="slot预算不足买入一手",
+                skip_reason=skip_reason,
+                target_position_pct=target_position_pct,
+                target_position_budget=target_position_budget,
+                slot_capacity_capped=slot_available_cash + 1e-6 < target_position_budget,
             )
         lots = floor(buy_budget / lot_cost_with_fee)
         quantity = int(lots * self.A_SHARE_LOT_SIZE)
@@ -290,6 +310,9 @@ class PortfolioService:
             buy_budget=buy_budget,
             quantity=quantity,
             skip_reason=None,
+            target_position_pct=target_position_pct,
+            target_position_budget=target_position_budget,
+            slot_capacity_capped=slot_available_cash + 1e-6 < target_position_budget,
         )
 
     def _estimate_legacy_buy_quantity(self, signal: dict, price: float, summary: dict, commission_rate: float) -> int:
@@ -320,13 +343,6 @@ class PortfolioService:
             return max(float(signal.get("position_size_pct") or 0), 0.0)
         except (TypeError, ValueError):
             return 0.0
-
-    @staticmethod
-    def _is_position_add(signal: dict) -> bool:
-        strategy_profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
-        add_gate = strategy_profile.get("position_add_gate") if isinstance(strategy_profile.get("position_add_gate"), dict) else {}
-        intent = str(add_gate.get("intent") or strategy_profile.get("execution_intent") or "").strip().lower()
-        return intent == "position_add" and str(add_gate.get("status") or "").strip().lower() == "passed"
 
     def _execution_sort_key(self, signal: dict) -> tuple[int, float, int]:
         action = str(signal.get("action") or "").upper()
