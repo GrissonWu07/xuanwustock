@@ -120,7 +120,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
             "sellTaxRatePct": _fee_rate_pct_text(scheduler.get("sell_tax_rate"), DEFAULT_SELL_TAX_RATE),
             "capitalSlotEnabled": bool(scheduler.get("capital_slot_enabled", True)),
             "capitalPoolMinCash": _txt(scheduler.get("capital_pool_min_cash"), "20000"),
-            "capitalPoolMaxCash": _txt(scheduler.get("capital_pool_max_cash"), "1000000"),
+            "capitalPoolMaxCash": _txt(scheduler.get("capital_pool_max_cash"), "1000000000000"),
             "capitalSlotMinCash": _txt(scheduler.get("capital_slot_min_cash"), "20000"),
             "capitalMaxSlots": _txt(scheduler.get("capital_max_slots"), "25"),
             "capitalMinBuySlotFraction": _txt(scheduler.get("capital_min_buy_slot_fraction"), "0.25"),

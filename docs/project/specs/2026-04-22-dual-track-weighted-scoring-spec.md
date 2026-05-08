@@ -4,6 +4,8 @@ Status: ready-for-implementation after this revision
 Version: `v2.3`  
 Date: `2026-04-22`
 
+Implementation note as of `2026-05-08`: the v2.3 scoring stack is implemented. The current built-in persisted profiles (`aggressive`, `stable`, `conservative`) run with `dual_track.mode=hybrid`, and new stores initialize `aggressive` as the default profile. `rule_only` remains the generic schema fallback / compatibility mode, not the active built-in profile mode.
+
 ## 1. Objective
 Refactor quant decision scoring to support:
 - 12 technical dimensions with configurable weights
@@ -907,7 +909,8 @@ Historical replay behavior:
 
 ### 16.7 Compatibility and migration
 - Existing runs/tasks without `strategy_profile_id` continue using default profile.
-- Existing behavior remains stable with default profile matching current baseline (`rule_only`).
+- Current fresh stores initialize the built-in `aggressive` profile as default and run built-in profiles in `hybrid` mode.
+- `rule_only` remains available as a compatibility mode for explicitly bound legacy/default configs.
 - No breaking change to old signal payload consumers.
 - Flat context legacy configs are auto-adapted into grouped context via compatibility adapter.
 

@@ -115,7 +115,7 @@ Current source of truth: `docs/superpowers/specs/2026-05-05-stock-universe-refre
 
 ### 实时模拟口径
 
-`/live-sim` 继续使用 live `quant_sim.db` 中的账户、持仓、信号、成交、资金槽。
+`/live-sim` 继续使用 primary/live `xuanwu_stock.db` 中的账户、持仓、信号、成交、资金槽。
 
 `/portfolio` 合并展示 live-sim 股票时，必须满足：
 

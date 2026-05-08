@@ -20,8 +20,14 @@
 - `/portfolio`
 - `/live-sim`
 - `/his-replay`
-- `/ai-monitor`
+- `/strategy-config`
+- `/settings`
+
+保留但不作为默认导航入口的内部页面：
+
 - `/real-monitor`
+
+后端仍保留 AI 盯盘 API 和页面组件代码，但当前 SPA 路由清单里不再挂载 `/ai-monitor`。
 
 ## 核心能力
 

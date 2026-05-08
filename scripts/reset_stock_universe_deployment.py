@@ -7,6 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 RESET_FILENAMES = {
+    "xuanwu_stock.db",
+    "xuanwu_stock_replay.db",
     "quant_sim.db",
     "quant_sim_replay.db",
     "watchlist.db",

@@ -42,6 +42,7 @@
   "require_ma20_slope": true,
   "allow_ma_stack_confirmation": true,
   "allow_ma20_retest_confirmation": true,
+  "strict_reentry_trend_confirmation": true,
   "execution_feedback_score_cap": 0.25
 }
 ```
@@ -50,7 +51,7 @@
 
 | 参数 | 积极 | 中性 | 保守 |
 | --- | ---: | ---: | ---: |
-| `lookback_days` | 15 | 20 | 30 |
+| `lookback_days` | 20 | 30 | 45 |
 | `stop_loss_count_threshold` | 2 | 2 | 2 |
 | `stop_loss_cooldown_days` | 8 | 12 | 20 |
 | `loss_pnl_pct_threshold` | -8.0 | -5.0 | -3.0 |
@@ -58,6 +59,7 @@
 | `loss_reentry_size_multiplier` | 0.50 | 0.35 | 0.25 |
 | `repeated_stop_size_multiplier` | 0.25 | 0.25 | 0.15 |
 | `trend_confirm_checkpoints` | 2 | 3 | 3 |
+| `strict_reentry_trend_confirmation` | true | true | true |
 
 ## 运行机制
 
@@ -93,10 +95,12 @@
    - BUY 保留，但仓位倍率不超过 `loss_reentry_size_multiplier`。
 6. 假突破过滤：
    - 如果处于亏损/止损反馈状态，并且只满足 `price > MA20`，不算强趋势确认。
-   - 强趋势确认至少满足以下之一：
-     - `MA5 > MA10 > MA20` 且 `price > MA20`
-     - `price > MA20` 连续 `trend_confirm_checkpoints` 个 checkpoint 且 `MA20_slope > 0`
-     - 最近突破后回踩低点不破 MA20，并重新站上 MA5/MA10
+   - 当前默认 `strict_reentry_trend_confirmation=true`。亏损/止损反馈后的强趋势确认必须同时满足：
+     - `price > MA20`，且 `MA5 > MA10 > MA20`
+     - 最近连续 `trend_confirm_checkpoints` 个 checkpoint 都站上 MA20
+     - 最近突破后回踩低点不破 MA20，并重新站上 MA20
+     - 如果 `require_ma20_slope=true`，上述 MA 多头和连续 checkpoint 都要求 MA20 slope > 0
+   - 只有显式配置 `strict_reentry_trend_confirmation=false` 时，才退回兼容模式：MA 多头、连续 checkpoint、MA20 回踩确认满足任一类即可通过。
 
 ## 数据隔离
 
@@ -130,6 +134,7 @@
 10. MA20 上行要求
 11. 均线多头排列确认
 12. 回踩不破 MA20 确认
+13. 亏损后复买严格趋势确认
 
 ## 测试要求
 

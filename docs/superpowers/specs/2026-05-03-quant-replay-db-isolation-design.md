@@ -1,28 +1,29 @@
 # Quant Replay DB Isolation Design
 
+Implementation note as of `2026-05-08`: this spec is superseded by `docs/superpowers/specs/2026-05-06-shared-db-runtime-design.md` for current DB names and runtime wiring. Current SQLite defaults are `xuanwu_stock.db` for primary/live state and `xuanwu_stock_replay.db` for replay state.
+
 ## Goal
 
 Separate historical replay persistence from live quant simulation persistence.
 
-`quant_sim.db` remains the live/shared database for candidate pool, strategy configuration, live positions, live trades, live account, live capital slots, and live strategy signals. Historical replay writes and reads only `quant_sim_replay.db`.
+`xuanwu_stock.db` remains the live/shared database for unified stock pool, strategy configuration, live positions, live trades, live account, live capital slots, and live strategy signals. Historical replay writes and reads only `xuanwu_stock_replay.db`.
 
 ## Explicit Non-Goals
 
-- No migration from existing `quant_sim.db.sim_run_*` tables.
-- No compatibility fallback that reads old replay data from `quant_sim.db`.
-- No automatic cleanup of old `sim_run_*` tables in `quant_sim.db`.
+- No migration from existing `xuanwu_stock.db.sim_run_*` tables or older `quant_sim.db.sim_run_*` tables.
+- No compatibility fallback that reads old replay data from `xuanwu_stock.db`.
+- No automatic cleanup of old `sim_run_*` tables in the live DB.
 - No live-sim state reset in application startup.
 
 Deployment to `family-mac` will reset the quant databases manually, so the new replay database starts clean.
 
 ## Database Boundaries
 
-### `quant_sim.db`
+### `xuanwu_stock.db`
 
 Owns:
 
-- `candidate_pool`
-- `candidate_sources`
+- `stock_universe`
 - `strategy_profiles`
 - `strategy_profile_versions`
 - `sim_scheduler_config`
@@ -38,7 +39,7 @@ Owns:
 
 The existing `sim_run_*` tables may remain in old physical files but new code must not create, write, or read them from the live DB.
 
-### `quant_sim_replay.db`
+### `xuanwu_stock_replay.db`
 
 Owns:
 
@@ -101,12 +102,12 @@ The temporary execution DB remains separate and is used only inside a replay wor
 
 On `family-mac`, stop services, delete or archive:
 
-- `/Users/grisson.wu/app/xuanwustock/data/quant_sim.db`
-- `/Users/grisson.wu/app/xuanwustock/data/quant_sim.db-wal`
-- `/Users/grisson.wu/app/xuanwustock/data/quant_sim.db-shm`
-- `/Users/grisson.wu/app/xuanwustock/data/quant_sim_replay.db`
-- `/Users/grisson.wu/app/xuanwustock/data/quant_sim_replay.db-wal`
-- `/Users/grisson.wu/app/xuanwustock/data/quant_sim_replay.db-shm`
+- `/Users/grisson.wu/app/xuanwustock/data/xuanwu_stock.db`
+- `/Users/grisson.wu/app/xuanwustock/data/xuanwu_stock.db-wal`
+- `/Users/grisson.wu/app/xuanwustock/data/xuanwu_stock.db-shm`
+- `/Users/grisson.wu/app/xuanwustock/data/xuanwu_stock_replay.db`
+- `/Users/grisson.wu/app/xuanwustock/data/xuanwu_stock_replay.db-wal`
+- `/Users/grisson.wu/app/xuanwustock/data/xuanwu_stock_replay.db-shm`
 
 Then redeploy. The application recreates both schemas from scratch.
 
@@ -114,8 +115,8 @@ Then redeploy. The application recreates both schemas from scratch.
 
 - `QuantSimDB` no longer creates replay-owned `sim_run_*` tables.
 - `QuantSimReplayDB` creates and owns replay tables.
-- Starting a historical replay creates rows in `quant_sim_replay.db`, not `quant_sim.db`.
-- Live-sim snapshots and tables still use `quant_sim.db`.
-- Historical replay APIs read only `quant_sim_replay.db` for run/trade/signal/checkpoint artifacts.
+- Starting a historical replay creates rows in `xuanwu_stock_replay.db`, not `xuanwu_stock.db`.
+- Live-sim snapshots and tables still use `xuanwu_stock.db`.
+- Historical replay APIs read only `xuanwu_stock_replay.db` for run/trade/signal/checkpoint artifacts.
 - Replay signal list rows do not include full `strategy_profile_json`.
 - Replay signal detail loads full strategy/explainability JSON from `sim_run_signal_details`.

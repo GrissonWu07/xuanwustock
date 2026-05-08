@@ -8,8 +8,8 @@ Replace fixed BUY sizing with a configurable capital-slot allocator. BUY decisio
 
 1. All capital-slot parameters must have defaults and must be configurable from the UI.
 2. A slot is a portfolio budget unit. A lot is still the actual trading and T+1 sellability unit.
-3. One slot must be at least 20,000 CNY. Slot count uses floor division, so a 50,000 CNY pool creates 2 slots.
-4. The effective pool is capped by a configurable max pool value. Default max is 1,000,000 CNY.
+3. `capital_slot_min_cash` is the minimum account readiness threshold, not a hard guarantee that every computed slot budget is at least 20,000 CNY. Current implementation uses dynamic equity tiers: accounts up to 100,000 CNY use 2 slots; 100,000-1,000,000 CNY use roughly 100,000 CNY per slot; accounts above 1,000,000 CNY use roughly 200,000 CNY per slot.
+4. The effective pool is capped by a configurable max pool value. Current default cap is intentionally very high (`1,000,000,000,000`) so live/replay cash is not artificially capped unless the user configures it.
 5. Accounts below the configurable min pool value do not auto-open new positions.
 6. A normal BUY can use at most 1 slot. For stocks priced above the high-price threshold, a strong BUY may use up to 2 slots to satisfy one A-share lot.
 7. At each live cycle or replay checkpoint, all BUY signals must be ranked by signal strength before execution. Funds are allocated to stronger signals first.
@@ -23,8 +23,8 @@ Replace fixed BUY sizing with a configurable capital-slot allocator. BUY decisio
 |---|---:|---|
 | `capital_slot_enabled` | `true` | Enable slot-based sizing for auto execution. |
 | `capital_pool_min_cash` | `20000` | Minimum account equity required to auto-open new positions. |
-| `capital_pool_max_cash` | `1000000` | Maximum equity considered by the allocator. |
-| `capital_slot_min_cash` | `20000` | Minimum budget per slot. |
+| `capital_pool_max_cash` | `1000000000000` | Maximum equity considered by the allocator. |
+| `capital_slot_min_cash` | `20000` | Minimum pool readiness threshold used together with `capital_pool_min_cash`. |
 | `capital_max_slots` | `25` | Hard cap on slot count to avoid too many tiny bookkeeping units. |
 | `capital_min_buy_slot_fraction` | `0.25` | Weak BUY minimum budget, as a fraction of one slot. |
 | `capital_full_buy_edge` | `0.25` | Fusion score edge needed to reach a full 1-slot BUY. |
@@ -42,7 +42,13 @@ required_pool_cash = max(capital_pool_min_cash, capital_slot_min_cash)
 if effective_pool_cash < required_pool_cash:
   auto BUY is blocked
 
-raw_slot_count = floor(effective_pool_cash / capital_slot_min_cash)
+if effective_pool_cash <= 100000:
+  raw_slot_count = 2
+else if effective_pool_cash > 1000000:
+  raw_slot_count = ceil(effective_pool_cash / 200000)
+else:
+  raw_slot_count = ceil(effective_pool_cash / 100000)
+
 slot_count = min(max(raw_slot_count, 1), capital_max_slots)
 slot_budget = effective_pool_cash / slot_count
 ```
@@ -50,10 +56,12 @@ slot_budget = effective_pool_cash / slot_count
 Examples:
 
 ```text
-20,000 -> 1 slot, 20,000 each
+20,000 -> 2 slots, 10,000 each
 50,000 -> 2 slots, 25,000 each
-90,000 -> 4 slots, 22,500 each
-1,000,000 with max_slots=25 -> 25 slots, 40,000 each
+80,000 -> 2 slots, 40,000 each
+452,000 -> 5 slots, 90,400 each
+1,000,000 -> 10 slots, 100,000 each
+1,200,000 -> 6 slots, 200,000 each
 ```
 
 ## BUY Slot Units

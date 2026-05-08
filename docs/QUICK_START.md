@@ -103,6 +103,8 @@ npm run dev
 3. 默认调度周期是 `10` 分钟。
 4. 只在交易时段运行。
 
+新库默认策略档案是 `aggressive`；策略配置页可以切换或克隆 `aggressive / stable / conservative`，三档都使用同一套实时/回放共享策略内核。
+
 运行时依赖：
 
 - 行情技术刷新走 local-first

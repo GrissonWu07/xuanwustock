@@ -47,9 +47,8 @@ The SPA uses explicit client-side routes:
 - `/discover` 发现股票
 - `/research` 研究情报
 - `/portfolio` 持仓分析
-- `/live-sim` 量化模拟
+- `/live-sim` 实时量化
 - `/his-replay` 历史回放
-- `/ai-monitor` AI盯盘
 - `/strategy-config` 策略配置
 - `/settings` 环境配置
 
@@ -61,6 +60,10 @@ Optional future routes:
 Hidden internal route:
 
 - `/real-monitor` 实时监控
+
+Retained backend/component only:
+
+- `/ai-monitor` AI 盯盘 API 与页面组件仍保留，但当前 SPA 路由未挂载
 
 ## Docker / nginx deployment
 

@@ -1,7 +1,7 @@
 # Shared DB Runtime and Persistence Standard Design
 
-Date: 2026-05-06
-Status: Proposed
+Date: 2026-05-08
+Status: Baseline implemented; repository migration ongoing
 
 Supersedes:
 
@@ -9,30 +9,17 @@ Supersedes:
 
 ## Current Implementation Snapshot
 
-As of `2026-05-06`, relational persistence is fragmented across the codebase:
+As of `2026-05-08`, the runtime baseline has been introduced and is now the current persistence standard:
 
-1. `app/` contains `82` direct `sqlite3.connect(...)` call sites across `15` files.
-2. `UIApiContext` still builds service objects by passing raw file paths such as `quant_sim.db`, `quant_sim_replay.db`, `stock_monitor.db`, and `stock_analysis.db` directly into domain services.
-3. Most DB-owning modules create tables lazily in constructors and open a brand-new SQLite connection per method call.
-4. The project does not yet include `SQLAlchemy`, `Alembic`, or a MySQL driver.
-5. Local market data already has a non-relational persistence path through parquet files under `data/local_sources/`; that path is separate from the relational DB problem and should remain separate.
-6. Historical replay corruption on `family-mac` showed the current approach is not operationally safe for long-running write-heavy workloads on Docker Desktop bind mounts backed by `grpcfuse`.
+1. `app/db/runtime` owns backend configuration, SQLAlchemy engine creation, process-scoped engine caching, session factories, read/write unit-of-work helpers, and health checks.
+2. Backend selection is configurable with `APP_DB_BACKEND=sqlite|mysql`.
+3. The two named relational stores are `primary` and `replay`.
+4. SQLite defaults are `data/xuanwu_stock.db` and `data/xuanwu_stock_replay.db`.
+5. MySQL URLs can be supplied directly through `APP_DB_PRIMARY_URL` and `APP_DB_REPLAY_URL`, or assembled from `APP_DB_MYSQL_*` settings.
+6. Domain services are being wired through `DatabaseRuntime`; compatibility wrappers remain where existing DB classes still expose sqlite-style methods.
+7. Local market data remains a separate non-relational parquet/cache path under `data/local_sources/`.
 
-Current relational files include at least:
-
-1. `quant_sim.db`
-2. `quant_sim_replay.db`
-3. `stock_analysis.db`
-4. `stock_monitor.db`
-5. `smart_monitor.db`
-6. `main_force_batch.db`
-7. `longhubang.db`
-8. `news_flow.db`
-9. `sector_strategy.db`
-10. `settings.db`
-11. `ui_table_cache.db`
-
-This is not a maintainable persistence standard. The system needs a shared runtime, clear transaction boundaries, backend configurability, and a single way to define schemas and repositories.
+Remaining migration work is repository-level cleanup, not a change in persistence direction: old direct-DB wrappers should keep moving behind runtime-owned connections and explicit read/write boundaries.
 
 ## Background
 

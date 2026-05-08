@@ -1,7 +1,7 @@
 # 股票池与统一数据刷新架构设计
 
-Date: 2026-05-05
-Status: Partially implemented
+Date: 2026-05-08
+Status: Implemented baseline; refresh-service consolidation ongoing
 
 Supersedes:
 
@@ -10,16 +10,16 @@ Supersedes:
 
 ## 当前实现快照
 
-截至 `2026-05-06`，以下内容已经在代码中落地：
+截至 `2026-05-08`，以下内容已经在代码中落地：
 
-1. 统一股票池主表已经切到 `quant_sim.db.stock_universe`。
+1. 统一股票池主表已经切到 `xuanwu_stock.db.stock_universe`。
 2. 工作台股票列表已经读取 `watched OR quant_enabled OR registered_position_enabled` 的统一股票池视图，而不是只读 `watched=1`。
 3. `WatchlistService` 物理上已经不再使用 `watchlist.db`，而是直接操作 `stock_universe`。
 4. `CandidatePoolService` 仍保留兼容命名，但底层已经是 `stock_universe.quant_enabled` 视图。
 5. 手工录入股票时，`basic_info_missing` 会同步写入专用列。
 6. live-sim 调度默认间隔已经是 `10` 分钟。
 7. 实时刷新链路已经对 fresh runtime entry 做 local-first 命中，并对失败股票做冷却跳过。
-8. 历史回放已经使用独立 `quant_sim_replay.db`，并在准备阶段走 local-first 历史 K 线/指标复用。
+8. 历史回放已经使用独立 `xuanwu_stock_replay.db`，并在准备阶段走 local-first 历史 K 线/指标复用。
 
 以下内容仍处于“目标态先行、实现逐步收敛”：
 
@@ -119,7 +119,7 @@ Supersedes:
 2. 删除或重置旧 `quant_sim.db` 中的股票范围相关表：`candidate_pool`、`candidate_sources`，以及任何只用于旧量化池成员关系的表。
 3. 删除或重置旧 `portfolio_stocks.db`，不再作为持仓池数据库使用。
 4. 删除或重置旧 `watchlist.db`，不再作为关注池/股票池数据库使用。
-5. 保留 live-sim 账户状态库和 replay 结果库的策略由部署任务显式决定；如果本次部署要求干净环境，则同步删除 `sim_positions`、`sim_trades`、`strategy_signals` 和 `quant_sim_replay.db`。
+5. 保留 live-sim 账户状态库和 replay 结果库的策略由部署任务显式决定；如果本次部署要求干净环境，则同步删除 `sim_positions`、`sim_trades`、`strategy_signals` 和 `xuanwu_stock_replay.db`。
 6. 清库完成后启动新版本，由新版本初始化统一股票池主表和附属表。
 7. 清库步骤必须写入部署脚本或部署 runbook，不能依赖人工临时 SQL。
 8. 当前部署脚本为 `scripts/reset_stock_universe_deployment.py --yes`；它会删除旧股票范围相关 DB、旧持仓 DB、旧关注 DB、live-sim DB 与 replay DB，由新版本重新初始化。

@@ -27,9 +27,22 @@ def test_ui_docs_cover_spa_and_independent_deployment():
         assert "_stcore/health" not in text
         assert "streamlit" not in text.lower()
 
-    for route in ["/main", "/discover", "/research", "/portfolio", "/live-sim", "/his-replay", "/ai-monitor", "/real-monitor"]:
+    current_routes = [
+        "/main",
+        "/discover",
+        "/research",
+        "/portfolio",
+        "/live-sim",
+        "/his-replay",
+        "/strategy-config",
+        "/settings",
+        "/real-monitor",
+    ]
+    for route in current_routes:
         assert route in root_readme
         assert route in ui_readme
+
+    for route in ["/main", "/discover", "/research", "/portfolio", "/live-sim", "/his-replay", "/ai-monitor", "/real-monitor"]:
         assert route in spec
 
 

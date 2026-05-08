@@ -1,56 +1,56 @@
 # Current State
 
 ## Objective
-- Define and approve a refactor spec for dual-track scoring:
-- Expand technical scoring to 12 dimensions.
-- Make per-dimension weights configurable for both technical and context tracks.
-- Add configurable dual-track fusion weights and explicit fusion mode.
-- Add UI-managed strategy profiles for params/weights/algorithms and bind them to live/replay runs.
-- Keep current behavior safe by default and avoid accidental strategy drift.
 
-## Completed
-- Reviewed current implementation paths and decision flow:
-- `app/quant_kernel/runtime.py` (technical/context scoring and explainability payload assembly)
-- `app/quant_kernel/decision_engine.py` (final dual-track action logic)
-- `app/quant_kernel/config.py` (thresholds and fixed scoring constants)
-- `app/quant_sim/signal_center_service.py` (AI overlay deltas that modify context score)
-- `app/gateway_api.py` + `ui/src/features/quant/signal-detail-page.tsx` (explanation rendering)
-- Identified that current final decision is rule-based, not linear fusion.
-- Identified technical dimensions are limited (candidate=5, position=4) and weights are implicit constants.
+Keep the project state document aligned with the current implementation of the SPA, shared DB runtime, and quant strategy stack. Older spec/plan files remain as design history; this file is the current operational summary.
 
-## In Progress
-- Upgraded spec to implementation-ready `v2.3` with:
-- exact math formulas
-- deterministic missing-field handling
-- candidate/position profile design
-- explicit hybrid precedence
-- context grouped scoring and overlay ownership migration
-- backward-compat acceptance definition
-- schema versioning (`quant_explain/v2.3`)
-- golden fixture regression scope
-- fixed 12 review issues (normalization scope, context flat-group, fusion unavailable policy, confidence coverage, confirmation formula, veto priority, action mapping, scoring appendix, mode compatibility wording, config validation, contribution semantics, extra fixtures)
-- extended spec with strategy profile configuration scope (UI/API/persistence/runtime binding to live and replay)
-- completed requirement alignment pass: task now explicitly covers full 21-dimension parameterization, no-hardcoded-constant rule, and strategy-switch propagation tests.
-- upgraded to spec `v2.3`: context grouped scoring as production default, candidate/position recommended default group weights, weighted/hybrid non-uniform default-weight policy, sell-precedence gate, divergence-penalized confidence, dynamic thresholds, and candidate-reject execution guard.
-- aligned final-decision semantics across modes: veto-first for all modes, core-rule action separation, weighted BUY per-track gates, alpha=0 gate skipping, and stricter context-group validation/schema rules.
-- incorporated final-review blockers: weighted action staging (`weighted_threshold_action` vs `weighted_action_raw`), rule-only legacy-path authority, replay fail-fast reproducibility policy, extended scorer algorithm types/schema, dynamic-threshold volatility source definition, and reason-template validation.
-- applied final consistency fixes: section-9 abbreviated-schema clarification, scorer validation model (`dimension_id + algorithm`), explicit veto config source block, volatility-adjusted sell-precedence validation, execution-feedback score-cap math position, and per-profile dual-track override semantics.
-- upgraded technical grouping to 4 groups: `trend`, `momentum`, `volume_confirmation`, `volatility_risk`.
-- Waiting for final user approval before code implementation.
+## Implemented Baseline
 
-## Design/State Review Gate
-- PASS (2026-04-22): `state`, `task`, `spec` are now aligned at implementation level:
-- scope, formulas, precedence, compatibility, schema versioning, full parameterization, context grouped defaults, validation, sell-safety/conflict-penalty logic, and fixture regression criteria are consistent.
-- No spec/task drift found for implementation entry.
+- The frontend is a Vite/React SPA served through `app/gateway_api.py` and nginx in production.
+- Current visible SPA routes are `/main`, `/discover`, `/research`, `/portfolio`, `/live-sim`, `/his-replay`, `/strategy-config`, and `/settings`.
+- `/real-monitor` is retained as a hidden internal route. AI monitor backend APIs and component code remain, but `/ai-monitor` is not mounted in the current SPA route manifest.
+- Primary relational data defaults to `data/xuanwu_stock.db`.
+- Historical replay relational data defaults to `data/xuanwu_stock_replay.db`.
+- `app/db/runtime` provides the process-scoped DB runtime, configurable `sqlite` / `mysql` URLs, named `primary` and `replay` stores, and read/write/worker unit-of-work entrypoints.
 
-## Risks / Decisions
-- Risk: introducing explicit fusion weights could change live/replay signal behavior.
-- Decision: default mode must remain behavior-compatible (`rule_only`) until explicitly switched.
-- Risk: adding many dimensions without normalization will make scores unstable.
-- Decision: adopt hierarchical scoring (`dimension -> group -> track -> fusion`) with clamping at each stage.
-- Risk: UI may still be interpreted as “票数即权重”.
-- Decision: expose explicit weight sources and formula fields from backend.
+## Strategy Runtime
 
-## Next Step
-- User approves implementation-ready spec.
-- Start execution by task step order: config -> scoring pipeline -> precedence -> adapter -> strategy profile module -> UI binding -> fixtures.
+- Realtime simulation and historical replay share the same quant decision kernel.
+- Built-in strategy profiles are `aggressive`, `stable`, and `conservative`.
+- New default profile is `aggressive`; `stable` remains the balanced baseline, not the initialized default.
+- Built-in profiles run with `dual_track.mode=hybrid`. The generic `StrategyScoringConfig.default()` `rule_only` mode is only a compatibility base/fallback, not the active built-in profile mode.
+- Strategy profile settings, candidate/position overrides, stock execution feedback policy, portfolio execution guard policy, and AI dynamic strategy parameters are persisted through the strategy-profile APIs and settings snapshot.
+
+## Execution Gates
+
+`SignalCenterService` applies gates in this order:
+
+1. normalize decision payload and canonical v2.3 scores
+2. position constraints
+3. position add gate
+4. reentry constraints
+5. stock execution feedback
+6. portfolio execution guard
+7. transaction-cost constraints
+8. signal persistence
+
+Current strategy guard semantics:
+
+- No-position candidates never generate executable SELL; sell-like candidate outcomes become non-tradable HOLD/reject records.
+- Loss/stop feedback after a BUY can block or downgrade later BUY signals.
+- Strong trend confirmation after loss is strict by default and requires MA stack, consecutive checkpoints above MA20, and MA20 retest confirmation.
+- Weak-buy reentry after a loss is additionally checked by the portfolio guard: last buy was weak, a loss happened after that buy, the current signal is still weak, and strict trend confirmation is missing.
+- Capital-slot sizing reads final gate multipliers once; gates record evidence and do not pre-scale `position_size_pct`.
+
+## Data And UI Boundaries
+
+- `/live-sim` first snapshot is intentionally light: config, status, account metrics, realtime quant stocks, capital pool, and trade-cost summary.
+- Live signals and trades are separate paged endpoints.
+- `/his-replay` freezes `stock_universe.quant_enabled=1` at task start and writes only to replay tables.
+- UI table timestamps must display system time; persisted timestamps remain UTC.
+
+## Review State
+
+- The active algorithm description is `docs/量化模拟算法设计.md`.
+- The active UI/API route descriptions are `docs/前端页面与交互清单.md` and `docs/后端能力与服务接口清单.md`.
+- Historical specs under `docs/superpowers/` are design records unless they explicitly include a current implementation note.
