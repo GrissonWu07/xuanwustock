@@ -163,6 +163,29 @@ def test_feedback_gate_blocks_recent_loss_reentry_without_trend_confirmation():
     assert "缺少强趋势确认" in gate["reasons"]
 
 
+def test_feedback_gate_blocks_recent_weak_buy_reentry_without_trend_confirmation():
+    gate = evaluate_stock_execution_feedback_gate(
+        action="BUY",
+        stock_code="300857",
+        policy=_policy(),
+        summary={
+            "stock_code": "300857",
+            "weak_buy_lookback_days": 3650,
+            "recent_weak_buy_count": 1,
+            "last_weak_buy_at": "2026-01-05 10:00:00",
+        },
+        market_snapshot=_snapshot(),
+        current_time="2026-01-08 10:00:00",
+    )
+
+    assert gate["status"] == "blocked"
+    assert gate["recent_loss_trade_count"] == 0
+    assert gate["recent_weak_buy_count"] == 1
+    assert gate["weak_buy_reentry_active"] is True
+    assert "历史存在弱买成交" in gate["reasons"]
+    assert "缺少强趋势确认" in gate["reasons"]
+
+
 def test_feedback_gate_uses_stop_loss_cooldown_days():
     gate = evaluate_stock_execution_feedback_gate(
         action="BUY",
@@ -295,6 +318,63 @@ def test_signal_center_blocks_loss_reentry_when_portfolio_tier_is_weak(tmp_path)
     assert portfolio_gate["buy_tier"] == "weak_buy"
     assert portfolio_gate["status"] == "blocked"
     assert "亏损后再买弱买信号不允许执行" in portfolio_gate["reasons"]
+
+
+def test_signal_center_blocks_profitable_weak_buy_reentry_without_trend_confirmation(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    portfolio = PortfolioService(db_file=db_file)
+    signals = SignalCenterService(db_file=db_file)
+    portfolio.configure_account(100000)
+    candidate = {"stock_code": "300857", "stock_name": "协创数据", "source": "main_force"}
+    weak_buy = signals.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 80,
+            "position_size_pct": 25,
+            "reasoning": "weak seed",
+            "decision_time": "2026-01-05 10:00:00",
+            "strategy_profile": {
+                "portfolio_execution_guard_policy": {"enabled": False},
+                "portfolio_execution_guard": {
+                    "buy_tier": "weak_buy",
+                    "buy_tier_label": "弱买",
+                    "buy_strength_score": 0.42,
+                },
+            },
+        },
+        notify=False,
+    )
+    portfolio.confirm_buy(weak_buy["id"], price=100.0, quantity=100, note="weak buy seed", executed_at="2026-01-05 10:00:00")
+    sell = signals.create_signal(
+        candidate,
+        {"action": "SELL", "confidence": 80, "position_size_pct": 100, "reasoning": "profit sell"},
+        notify=False,
+    )
+    portfolio.confirm_sell(sell["id"], price=105.0, quantity=100, note="止盈", executed_at="2026-01-06 10:00:00")
+
+    blocked = signals.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 88,
+            "position_size_pct": 50,
+            "reasoning": "retry after weak buy",
+            "decision_time": "2026-02-10 10:00:00",
+            "strategy_profile": {
+                "stock_execution_feedback_policy": _policy(),
+                "market_snapshot": _snapshot(),
+            },
+        },
+        notify=False,
+    )
+
+    assert blocked["action"] == "HOLD"
+    gate = blocked["strategy_profile"]["stock_execution_feedback_gate"]
+    assert gate["status"] == "blocked"
+    assert gate["recent_loss_trade_count"] == 0
+    assert gate["recent_weak_buy_count"] == 1
+    assert gate["weak_buy_reentry_active"] is True
 
 
 def test_signal_center_blocks_generic_loss_reentry_without_trend_confirmation(tmp_path):

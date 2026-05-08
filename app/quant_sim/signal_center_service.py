@@ -548,6 +548,7 @@ class SignalCenterService:
             stock_code,
             as_of=current_time,
             lookback_days=int(policy.get("lookback_days") or 20),
+            weak_buy_lookback_days=int(policy.get("weak_buy_reentry_lookback_days") or policy.get("lookback_days") or 20),
         )
         market_snapshot = (
             strategy_profile.get("market_snapshot")

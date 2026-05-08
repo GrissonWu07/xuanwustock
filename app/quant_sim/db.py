@@ -1485,25 +1485,31 @@ class QuantSimDB:
         *,
         as_of: str | datetime | None = None,
         lookback_days: int = 20,
+        weak_buy_lookback_days: int | None = None,
     ) -> dict[str, Any]:
         code = str(stock_code or "").strip()
-        days = max(1, int(lookback_days or 20))
+        days = max(20, int(lookback_days or 20))
+        weak_days = max(days, int(weak_buy_lookback_days or days))
         if not code:
             return {
                 "stock_code": "",
                 "lookback_days": days,
+                "weak_buy_lookback_days": weak_days,
                 "recent_stop_loss_count": 0,
                 "recent_loss_trade_count": 0,
+                "recent_weak_buy_count": 0,
                 "recent_realized_pnl": 0.0,
                 "recent_realized_pnl_pct": 0.0,
                 "sample_count": 0,
                 "last_stop_loss_at": None,
                 "last_loss_sell_at": None,
+                "last_weak_buy_at": None,
                 "recent_checkpoints": [],
             }
 
         as_of_dt = self._ensure_datetime(as_of)
         since_text = self._format_datetime(as_of_dt - timedelta(days=days))
+        weak_since_text = self._format_datetime(as_of_dt - timedelta(days=weak_days))
         as_of_text = self._format_datetime(as_of_dt)
         conn = self._connect()
         cursor = conn.cursor()
@@ -1525,14 +1531,34 @@ class QuantSimDB:
             (code, since_text, as_of_text),
         )
         rows = [self._row_to_dict(row) for row in cursor.fetchall()]
+        cursor.execute(
+            """
+            SELECT
+                t.*,
+                s.decision_type AS signal_decision_type,
+                s.strategy_profile_json AS signal_strategy_profile_json,
+                s.execution_note AS signal_execution_note
+            FROM sim_trades t
+            LEFT JOIN strategy_signals s ON s.id = t.signal_id
+            WHERE t.stock_code = ?
+              AND UPPER(t.action) = 'BUY'
+              AND t.executed_at >= ?
+              AND t.executed_at <= ?
+            ORDER BY t.executed_at DESC, t.id DESC
+            """,
+            (code, weak_since_text, as_of_text),
+        )
+        buy_rows = [self._row_to_dict(row) for row in cursor.fetchall()]
         conn.close()
 
         realized_pnl = sum(float(row.get("realized_pnl") or 0.0) for row in rows)
         cost_basis = 0.0
         loss_count = 0
         stop_count = 0
+        weak_buy_count = 0
         last_loss_at = None
         last_stop_at = None
+        last_weak_buy_at = None
         for row in rows:
             pnl = float(row.get("realized_pnl") or 0.0)
             gross = float(row.get("gross_amount") or 0.0)
@@ -1547,17 +1573,24 @@ class QuantSimDB:
             if self._trade_row_is_stop_loss(row):
                 stop_count += 1
                 last_stop_at = last_stop_at or row.get("executed_at")
+        for row in buy_rows:
+            if self._trade_row_is_weak_buy(row):
+                weak_buy_count += 1
+                last_weak_buy_at = last_weak_buy_at or row.get("executed_at")
         realized_pct = (realized_pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
         return {
             "stock_code": code,
             "lookback_days": days,
+            "weak_buy_lookback_days": weak_days,
             "recent_stop_loss_count": stop_count,
             "recent_loss_trade_count": loss_count,
+            "recent_weak_buy_count": weak_buy_count,
             "recent_realized_pnl": round(realized_pnl, 4),
             "recent_realized_pnl_pct": round(realized_pct, 4),
             "sample_count": len(rows),
             "last_stop_loss_at": last_stop_at,
             "last_loss_sell_at": last_loss_at,
+            "last_weak_buy_at": last_weak_buy_at,
             "recent_checkpoints": [],
         }
 
@@ -1571,6 +1604,18 @@ class QuantSimDB:
         fusion = explainability.get("fusion_breakdown") if isinstance(explainability, dict) and isinstance(explainability.get("fusion_breakdown"), dict) else {}
         veto_id = str(fusion.get("veto_id") or fusion.get("veto_trigger_type") or "").strip()
         return veto_id in {"stop_loss", "hard_stop_loss", "risk_stop"}
+
+    def _trade_row_is_weak_buy(self, row: dict[str, Any]) -> bool:
+        profile = self._loads_metadata(row.get("signal_strategy_profile_json"))
+        if not isinstance(profile, dict):
+            return False
+        gate = profile.get("portfolio_execution_guard")
+        if not isinstance(gate, dict):
+            return False
+        tier = str(gate.get("buy_tier") or gate.get("initial_buy_tier") or "").strip().lower()
+        label = str(gate.get("buy_tier_label") or "").strip()
+        badges = gate.get("ui_badges") if isinstance(gate.get("ui_badges"), list) else []
+        return tier == "weak_buy" or label == "弱买" or "弱买" in badges
 
     def get_portfolio_execution_guard_summary(
         self,

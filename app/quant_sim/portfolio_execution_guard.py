@@ -365,10 +365,17 @@ def evaluate_portfolio_execution_guard(
         bool(stock_gate.get("recent_loss_reentry_active"))
         or int(_float(stock_gate.get("recent_loss_trade_count"), 0.0)) > 0
     )
-    if stock_loss_reentry_active and tier == "weak_buy":
+    stock_weak_buy_reentry_active = (
+        bool(stock_gate.get("weak_buy_reentry_active"))
+        or int(_float(stock_gate.get("recent_weak_buy_count"), 0.0)) > 0
+    )
+    if (stock_loss_reentry_active or stock_weak_buy_reentry_active) and tier == "weak_buy":
         status = "blocked"
         multiplier = 0.0
-        reasons.append("亏损后再买弱买信号不允许执行")
+        if stock_loss_reentry_active:
+            reasons.append("亏损后再买弱买信号不允许执行")
+        if stock_weak_buy_reentry_active:
+            reasons.append("弱买后再买弱买信号不允许执行")
 
     if status == "blocked":
         reasons.extend(portfolio["reasons"])

@@ -361,7 +361,9 @@ def test_builtin_strategy_profiles_tier_stock_execution_feedback_policy(tmp_path
     stable = configs["stable"]["base"]["context"]["stock_execution_feedback_policy"]
     conservative = configs["conservative"]["base"]["context"]["stock_execution_feedback_policy"]
 
+    assert aggressive["lookback_days"] >= 20
     assert aggressive["lookback_days"] < stable["lookback_days"] < conservative["lookback_days"]
+    assert aggressive["weak_buy_reentry_lookback_days"] >= 3650
     assert aggressive["loss_reentry_size_multiplier"] > stable["loss_reentry_size_multiplier"] > conservative["loss_reentry_size_multiplier"]
     assert aggressive["stop_loss_cooldown_days"] < stable["stop_loss_cooldown_days"] < conservative["stop_loss_cooldown_days"]
 
