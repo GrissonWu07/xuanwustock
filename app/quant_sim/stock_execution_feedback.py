@@ -15,11 +15,8 @@ DEFAULT_STOCK_EXECUTION_FEEDBACK_POLICY: dict[str, Any] = {
     "loss_pnl_pct_threshold": -5.0,
     "loss_amount_threshold": -1000.0,
     "loss_reentry_size_multiplier": 0.35,
-    "weak_buy_reentry_size_multiplier": 0.35,
-    "weak_buy_reentry_lookback_days": 3650,
     "repeated_stop_size_multiplier": 0.25,
     "require_trend_confirmation": True,
-    "weak_buy_reentry_requires_trend_confirmation": True,
     "trend_confirm_checkpoints": 3,
     "require_ma20_slope": True,
     "allow_ma_stack_confirmation": True,
@@ -37,7 +34,6 @@ STOCK_EXECUTION_FEEDBACK_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "loss_pnl_pct_threshold": -8.0,
         "loss_amount_threshold": -2000.0,
         "loss_reentry_size_multiplier": 0.5,
-        "weak_buy_reentry_size_multiplier": 0.5,
         "repeated_stop_size_multiplier": 0.25,
         "trend_confirm_checkpoints": 2,
     },
@@ -48,7 +44,6 @@ STOCK_EXECUTION_FEEDBACK_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "loss_pnl_pct_threshold": -5.0,
         "loss_amount_threshold": -1000.0,
         "loss_reentry_size_multiplier": 0.35,
-        "weak_buy_reentry_size_multiplier": 0.35,
         "repeated_stop_size_multiplier": 0.25,
         "trend_confirm_checkpoints": 3,
     },
@@ -59,7 +54,6 @@ STOCK_EXECUTION_FEEDBACK_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "loss_pnl_pct_threshold": -3.0,
         "loss_amount_threshold": -500.0,
         "loss_reentry_size_multiplier": 0.25,
-        "weak_buy_reentry_size_multiplier": 0.25,
         "repeated_stop_size_multiplier": 0.15,
         "trend_confirm_checkpoints": 3,
     },
@@ -73,13 +67,16 @@ class StockExecutionFeedbackSummary:
     recent_stop_loss_count: int = 0
     recent_loss_trade_count: int = 0
     recent_weak_buy_count: int = 0
+    loss_after_last_buy_count: int = 0
     recent_realized_pnl: float = 0.0
     recent_realized_pnl_pct: float = 0.0
     sample_count: int = 0
     last_stop_loss_at: str | None = None
     last_loss_sell_at: str | None = None
     last_weak_buy_at: str | None = None
-    weak_buy_lookback_days: int | None = None
+    last_buy_at: str | None = None
+    last_buy_was_weak: bool = False
+    last_loss_after_last_buy_at: str | None = None
     recent_checkpoints: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -109,21 +106,8 @@ def normalize_stock_execution_feedback_policy(
     policy["loss_pnl_pct_threshold"] = min(0.0, _float(policy.get("loss_pnl_pct_threshold"), -5.0))
     policy["loss_amount_threshold"] = min(0.0, _float(policy.get("loss_amount_threshold"), -1000.0))
     policy["loss_reentry_size_multiplier"] = _clamp(_float(policy.get("loss_reentry_size_multiplier"), 0.35), 0.0, 1.0)
-    policy["weak_buy_reentry_size_multiplier"] = _clamp(
-        _float(policy.get("weak_buy_reentry_size_multiplier"), policy.get("loss_reentry_size_multiplier") or 0.35),
-        0.0,
-        1.0,
-    )
-    policy["weak_buy_reentry_lookback_days"] = max(
-        policy["lookback_days"],
-        int(_float(policy.get("weak_buy_reentry_lookback_days"), 3650)),
-    )
     policy["repeated_stop_size_multiplier"] = _clamp(_float(policy.get("repeated_stop_size_multiplier"), 0.25), 0.0, 1.0)
     policy["require_trend_confirmation"] = _bool(policy.get("require_trend_confirmation"), True)
-    policy["weak_buy_reentry_requires_trend_confirmation"] = _bool(
-        policy.get("weak_buy_reentry_requires_trend_confirmation"),
-        True,
-    )
     policy["trend_confirm_checkpoints"] = max(1, int(_float(policy.get("trend_confirm_checkpoints"), 3)))
     policy["require_ma20_slope"] = _bool(policy.get("require_ma20_slope"), True)
     policy["allow_ma_stack_confirmation"] = _bool(policy.get("allow_ma_stack_confirmation"), True)
@@ -179,7 +163,6 @@ def evaluate_stock_execution_feedback_gate(
     )
     repeated_stop = summary_obj.recent_stop_loss_count >= stop_threshold and stop_cooldown_active
     recent_loss_reentry = summary_obj.recent_loss_trade_count > 0
-    recent_weak_buy_reentry = summary_obj.recent_weak_buy_count > 0
     repeated_loss = summary_obj.recent_loss_trade_count >= stop_threshold
     loss_trigger = (
         summary_obj.recent_realized_pnl <= float(resolved_policy["loss_amount_threshold"])
@@ -209,17 +192,6 @@ def evaluate_stock_execution_feedback_gate(
             status = "downgraded"
             multiplier = min(multiplier, float(resolved_policy["loss_reentry_size_multiplier"]))
             reasons.append("亏损后仅允许降仓试错")
-    elif recent_weak_buy_reentry:
-        weak_days = int(summary_obj.weak_buy_lookback_days or resolved_policy["weak_buy_reentry_lookback_days"])
-        reasons.append("历史存在弱买成交" if weak_days >= 3650 else f"最近{weak_days}天存在弱买成交")
-        if resolved_policy["weak_buy_reentry_requires_trend_confirmation"] and not trend["confirmed"]:
-            status = "blocked"
-            multiplier = 0.0
-            reasons.append("缺少强趋势确认")
-        else:
-            status = "downgraded"
-            multiplier = min(multiplier, float(resolved_policy["weak_buy_reentry_size_multiplier"]))
-            reasons.append("弱买后仅允许降仓试错")
 
     if loss_trigger and status != "blocked":
         status = "downgraded"
@@ -238,8 +210,6 @@ def evaluate_stock_execution_feedback_gate(
             severity += 0.7
         elif recent_loss_reentry:
             severity += 0.4
-        elif recent_weak_buy_reentry:
-            severity += 0.35
         if loss_trigger:
             severity += 0.5
         feedback_score = -min(cap, cap * min(1.0, severity))
@@ -275,14 +245,17 @@ def _gate(
         "recent_stop_loss_count": int(summary.recent_stop_loss_count),
         "recent_loss_trade_count": int(summary.recent_loss_trade_count),
         "recent_weak_buy_count": int(summary.recent_weak_buy_count),
+        "loss_after_last_buy_count": int(summary.loss_after_last_buy_count),
         "recent_realized_pnl": round(float(summary.recent_realized_pnl), 4),
         "recent_realized_pnl_pct": round(float(summary.recent_realized_pnl_pct), 4),
         "sample_count": int(summary.sample_count),
         "lookback_days": int(summary.lookback_days),
-        "weak_buy_lookback_days": int(summary.weak_buy_lookback_days or policy.get("weak_buy_reentry_lookback_days") or summary.lookback_days),
         "last_stop_loss_at": summary.last_stop_loss_at,
         "last_loss_sell_at": summary.last_loss_sell_at,
         "last_weak_buy_at": summary.last_weak_buy_at,
+        "last_buy_at": summary.last_buy_at,
+        "last_buy_was_weak": bool(summary.last_buy_was_weak),
+        "last_loss_after_last_buy_at": summary.last_loss_after_last_buy_at,
         "stop_loss_cooldown_days": int(policy.get("stop_loss_cooldown_days") or 0),
         "stop_loss_cooldown_active": _within_cooldown(
             summary.last_stop_loss_at,
@@ -295,7 +268,7 @@ def _gate(
             int(policy.get("stop_loss_cooldown_days") or 0),
         ),
         "recent_loss_reentry_active": summary.recent_loss_trade_count > 0,
-        "weak_buy_reentry_active": summary.recent_weak_buy_count > 0,
+        "weak_buy_reentry_active": bool(summary.last_buy_was_weak and summary.loss_after_last_buy_count > 0),
         "trend_confirmed": bool(trend.get("confirmed")),
         "trend_confirmation": trend,
         "policy": policy,
@@ -405,19 +378,16 @@ def _summary_from_any(
         recent_stop_loss_count=int(payload.get("recent_stop_loss_count") or 0),
         recent_loss_trade_count=int(payload.get("recent_loss_trade_count") or 0),
         recent_weak_buy_count=int(payload.get("recent_weak_buy_count") or 0),
+        loss_after_last_buy_count=int(payload.get("loss_after_last_buy_count") or 0),
         recent_realized_pnl=float(payload.get("recent_realized_pnl") or 0.0),
         recent_realized_pnl_pct=float(payload.get("recent_realized_pnl_pct") or 0.0),
         sample_count=int(payload.get("sample_count") or 0),
         last_stop_loss_at=payload.get("last_stop_loss_at"),
         last_loss_sell_at=payload.get("last_loss_sell_at"),
         last_weak_buy_at=payload.get("last_weak_buy_at"),
-        weak_buy_lookback_days=int(
-            payload.get("weak_buy_lookback_days")
-            or policy.get("weak_buy_reentry_lookback_days")
-            or payload.get("lookback_days")
-            or policy.get("lookback_days")
-            or 20
-        ),
+        last_buy_at=payload.get("last_buy_at"),
+        last_buy_was_weak=_bool(payload.get("last_buy_was_weak"), False),
+        last_loss_after_last_buy_at=payload.get("last_loss_after_last_buy_at"),
         recent_checkpoints=payload.get("recent_checkpoints") if isinstance(payload.get("recent_checkpoints"), list) else [],
     )
 

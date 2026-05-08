@@ -361,21 +361,14 @@ def evaluate_portfolio_execution_guard(
             multiplier = min(multiplier, float(resolved["cooldown_size_multiplier"]))
 
     stock_gate = _dict(profile.get("stock_execution_feedback_gate"))
-    stock_loss_reentry_active = (
-        bool(stock_gate.get("recent_loss_reentry_active"))
-        or int(_float(stock_gate.get("recent_loss_trade_count"), 0.0)) > 0
+    weak_buy_loss_reentry_active = (
+        bool(stock_gate.get("last_buy_was_weak"))
+        and int(_float(stock_gate.get("loss_after_last_buy_count"), 0.0)) > 0
     )
-    stock_weak_buy_reentry_active = (
-        bool(stock_gate.get("weak_buy_reentry_active"))
-        or int(_float(stock_gate.get("recent_weak_buy_count"), 0.0)) > 0
-    )
-    if (stock_loss_reentry_active or stock_weak_buy_reentry_active) and tier == "weak_buy":
+    if weak_buy_loss_reentry_active and tier == "weak_buy" and not bool(stock_gate.get("trend_confirmed")):
         status = "blocked"
         multiplier = 0.0
-        if stock_loss_reentry_active:
-            reasons.append("亏损后再买弱买信号不允许执行")
-        if stock_weak_buy_reentry_active:
-            reasons.append("弱买后再买弱买信号不允许执行")
+        reasons.append("弱买亏损后再买需要强趋势确认")
 
     if status == "blocked":
         reasons.extend(portfolio["reasons"])
