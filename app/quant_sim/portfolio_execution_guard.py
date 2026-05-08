@@ -360,6 +360,16 @@ def evaluate_portfolio_execution_guard(
         else:
             multiplier = min(multiplier, float(resolved["cooldown_size_multiplier"]))
 
+    stock_gate = _dict(profile.get("stock_execution_feedback_gate"))
+    stock_loss_reentry_active = (
+        bool(stock_gate.get("recent_loss_reentry_active"))
+        or int(_float(stock_gate.get("recent_loss_trade_count"), 0.0)) > 0
+    )
+    if stock_loss_reentry_active and tier == "weak_buy":
+        status = "blocked"
+        multiplier = 0.0
+        reasons.append("亏损后再买弱买信号不允许执行")
+
     if status == "blocked":
         reasons.extend(portfolio["reasons"])
 

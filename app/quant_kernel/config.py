@@ -265,6 +265,7 @@ def _default_strategy_profile_payload() -> dict[str, Any]:
                     "require_ma20_slope": True,
                     "allow_ma_stack_confirmation": True,
                     "allow_ma20_retest_confirmation": True,
+                    "strict_reentry_trend_confirmation": True,
                     "execution_feedback_score_cap": 0.25,
                 },
                 "portfolio_execution_guard_policy": {

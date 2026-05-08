@@ -21,6 +21,7 @@ DEFAULT_STOCK_EXECUTION_FEEDBACK_POLICY: dict[str, Any] = {
     "require_ma20_slope": True,
     "allow_ma_stack_confirmation": True,
     "allow_ma20_retest_confirmation": True,
+    "strict_reentry_trend_confirmation": True,
     "execution_feedback_score_cap": 0.25,
 }
 
@@ -105,6 +106,7 @@ def normalize_stock_execution_feedback_policy(
     policy["require_ma20_slope"] = _bool(policy.get("require_ma20_slope"), True)
     policy["allow_ma_stack_confirmation"] = _bool(policy.get("allow_ma_stack_confirmation"), True)
     policy["allow_ma20_retest_confirmation"] = _bool(policy.get("allow_ma20_retest_confirmation"), True)
+    policy["strict_reentry_trend_confirmation"] = _bool(policy.get("strict_reentry_trend_confirmation"), True)
     policy["execution_feedback_score_cap"] = max(0.0, _float(policy.get("execution_feedback_score_cap"), 0.25))
     return policy
 
@@ -121,7 +123,10 @@ def evaluate_stock_execution_feedback_gate(
     resolved_policy = normalize_stock_execution_feedback_policy(policy)
     summary_obj = _summary_from_any(stock_code, summary, resolved_policy)
     metrics = _extract_metrics(market_snapshot)
-    trend = _trend_confirmation(metrics, summary_obj.recent_checkpoints, resolved_policy)
+    checkpoints = summary_obj.recent_checkpoints
+    if not checkpoints and isinstance(market_snapshot, dict) and isinstance(market_snapshot.get("recent_checkpoints"), list):
+        checkpoints = market_snapshot["recent_checkpoints"]
+    trend = _trend_confirmation(metrics, checkpoints, resolved_policy)
     cap = max(0.0, _float(resolved_policy.get("execution_feedback_score_cap"), 0.25))
     status = "passed"
     multiplier = 1.0
@@ -272,37 +277,73 @@ def _trend_confirmation(
     if price is None or ma20 is None or price <= 0 or ma20 <= 0:
         return {"confirmed": False, "mode": "missing_market_snapshot"}
 
+    require_slope = bool(policy.get("require_ma20_slope", True))
     ma_stack = (
         bool(policy.get("allow_ma_stack_confirmation", True))
         and ma5 is not None
         and ma10 is not None
         and ma5 > ma10 > ma20
         and price > ma20
+        and (not require_slope or (ma20_slope is not None and ma20_slope > 0.0))
     )
-    if ma_stack:
-        return {"confirmed": True, "mode": "ma_stack", "reason": "MA5 > MA10 > MA20 且价格站上 MA20"}
 
     needed = int(policy.get("trend_confirm_checkpoints") or 1)
-    require_slope = bool(policy.get("require_ma20_slope", True))
     recent = checkpoints[-needed:] if needed > 0 else []
+    checkpoints_confirmed = False
+    slopes_ok = False
     if len(recent) >= needed:
         above = all(_price_above_ma20(item) for item in recent)
         slopes_ok = all((_float(item.get("ma20_slope"), 0.0) > 0.0) for item in recent) if require_slope else True
-        if above and slopes_ok:
-            return {
-                "confirmed": True,
-                "mode": "above_ma20_checkpoints",
-                "checkpoint_count": needed,
-                "reason": f"价格连续{needed}个checkpoint站上MA20" + ("且MA20上行" if require_slope else ""),
-            }
+        checkpoints_confirmed = above and slopes_ok
 
+    retest_confirmed = False
     if bool(policy.get("allow_ma20_retest_confirmation", True)) and len(checkpoints) >= 3:
         previous = checkpoints[-3:]
         broke_above = _price_above_ma20(previous[0])
         retest_ok = _low_not_below_ma20(previous[1])
         recovered = _price_above_ma20(previous[2])
-        if broke_above and retest_ok and recovered:
-            return {"confirmed": True, "mode": "ma20_retest", "reason": "突破后回踩不破MA20并重新站上"}
+        retest_confirmed = broke_above and retest_ok and recovered
+
+    if bool(policy.get("strict_reentry_trend_confirmation", True)):
+        required = {
+            "ma_stack": ma_stack,
+            "above_ma20_checkpoints": checkpoints_confirmed,
+            "ma20_retest": retest_confirmed if bool(policy.get("allow_ma20_retest_confirmation", True)) else True,
+        }
+        confirmed = all(required.values())
+        if confirmed:
+            return {
+                "confirmed": True,
+                "mode": "strict_reentry_trend",
+                "ma_stack": ma_stack,
+                "above_ma20_checkpoints": needed,
+                "ma20_retest": retest_confirmed,
+                "reason": "MA多头排列、连续checkpoint站上MA20、MA20回踩确认均满足",
+            }
+        missing = [label for label, ok in required.items() if not ok]
+        return {
+            "confirmed": False,
+            "mode": "weak_or_unconfirmed",
+            "ma_stack": ma_stack,
+            "above_ma20_checkpoints": len(recent) if checkpoints_confirmed else 0,
+            "ma20_retest": retest_confirmed,
+            "missing": missing,
+            "reason": "亏损后再买需要同时满足MA多头、连续checkpoint、MA20回踩确认",
+        }
+
+    if ma_stack:
+        return {"confirmed": True, "mode": "ma_stack", "reason": "MA5 > MA10 > MA20 且价格站上 MA20"}
+
+    if checkpoints_confirmed:
+        return {
+            "confirmed": True,
+            "mode": "above_ma20_checkpoints",
+            "checkpoint_count": needed,
+            "reason": f"价格连续{needed}个checkpoint站上MA20" + ("且MA20上行" if require_slope else ""),
+        }
+
+    if retest_confirmed:
+        return {"confirmed": True, "mode": "ma20_retest", "reason": "突破后回踩不破MA20并重新站上"}
 
     return {"confirmed": False, "mode": "weak_or_unconfirmed", "reason": "仅站上MA20不足以通过亏损反馈例外"}
 

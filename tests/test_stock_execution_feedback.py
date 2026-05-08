@@ -37,6 +37,23 @@ def _snapshot(**overrides):
     }
 
 
+def _strict_trend_snapshot(**overrides):
+    return _snapshot(
+        current_price=12.0,
+        ma5=11.8,
+        ma10=11.5,
+        ma20=11.0,
+        ma20_slope=0.03,
+        volume_ratio=1.8,
+        recent_checkpoints=[
+            {"close": 11.3, "low": 11.05, "ma20": 11.0, "ma20_slope": 0.01},
+            {"close": 11.4, "low": 11.1, "ma20": 11.05, "ma20_slope": 0.02},
+            {"close": 12.0, "low": 11.2, "ma20": 11.1, "ma20_slope": 0.03},
+        ],
+        **overrides,
+    )
+
+
 def test_feedback_gate_blocks_repeated_stop_without_trend_confirmation():
     gate = evaluate_stock_execution_feedback_gate(
         action="BUY",
@@ -60,6 +77,7 @@ def test_feedback_gate_blocks_repeated_stop_without_trend_confirmation():
 
 
 def test_feedback_gate_downgrades_repeated_stop_when_trend_is_confirmed():
+    snapshot = _strict_trend_snapshot()
     gate = evaluate_stock_execution_feedback_gate(
         action="BUY",
         stock_code="300857",
@@ -71,13 +89,34 @@ def test_feedback_gate_downgrades_repeated_stop_when_trend_is_confirmed():
             "recent_realized_pnl": -300,
             "recent_realized_pnl_pct": -1.5,
         },
-        market_snapshot=_snapshot(current_price=12.0, ma5=11.5, ma10=11.0, ma20=10.5, ma20_slope=0.02),
+        market_snapshot=snapshot,
         current_time="2026-01-10 10:00:00",
     )
 
     assert gate["status"] == "downgraded"
     assert gate["size_multiplier"] == 0.25
     assert gate["trend_confirmed"] is True
+
+
+def test_feedback_gate_blocks_loss_reentry_when_only_ma_stack_is_confirmed():
+    gate = evaluate_stock_execution_feedback_gate(
+        action="BUY",
+        stock_code="300857",
+        policy=_policy(),
+        summary={
+            "stock_code": "300857",
+            "lookback_days": 20,
+            "recent_loss_trade_count": 1,
+            "recent_realized_pnl": -300,
+            "recent_realized_pnl_pct": -2.5,
+        },
+        market_snapshot=_snapshot(current_price=12.0, ma5=11.5, ma10=11.0, ma20=10.5, ma20_slope=0.02),
+        current_time="2026-01-10 10:00:00",
+    )
+
+    assert gate["status"] == "blocked"
+    assert gate["trend_confirmed"] is False
+    assert "缺少强趋势确认" in gate["reasons"]
 
 
 def test_feedback_gate_downgrades_recent_realized_loss():
@@ -200,6 +239,64 @@ def test_signal_center_applies_live_stock_feedback_gate(tmp_path):
     assert blocked["strategy_profile"]["stock_execution_feedback_gate"]["status"] == "blocked"
 
 
+def test_signal_center_blocks_loss_reentry_when_portfolio_tier_is_weak(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    portfolio = PortfolioService(db_file=db_file)
+    signals = SignalCenterService(db_file=db_file)
+    portfolio.configure_account(100000)
+    _seed_stop_loss_round(portfolio, signals, "300857", "2026-01-01 10:00:00", "2026-01-05 10:00:00")
+    signals.db.get_portfolio_execution_guard_summary = lambda *args, **kwargs: {
+        "recent_realized_pnl_pct": 0.0,
+        "recent_realized_pnl": 0.0,
+        "reference_equity": 100000.0,
+        "recent_stop_loss_count": 0,
+        "recent_sell_count": 0,
+        "current_checkpoint_buy_count": 0,
+        "current_day_buy_count": 0,
+    }
+
+    weak_retry = signals.create_signal(
+        {"stock_code": "300857", "stock_name": "协创数据", "source": "main_force", "market": "A"},
+        {
+            "action": "BUY",
+            "confidence": 88,
+            "position_size_pct": 50,
+            "reasoning": "weak retry",
+            "decision_time": "2026-01-08 10:00:00",
+            "market": "A",
+            "timeframe": "30m",
+            "strategy_profile": {
+                "stock_execution_feedback_policy": _policy(loss_amount_threshold=-1000, loss_reentry_size_multiplier=0.5),
+                "portfolio_execution_guard_policy": {
+                    "enabled": True,
+                    "max_new_buys_per_checkpoint": 10,
+                    "max_new_buys_per_day": 10,
+                },
+                "effective_thresholds": {"fusion_buy_threshold": 0.35},
+                "explainability": {
+                    "fusion_breakdown": {
+                        "fusion_score": 0.37,
+                        "buy_threshold_eff": 0.35,
+                        "tech_score": 0.58,
+                        "context_score": 0.56,
+                    }
+                },
+                "market_snapshot": _strict_trend_snapshot(),
+            },
+        },
+        notify=False,
+    )
+
+    assert weak_retry["action"] == "HOLD"
+    stock_gate = weak_retry["strategy_profile"]["stock_execution_feedback_gate"]
+    portfolio_gate = weak_retry["strategy_profile"]["portfolio_execution_guard"]
+    assert stock_gate["status"] == "downgraded"
+    assert stock_gate["trend_confirmed"] is True
+    assert portfolio_gate["buy_tier"] == "weak_buy"
+    assert portfolio_gate["status"] == "blocked"
+    assert "亏损后再买弱买信号不允许执行" in portfolio_gate["reasons"]
+
+
 def test_signal_center_blocks_generic_loss_reentry_without_trend_confirmation(tmp_path):
     db_file = tmp_path / "quant_sim.db"
     portfolio = PortfolioService(db_file=db_file)
@@ -256,7 +353,7 @@ def test_signal_center_records_downgrade_without_pre_scaling_position_size(tmp_p
                 "strategy_profile": {
                     "stock_execution_feedback_policy": _policy(loss_amount_threshold=-1000, loss_reentry_size_multiplier=0.5),
                     "portfolio_execution_guard_policy": {"enabled": False},
-                    "market_snapshot": _snapshot(current_price=12.0, ma5=11.5, ma10=11.0, ma20=10.5, ma20_slope=0.02),
+                    "market_snapshot": _strict_trend_snapshot(),
                 },
             },
         notify=False,
@@ -290,14 +387,7 @@ def test_signal_center_feedback_uses_market_snapshot_time_before_runtime_decisio
                     loss_amount_threshold=-1000,
                     loss_reentry_size_multiplier=0.5,
                 ),
-                "market_snapshot": _snapshot(
-                    update_time="2026-03-25 10:00:00",
-                    current_price=12.0,
-                    ma5=11.5,
-                    ma10=11.0,
-                    ma20=10.5,
-                    ma20_slope=0.02,
-                ),
+                "market_snapshot": _strict_trend_snapshot(update_time="2026-03-25 10:00:00"),
             },
         },
         notify=False,
