@@ -126,6 +126,93 @@ const snapshot = {
   ],
 };
 
+const lifecycleSnapshot = {
+  ...snapshot,
+  candidatePool: {
+    ...snapshot.candidatePool,
+    rows: [
+      {
+        id: "600001",
+        cells: ["600001", "试运行股", "discover", "10.00"],
+        code: "600001",
+        name: "试运行股",
+        lifecycle: {
+          quant_status: "trial",
+          health_score: 82,
+          latest_reason: "新发现已进入试运行",
+          quant_auto_managed: true,
+          quant_manual_override: "",
+        },
+      },
+      {
+        id: "600002",
+        cells: ["600002", "正常股", "discover", "11.00"],
+        code: "600002",
+        name: "正常股",
+        lifecycle: {
+          quant_status: "active",
+          health_score: 68,
+          latest_reason: "趋势确认后正常扫描",
+          quant_auto_managed: true,
+          quant_manual_override: "",
+        },
+      },
+      {
+        id: "600003",
+        cells: ["600003", "只出场股", "discover", "12.00"],
+        code: "600003",
+        name: "只出场股",
+        lifecycle: {
+          quant_status: "exit_only",
+          health_score: 31,
+          latest_reason: "趋势转弱，仅允许出场",
+          quant_auto_managed: true,
+          quant_manual_override: "",
+        },
+      },
+      {
+        id: "600004",
+        cells: ["600004", "冷却股", "discover", "13.00"],
+        code: "600004",
+        name: "冷却股",
+        lifecycle: {
+          quant_status: "cooling",
+          health_score: 22,
+          latest_reason: "连续下行进入冷却",
+          quant_auto_managed: true,
+          quant_manual_override: "",
+        },
+      },
+      {
+        id: "600005",
+        cells: ["600005", "暂停股", "manual", "14.00"],
+        code: "600005",
+        name: "暂停股",
+        lifecycle: {
+          quant_status: "manual_paused",
+          health_score: 55,
+          latest_reason: "用户手工暂停",
+          quant_auto_managed: false,
+          quant_manual_override: "manual_pause",
+        },
+      },
+      {
+        id: "600006",
+        cells: ["600006", "退出股", "discover", "15.00"],
+        code: "600006",
+        name: "退出股",
+        lifecycle: {
+          quant_status: "retired",
+          health_score: 10,
+          latest_reason: "长期无有效买点退出",
+          quant_auto_managed: true,
+          quant_manual_override: "",
+        },
+      },
+    ],
+  },
+};
+
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -159,7 +246,120 @@ function renderLiveSimPage(client: ApiClient) {
   render(<RouterProvider router={router} />);
 }
 
+const emptySignalTable = () => ({
+  columns: ["信号ID", "时间", "代码", "动作", "状态"],
+  rows: [],
+  emptyLabel: "暂无信号",
+});
+
+const emptyTradeTable = () => ({
+  columns: ["时间", "代码", "动作", "数量", "价格", "备注"],
+  rows: [],
+  emptyLabel: "暂无交易记录",
+});
+
 describe("LiveSimPage", () => {
+  it("renders lifecycle controls, status chips, health fields, and scoped restore actions", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
+      if (String(url).includes("/api/v1/quant/universe/settings")) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => ({
+            quant_universe_lifecycle_enabled: true,
+            auto_entry_mode: "confirm_first",
+            auto_exit_enabled: true,
+          }),
+        });
+      }
+      if (String(url).includes("/api/v1/quant/universe/actions/restore-to-trial")) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => ({ stock_code: "600004", new_status: "trial" }),
+        });
+      }
+      if (String(url).includes("/api/v1/quant/universe/actions/set-override")) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => ({ stock_code: "600001", quant_status: "manual_paused", quant_auto_managed: false }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ table: String(url).includes("/trades") ? emptyTradeTable() : emptySignalTable() }),
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(lifecycleSnapshot),
+      runPageAction: vi.fn().mockResolvedValue(lifecycleSnapshot),
+    } as unknown as ApiClient;
+
+    renderLiveSimPage(client);
+
+    expect(await screen.findByRole("checkbox", { name: "量化生命周期" })).toBeChecked();
+    expect(screen.getByLabelText("自动入池模式")).toHaveValue("confirm_first");
+    expect(screen.getByRole("checkbox", { name: "自动出池" })).toBeChecked();
+    expect(screen.getAllByText("手工确认").length).toBeGreaterThan(0);
+
+    const statusNames = ["trial", "active", "exit_only", "cooling", "retired", "manual_paused"];
+    statusNames.forEach((status) => expect(screen.getByRole("button", { name: new RegExp(status) })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /trial/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /active/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /exit_only/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /manual_paused/ })).toHaveAttribute("aria-pressed", "false");
+
+    expect(screen.getByText("健康 82")).toBeInTheDocument();
+    expect(screen.getByText("新发现已进入试运行")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "恢复到试运行 600001" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "恢复到试运行 600002" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "恢复到试运行 600003" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "自动出池" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/quant/universe/settings",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ auto_exit_enabled: false }),
+        }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "暂停自动管理 600001" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/quant/universe/actions/set-override",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ stock_code: "600001", override_type: "manual_pause" }),
+        }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /cooling/ }));
+    fireEvent.click(screen.getByRole("button", { name: /manual_paused/ }));
+    fireEvent.click(screen.getByRole("button", { name: /retired/ }));
+    expect(screen.getByRole("button", { name: "恢复到试运行 600004" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "恢复到试运行 600005" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "恢复到试运行 600006" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "恢复到试运行 600004" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/quant/universe/actions/restore-to-trial",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ stock_code: "600004" }),
+        }),
+      );
+    });
+  });
+
   it("clears local signal, trade, and capital pool views after reset", async () => {
     const resetSnapshot = {
       ...snapshot,
@@ -337,7 +537,7 @@ describe("LiveSimPage", () => {
     expect(screen.queryByText("弱BUY最小Slot比例")).not.toBeInTheDocument();
     expect(screen.queryByText("Slot下限")).not.toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "策略" })).not.toBeInTheDocument();
-    expect(await screen.findByRole("columnheader", { name: "状态" })).toBeInTheDocument();
+    expect((await screen.findAllByRole("columnheader", { name: "状态" })).length).toBeGreaterThan(0);
     const executionSection = screen.getByLabelText("费用与执行统计");
     expect(within(executionSection).getByText("收益结果")).toBeInTheDocument();
     expect(within(executionSection).getByText("2368.76")).toBeInTheDocument();
