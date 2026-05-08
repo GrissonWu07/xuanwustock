@@ -101,6 +101,29 @@ def test_feedback_gate_downgrades_recent_realized_loss():
     assert gate["recent_loss_trade_count"] == 0
 
 
+def test_feedback_gate_blocks_recent_loss_reentry_without_trend_confirmation():
+    gate = evaluate_stock_execution_feedback_gate(
+        action="BUY",
+        stock_code="300857",
+        policy=_policy(stop_loss_cooldown_days=8),
+        summary={
+            "stock_code": "300857",
+            "lookback_days": 20,
+            "recent_loss_trade_count": 1,
+            "recent_realized_pnl": -300,
+            "recent_realized_pnl_pct": -2.5,
+            "last_loss_sell_at": "2026-01-05 10:00:00",
+        },
+        market_snapshot=_snapshot(),
+        current_time="2026-01-08 10:00:00",
+    )
+
+    assert gate["status"] == "blocked"
+    assert gate["size_multiplier"] == 0
+    assert gate["loss_reentry_cooldown_active"] is True
+    assert "缺少强趋势确认" in gate["reasons"]
+
+
 def test_feedback_gate_uses_stop_loss_cooldown_days():
     gate = evaluate_stock_execution_feedback_gate(
         action="BUY",
@@ -175,6 +198,44 @@ def test_signal_center_applies_live_stock_feedback_gate(tmp_path):
     assert blocked["action"] == "HOLD"
     assert blocked["position_size_pct"] == 0
     assert blocked["strategy_profile"]["stock_execution_feedback_gate"]["status"] == "blocked"
+
+
+def test_signal_center_blocks_generic_loss_reentry_without_trend_confirmation(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    portfolio = PortfolioService(db_file=db_file)
+    signals = SignalCenterService(db_file=db_file)
+    portfolio.configure_account(100000)
+    candidate = {"stock_code": "300857", "stock_name": "协创数据", "source": "main_force"}
+    buy = signals.create_signal(candidate, {"action": "BUY", "confidence": 90, "position_size_pct": 50, "reasoning": "buy"}, notify=False)
+    portfolio.confirm_buy(buy["id"], price=100.0, quantity=100, note="seed", executed_at="2026-01-05 10:00:00")
+    sell = signals.create_signal(
+        candidate,
+        {"action": "SELL", "confidence": 90, "position_size_pct": 100, "reasoning": "ordinary sell"},
+        notify=False,
+    )
+    portfolio.confirm_sell(sell["id"], price=96.0, quantity=100, note="普通卖出亏损", executed_at="2026-01-06 10:00:00")
+
+    blocked = signals.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 88,
+            "position_size_pct": 50,
+            "reasoning": "retry",
+            "decision_time": "2026-01-08 10:00:00",
+            "strategy_profile": {
+                "stock_execution_feedback_policy": _policy(stop_loss_cooldown_days=8),
+                "market_snapshot": _snapshot(),
+            },
+        },
+        notify=False,
+    )
+
+    assert blocked["action"] == "HOLD"
+    gate = blocked["strategy_profile"]["stock_execution_feedback_gate"]
+    assert gate["status"] == "blocked"
+    assert gate["recent_loss_trade_count"] == 1
+    assert gate["recent_stop_loss_count"] == 0
 
 
 def test_signal_center_records_downgrade_without_pre_scaling_position_size(tmp_path):

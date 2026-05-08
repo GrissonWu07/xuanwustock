@@ -145,14 +145,24 @@ def evaluate_stock_execution_feedback_gate(
         current_time,
         int(resolved_policy.get("stop_loss_cooldown_days") or 0),
     )
+    loss_reentry_cooldown_active = _within_cooldown(
+        summary_obj.last_loss_sell_at,
+        current_time,
+        int(resolved_policy.get("stop_loss_cooldown_days") or 0),
+    )
     repeated_stop = summary_obj.recent_stop_loss_count >= stop_threshold and stop_cooldown_active
+    recent_loss_reentry = summary_obj.recent_loss_trade_count > 0
+    repeated_loss = summary_obj.recent_loss_trade_count >= stop_threshold
     loss_trigger = (
         summary_obj.recent_realized_pnl <= float(resolved_policy["loss_amount_threshold"])
         or summary_obj.recent_realized_pnl_pct <= float(resolved_policy["loss_pnl_pct_threshold"])
     )
 
-    if repeated_stop:
-        reasons.append(f"最近{summary_obj.lookback_days}天止损{summary_obj.recent_stop_loss_count}次")
+    if repeated_stop or repeated_loss:
+        if repeated_stop:
+            reasons.append(f"最近{summary_obj.lookback_days}天止损{summary_obj.recent_stop_loss_count}次")
+        if repeated_loss:
+            reasons.append(f"最近{summary_obj.lookback_days}天亏损卖出{summary_obj.recent_loss_trade_count}次")
         if resolved_policy["require_trend_confirmation"] and not trend["confirmed"]:
             status = "blocked"
             multiplier = 0.0
@@ -160,7 +170,17 @@ def evaluate_stock_execution_feedback_gate(
         else:
             status = "downgraded"
             multiplier = min(multiplier, float(resolved_policy["repeated_stop_size_multiplier"]))
-            reasons.append("连续止损后仅允许轻仓试错")
+            reasons.append("连续亏损后仅允许轻仓试错")
+    elif recent_loss_reentry:
+        reasons.append(f"最近{summary_obj.lookback_days}天存在亏损卖出")
+        if resolved_policy["require_trend_confirmation"] and not trend["confirmed"]:
+            status = "blocked"
+            multiplier = 0.0
+            reasons.append("缺少强趋势确认")
+        else:
+            status = "downgraded"
+            multiplier = min(multiplier, float(resolved_policy["loss_reentry_size_multiplier"]))
+            reasons.append("亏损后仅允许降仓试错")
 
     if loss_trigger and status != "blocked":
         status = "downgraded"
@@ -175,6 +195,10 @@ def evaluate_stock_execution_feedback_gate(
         severity = 0.0
         if repeated_stop:
             severity += 0.7
+        if repeated_loss:
+            severity += 0.7
+        elif recent_loss_reentry:
+            severity += 0.4
         if loss_trigger:
             severity += 0.5
         feedback_score = -min(cap, cap * min(1.0, severity))
@@ -221,6 +245,12 @@ def _gate(
             current_time,
             int(policy.get("stop_loss_cooldown_days") or 0),
         ),
+        "loss_reentry_cooldown_active": _within_cooldown(
+            summary.last_loss_sell_at,
+            current_time,
+            int(policy.get("stop_loss_cooldown_days") or 0),
+        ),
+        "recent_loss_reentry_active": summary.recent_loss_trade_count > 0,
         "trend_confirmed": bool(trend.get("confirmed")),
         "trend_confirmation": trend,
         "policy": policy,
