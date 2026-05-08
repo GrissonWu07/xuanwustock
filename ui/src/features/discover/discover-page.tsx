@@ -9,6 +9,17 @@ import { usePageData } from "../../lib/use-page-data";
 import { useSelection } from "../../lib/use-selection";
 import type { DiscoverSnapshot, WorkbenchSnapshot } from "../../lib/page-models";
 import { t } from "../../lib/i18n";
+import {
+  BatchPromoteDialog,
+  EligibleBadge,
+  entryStatusOf,
+  ignoreResultOverrides,
+  isEligibleEntry,
+  postQuantEntryAction,
+  promoteResultOverrides,
+  type EntryStatusOverride,
+  type QuantEntryActionResult,
+} from "../quant/quant-entry-controls";
 
 type DiscoverPageProps = {
   client?: ApiClient;
@@ -111,6 +122,11 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
   const resource = usePageData("discover", client);
   const [search, setSearch] = useState("");
   const [batching, setBatching] = useState(false);
+  const [promotingToTrial, setPromotingToTrial] = useState(false);
+  const [eligibleOnly, setEligibleOnly] = useState(false);
+  const [promoteDialogOpen, setPromoteDialogOpen] = useState(false);
+  const [promoteTargetCodes, setPromoteTargetCodes] = useState<string[]>([]);
+  const [entryOverrides, setEntryOverrides] = useState<Record<string, EntryStatusOverride>>({});
   const [runningStrategy, setRunningStrategy] = useState(false);
   const [resettingList, setResettingList] = useState(false);
   const [runStrategySelection, setRunStrategySelection] = useState<string>("all");
@@ -162,12 +178,17 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
   );
   const totalRows = Number(snapshot?.candidateTable.pagination?.totalRows ?? sourceRows.length);
   const totalPages = Math.max(1, Number(snapshot?.candidateTable.pagination?.totalPages ?? 1));
-  const visibleRows = sourceRows;
+  const visibleRows = useMemo(
+    () => (eligibleOnly ? sourceRows.filter((row) => Boolean(entryOverrides[row.id]) || isEligibleEntry(row, entryOverrides[row.id])) : sourceRows),
+    [eligibleOnly, entryOverrides, sourceRows],
+  );
   const rowIds = useMemo(() => visibleRows.map((row) => row.id), [visibleRows]);
   const selection = useSelection(rowIds);
   const selectedRows = visibleRows.filter((row) => selection.isSelected(row.id));
   const selectedCodes = selectedRows.map((row) => row.id);
   const canBatchWatchlist = selectedCodes.length > 0;
+  const canBatchPromoteToTrial = selectedCodes.length > 0;
+  const dialogPromoteCodes = promoteTargetCodes.length > 0 ? promoteTargetCodes : selectedCodes;
   const discoverAnalystViews = analysisSnapshot?.analystViews ?? [];
   const discoverDecisionInsights = (analysisSnapshot?.insights ?? []).filter(
     (item) => !discoverAnalystViews.some((view) => view.title === item.title),
@@ -222,6 +243,43 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
       setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBatching(false);
+    }
+  };
+
+  const handleBatchPromoteToTrial = async () => {
+    if (dialogPromoteCodes.length === 0 || promotingToTrial) return;
+    setPromotingToTrial(true);
+    try {
+      const result = await postQuantEntryAction<QuantEntryActionResult>(
+        "/api/v1/quant/universe/actions/promote-to-trial",
+        {
+          stock_codes: dialogPromoteCodes,
+          source_type: "discover",
+        },
+      );
+      const updates = promoteResultOverrides(result);
+      setEntryOverrides((current) => ({ ...current, ...updates }));
+      setRunFeedback(t("Quant trial entry result updated."));
+      setPromoteDialogOpen(false);
+      setPromoteTargetCodes([]);
+    } catch (error) {
+      setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPromotingToTrial(false);
+    }
+  };
+
+  const handleIgnoreAutoEntry = async (codes: string[]) => {
+    if (codes.length === 0) return;
+    try {
+      const result = await postQuantEntryAction<QuantEntryActionResult>("/api/v1/quant/universe/actions/ignore-auto-entry", {
+        stock_codes: codes,
+        source_type: "discover",
+      });
+      setEntryOverrides((current) => ({ ...current, ...ignoreResultOverrides(codes, result) }));
+      setRunFeedback(t("Auto-entry candidate ignored."));
+    } catch (error) {
+      setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -478,6 +536,33 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                 onClick={() => void handleBatchWatchlist()}
                 disabled={!canBatchWatchlist || batching}
               />
+              <button
+                className={`button ${eligibleOnly ? "button--primary" : "button--secondary"}`}
+                type="button"
+                aria-pressed={eligibleOnly}
+                onClick={() => setEligibleOnly((current) => !current)}
+              >
+                仅看 eligible
+              </button>
+              <button
+                className="button button--primary"
+                type="button"
+                onClick={() => {
+                  setPromoteTargetCodes(selectedCodes);
+                  setPromoteDialogOpen(true);
+                }}
+                disabled={!canBatchPromoteToTrial || promotingToTrial}
+              >
+                纳入量化试运行
+              </button>
+              <button
+                className="button button--secondary"
+                type="button"
+                onClick={() => void handleIgnoreAutoEntry(selectedCodes)}
+                disabled={selectedCodes.length === 0}
+              >
+                忽略自动纳入
+              </button>
             </div>
             <span className="badge badge--neutral discover-candidate-toolbar__summary">
               {t("Selected / candidate {selected} / {total}", { selected: selection.selectedCount, total: totalRows })}
@@ -505,13 +590,14 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                   {candidateColumns.map((column) => (
                     <th key={column}>{t(column)}</th>
                   ))}
+                  <th>{t("Quant status")}</th>
                   <th className="table__actions-head">{t("Actions")}</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleRows.length === 0 ? (
                   <tr>
-                    <td className="table__empty" colSpan={candidateColumns.length + 2}>
+                    <td className="table__empty" colSpan={candidateColumns.length + 3}>
                       <div className="summary-item">
                         <div className="summary-item__title">{candidateEmptyLabel}</div>
                         {candidateEmptyMessage ? <div className="summary-item__body">{candidateEmptyMessage}</div> : null}
@@ -520,7 +606,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                   </tr>
                 ) : visibleRows.length === 0 ? (
                   <tr>
-                    <td className="table__empty" colSpan={candidateColumns.length + 2}>
+                    <td className="table__empty" colSpan={candidateColumns.length + 3}>
                       <div className="summary-item">
                         <div className="summary-item__title">{t("Current page has no candidate stocks")}</div>
                         <div className="summary-item__body">{t("You can switch page to view other candidates.")}</div>
@@ -562,6 +648,9 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                         </td>
                       ) : null}
                       <td>
+                        <EligibleBadge row={row} override={entryOverrides[row.id]} />
+                      </td>
+                      <td>
                         <div className="table__actions">
                           <button
                             className="button button--secondary"
@@ -586,6 +675,31 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                             <span aria-hidden="true">{row.actions?.[0]?.icon ?? "⭐"}</span>
                             <span>{row.actions?.[0]?.label ? t(row.actions[0].label) : t("Add to watchlist")}</span>
                           </button>
+                          {entryStatusOf(row, entryOverrides[row.id]) === "eligible" ? (
+                            <>
+                              <button
+                                className="button button--secondary"
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setPromoteTargetCodes([row.id]);
+                                  setPromoteDialogOpen(true);
+                                }}
+                              >
+                                <span>纳入 trial</span>
+                              </button>
+                              <button
+                                className="button button--secondary"
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleIgnoreAutoEntry([row.id]);
+                                }}
+                              >
+                                <span>忽略自动纳入</span>
+                              </button>
+                            </>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -625,6 +739,16 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
               </button>
             </div>
           </div>
+          <BatchPromoteDialog
+            open={promoteDialogOpen}
+            count={dialogPromoteCodes.length}
+            pending={promotingToTrial}
+            onCancel={() => {
+              setPromoteDialogOpen(false);
+              setPromoteTargetCodes([]);
+            }}
+            onConfirm={() => void handleBatchPromoteToTrial()}
+          />
         </WorkbenchCard>
 
         <WorkbenchCard className="discover-analysis-panel discover-summary-panel" ref={analysisPanelRef}>

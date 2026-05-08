@@ -9,6 +9,16 @@ import { usePageData } from "../../lib/use-page-data";
 import { useSelection } from "../../lib/use-selection";
 import type { ResearchSnapshot } from "../../lib/page-models";
 import { t } from "../../lib/i18n";
+import {
+  BatchPromoteDialog,
+  EligibleBadge,
+  entryStatusOf,
+  ignoreResultOverrides,
+  postQuantEntryAction,
+  promoteResultOverrides,
+  type EntryStatusOverride,
+  type QuantEntryActionResult,
+} from "../quant/quant-entry-controls";
 
 type ResearchPageProps = {
   client?: ApiClient;
@@ -214,6 +224,10 @@ export function ResearchPage({ client }: ResearchPageProps) {
   const resource = usePageData("research", client);
   const [search, setSearch] = useState("");
   const [batching, setBatching] = useState(false);
+  const [promotingToTrial, setPromotingToTrial] = useState(false);
+  const [promoteDialogOpen, setPromoteDialogOpen] = useState(false);
+  const [promoteTargetCodes, setPromoteTargetCodes] = useState<string[]>([]);
+  const [entryOverrides, setEntryOverrides] = useState<Record<string, EntryStatusOverride>>({});
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [resettingList, setResettingList] = useState(false);
   const [runFeedback, setRunFeedback] = useState("");
@@ -282,6 +296,8 @@ export function ResearchPage({ client }: ResearchPageProps) {
   const selectedRows = sourceRows.filter((row) => selection.isSelected(row.id));
   const selectedCodes = selectedRows.map((row) => row.id);
   const canBatchWatchlist = selectedCodes.length > 0;
+  const canBatchPromoteToTrial = selectedCodes.length > 0;
+  const dialogPromoteCodes = promoteTargetCodes.length > 0 ? promoteTargetCodes : selectedCodes;
   const selectedPreview = selectedRows.slice(0, 3);
   const selectedPreviewLabel =
     selection.selectedCount > 0
@@ -335,6 +351,43 @@ export function ResearchPage({ client }: ResearchPageProps) {
       setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBatching(false);
+    }
+  };
+
+  const handleBatchPromoteToTrial = async () => {
+    if (dialogPromoteCodes.length === 0 || promotingToTrial) return;
+    setPromotingToTrial(true);
+    try {
+      const result = await postQuantEntryAction<QuantEntryActionResult>(
+        "/api/v1/quant/universe/actions/promote-to-trial",
+        {
+          stock_codes: dialogPromoteCodes,
+          source_type: "research",
+        },
+      );
+      const updates = promoteResultOverrides(result);
+      setEntryOverrides((current) => ({ ...current, ...updates }));
+      setRunFeedback(t("Quant trial entry result updated."));
+      setPromoteDialogOpen(false);
+      setPromoteTargetCodes([]);
+    } catch (error) {
+      setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPromotingToTrial(false);
+    }
+  };
+
+  const handleIgnoreAutoEntry = async (codes: string[]) => {
+    if (codes.length === 0) return;
+    try {
+      const result = await postQuantEntryAction<QuantEntryActionResult>("/api/v1/quant/universe/actions/ignore-auto-entry", {
+        stock_codes: codes,
+        source_type: "research",
+      });
+      setEntryOverrides((current) => ({ ...current, ...ignoreResultOverrides(codes, result) }));
+      setRunFeedback(t("Auto-entry candidate ignored."));
+    } catch (error) {
+      setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -474,6 +527,20 @@ export function ResearchPage({ client }: ResearchPageProps) {
             </button>
             <button className="button button--primary" type="button" onClick={() => void handleBatchWatchlist()} disabled={!canBatchWatchlist || batching || resettingList}>
               {t("Add selected to watchlist")}
+            </button>
+            <button
+              className="button button--primary"
+              type="button"
+              onClick={() => {
+                setPromoteTargetCodes(selectedCodes);
+                setPromoteDialogOpen(true);
+              }}
+              disabled={!canBatchPromoteToTrial || promotingToTrial || resettingList}
+            >
+              纳入量化试运行
+            </button>
+            <button className="button button--secondary" type="button" onClick={() => void handleIgnoreAutoEntry(selectedCodes)} disabled={selectedCodes.length === 0 || resettingList}>
+              忽略自动纳入
             </button>
           </>
         }
@@ -659,13 +726,14 @@ export function ResearchPage({ client }: ResearchPageProps) {
                   {snapshot.outputTable.columns.map((column) => (
                     <th key={column}>{localizeResearchText(column)}</th>
                   ))}
+                  <th>{t("Quant status")}</th>
                   <th className="table__actions-head">{t("Actions")}</th>
                 </tr>
               </thead>
               <tbody>
                 {sourceRows.length === 0 ? (
                   <tr>
-                    <td className="table__empty" colSpan={snapshot.outputTable.columns.length + 2}>
+                    <td className="table__empty" colSpan={snapshot.outputTable.columns.length + 3}>
                       <div className="summary-item">
                         <div className="summary-item__title">{outputEmptyLabel}</div>
                         {outputEmptyMessage ? <div className="summary-item__body">{outputEmptyMessage}</div> : null}
@@ -704,6 +772,9 @@ export function ResearchPage({ client }: ResearchPageProps) {
                         );
                       })}
                       <td>
+                        <EligibleBadge row={row} override={entryOverrides[row.id]} />
+                      </td>
+                      <td>
                         <div className="table__actions">
                           <button
                             className="button button--secondary"
@@ -716,6 +787,31 @@ export function ResearchPage({ client }: ResearchPageProps) {
                             <span aria-hidden="true">{row.actions?.[0]?.icon ?? "⭐"}</span>
                             <span>{localizeResearchText(row.actions?.[0]?.label) || t("Add to watchlist")}</span>
                           </button>
+                          {entryStatusOf(row, entryOverrides[row.id]) === "eligible" ? (
+                            <>
+                              <button
+                                className="button button--secondary"
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setPromoteTargetCodes([row.id]);
+                                  setPromoteDialogOpen(true);
+                                }}
+                              >
+                                <span>纳入 trial</span>
+                              </button>
+                              <button
+                                className="button button--secondary"
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleIgnoreAutoEntry([row.id]);
+                                }}
+                              >
+                                <span>忽略自动纳入</span>
+                              </button>
+                            </>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -725,6 +821,16 @@ export function ResearchPage({ client }: ResearchPageProps) {
               </tbody>
             </table>
           </div>
+          <BatchPromoteDialog
+            open={promoteDialogOpen}
+            count={dialogPromoteCodes.length}
+            pending={promotingToTrial}
+            onCancel={() => {
+              setPromoteDialogOpen(false);
+              setPromoteTargetCodes([]);
+            }}
+            onConfirm={() => void handleBatchPromoteToTrial()}
+          />
         </WorkbenchCard>
 
         <WorkbenchCard>
