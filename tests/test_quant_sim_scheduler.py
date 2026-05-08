@@ -3,6 +3,7 @@ import sqlite3
 from unittest.mock import Mock
 
 from app.quant_sim.candidate_pool_service import CandidatePoolService
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.scheduler import QuantSimScheduler
@@ -344,6 +345,61 @@ def test_scheduler_run_once_sets_adapter_market_before_analysis(tmp_path, monkey
     scheduler.run_once("manual_scan")
 
     assert captured["market"] == "US"
+
+
+def test_scheduler_opportunistic_review_processes_at_most_five_cooling_stocks(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    for index in range(7):
+        code = f"60010{index}"
+        candidate_service.add_manual_candidate(code, code, "manual")
+        candidate_service.db.upsert_quant_universe_state(
+            code,
+            {
+                "quant_status": "cooling",
+                "health_score": 20 + index,
+                "last_health_evaluated_at": f"2026-05-08T00:0{index}:00Z",
+            },
+        )
+    scheduler = QuantSimScheduler(db_file=db_file)
+    monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
+    scheduler.engine.analyze_active_candidates = Mock(return_value=[])
+    scheduler.engine.analyze_positions = Mock(return_value=[])
+    scheduler.portfolio.list_positions = Mock(return_value=[])
+    reviewed: list[str] = []
+
+    def fake_evaluate_candidate(self, stock_code):
+        del self
+        reviewed.append(stock_code)
+        return {"stock_code": stock_code, "candidate_score": 0}
+
+    monkeypatch.setattr(QuantUniverseManager, "evaluate_candidate", fake_evaluate_candidate)
+
+    result = scheduler.run_once("manual_scan")
+
+    assert result["cooling_reviewed"] == 5
+    assert reviewed == ["600100", "600101", "600102", "600103", "600104"]
+
+
+def test_scheduler_opportunistic_review_does_not_call_signal_provider(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_manual_candidate("600000", "浦发银行", "manual")
+    candidate_service.db.upsert_quant_universe_state("600000", {"quant_status": "cooling", "health_score": 20})
+    scheduler = QuantSimScheduler(db_file=db_file)
+    monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
+    scheduler.engine.analyze_positions = Mock(return_value=[])
+    scheduler.portfolio.list_positions = Mock(return_value=[])
+
+    def fail_if_provider_called(*args, **kwargs):
+        raise AssertionError("cooling review must not call signal provider")
+
+    monkeypatch.setattr(scheduler.engine.adapter, "analyze_candidate", fail_if_provider_called)
+
+    result = scheduler.run_once("manual_scan")
+
+    assert result["candidates_scanned"] == 0
+    assert result["cooling_reviewed"] == 1
 
 
 def test_scheduler_restores_background_job_from_persisted_config(tmp_path, monkeypatch):

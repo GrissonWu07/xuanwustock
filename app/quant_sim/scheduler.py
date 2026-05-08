@@ -18,6 +18,7 @@ from app.quant_sim.dynamic_strategy import (
 )
 from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.portfolio_service import PortfolioService
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
 from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
 TRADING_HOURS = {
     "CN": [("09:30", "11:30"), ("13:00", "15:00")],
@@ -66,6 +67,7 @@ class QuantSimScheduler:
                 "candidates_scanned": 0,
                 "signals_created": 0,
                 "positions_checked": 0,
+                "cooling_reviewed": 0,
                 "auto_executed": 0,
                 "snapshot_id": 0,
                 "total_equity": self.portfolio.get_account_summary()["total_equity"],
@@ -79,15 +81,14 @@ class QuantSimScheduler:
         configured_profile_id = str(config.get("strategy_profile_id") or "").strip()
         default_profile_id = self.db.get_default_strategy_profile_id()
         strategy_profile_id = configured_profile_id if configured_profile_id and configured_profile_id != default_profile_id else None
+        lifecycle_profile_id = configured_profile_id or default_profile_id
         ai_dynamic_strategy = str(config.get("ai_dynamic_strategy") or DEFAULT_AI_DYNAMIC_STRATEGY).strip().lower()
         ai_dynamic_strength = float(config.get("ai_dynamic_strength") or DEFAULT_AI_DYNAMIC_STRENGTH)
         ai_dynamic_lookback = int(config.get("ai_dynamic_lookback") or DEFAULT_AI_DYNAMIC_LOOKBACK)
         positions = self.portfolio.list_positions()
         held_codes = {str(item.get("stock_code") or "").strip() for item in positions if str(item.get("stock_code") or "").strip()}
         candidates = [
-            item
-            for item in self.engine.candidate_pool.list_candidates(status="active")
-            if str(item.get("stock_code") or "").strip() not in held_codes
+            item for item in self.engine.list_live_scan_candidates(exclude_codes=held_codes)
         ]
         candidate_kwargs = {
             "analysis_timeframe": analysis_timeframe,
@@ -115,6 +116,7 @@ class QuantSimScheduler:
         if strategy_profile_id:
             position_kwargs["strategy_profile_id"] = strategy_profile_id
         position_signals = self.engine.analyze_positions(**position_kwargs)
+        cooling_reviewed = self._opportunistic_cooling_review(lifecycle_profile_id)
         auto_executed = self._auto_execute_pending_signals()
         snapshot_id = self.db.add_account_snapshot(run_reason)
         self.db.update_scheduler_config(last_run_at=self._now())
@@ -123,6 +125,7 @@ class QuantSimScheduler:
             "candidates_scanned": len(candidates),
             "signals_created": len(candidate_signals) + len(position_signals),
             "positions_checked": len(positions),
+            "cooling_reviewed": cooling_reviewed,
             "auto_executed": auto_executed,
             "snapshot_id": snapshot_id,
             "total_equity": account_summary["total_equity"],
@@ -281,6 +284,27 @@ class QuantSimScheduler:
             return 0
 
         return self.portfolio.auto_execute_pending_signals(self.engine.signal_center.list_pending_signals())
+
+    def _opportunistic_cooling_review(self, strategy_profile_id: str | None = None) -> int:
+        settings = self.db.get_quant_universe_settings()
+        if not settings["quant_universe_lifecycle_enabled"] or not settings["auto_exit_enabled"]:
+            return 0
+        policy = self.engine._quant_lifecycle_policy_from_binding({"profile_id": strategy_profile_id or ""})
+        rows = self.db.list_quant_universe_state(statuses=["cooling"], limit=1000)["items"]
+        rows.sort(
+            key=lambda item: (
+                float(item.get("health_score") or 0),
+                str(item.get("last_health_evaluated_at") or ""),
+                str(item.get("stock_code") or ""),
+            )
+        )
+        selected = rows[: min(5, len(rows))]
+        if not selected:
+            return 0
+        manager = QuantUniverseManager(db=self.db, profile_id=policy.profile_id, policy=policy)
+        for item in selected:
+            manager.evaluate_candidate(str(item.get("stock_code") or ""))
+        return len(selected)
 
     def _register_jobs(self, interval_minutes: int) -> None:
         self._clear_jobs()

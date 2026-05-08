@@ -1014,6 +1014,7 @@ class QuantSimDB:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM stock_universe WHERE stock_code = ?", (payload["stock_code"],))
         existing = cursor.fetchone()
+        now_text = self._now()
 
         if existing:
             existing_metadata = self._loads_metadata(existing["metadata_json"])
@@ -1024,7 +1025,14 @@ class QuantSimDB:
                 """
                 UPDATE stock_universe
                 SET stock_name = ?, latest_price = ?, notes = ?, metadata_json = ?, status = ?,
-                    quant_enabled = 1, updated_at = ?
+                    quant_enabled = 1,
+                    quant_status = CASE
+                        WHEN COALESCE(quant_status, 'inactive') IN ('trial', 'active', 'exit_only') THEN quant_status
+                        ELSE 'active'
+                    END,
+                    quant_entry_source = COALESCE(quant_entry_source, ?),
+                    quant_entry_at = COALESCE(quant_entry_at, ?),
+                    updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -1033,18 +1041,23 @@ class QuantSimDB:
                     payload["notes"] or existing["notes"],
                     json.dumps(merged_metadata, ensure_ascii=False),
                     next_status,
-                    self._now(),
+                    payload["source"],
+                    now_text,
+                    now_text,
                     int(existing["id"]),
                 ),
             )
             candidate_id = int(existing["id"])
         else:
-            now_text = self._now()
             cursor.execute(
                 """
                 INSERT INTO stock_universe
-                (stock_code, stock_name, source, latest_price, notes, metadata_json, status, quant_enabled, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                (
+                    stock_code, stock_name, source, latest_price, notes, metadata_json,
+                    status, quant_enabled, quant_status, quant_entry_source, quant_entry_at,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?, ?, ?)
                 """,
                 (
                     payload["stock_code"],
@@ -1054,6 +1067,8 @@ class QuantSimDB:
                     payload["notes"],
                     json.dumps(payload["metadata"], ensure_ascii=False),
                     payload["status"],
+                    payload["source"],
+                    now_text,
                     now_text,
                     now_text,
                 ),
@@ -1071,6 +1086,7 @@ class QuantSimDB:
         *,
         status: Optional[str] = None,
         search: str | None = None,
+        quant_statuses: list[str] | tuple[str, ...] | None = None,
     ) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -1078,6 +1094,11 @@ class QuantSimDB:
             clauses.append("status = ?")
             params.append(status)
         clauses.append("quant_enabled = 1")
+        normalized_statuses = [str(item).strip() for item in (quant_statuses or []) if str(item).strip()]
+        if normalized_statuses:
+            placeholders = ", ".join("?" for _ in normalized_statuses)
+            clauses.append(f"COALESCE(quant_status, 'inactive') IN ({placeholders})")
+            params.extend(normalized_statuses)
         keyword = str(search or "").strip()
         if keyword:
             like_keyword = f"%{keyword}%"
@@ -1101,10 +1122,15 @@ class QuantSimDB:
         limit: int | None = None,
         offset: int = 0,
         search: str | None = None,
+        quant_statuses: list[str] | tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
         conn = self._connect()
         cursor = conn.cursor()
-        where_sql, params = self._build_candidate_filters(status=status, search=search)
+        where_sql, params = self._build_candidate_filters(
+            status=status,
+            search=search,
+            quant_statuses=quant_statuses,
+        )
         sql = f"""
             SELECT * FROM stock_universe
             {where_sql}
