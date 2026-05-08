@@ -19,7 +19,9 @@ from app.quant_sim.dynamic_strategy import (
 from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
+from app.quant_sim.quant_universe_notifications import build_quant_universe_retired_notification
 from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
+from app.notification_service import notification_service
 TRADING_HOURS = {
     "CN": [("09:30", "11:30"), ("13:00", "15:00")],
     "HK": [("09:30", "12:00"), ("13:00", "16:00")],
@@ -76,6 +78,7 @@ class QuantSimScheduler:
         strategy_mode = str(config["strategy_mode"])
         market = str(config["market"])
         current_time = self._decision_time()
+        lifecycle_event_since = format_utc_iso_z()
         if hasattr(self.engine.adapter, "set_market"):
             self.engine.adapter.set_market(market)
         configured_profile_id = str(config.get("strategy_profile_id") or "").strip()
@@ -119,6 +122,9 @@ class QuantSimScheduler:
         cooling_reviewed = self._opportunistic_cooling_review(lifecycle_profile_id)
         auto_executed = self._auto_execute_pending_signals()
         snapshot_id = self.db.add_account_snapshot(run_reason)
+        self._dispatch_lifecycle_notifications(
+            self.db.list_quant_universe_events(created_at_gte=lifecycle_event_since, limit=500)
+        )
         self.db.update_scheduler_config(last_run_at=self._now())
         account_summary = self.portfolio.get_account_summary()
         return {
@@ -305,6 +311,15 @@ class QuantSimScheduler:
         for item in selected:
             manager.evaluate_candidate(str(item.get("stock_code") or ""))
         return len(selected)
+
+    def _dispatch_lifecycle_notifications(self, events: list[dict]) -> int:
+        sent = 0
+        for event in events:
+            if str(event.get("to_status") or "") != "retired":
+                continue
+            if notification_service.send_notification(build_quant_universe_retired_notification(event)):
+                sent += 1
+        return sent
 
     def _register_jobs(self, interval_minutes: int) -> None:
         self._clear_jobs()

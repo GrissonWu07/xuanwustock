@@ -1186,6 +1186,39 @@ class QuantSimDB:
         conn.close()
         return self._quant_universe_event_row_to_dict(row) if row is not None else None
 
+    def list_quant_universe_events(
+        self,
+        *,
+        created_at_gte: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if created_at_gte:
+            clauses.append("e.created_at >= ?")
+            params.append(created_at_gte)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        safe_limit = max(1, min(int(limit or 200), 1000))
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT
+                e.*,
+                COALESCE(NULLIF(su.stock_name, ''), e.stock_code) AS stock_name,
+                COALESCE(su.quant_manual_override, 'none') AS manual_override
+            FROM stock_universe_quant_events e
+            LEFT JOIN stock_universe su ON su.stock_code = e.stock_code
+            {where_sql}
+            ORDER BY e.created_at DESC, e.id DESC
+            LIMIT ?
+            """,
+            (*params, safe_limit),
+        )
+        rows = [self._quant_universe_event_row_to_dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
     def get_candidate(self, stock_code: str) -> Optional[dict[str, Any]]:
         conn = self._connect()
         cursor = conn.cursor()
