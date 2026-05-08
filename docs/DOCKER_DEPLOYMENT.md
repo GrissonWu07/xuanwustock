@@ -161,6 +161,21 @@ Docker 部署会自动挂载以下目录/文件到宿主机：
 
 **重要**：即使删除容器，这些数据也会保留在宿主机上。
 
+### 重置式部署
+
+当前量化股票池、持仓登记、实时模拟和历史回放都以统一股票池为核心。涉及股票池生命周期 schema 的版本切换时，不做旧数据迁移，也不保留兼容 fallback；需要干净部署时按下面步骤重置：
+
+1. 停止后端服务，确认没有旧进程继续写库。
+2. 在项目根目录执行：
+
+```bash
+python scripts/reset_stock_universe_deployment.py --yes --recreate
+```
+
+3. 脚本会删除 `xuanwu_stock.db`、`xuanwu_stock_replay.db`、旧 `quant_sim*.db`、旧 `watchlist.db`、旧 `portfolio_stocks.db`，以及对应的备份和 SQLite `-wal`、`-shm`、`-journal` 文件。
+4. 脚本会创建空的运行时主库和回放库。主库只保留新 schema，包括统一股票池、生命周期状态表、候选事件表、生命周期事件表和生命周期设置表。
+5. 重启服务后，由用户手工添加、发现股票、研究结果或自动入池流程重新建立股票范围。
+
 ## 🔧 常用命令
 
 ### Docker Compose

@@ -1488,6 +1488,22 @@ UI 第 17 节引用的交互必须落到明确 API，不允许只写“调用某
 4. 由用户或新的候选事件重新建立股票池与量化管理状态
 5. 手工暂停功能默认关闭，需用户显式操作
 
+部署执行必须使用重置脚本，而不是临时 SQL：
+
+```powershell
+python scripts/reset_stock_universe_deployment.py --yes --recreate
+```
+
+脚本职责：
+
+1. 删除当前运行时主库 `xuanwu_stock.db`、回放库 `xuanwu_stock_replay.db`
+2. 删除旧库 `quant_sim.db`、`quant_sim_replay.db`、`watchlist.db`、`portfolio_stocks.db`
+3. 同步删除上述库的 `.backup*`、`.bak-*`、`-wal`、`-shm`、`-journal`
+4. 重新创建空的运行时主库和回放库
+5. 新主库必须包含空的 `stock_universe`、`stock_universe_quant_state`、`stock_universe_candidate_events`、`stock_universe_quant_events`、`quant_universe_settings`
+6. 新回放库必须包含空的 `sim_run_*` 回放结果表
+7. 不从旧量化池、旧关注池、旧持仓池恢复任何成员关系
+
 要求：
 
 1. 新版本代码中不得保留“如果缺字段就兼容旧状态”的过渡逻辑

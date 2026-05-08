@@ -122,7 +122,7 @@ Supersedes:
 5. 保留 live-sim 账户状态库和 replay 结果库的策略由部署任务显式决定；如果本次部署要求干净环境，则同步删除 `sim_positions`、`sim_trades`、`strategy_signals` 和 `xuanwu_stock_replay.db`。
 6. 清库完成后启动新版本，由新版本初始化统一股票池主表和附属表。
 7. 清库步骤必须写入部署脚本或部署 runbook，不能依赖人工临时 SQL。
-8. 当前部署脚本为 `scripts/reset_stock_universe_deployment.py --yes`；它会删除旧股票范围相关 DB、旧持仓 DB、旧关注 DB、live-sim DB 与 replay DB，由新版本重新初始化。
+8. 当前部署脚本为 `python scripts/reset_stock_universe_deployment.py --yes --recreate`；它会删除旧股票范围相关 DB、旧持仓 DB、旧关注 DB、live-sim DB、replay DB、SQLite sidecar 和备份文件，并由新版本 schema 重新初始化空主库与空回放库。
 
 ## 页面边界
 
