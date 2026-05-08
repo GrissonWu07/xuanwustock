@@ -4,6 +4,8 @@ from app.quant_sim.quant_universe_lifecycle import (
     AutoEntryMode,
     HealthInputs,
     ManualOverride,
+    QuantUniverseDomainError,
+    QuantUniverseManager,
     QuantStatus,
     QuantUniverseLifecyclePolicy,
     calculate_candidate_score,
@@ -13,6 +15,7 @@ from app.quant_sim.quant_universe_lifecycle import (
     resolve_next_status,
     resolve_restore_to_trial,
 )
+from app.quant_sim.db import QuantSimDB
 
 
 def test_health_score_uses_kernel_score_normalization():
@@ -107,8 +110,8 @@ def test_candidate_score_uses_profile_weights_and_clamps_result():
     result = calculate_candidate_score(events, {"is_liquid": True}, policy)
 
     assert 0 <= result["candidate_score"] <= 1
-    assert result["candidate_score"] == 0.7267
-    assert result["breakdown"]["multi_source_bonus"] > 0
+    assert result["candidate_score"] == 0.86
+    assert result["breakdown"]["multi_source_bonus"] == 1.0
 
 
 def test_resolve_active_to_exit_only_when_holding_and_health_breaks_threshold():
@@ -221,3 +224,365 @@ def test_manual_paused_is_not_auto_restored_and_active_to_retired_is_forbidden()
     assert manual.reason_code == "manual_paused_no_auto_restore"
     assert forbidden.allowed is False
     assert forbidden.reason_code == "forbidden_direct_retire"
+
+
+def _manager(tmp_path, policy: QuantUniverseLifecyclePolicy | None = None) -> QuantUniverseManager:
+    db = QuantSimDB(tmp_path / "quant_sim.db")
+    return QuantUniverseManager(db=db, profile_id="stable", policy=policy or QuantUniverseLifecyclePolicy.stable_defaults())
+
+
+def test_manager_confirm_first_marks_eligible_without_promoting(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+
+    result = manager.ingest_candidate_event(
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_key": "main_force",
+            "source_score": 0.9,
+            "confidence": 0.8,
+            "trend": "up",
+            "reason_text": "主力与趋势共振",
+        }
+    )
+
+    state = manager.db.get_quant_universe_state("600000")
+    events = manager.db.list_candidate_events(stock_code="600000", status="eligible")
+    assert result["decision"] == "eligible"
+    assert result["candidate_score"] >= manager.policy.trial_threshold
+    assert state is None or state["quant_status"] == "inactive"
+    assert events[0]["status"] == "eligible"
+
+
+def test_manager_auto_trial_promotes_eligible_candidate(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+
+    result = manager.ingest_candidate_event(
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_key": "main_force",
+            "source_score": 0.9,
+            "confidence": 0.8,
+            "trend": "up",
+            "reason_text": "自动纳入",
+        }
+    )
+
+    state = manager.db.get_quant_universe_state("600000")
+    assert result["decision"] == "promoted_to_trial"
+    assert state["quant_status"] == "trial"
+    assert state["quant_enabled"] is True
+
+
+def test_manager_lifecycle_disabled_records_event_without_auto_promoting(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.update_quant_universe_settings(
+        {"auto_entry_mode": "auto_trial", "quant_universe_lifecycle_enabled": False}
+    )
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+
+    result = manager.ingest_candidate_event(
+        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+    )
+
+    assert result["decision"] == "eligible"
+    assert result["skip_reason"] == "lifecycle_disabled"
+    assert manager.db.get_quant_universe_state("600000")["quant_status"] == "inactive"
+
+
+def test_manager_ignore_auto_entry_marks_events_ignored(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+    manager.db.add_candidate_event(
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 0.9,
+            "confidence": 0.8,
+            "trend": "up",
+            "status": "eligible",
+        }
+    )
+
+    result = manager.ignore_auto_entry(["600000"], source_type="discover")
+
+    assert result["ignored"] == ["600000"]
+    assert manager.db.list_candidate_events(stock_code="600000", status="ignored")[0]["status"] == "ignored"
+
+
+def test_manager_set_override_manual_pause_sets_manual_paused_and_disables_quant(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "active"})
+
+    result = manager.set_override("600000", "manual_pause")
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["quant_status"] == "manual_paused"
+    assert result["quant_manual_override"] == "manual_pause"
+    assert state["quant_status"] == "manual_paused"
+    assert state["quant_enabled"] is False
+
+
+def test_manager_basic_info_missing_blocks_auto_trial_but_keeps_eligible(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    manager.db.add_watch(
+        stock_code="600000",
+        stock_name="浦发银行",
+        source="discover",
+        metadata={"basic_info_missing": True},
+    )
+
+    result = manager.ingest_candidate_event(
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+        }
+    )
+
+    assert result["decision"] == "eligible"
+    assert result["skip_reason"] == "basic_info_missing"
+    assert manager.db.get_quant_universe_state("600000")["quant_status"] == "inactive"
+
+
+def test_manager_manual_ban_and_cooling_window_block_entry(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+    manager.db.add_watch(stock_code="000001", stock_name="平安银行", source="discover")
+    manager.set_override("600000", "manual_ban")
+    manager.db.upsert_quant_universe_state(
+        "000001",
+        {"quant_status": "cooling", "cooling_until": "2099-01-01T00:00:00Z"},
+    )
+
+    banned = manager.ingest_candidate_event(
+        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+    )
+    cooling = manager.ingest_candidate_event(
+        {"stock_code": "000001", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+    )
+
+    assert banned["decision"] == "skipped"
+    assert banned["skip_reason"] == "manual_ban"
+    assert cooling["decision"] == "skipped"
+    assert cooling["skip_reason"] == "cooling_blocked"
+
+
+def test_manager_non_tradable_blocks_auto_entry(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    manager.db.add_watch(
+        stock_code="600000",
+        stock_name="浦发银行",
+        source="discover",
+        metadata={"tradable": False},
+    )
+
+    result = manager.ingest_candidate_event(
+        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+    )
+
+    assert result["decision"] == "skipped"
+    assert result["skip_reason"] == "non_tradable"
+
+
+def test_manager_daily_capacity_keeps_candidate_eligible_without_auto_promoting(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.stable_defaults().with_overrides(max_auto_entries_per_day=0)
+    manager = _manager(tmp_path, policy)
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+
+    result = manager.ingest_candidate_event(
+        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+    )
+
+    assert result["decision"] == "eligible"
+    assert result["skip_reason"] == "daily_capacity_exceeded"
+    assert manager.db.get_quant_universe_state("600000")["quant_status"] == "inactive"
+
+
+def test_manager_promote_to_trial_respects_batch_capacity(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.stable_defaults()
+    policy = policy.with_overrides(max_auto_entries_per_batch=1)
+    manager = _manager(tmp_path, policy)
+    for code, score in (("600000", 0.95), ("000001", 0.75)):
+        manager.db.add_watch(stock_code=code, stock_name=code, source="discover")
+        manager.db.add_candidate_event(
+            {
+                "stock_code": code,
+                "source_type": "discover",
+                "source_score": score,
+                "confidence": 0.9,
+                "trend": "up",
+                "status": "eligible",
+            }
+        )
+
+    result = manager.promote_to_trial(["000001", "600000"], source_type="manual", source_key=None)
+
+    assert result["success"] == ["600000"]
+    assert result["skipped"][0]["stock_code"] == "000001"
+    assert result["skipped"][0]["reason"] == "batch_capacity_exceeded"
+
+
+def test_manager_promote_to_trial_respects_strategy_and_industry_capacity(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.stable_defaults().with_overrides(
+        max_auto_entries_per_batch=10,
+        max_auto_entries_per_strategy_batch=1,
+        max_same_industry_auto_entries_per_day=1,
+    )
+    manager = _manager(tmp_path, policy)
+    for code, score, source_key in (
+        ("600000", 0.95, "main_force"),
+        ("000001", 0.90, "main_force"),
+        ("600036", 0.88, "value"),
+    ):
+        manager.db.add_watch(stock_code=code, stock_name=code, source="discover")
+        with manager.db._connect() as conn:  # noqa: SLF001 - test setup for stock universe metadata
+            conn.execute("UPDATE stock_universe SET industry = ? WHERE stock_code = ?", ("银行", code))
+            conn.commit()
+        manager.db.add_candidate_event(
+            {
+                "stock_code": code,
+                "source_type": "discover",
+                "source_key": source_key,
+                "source_score": score,
+                "confidence": 0.9,
+                "trend": "up",
+                "status": "eligible",
+            }
+        )
+
+    result = manager.promote_to_trial(["600000", "000001", "600036"], source_type="discover", source_key="main_force")
+
+    assert result["success"] == ["600000"]
+    assert {item["reason"] for item in result["skipped"]} == {
+        "strategy_batch_capacity_exceeded",
+        "industry_capacity_exceeded",
+    }
+
+
+def test_manager_promote_to_trial_respects_same_concept_capacity(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.stable_defaults().with_overrides(
+        max_auto_entries_per_batch=10,
+        max_same_concept_auto_entries_per_day=1,
+    )
+    manager = _manager(tmp_path, policy)
+    for code, score in (("600000", 0.95), ("000001", 0.90)):
+        manager.db.add_watch(
+            stock_code=code,
+            stock_name=code,
+            source="discover",
+            metadata={"primary_theme": "AI金融"},
+        )
+        manager.db.add_candidate_event(
+            {
+                "stock_code": code,
+                "source_type": "discover",
+                "source_score": score,
+                "confidence": 0.9,
+                "trend": "up",
+                "status": "eligible",
+            }
+        )
+
+    result = manager.promote_to_trial(["600000", "000001"], source_type="manual", source_key=None)
+
+    assert result["success"] == ["600000"]
+    assert result["skipped"] == [{"stock_code": "000001", "reason": "concept_capacity_exceeded"}]
+
+
+def test_manager_retired_reactivation_requires_high_threshold(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "retired", "health_score": 20})
+
+    weak = manager.ingest_candidate_event(
+        {"stock_code": "600000", "source_type": "discover", "source_score": 0.7, "confidence": 0.6, "trend": "up"}
+    )
+    strong = manager.ingest_candidate_event(
+        {"stock_code": "600000", "source_type": "research", "source_score": 0.98, "confidence": 0.95, "trend": "up"}
+    )
+
+    assert weak["decision"] == "skipped"
+    assert weak["skip_reason"] == "retired_reentry_below_threshold"
+    assert strong["decision"] == "promoted_to_trial"
+
+
+def test_manager_retired_reactivation_can_be_disabled(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.stable_defaults().with_overrides(retired_reactivation_check_enabled=False)
+    manager = _manager(tmp_path, policy)
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "retired", "health_score": 20})
+
+    result = manager.ingest_candidate_event(
+        {"stock_code": "600000", "source_type": "discover", "source_score": 1.0, "confidence": 1.0, "trend": "up"}
+    )
+
+    assert result["decision"] == "skipped"
+    assert result["skip_reason"] == "retired_reactivation_disabled"
+
+
+def test_manager_update_after_signal_respects_auto_exit_switch(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "active", "health_score": 80})
+    manager.db.update_quant_universe_settings({"auto_exit_enabled": False})
+
+    result = manager.update_after_signal(
+        "600000",
+        latest_signal={"action": "HOLD", "tech_score": -0.5, "fusion_score": 0.1, "fusion_score_delta": -0.1},
+        recent_signals=[
+            {"action": "HOLD", "tech_score": -0.5, "context_score": -0.5, "fusion_score": 0.1, "buy_strength_score": 0.1}
+        ],
+        position={"quantity": 100},
+    )
+
+    state = manager.db.get_quant_universe_state("600000")
+    assert result["status_changed"] is False
+    assert state["quant_status"] == "active"
+    assert state["health_score"] < 80
+
+
+def test_manager_update_after_signal_freezes_status_when_lifecycle_disabled(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "active", "health_score": 80})
+    manager.db.update_quant_universe_settings({"quant_universe_lifecycle_enabled": False})
+
+    result = manager.update_after_signal(
+        "600000",
+        latest_signal={"action": "SELL", "tech_score": -0.8, "fusion_score": 0.1},
+        recent_signals=[{"action": "SELL", "tech_score": -0.8, "context_score": -0.5, "fusion_score": 0.1}],
+        position={"quantity": 100},
+    )
+
+    assert result["status_changed"] is False
+    assert manager.db.get_quant_universe_state("600000")["quant_status"] == "active"
+
+
+def test_manager_restore_to_trial_raises_structured_error_for_active(tmp_path):
+    manager = _manager(tmp_path)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "active"})
+
+    try:
+        manager.restore_to_trial("600000")
+    except QuantUniverseDomainError as exc:
+        payload = exc.to_dict()
+    else:
+        raise AssertionError("expected QuantUniverseDomainError")
+
+    assert payload["error_code"] == "invalid_restore_state"
+    assert payload["error_message"] == "股票当前处于 active，无需恢复"

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
+import json
 from typing import Any
 
 
@@ -39,6 +40,11 @@ class QuantUniverseLifecyclePolicy:
     high_reentry_threshold: float
     active_upgrade_threshold: float
     active_upgrade_confirm_checkpoints: int
+    max_auto_entries_per_batch: int
+    max_auto_entries_per_day: int
+    max_auto_entries_per_strategy_batch: int
+    max_same_industry_auto_entries_per_day: int
+    max_same_concept_auto_entries_per_day: int
     exit_only_threshold: float
     cooling_threshold: float
     retire_threshold: float
@@ -82,6 +88,11 @@ class QuantUniverseLifecyclePolicy:
             high_reentry_threshold=0.85,
             active_upgrade_threshold=60,
             active_upgrade_confirm_checkpoints=2,
+            max_auto_entries_per_batch=10,
+            max_auto_entries_per_day=20,
+            max_auto_entries_per_strategy_batch=5,
+            max_same_industry_auto_entries_per_day=3,
+            max_same_concept_auto_entries_per_day=3,
             exit_only_threshold=38,
             cooling_threshold=30,
             retire_threshold=22,
@@ -126,6 +137,11 @@ class QuantUniverseLifecyclePolicy:
             high_reentry_threshold=0.88,
             active_upgrade_threshold=65,
             active_upgrade_confirm_checkpoints=3,
+            max_auto_entries_per_batch=8,
+            max_auto_entries_per_day=15,
+            max_auto_entries_per_strategy_batch=4,
+            max_same_industry_auto_entries_per_day=2,
+            max_same_concept_auto_entries_per_day=2,
             exit_only_threshold=35,
             cooling_threshold=28,
             retire_threshold=20,
@@ -170,6 +186,11 @@ class QuantUniverseLifecyclePolicy:
             high_reentry_threshold=0.92,
             active_upgrade_threshold=70,
             active_upgrade_confirm_checkpoints=4,
+            max_auto_entries_per_batch=5,
+            max_auto_entries_per_day=10,
+            max_auto_entries_per_strategy_batch=3,
+            max_same_industry_auto_entries_per_day=2,
+            max_same_concept_auto_entries_per_day=2,
             exit_only_threshold=42,
             cooling_threshold=34,
             retire_threshold=26,
@@ -204,6 +225,9 @@ class QuantUniverseLifecyclePolicy:
             inactivity_penalty_multiplier=1.20,
             reentry_watch_penalty_multiplier=1.25,
         )
+
+    def with_overrides(self, **overrides: Any) -> "QuantUniverseLifecyclePolicy":
+        return replace(self, **overrides)
 
 
 @dataclass(frozen=True)
@@ -341,7 +365,7 @@ def calculate_candidate_score(
     confidence_component = sum(_float(event.get("confidence"), 0.0) for event in events) / len(events)
     trend_component = max(_trend_score(event.get("trend")) for event in events)
     source_count = len({str(event.get("source_type") or "") for event in events if event.get("source_type")})
-    multi_source_bonus = _clamp((source_count - 1) / 3.0, 0.0, 1.0)
+    multi_source_bonus = 1.0 if source_count >= 2 else 0.0
     liquidity_penalty = 0.0 if stock_snapshot.get("is_liquid", True) else 0.10 * policy.liquidity_penalty_multiplier
     cooldown_penalty = 0.15 * policy.cooldown_penalty_multiplier if stock_snapshot.get("in_cooldown") else 0.0
     manual_priority_bonus = 0.08 * policy.manual_priority_bonus_multiplier if stock_snapshot.get("manual_priority") else 0.0
@@ -431,6 +455,479 @@ def resolve_restore_to_trial(current_status: QuantStatus | str) -> TransitionRes
     return _blocked(current, "invalid_restore_state", "当前状态不能恢复到 trial", error_code="invalid_restore_state")
 
 
+class QuantUniverseDomainError(Exception):
+    def __init__(self, error_code: str, error_message: str, *, payload: dict[str, Any] | None = None) -> None:
+        super().__init__(error_message)
+        self.error_code = error_code
+        self.error_message = error_message
+        self.payload = payload or {}
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"error_code": self.error_code, "error_message": self.error_message, **self.payload}
+
+
+class QuantUniverseManager:
+    def __init__(self, *, db: Any, profile_id: str, policy: QuantUniverseLifecyclePolicy) -> None:
+        self.db = db
+        self.profile_id = profile_id
+        self.policy = policy
+
+    def ingest_candidate_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        event = self.db.add_candidate_event({**payload, "status": payload.get("status") or "active"})
+        evaluation = self.evaluate_candidate(event["stock_code"])
+        settings = self.db.get_quant_universe_settings()
+        stock = self._load_stock(event["stock_code"])
+        state = self.db.get_quant_universe_state(event["stock_code"])
+        current_status = _status(stock.get("quant_status") if stock else None)
+        skip_reason = self._entry_skip_reason(stock, state, evaluation)
+        if skip_reason and skip_reason not in {"basic_info_missing"}:
+            return {**evaluation, "decision": "skipped", "skip_reason": skip_reason}
+        if evaluation["candidate_score"] < self.policy.trial_threshold:
+            return {**evaluation, "decision": "skipped", "skip_reason": "below_trial_threshold"}
+        if current_status == QuantStatus.RETIRED and evaluation["candidate_score"] < self.policy.high_reentry_threshold:
+            return {**evaluation, "decision": "skipped", "skip_reason": "retired_reentry_below_threshold"}
+        self._mark_candidate_events(event["stock_code"], "eligible")
+        if not settings["quant_universe_lifecycle_enabled"]:
+            return {**evaluation, "decision": "eligible", "skip_reason": "lifecycle_disabled"}
+        if settings["auto_entry_mode"] != AutoEntryMode.AUTO_TRIAL.value or skip_reason == "basic_info_missing":
+            return {**evaluation, "decision": "eligible", "skip_reason": skip_reason or ""}
+        capacity_reason = self._auto_capacity_skip_reason(str(event.get("source_type") or ""))
+        if capacity_reason:
+            return {**evaluation, "decision": "eligible", "skip_reason": capacity_reason}
+        promoted = self._promote_stock_to_trial(
+            event["stock_code"],
+            source_type=str(event.get("source_type") or "candidate_event"),
+            source_key=event.get("source_key"),
+            reason_code="auto_trial",
+            reason_text=event.get("reason_text") or "候选事件自动纳入 trial",
+            candidate_score=evaluation["candidate_score"],
+        )
+        return {**evaluation, "decision": "promoted_to_trial", **promoted}
+
+    def evaluate_candidate(self, stock_code: str) -> dict[str, Any]:
+        code = str(stock_code or "").strip().upper()
+        events = self.db.list_candidate_events(stock_code=code, status="active", limit=100)
+        events.extend(self.db.list_candidate_events(stock_code=code, status="eligible", limit=100))
+        stock = self._load_stock(code)
+        state = self.db.get_quant_universe_state(code)
+        snapshot = {
+            "is_liquid": not bool((stock or {}).get("liquidity_blocked")),
+            "in_cooldown": _is_future((state or {}).get("cooling_until"), None),
+            "manual_priority": any(str(event.get("source_type")) == "manual" for event in events),
+        }
+        score = calculate_candidate_score(events, snapshot, self.policy)
+        if state is not None:
+            self.db.upsert_quant_universe_state(
+                code,
+                {
+                    "quant_status": stock.get("quant_status") if stock else state.get("quant_status"),
+                    "candidate_score": score["candidate_score"],
+                    "candidate_confidence": max((_float(event.get("confidence"), 0.0) for event in events), default=0.0),
+                    "health_score": state.get("health_score", 100),
+                    "cooling_until": state.get("cooling_until"),
+                    "snapshot_json": {"candidate_score_breakdown": score["breakdown"]},
+                },
+            )
+        return {
+            "stock_code": code,
+            "candidate_score": score["candidate_score"],
+            "candidate_confidence": max((_float(event.get("confidence"), 0.0) for event in events), default=0.0),
+            "breakdown": score["breakdown"],
+        }
+
+    def promote_to_trial(
+        self,
+        stock_codes: list[str],
+        *,
+        source_type: str,
+        source_key: str | None,
+    ) -> dict[str, Any]:
+        evaluations = []
+        for code in {str(stock_code or "").strip().upper() for stock_code in stock_codes if str(stock_code or "").strip()}:
+            evaluation = self.evaluate_candidate(code)
+            evaluations.append(evaluation)
+        evaluations.sort(key=lambda item: item["candidate_score"], reverse=True)
+        success: list[str] = []
+        skipped: list[dict[str, str]] = []
+        strategy_counts: dict[str, int] = {}
+        industry_counts, concept_counts = self._theme_counts_today()
+        promoted_today = self._promotions_today_count()
+        for evaluation in evaluations:
+            code = evaluation["stock_code"]
+            stock = self._load_stock(code)
+            state = self.db.get_quant_universe_state(code)
+            skip_reason = self._entry_skip_reason(stock, state, evaluation)
+            if skip_reason:
+                skipped.append({"stock_code": code, "reason": skip_reason})
+                continue
+            if len(success) >= self.policy.max_auto_entries_per_batch:
+                skipped.append({"stock_code": code, "reason": "batch_capacity_exceeded"})
+                continue
+            if promoted_today + len(success) >= self.policy.max_auto_entries_per_day:
+                skipped.append({"stock_code": code, "reason": "daily_capacity_exceeded"})
+                continue
+            strategy_key = self._primary_candidate_source_key(code) or source_key or source_type
+            if strategy_key and strategy_counts.get(strategy_key, 0) >= self.policy.max_auto_entries_per_strategy_batch:
+                skipped.append({"stock_code": code, "reason": "strategy_batch_capacity_exceeded"})
+                continue
+            industry = str((stock or {}).get("industry") or "").strip()
+            if industry and industry_counts.get(industry, 0) >= self.policy.max_same_industry_auto_entries_per_day:
+                skipped.append({"stock_code": code, "reason": "industry_capacity_exceeded"})
+                continue
+            concept = self._stock_primary_theme(stock)
+            if concept and concept_counts.get(concept, 0) >= self.policy.max_same_concept_auto_entries_per_day:
+                skipped.append({"stock_code": code, "reason": "concept_capacity_exceeded"})
+                continue
+            self._promote_stock_to_trial(
+                code,
+                source_type=source_type,
+                source_key=source_key,
+                reason_code="manual_promote_to_trial",
+                reason_text="用户批量纳入 trial",
+                candidate_score=evaluation["candidate_score"],
+            )
+            success.append(code)
+            if strategy_key:
+                strategy_counts[strategy_key] = strategy_counts.get(strategy_key, 0) + 1
+            if industry:
+                industry_counts[industry] = industry_counts.get(industry, 0) + 1
+            if concept:
+                concept_counts[concept] = concept_counts.get(concept, 0) + 1
+        return {"success": success, "skipped": skipped}
+
+    def ignore_auto_entry(self, stock_codes: list[str], source_type: str | None = None) -> dict[str, Any]:
+        ignored: list[str] = []
+        conn = self.db._connect()
+        cursor = conn.cursor()
+        for stock_code in stock_codes:
+            code = str(stock_code or "").strip().upper()
+            if not code:
+                continue
+            clauses = ["stock_code = ?", "status IN ('active', 'eligible')"]
+            params: list[Any] = [code]
+            if source_type:
+                clauses.append("source_type = ?")
+                params.append(source_type)
+            cursor.execute(
+                f"""
+                UPDATE stock_universe_candidate_events
+                SET status = 'ignored', updated_at = ?
+                WHERE {' AND '.join(clauses)}
+                """,
+                (self.db._now(), *params),
+            )
+            ignored.append(code)
+        conn.commit()
+        conn.close()
+        return {"ignored": ignored}
+
+    def set_override(self, stock_code: str, override_type: str) -> dict[str, Any]:
+        code = str(stock_code or "").strip().upper()
+        override = _manual_override(override_type)
+        conn = self.db._connect()
+        cursor = conn.cursor()
+        self.db._ensure_stock_universe_member(cursor, code)
+        quant_status = "manual_paused" if override == ManualOverride.MANUAL_PAUSE else None
+        quant_enabled = 0 if override in {ManualOverride.MANUAL_PAUSE, ManualOverride.MANUAL_BAN} else None
+        updates = ["quant_manual_override = ?", "updated_at = ?"]
+        params: list[Any] = [override.value, self.db._now()]
+        if quant_status is not None:
+            updates.append("quant_status = ?")
+            params.append(quant_status)
+        if quant_enabled is not None:
+            updates.append("quant_enabled = ?")
+            params.append(quant_enabled)
+        params.append(code)
+        cursor.execute(
+            f"""
+            UPDATE stock_universe
+            SET {', '.join(updates)}
+            WHERE stock_code = ?
+            """,
+            tuple(params),
+        )
+        conn.commit()
+        conn.close()
+        stock = self._load_stock(code)
+        return {
+            "stock_code": code,
+            "quant_status": stock.get("quant_status") if stock else None,
+            "quant_auto_managed": bool((stock or {}).get("quant_auto_managed", 1)),
+            "quant_manual_override": override.value,
+        }
+
+    def restore_to_trial(self, stock_code: str) -> dict[str, Any]:
+        code = str(stock_code or "").strip().upper()
+        stock = self._load_stock(code)
+        current = _status((stock or {}).get("quant_status"))
+        transition = resolve_restore_to_trial(current)
+        if not transition.allowed:
+            raise QuantUniverseDomainError(
+                transition.error_code or transition.reason_code,
+                transition.error_message or transition.reason,
+                payload={"stock_code": code},
+            )
+        self._promote_stock_to_trial(
+            code,
+            source_type="manual",
+            source_key=None,
+            reason_code=transition.reason_code,
+            reason_text=transition.reason,
+            candidate_score=0.0,
+        )
+        return {"stock_code": code, "old_status": current.value, "new_status": QuantStatus.TRIAL.value}
+
+    def update_after_signal(
+        self,
+        stock_code: str,
+        latest_signal: dict[str, Any],
+        recent_signals: list[dict[str, Any]],
+        position: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        code = str(stock_code or "").strip().upper()
+        stock = self._load_stock(code)
+        current = _status((stock or {}).get("quant_status"))
+        previous_state = self.db.get_quant_universe_state(code) or {}
+        health = calculate_health_score(self._health_inputs_from_signals(recent_signals), self.policy)
+        downtrend_hit = detect_downtrend_hit(latest_signal, previous_state, self.policy)
+        warning_hit = detect_weakening_warning(latest_signal, self.policy)
+        next_downtrend_streak = int(previous_state.get("downtrend_streak") or 0) + 1 if downtrend_hit else 0
+        next_warning_streak = int(previous_state.get("weakening_warning_streak") or 0) + 1 if warning_hit else 0
+        settings = self.db.get_quant_universe_settings()
+        has_position = int((position or {}).get("quantity") or 0) > 0
+        status_changed = False
+        next_status = current
+        if settings["quant_universe_lifecycle_enabled"] and settings["auto_exit_enabled"]:
+            transition = resolve_next_status(
+                current_status=current,
+                health_score=health.health_score,
+                downtrend_streak=next_downtrend_streak,
+                has_position=has_position,
+                policy=self.policy,
+            )
+            if transition.allowed and transition.to_status != current:
+                next_status = transition.to_status
+                status_changed = True
+                self.db.record_quant_universe_event(
+                    {
+                        "stock_code": code,
+                        "event_type": "state_changed",
+                        "from_status": current.value,
+                        "to_status": next_status.value,
+                        "reason_code": transition.reason_code,
+                        "reason_text": transition.reason,
+                        "health_score_before": previous_state.get("health_score"),
+                        "health_score_after": health.health_score,
+                        "evidence_json": {"latest_signal": latest_signal, "health": health.breakdown},
+                    }
+                )
+        self.db.upsert_quant_universe_state(
+            code,
+            {
+                "quant_status": next_status.value,
+                "health_score": health.health_score,
+                "candidate_score": previous_state.get("candidate_score", 0),
+                "candidate_confidence": previous_state.get("candidate_confidence", 0),
+                "downtrend_streak": next_downtrend_streak,
+                "weakening_warning_streak": next_warning_streak,
+                "blocked_streak": previous_state.get("blocked_streak", 0),
+                "no_buy_days": previous_state.get("no_buy_days", 0),
+                "cooling_until": previous_state.get("cooling_until"),
+                "snapshot_json": {"latest_signal": latest_signal, "health": health.breakdown},
+            },
+        )
+        return {
+            "stock_code": code,
+            "status_changed": status_changed,
+            "old_status": current.value,
+            "new_status": next_status.value,
+            "health_score": health.health_score,
+        }
+
+    def overview(self) -> dict[str, Any]:
+        return self.db.get_quant_universe_overview()
+
+    def _health_inputs_from_signals(self, signals: list[dict[str, Any]]) -> HealthInputs:
+        if not signals:
+            return HealthInputs()
+        count = len(signals)
+        return HealthInputs(
+            avg_tech_score=sum(_float(signal.get("tech_score"), 0.0) for signal in signals) / count,
+            avg_context_score=sum(_float(signal.get("context_score"), 0.0) for signal in signals) / count,
+            avg_fusion_score=sum(_float(signal.get("fusion_score"), 0.0) for signal in signals) / count,
+            avg_buy_strength_score=sum(_float(signal.get("buy_strength_score"), 0.0) for signal in signals) / count,
+            recent_stoploss_count=sum(1 for signal in signals if str(signal.get("decision_type") or "").lower() == "hard_stop_loss"),
+            blocked_streak=sum(1 for signal in signals if str(signal.get("stock_execution_feedback_status") or "") == "blocked"),
+        )
+
+    def _entry_skip_reason(
+        self,
+        stock: dict[str, Any] | None,
+        state: dict[str, Any] | None,
+        evaluation: dict[str, Any],
+    ) -> str:
+        if not stock:
+            return "stock_not_found"
+        if str(stock.get("quant_manual_override") or "") == ManualOverride.MANUAL_BAN.value:
+            return "manual_ban"
+        if self._is_non_tradable(stock):
+            return "non_tradable"
+        if _is_future((state or {}).get("cooling_until"), None):
+            return "cooling_blocked"
+        current_status = _status(stock.get("quant_status"))
+        if current_status == QuantStatus.RETIRED and not self.policy.retired_reactivation_check_enabled:
+            return "retired_reactivation_disabled"
+        if current_status == QuantStatus.RETIRED and evaluation["candidate_score"] < self.policy.high_reentry_threshold:
+            return "retired_reentry_below_threshold"
+        if bool(stock.get("basic_info_missing")):
+            return "basic_info_missing"
+        return ""
+
+    def _promote_stock_to_trial(
+        self,
+        stock_code: str,
+        *,
+        source_type: str,
+        source_key: str | None,
+        reason_code: str,
+        reason_text: str,
+        candidate_score: float,
+    ) -> dict[str, Any]:
+        code = str(stock_code or "").strip().upper()
+        previous = self._load_stock(code) or {}
+        previous_status = _status(previous.get("quant_status"))
+        self.db.upsert_quant_universe_state(
+            code,
+            {
+                "quant_status": QuantStatus.TRIAL.value,
+                "quant_entry_source": source_type,
+                "candidate_score": candidate_score,
+                "candidate_confidence": 0,
+                "health_score": (self.db.get_quant_universe_state(code) or {}).get("health_score", 100),
+                "snapshot_json": {"source_type": source_type, "source_key": source_key},
+            },
+        )
+        self.db.record_quant_universe_event(
+            {
+                "stock_code": code,
+                "event_type": "candidate_promoted_to_trial",
+                "from_status": previous_status.value,
+                "to_status": QuantStatus.TRIAL.value,
+                "trigger_source": source_type,
+                "reason_code": reason_code,
+                "reason_text": reason_text,
+                "candidate_score": candidate_score,
+                "evidence_json": {"source_key": source_key},
+            }
+        )
+        self._mark_candidate_events(code, "consumed")
+        return {"stock_code": code, "old_status": previous_status.value, "new_status": QuantStatus.TRIAL.value}
+
+    def _mark_candidate_events(self, stock_code: str, status: str) -> None:
+        conn = self.db._connect()
+        cursor = conn.cursor()
+        now_text = self.db._now()
+        cursor.execute(
+            """
+            UPDATE stock_universe_candidate_events
+            SET status = ?,
+                consumed_by_quant_manager_at = CASE WHEN ? = 'consumed' THEN ? ELSE consumed_by_quant_manager_at END,
+                updated_at = ?
+            WHERE stock_code = ? AND status IN ('active', 'eligible')
+            """,
+            (status, status, now_text, now_text, str(stock_code or "").strip().upper()),
+        )
+        conn.commit()
+        conn.close()
+
+    def _load_stock(self, stock_code: str) -> dict[str, Any] | None:
+        conn = self.db._connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM stock_universe WHERE stock_code = ?", (str(stock_code or "").strip().upper(),))
+        row = cursor.fetchone()
+        conn.close()
+        if row is None:
+            return None
+        payload = {key: row[key] for key in row.keys()}
+        payload["metadata"] = _loads_json_object(payload.get("metadata_json"))
+        payload["basic_info_missing"] = bool(payload.get("basic_info_missing"))
+        payload["quant_auto_managed"] = bool(payload.get("quant_auto_managed"))
+        return payload
+
+    def _auto_capacity_skip_reason(self, source_type: str) -> str:
+        if self._promotions_today_count() >= self.policy.max_auto_entries_per_day:
+            return "daily_capacity_exceeded"
+        return ""
+
+    def _promotions_today_count(self) -> int:
+        today = datetime.now(timezone.utc).date().isoformat()
+        conn = self.db._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM stock_universe_quant_events
+            WHERE event_type = 'candidate_promoted_to_trial'
+              AND created_at >= ?
+            """,
+            (f"{today}T00:00:00Z",),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return int(row["total"] or 0) if row else 0
+
+    def _theme_counts_today(self) -> tuple[dict[str, int], dict[str, int]]:
+        today = datetime.now(timezone.utc).date().isoformat()
+        conn = self.db._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT su.industry AS industry, su.metadata_json AS metadata_json
+            FROM stock_universe_quant_events qe
+            JOIN stock_universe su ON su.stock_code = qe.stock_code
+            WHERE qe.event_type = 'candidate_promoted_to_trial'
+              AND qe.created_at >= ?
+            """,
+            (f"{today}T00:00:00Z",),
+        )
+        industry_counts: dict[str, int] = {}
+        concept_counts: dict[str, int] = {}
+        for row in cursor.fetchall():
+            industry = str(row["industry"] or "").strip()
+            if industry:
+                industry_counts[industry] = industry_counts.get(industry, 0) + 1
+            metadata = _loads_json_object(row["metadata_json"])
+            concept = str(metadata.get("primary_theme") or metadata.get("concept_tag") or "").strip()
+            if concept:
+                concept_counts[concept] = concept_counts.get(concept, 0) + 1
+        conn.close()
+        return industry_counts, concept_counts
+
+    def _primary_candidate_source_key(self, stock_code: str) -> str:
+        events = self.db.list_candidate_events(stock_code=stock_code, status="eligible", limit=20)
+        events.extend(self.db.list_candidate_events(stock_code=stock_code, status="active", limit=20))
+        events.sort(key=lambda event: (_float(event.get("source_score"), 0.0), _float(event.get("confidence"), 0.0)), reverse=True)
+        if not events:
+            return ""
+        event = events[0]
+        return str(event.get("source_key") or event.get("source_type") or "").strip()
+
+    def _is_non_tradable(self, stock: dict[str, Any]) -> bool:
+        metadata = stock.get("metadata") if isinstance(stock.get("metadata"), dict) else {}
+        limit_status = str(metadata.get("limit_status") or stock.get("limit_status") or "").strip().lower()
+        return (
+            metadata.get("tradable") is False
+            or bool(metadata.get("is_suspended"))
+            or limit_status in {"limit_up", "limit_down", "up_limit", "down_limit", "涨停", "跌停"}
+        )
+
+    def _stock_primary_theme(self, stock: dict[str, Any] | None) -> str:
+        if not stock:
+            return ""
+        metadata = stock.get("metadata") if isinstance(stock.get("metadata"), dict) else {}
+        return str(metadata.get("primary_theme") or metadata.get("concept_tag") or "").strip()
+
+
 def _transition(from_status: QuantStatus, to_status: QuantStatus, reason_code: str, reason: str) -> TransitionResult:
     return TransitionResult(
         allowed=True,
@@ -518,6 +1015,18 @@ def _float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _loads_json_object(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
