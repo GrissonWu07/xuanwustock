@@ -24,6 +24,7 @@ from app.gateway.common import (
     table as _table,
     txt as _txt,
 )
+from app.gateway.quant_universe_entry import enrich_lifecycle_entry_rows
 from app.i18n import t
 from app.quant_sim.time_utils import format_system_time, parse_system_datetime
 from app.selector_ui_state import (
@@ -479,7 +480,7 @@ def _discover_rows(context: Any) -> list[dict[str, Any]]:
                 row["latestPrice"] = _num(runtime_price)
                 if len(row.get("cells", [])) > 4:
                     row["cells"][4] = row["latestPrice"]
-    return rows
+    return enrich_lifecycle_entry_rows(context, rows)
 
 
 def _optional_float(value: Any) -> float | None:
