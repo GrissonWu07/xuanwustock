@@ -83,7 +83,7 @@ Implementation must follow the spec as the source of truth. Drill runs must not 
 - Modify: `app/quant_sim/db.py`
 - Test: `tests/test_live_quant_drill_db.py`
 
-- [ ] **Step 1: Write failing schema tests**
+- [x] **Step 1: Write failing schema tests**
 
 Create `tests/test_live_quant_drill_db.py` with:
 
@@ -151,7 +151,7 @@ def test_live_quant_drill_quant_state_crud(tmp_path):
     assert rows["items"][0]["snapshot_json"]["reason_code"] == "auto_trial"
 ```
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run:
 
@@ -161,7 +161,7 @@ pytest tests/test_live_quant_drill_db.py -q
 
 Expected: fails because tables and methods do not exist.
 
-- [ ] **Step 3: Add replay schema**
+- [x] **Step 3: Add replay schema**
 
 In `QuantSimReplayDB` schema initialization, create:
 
@@ -186,7 +186,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sim_run_quant_summary_run_checkpoint
 ON sim_run_quant_summary(run_id, checkpoint_at_utc);
 ```
 
-- [ ] **Step 4: Add CRUD methods**
+- [x] **Step 4: Add CRUD methods**
 
 Add these methods on `QuantSimReplayDB`:
 
@@ -215,7 +215,7 @@ Add these methods on `QuantSimReplayDB`:
 
 Represent consumed candidate events with `status='consumed'`; do not add `consumed_by_quant_manager_at` to the drill table.
 
-- [ ] **Step 5: Run schema tests**
+- [x] **Step 5: Run schema tests**
 
 Run:
 
@@ -225,7 +225,7 @@ pytest tests/test_live_quant_drill_db.py -q
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add app/quant_sim/db.py tests/test_live_quant_drill_db.py

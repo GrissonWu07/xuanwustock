@@ -2273,6 +2273,10 @@ class QuantSimDB:
         cursor.execute("DELETE FROM sim_run_trades WHERE run_id = ?", (run_id,))
         cursor.execute("DELETE FROM sim_run_snapshots WHERE run_id = ?", (run_id,))
         cursor.execute("DELETE FROM sim_run_positions WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM sim_run_quant_states WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM sim_run_quant_events WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM sim_run_candidate_events WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM sim_run_quant_summary WHERE run_id = ?", (run_id,))
         cursor.execute(
             """
             DELETE FROM sim_run_signal_details
@@ -7234,6 +7238,10 @@ class QuantSimReplayDB(QuantSimDB):
         "sim_run_positions",
         "sim_run_signals",
         "sim_run_signal_details",
+        "sim_run_quant_states",
+        "sim_run_quant_events",
+        "sim_run_candidate_events",
+        "sim_run_quant_summary",
     }
 
     def __init__(
@@ -7267,5 +7275,575 @@ class QuantSimReplayDB(QuantSimDB):
         for table_name in table_names:
             if table_name not in self._replay_owned_tables:
                 cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        self._ensure_live_quant_drill_tables(cursor)
         conn.commit()
         conn.close()
+
+    def _ensure_live_quant_drill_tables(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_run_quant_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                checkpoint_at TEXT NOT NULL,
+                checkpoint_at_utc TEXT NOT NULL,
+                stock_code TEXT NOT NULL,
+                stock_name TEXT,
+                market TEXT DEFAULT 'CN',
+                quant_enabled INTEGER DEFAULT 0,
+                quant_status TEXT NOT NULL,
+                health_score REAL DEFAULT 0,
+                candidate_score REAL DEFAULT 0,
+                downtrend_streak INTEGER DEFAULT 0,
+                weakening_warning_streak INTEGER DEFAULT 0,
+                blocked_streak INTEGER DEFAULT 0,
+                no_buy_days INTEGER DEFAULT 0,
+                cooling_until TEXT,
+                retired_at TEXT,
+                latest_reason TEXT,
+                snapshot_json TEXT,
+                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                UNIQUE(run_id, checkpoint_at_utc, stock_code),
+                FOREIGN KEY(run_id) REFERENCES sim_runs(id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_run_quant_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                checkpoint_at TEXT NOT NULL,
+                checkpoint_at_utc TEXT NOT NULL,
+                stock_code TEXT NOT NULL,
+                stock_name TEXT,
+                event_type TEXT NOT NULL,
+                from_status TEXT,
+                to_status TEXT,
+                reason_code TEXT,
+                reason_text TEXT,
+                health_score_before REAL DEFAULT 0,
+                health_score_after REAL DEFAULT 0,
+                candidate_score REAL DEFAULT 0,
+                reason_json TEXT,
+                evidence_json TEXT,
+                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                FOREIGN KEY(run_id) REFERENCES sim_runs(id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_run_candidate_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                checkpoint_at TEXT NOT NULL,
+                checkpoint_at_utc TEXT NOT NULL,
+                stock_code TEXT NOT NULL,
+                stock_name TEXT,
+                source_type TEXT NOT NULL,
+                source_key TEXT,
+                candidate_score REAL DEFAULT 0,
+                confidence REAL DEFAULT 0,
+                reason_text TEXT,
+                evidence_json TEXT,
+                occurred_at TEXT,
+                status TEXT DEFAULT 'new',
+                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                FOREIGN KEY(run_id) REFERENCES sim_runs(id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_run_quant_summary (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                checkpoint_at TEXT NOT NULL,
+                checkpoint_at_utc TEXT NOT NULL,
+                inactive_count INTEGER DEFAULT 0,
+                trial_count INTEGER DEFAULT 0,
+                active_count INTEGER DEFAULT 0,
+                exit_only_count INTEGER DEFAULT 0,
+                cooling_count INTEGER DEFAULT 0,
+                retired_count INTEGER DEFAULT 0,
+                manual_paused_count INTEGER DEFAULT 0,
+                auto_promoted_count INTEGER DEFAULT 0,
+                auto_exited_count INTEGER DEFAULT 0,
+                candidate_event_count INTEGER DEFAULT 0,
+                data_warning_count INTEGER DEFAULT 0,
+                metadata_json TEXT,
+                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                UNIQUE(run_id, checkpoint_at_utc),
+                FOREIGN KEY(run_id) REFERENCES sim_runs(id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sim_run_quant_states_run_status
+            ON sim_run_quant_states(run_id, quant_status, checkpoint_at_utc)
+            """
+        )
+        self._ensure_column(cursor, "sim_run_quant_states", "downtrend_streak", "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, "sim_run_quant_states", "weakening_warning_streak", "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, "sim_run_quant_states", "blocked_streak", "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, "sim_run_quant_states", "no_buy_days", "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, "sim_run_quant_states", "cooling_until", "TEXT")
+        self._ensure_column(cursor, "sim_run_quant_states", "retired_at", "TEXT")
+        self._ensure_column(cursor, "sim_run_quant_events", "reason_code", "TEXT")
+        self._ensure_column(cursor, "sim_run_quant_events", "reason_text", "TEXT")
+        self._ensure_column(cursor, "sim_run_quant_summary", "inactive_count", "INTEGER DEFAULT 0")
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sim_run_quant_events_run_status
+            ON sim_run_quant_events(run_id, to_status, checkpoint_at_utc)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sim_run_candidate_events_run_stock
+            ON sim_run_candidate_events(run_id, stock_code, source_type, checkpoint_at_utc)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_sim_run_quant_summary_run_checkpoint
+            ON sim_run_quant_summary(run_id, checkpoint_at_utc)
+            """
+        )
+
+    def _decode_live_quant_drill_row(self, row: sqlite3.Row, json_fields: tuple[str, ...]) -> dict[str, Any]:
+        payload = self._row_to_dict(row)
+        for field in json_fields:
+            if field in payload:
+                payload[field] = self._loads_metadata(payload.get(field))
+        return payload
+
+    @staticmethod
+    def _paged_response(items: list[dict[str, Any]], total: int, page: int, page_size: int) -> dict[str, Any]:
+        return {
+            "items": items,
+            "total": int(total),
+            "page": max(1, int(page)),
+            "page_size": max(1, int(page_size)),
+        }
+
+    def upsert_sim_run_quant_states(
+        self,
+        run_id: int,
+        *,
+        checkpoint_at: str,
+        checkpoint_at_utc: str,
+        states: list[dict[str, Any]],
+    ) -> None:
+        if not states:
+            return
+        now_text = self._now()
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            for state in states:
+                cursor.execute(
+                    """
+                    INSERT INTO sim_run_quant_states
+                    (
+                        run_id, checkpoint_at, checkpoint_at_utc, stock_code, stock_name, market,
+                        quant_enabled, quant_status, health_score, candidate_score, downtrend_streak,
+                        weakening_warning_streak, blocked_streak, no_buy_days, cooling_until, retired_at,
+                        latest_reason, snapshot_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(run_id, checkpoint_at_utc, stock_code) DO UPDATE SET
+                        checkpoint_at = excluded.checkpoint_at,
+                        stock_name = excluded.stock_name,
+                        market = excluded.market,
+                        quant_enabled = excluded.quant_enabled,
+                        quant_status = excluded.quant_status,
+                        health_score = excluded.health_score,
+                        candidate_score = excluded.candidate_score,
+                        downtrend_streak = excluded.downtrend_streak,
+                        weakening_warning_streak = excluded.weakening_warning_streak,
+                        blocked_streak = excluded.blocked_streak,
+                        no_buy_days = excluded.no_buy_days,
+                        cooling_until = excluded.cooling_until,
+                        retired_at = excluded.retired_at,
+                        latest_reason = excluded.latest_reason,
+                        snapshot_json = excluded.snapshot_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        int(run_id),
+                        checkpoint_at,
+                        checkpoint_at_utc,
+                        str(state["stock_code"]).strip(),
+                        state.get("stock_name"),
+                        state.get("market") or "CN",
+                        int(bool(state.get("quant_enabled"))),
+                        str(state.get("quant_status") or "inactive"),
+                        float(state.get("health_score") or 0),
+                        float(state.get("candidate_score") or 0),
+                        int(state.get("downtrend_streak") or 0),
+                        int(state.get("weakening_warning_streak") or 0),
+                        int(state.get("blocked_streak") or 0),
+                        int(state.get("no_buy_days") or 0),
+                        state.get("cooling_until"),
+                        state.get("retired_at"),
+                        state.get("latest_reason"),
+                        self._dumps_metadata(state.get("snapshot_json")),
+                        now_text,
+                        now_text,
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_sim_run_quant_states(
+        self,
+        run_id: int,
+        *,
+        checkpoint_at: str | None = None,
+        status: str | None = None,
+        stock: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [int(run_id)]
+        if checkpoint_at:
+            clauses.append("(checkpoint_at = ? OR checkpoint_at_utc = ?)")
+            params.extend([checkpoint_at, checkpoint_at])
+        if status:
+            clauses.append("quant_status = ?")
+            params.append(status)
+        if stock:
+            like_stock = f"%{stock}%"
+            clauses.append("(stock_code LIKE ? OR stock_name LIKE ?)")
+            params.extend([like_stock, like_stock])
+        where_sql = " AND ".join(clauses)
+        page_value = max(1, int(page))
+        page_size_value = max(1, int(page_size))
+        offset = (page_value - 1) * page_size_value
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) AS total FROM sim_run_quant_states WHERE {where_sql}", tuple(params))
+            total_row = cursor.fetchone()
+            cursor.execute(
+                f"""
+                SELECT *
+                FROM sim_run_quant_states
+                WHERE {where_sql}
+                ORDER BY checkpoint_at_utc DESC, stock_code ASC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params + [page_size_value, offset]),
+            )
+            items = [self._decode_live_quant_drill_row(row, ("snapshot_json",)) for row in cursor.fetchall()]
+            return self._paged_response(items, int(total_row["total"] or 0) if total_row else 0, page_value, page_size_value)
+        finally:
+            conn.close()
+
+    def add_sim_run_quant_events(self, run_id: int, events: list[dict[str, Any]]) -> None:
+        if not events:
+            return
+        now_text = self._now()
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            for event in events:
+                cursor.execute(
+                    """
+                    INSERT INTO sim_run_quant_events
+                    (
+                        run_id, checkpoint_at, checkpoint_at_utc, stock_code, stock_name,
+                        event_type, from_status, to_status, reason_code, reason_text,
+                        health_score_before, health_score_after, candidate_score,
+                        reason_json, evidence_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(run_id),
+                        event["checkpoint_at"],
+                        event["checkpoint_at_utc"],
+                        str(event["stock_code"]).strip(),
+                        event.get("stock_name"),
+                        event.get("event_type") or "status_transition",
+                        event.get("from_status"),
+                        event.get("to_status"),
+                        event.get("reason_code"),
+                        event.get("reason_text"),
+                        float(event.get("health_score_before") or 0),
+                        float(event.get("health_score_after") or 0),
+                        float(event.get("candidate_score") or 0),
+                        self._dumps_metadata(event.get("reason_json")),
+                        self._dumps_metadata(event.get("evidence_json")),
+                        event.get("created_at") or now_text,
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_sim_run_quant_events(
+        self,
+        run_id: int,
+        *,
+        event_type: str = "",
+        from_status: str = "",
+        to_status: str = "",
+        stock: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [int(run_id)]
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if from_status:
+            clauses.append("from_status = ?")
+            params.append(from_status)
+        if to_status:
+            clauses.append("to_status = ?")
+            params.append(to_status)
+        if stock:
+            like_stock = f"%{stock}%"
+            clauses.append("(stock_code LIKE ? OR stock_name LIKE ?)")
+            params.extend([like_stock, like_stock])
+        where_sql = " AND ".join(clauses)
+        page_value = max(1, int(page))
+        page_size_value = max(1, int(page_size))
+        offset = (page_value - 1) * page_size_value
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) AS total FROM sim_run_quant_events WHERE {where_sql}", tuple(params))
+            total_row = cursor.fetchone()
+            cursor.execute(
+                f"""
+                SELECT *
+                FROM sim_run_quant_events
+                WHERE {where_sql}
+                ORDER BY checkpoint_at_utc DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params + [page_size_value, offset]),
+            )
+            items = [self._decode_live_quant_drill_row(row, ("reason_json", "evidence_json")) for row in cursor.fetchall()]
+            return self._paged_response(items, int(total_row["total"] or 0) if total_row else 0, page_value, page_size_value)
+        finally:
+            conn.close()
+
+    def add_sim_run_candidate_events(self, run_id: int, events: list[dict[str, Any]]) -> None:
+        if not events:
+            return
+        now_text = self._now()
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            for event in events:
+                cursor.execute(
+                    """
+                    INSERT INTO sim_run_candidate_events
+                    (
+                        run_id, checkpoint_at, checkpoint_at_utc, stock_code, stock_name,
+                        source_type, source_key, candidate_score, confidence, reason_text,
+                        evidence_json, occurred_at, status, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(run_id),
+                        event["checkpoint_at"],
+                        event["checkpoint_at_utc"],
+                        str(event["stock_code"]).strip(),
+                        event.get("stock_name"),
+                        event["source_type"],
+                        event.get("source_key"),
+                        float(event.get("candidate_score") or 0),
+                        float(event.get("confidence") or 0),
+                        event.get("reason_text"),
+                        self._dumps_metadata(event.get("evidence_json")),
+                        event.get("occurred_at") or event.get("checkpoint_at_utc") or event["checkpoint_at"],
+                        event.get("status") or "new",
+                        event.get("created_at") or now_text,
+                        now_text,
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def mark_sim_run_candidate_events_consumed(
+        self,
+        run_id: int,
+        *,
+        stock_code: str,
+        source_type: str | None = None,
+        checkpoint_at_utc_lte: str | None = None,
+    ) -> int:
+        clauses = ["run_id = ?", "stock_code = ?"]
+        params: list[Any] = [int(run_id), str(stock_code).strip()]
+        if source_type:
+            clauses.append("source_type = ?")
+            params.append(source_type)
+        if checkpoint_at_utc_lte:
+            clauses.append("checkpoint_at_utc <= ?")
+            params.append(checkpoint_at_utc_lte)
+        params.append(self._now())
+        where_sql = " AND ".join(clauses)
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                UPDATE sim_run_candidate_events
+                SET status = 'consumed', updated_at = ?
+                WHERE {where_sql}
+                """,
+                tuple([params[-1], *params[:-1]]),
+            )
+            rowcount = int(cursor.rowcount or 0)
+            conn.commit()
+            return rowcount
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_sim_run_candidate_events(
+        self,
+        run_id: int,
+        *,
+        source_type: str = "",
+        status: str = "",
+        stock: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [int(run_id)]
+        if source_type:
+            clauses.append("source_type = ?")
+            params.append(source_type)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if stock:
+            like_stock = f"%{stock}%"
+            clauses.append("(stock_code LIKE ? OR stock_name LIKE ?)")
+            params.extend([like_stock, like_stock])
+        where_sql = " AND ".join(clauses)
+        page_value = max(1, int(page))
+        page_size_value = max(1, int(page_size))
+        offset = (page_value - 1) * page_size_value
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) AS total FROM sim_run_candidate_events WHERE {where_sql}", tuple(params))
+            total_row = cursor.fetchone()
+            cursor.execute(
+                f"""
+                SELECT *
+                FROM sim_run_candidate_events
+                WHERE {where_sql}
+                ORDER BY checkpoint_at_utc DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params + [page_size_value, offset]),
+            )
+            items = [self._decode_live_quant_drill_row(row, ("evidence_json",)) for row in cursor.fetchall()]
+            return self._paged_response(items, int(total_row["total"] or 0) if total_row else 0, page_value, page_size_value)
+        finally:
+            conn.close()
+
+    def upsert_sim_run_quant_summary(self, run_id: int, summary: dict[str, Any]) -> None:
+        now_text = self._now()
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO sim_run_quant_summary
+                (
+                    run_id, checkpoint_at, checkpoint_at_utc, inactive_count, trial_count,
+                    active_count, exit_only_count, cooling_count, retired_count,
+                    manual_paused_count, auto_promoted_count, auto_exited_count,
+                    candidate_event_count, data_warning_count, metadata_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, checkpoint_at_utc) DO UPDATE SET
+                    checkpoint_at = excluded.checkpoint_at,
+                    inactive_count = excluded.inactive_count,
+                    trial_count = excluded.trial_count,
+                    active_count = excluded.active_count,
+                    exit_only_count = excluded.exit_only_count,
+                    cooling_count = excluded.cooling_count,
+                    retired_count = excluded.retired_count,
+                    manual_paused_count = excluded.manual_paused_count,
+                    auto_promoted_count = excluded.auto_promoted_count,
+                    auto_exited_count = excluded.auto_exited_count,
+                    candidate_event_count = excluded.candidate_event_count,
+                    data_warning_count = excluded.data_warning_count,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(run_id),
+                    summary["checkpoint_at"],
+                    summary["checkpoint_at_utc"],
+                    int(summary.get("inactive_count") or 0),
+                    int(summary.get("trial_count") or 0),
+                    int(summary.get("active_count") or 0),
+                    int(summary.get("exit_only_count") or 0),
+                    int(summary.get("cooling_count") or 0),
+                    int(summary.get("retired_count") or 0),
+                    int(summary.get("manual_paused_count") or 0),
+                    int(summary.get("auto_promoted_count") or 0),
+                    int(summary.get("auto_exited_count") or 0),
+                    int(summary.get("candidate_event_count") or 0),
+                    int(summary.get("data_warning_count") or 0),
+                    self._dumps_metadata(summary.get("metadata_json")),
+                    now_text,
+                    now_text,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_sim_run_quant_summary(self, run_id: int) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT *
+                FROM sim_run_quant_summary
+                WHERE run_id = ?
+                ORDER BY checkpoint_at_utc ASC
+                """,
+                (int(run_id),),
+            )
+            return [self._decode_live_quant_drill_row(row, ("metadata_json",)) for row in cursor.fetchall()]
+        finally:
+            conn.close()
