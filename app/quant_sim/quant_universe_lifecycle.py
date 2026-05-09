@@ -406,6 +406,8 @@ def resolve_next_status(
     current = _status(current_status)
     requested = _status(requested_status) if requested_status else None
     override = _manual_override(manual_override)
+    if override == ManualOverride.MANUAL_BAN and current == QuantStatus.EXIT_ONLY and not has_position:
+        return _transition(current, QuantStatus.RETIRED, "manual_force_exit_flat_retired", "强制出池持仓已清空，退出量化")
     if override == ManualOverride.MANUAL_BAN:
         return _blocked(current, "manual_ban", "手工禁止自动纳入或恢复")
     if current == QuantStatus.MANUAL_PAUSED:
@@ -499,7 +501,7 @@ class QuantUniverseManager:
             source_type=str(event.get("source_type") or "candidate_event"),
             source_key=event.get("source_key"),
             reason_code="auto_trial",
-            reason_text=event.get("reason_text") or "候选事件自动纳入量化观察",
+            reason_text=event.get("reason_text") or "候选事件自动纳入量化",
             candidate_score=evaluation["candidate_score"],
         )
         return {**evaluation, "decision": "promoted_to_trial", **promoted}
@@ -583,7 +585,7 @@ class QuantUniverseManager:
                 source_type=source_type,
                 source_key=source_key,
                 reason_code="manual_promote_to_trial",
-                reason_text="用户批量纳入量化观察",
+                reason_text="用户批量纳入量化",
                 candidate_score=evaluation["candidate_score"],
             )
             success.append(code)
@@ -655,6 +657,69 @@ class QuantUniverseManager:
             "quant_auto_managed": bool((stock or {}).get("quant_auto_managed", 1)),
             "quant_manual_override": override.value,
         }
+
+    def force_exit(self, stock_codes: list[str], *, position_codes: set[str] | None = None) -> dict[str, Any]:
+        position_codes = {str(item or "").strip().upper() for item in (position_codes or set()) if str(item or "").strip()}
+        success: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        for raw_code in stock_codes:
+            code = str(raw_code or "").strip().upper()
+            if not code:
+                continue
+            previous = self._load_stock(code) or {}
+            previous_status = _status(previous.get("quant_status"))
+            has_position = code in position_codes
+            next_status = QuantStatus.EXIT_ONLY if has_position else QuantStatus.RETIRED
+            state = self.db.get_quant_universe_state(code) or {}
+            now_text = self.db._now()
+            self.db.upsert_quant_universe_state(
+                code,
+                {
+                    "quant_status": next_status.value,
+                    "quant_entry_source": previous.get("quant_entry_source") or "manual_force_exit",
+                    "health_score": state.get("health_score", 100),
+                    "retired_at": now_text if next_status == QuantStatus.RETIRED else state.get("retired_at"),
+                    "retire_reason": "用户强制出池" if next_status == QuantStatus.RETIRED else "用户强制出池，持仓进入只出场管理",
+                    "last_status_changed_at": now_text,
+                    "snapshot_json": {"manual_force_exit": True, "has_position": has_position},
+                },
+            )
+            conn = self.db._connect()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE stock_universe
+                SET quant_manual_override = ?,
+                    quant_auto_managed = 0,
+                    quant_enabled = ?,
+                    updated_at = ?
+                WHERE stock_code = ?
+                """,
+                (
+                    ManualOverride.MANUAL_BAN.value,
+                    1 if next_status == QuantStatus.EXIT_ONLY else 0,
+                    now_text,
+                    code,
+                ),
+            )
+            conn.commit()
+            conn.close()
+            self.db.record_quant_universe_event(
+                {
+                    "stock_code": code,
+                    "event_type": "manual_force_exit",
+                    "from_status": previous_status.value,
+                    "to_status": next_status.value,
+                    "trigger_source": "manual_workbench",
+                    "reason_code": "manual_force_exit_with_position" if has_position else "manual_force_exit",
+                    "reason_text": "用户强制出池，持仓进入只出场管理" if has_position else "用户强制出池",
+                    "health_score_before": state.get("health_score"),
+                    "health_score_after": state.get("health_score"),
+                    "evidence_json": {"has_position": has_position},
+                }
+            )
+            success.append({"stock_code": code, "new_status": next_status.value, "has_position": has_position})
+        return {"success": success, "skipped": skipped}
 
     def restore_to_trial(self, stock_code: str) -> dict[str, Any]:
         code = str(stock_code or "").strip().upper()
@@ -1031,3 +1096,4 @@ def _loads_json_object(value: Any) -> dict[str, Any]:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+

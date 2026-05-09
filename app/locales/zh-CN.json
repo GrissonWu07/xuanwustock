@@ -114,7 +114,7 @@
   "Profit growth": "净利增长",
   "Quant candidates": "量化候选",
   "Quant jobs": "量化任务",
-  "Quant simulation": "量化模拟",
+  "Quant simulation": "实时量化",
   "Quotes support manual refresh. Quant scheduler also writes latest prices and signals here.": "报价支持手动刷新，量化调度运行时也会把最新价格和信号回写到这里。",
   "Watchlist refresh updates name, price, and sector in batch. Quant scheduler also writes latest prices and signals here.": "关注池刷新会批量更新名称、价格和板块，量化调度运行时也会把最新价格和信号回写到这里。",
   "Relative activity versus historical average volume.": "当前成交活跃度，相对历史均量的强弱。",
@@ -206,7 +206,7 @@
   "Waiting for latest result": "等待最新结果",
   "Workbench aggregates watchlist, analysis, and next actions.": "工作台聚合了关注、分析和下一步动作。",
   "Workbench initialized": "工作台初始化",
-  "Once moved into candidate pool, quant simulation reads the same dataset.": "启用实时量化后，实时模拟会直接读取统一股票池中的同一份数据。",
+  "Once moved into candidate pool, quant simulation reads the same dataset.": "启用实时量化后，实时量化会直接读取统一股票池中的同一份数据。",
   "No quant run records yet. Watchlist and candidates will start from here.": "当前没有量化运行记录，关注池和候选池将从这里开始。",
   "⭐ Add selected to watchlist": "⭐ 加入所选关注池",
   "⭐ Add single to watchlist": "⭐ 加入单只关注池",
@@ -227,5 +227,7 @@
   "Configuration validated": "配置验证通过",
   "AI scanner returned no selected stocks": "AI扫描器未返回候选股票",
   "Scanner score: {score}": "扫描得分：{score}",
-  "AI scanner selected candidate": "AI扫描器筛选候选"
+  "AI scanner selected candidate": "AI扫描器筛选候选",
+  "Force exit quant": "强制出池",
+  "Force exit completed: {count} stocks.": "强制出池完成：{count} 只股票。"
 }

@@ -26,6 +26,7 @@ export const PAGE_ACTION_ENDPOINTS: Record<PageKey, Record<string, string>> = {
     "add-watchlist": "/api/v1/workbench/actions/add-watchlist",
     "refresh-watchlist": "/api/v1/workbench/actions/refresh-watchlist",
     "batch-quant": "/api/v1/workbench/actions/batch-quant",
+    "force-exit-quant": "/api/v1/workbench/actions/force-exit-quant",
     "batch-portfolio": "/api/v1/workbench/actions/batch-portfolio",
     analysis: "/api/v1/workbench/actions/analysis",
     "analysis-batch": "/api/v1/workbench/actions/analysis-batch",

@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from app import stock_analysis_service
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, QuantUniverseManager
 from app.quant_sim.time_utils import format_system_short_time, format_system_time, parse_system_datetime, system_now_text
 from app.i18n import t
 from app.watchlist_integration import add_watchlist_rows_to_quant_pool
@@ -149,6 +150,26 @@ def _watchlist_quote_label(item: dict[str, Any], metadata: dict[str, Any]) -> st
     return f"{price_text} {change_pct:+.2f}%"
 
 
+def _watchlist_metric_label(metadata: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        if key in metadata and metadata.get(key) not in (None, ""):
+            return _num(metadata.get(key), default="--")
+    return "--"
+
+
+def _watchlist_market_cap_label(metadata: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        if key not in metadata or metadata.get(key) in (None, ""):
+            continue
+        number = _float(metadata.get(key))
+        if number is None:
+            continue
+        if abs(number) >= 10_000_000:
+            number = number / 100_000_000
+        return _num(number, default="--")
+    return "--"
+
+
 def _watchlist_data_status(item: dict[str, Any], metadata: dict[str, Any], sector: str) -> str:
     latest_price = _float(item.get("latest_price"))
     stock_code = normalize_stock_code(item.get("stock_code"))
@@ -259,6 +280,9 @@ def watchlist_rows_from_items(
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         sector = _txt(metadata.get("industry") or metadata.get("sector"), "-")
         quote_label = _watchlist_quote_label(item, metadata)
+        market_cap = _watchlist_market_cap_label(metadata, "market_cap", "marketCap", "total_market_cap", "total_market_value", "总市值", "市值")
+        pe_ratio = _watchlist_metric_label(metadata, "pe_ratio", "peRatio", "pe", "PE", "市盈率")
+        pb_ratio = _watchlist_metric_label(metadata, "pb_ratio", "pbRatio", "pb", "PB", "市净率")
         data_status = _watchlist_data_status(item, metadata, sector)
         analysis_status, analysis_tone = _analysis_status(latest_analysis_by_code.get(code))
         signal_status = _watchlist_signal_label(item)
@@ -278,6 +302,9 @@ def watchlist_rows_from_items(
                     _txt(item.get("stock_name") or code),
                     quote_label,
                     sector,
+                    market_cap,
+                    pe_ratio,
+                    pb_ratio,
                     analysis_status,
                     signal_status,
                     " · ".join(workflow_badges),
@@ -291,6 +318,9 @@ def watchlist_rows_from_items(
                 "latestPrice": "--" if latest_price_value is None or latest_price_value <= 0 else _num(latest_price_value, default="--"),
                 "reason": analysis_status,
                 "quoteText": quote_label,
+                "marketCap": market_cap,
+                "peRatio": pe_ratio,
+                "pbRatio": pb_ratio,
                 "analysisStatus": analysis_status,
                 "analysisTone": analysis_tone,
                 "signalStatus": signal_status,
@@ -469,7 +499,19 @@ def build_workbench_snapshot(
         ],
         "watchlist": {
             **_table(
-                [t("Code"), t("Name"), t("Quote"), t("Sector"), t("Analysis"), t("Signal"), t("Workflow"), t("Updated")],
+                [
+                    t("Code"),
+                    t("Name"),
+                    t("Quote"),
+                    t("Sector"),
+                    t("Market cap (100M)"),
+                    t("P/E"),
+                    t("P/B"),
+                    t("Analysis"),
+                    t("Signal"),
+                    t("Workflow"),
+                    t("Updated"),
+                ],
                 watchlist,
                 t("Watchlist is empty."),
             ),
@@ -557,6 +599,46 @@ def action_workbench_batch_quant(context: Any, payload: dict[str, Any]) -> dict[
     codes = _normalize_codes(payload) or [row["code"] for row in watchlist_rows(context)]
     add_watchlist_rows_to_quant_pool(codes, watchlist_service=context.watchlist(), candidate_service=context.candidate_pool(), db_file=context.quant_sim_db_file)
     return snapshot_workbench(context)
+
+
+def _position_codes(context: Any) -> set[str]:
+    try:
+        return {
+            normalize_stock_code(position.get("stock_code") or position.get("code"))
+            for position in context.portfolio().list_positions()
+            if normalize_stock_code(position.get("stock_code") or position.get("code"))
+        }
+    except Exception:
+        return set()
+
+
+def action_workbench_force_exit_quant(context: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    codes = _normalize_codes(payload)
+    if not codes:
+        raise HTTPException(status_code=400, detail=t("Missing stock codes"))
+    manager = QuantUniverseManager(
+        db=context.quant_db(),
+        profile_id="stable",
+        policy=QuantUniverseLifecyclePolicy.stable_defaults(),
+    )
+    result = manager.force_exit(codes, position_codes=_position_codes(context))
+    for item in result.get("success", []):
+        code = normalize_stock_code(item.get("stock_code"))
+        if not code:
+            continue
+        if item.get("new_status") == "retired":
+            try:
+                context.candidate_pool().delete_candidate(code)
+            except Exception:
+                pass
+            try:
+                context.watchlist().mark_in_quant_pool(code, False)
+            except Exception:
+                pass
+    return build_workbench_snapshot(
+        context,
+        activity=[_timeline(_now(), t("Force exit quant"), t("Force exit completed: {count} stocks.", count=len(result.get("success", []))))],
+    )
 
 
 def action_workbench_batch_portfolio(context: Any, payload: dict[str, Any]) -> dict[str, Any]:
@@ -725,6 +807,7 @@ __all__ = [
     "action_workbench_batch_portfolio",
     "action_workbench_batch_quant",
     "action_workbench_delete",
+    "action_workbench_force_exit_quant",
     "action_workbench_refresh",
     "build_workbench_snapshot",
     "snapshot_workbench",

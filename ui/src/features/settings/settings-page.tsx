@@ -316,7 +316,7 @@ export function SettingsPage({ client }: SettingsPageProps) {
             <h2 className="section-card__title settings-card__title" style={{ margin: 0 }}>{t("量化策略自动化")}</h2>
           </div>
           <p className="section-card__description">
-            {t("开启后，系统会按候选评分自动纳入量化观察，并启用生命周期出池；关闭后只记录候选事件，不自动进入实时量化。")}</p>
+            {t("开启后，系统会按候选评分自动纳入量化，并启用生命周期出池；关闭后只记录候选事件，不自动进入实时量化。")}</p>
           <LifecycleSummaryBadgeGroup settings={quantLifecycleSettings} />
           <div className="summary-list">
             <ScoreBasedQuantAutomationSwitch
@@ -348,3 +348,4 @@ export function SettingsPage({ client }: SettingsPageProps) {
     </div>
   );
 }
+

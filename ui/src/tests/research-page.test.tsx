@@ -101,6 +101,29 @@ function renderResearchPage(client: ApiClient) {
 }
 
 describe("ResearchPage", () => {
+  it("renders research summary markdown instead of raw markdown text", async () => {
+    const markdownSnapshot = {
+      ...researchSnapshot,
+      summary: {
+        title: "Research",
+        body: "### 宏观判断\n\n- **政策底** 明确\n- 关注 `AI` 主线",
+      },
+    };
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(markdownSnapshot),
+      runPageAction: vi.fn().mockResolvedValue(markdownSnapshot),
+      getTaskStatus: vi.fn(),
+    } as unknown as ApiClient;
+
+    renderResearchPage(client);
+
+    expect(await screen.findAllByRole("heading", { name: "宏观判断" })).toHaveLength(2);
+    expect(screen.getAllByText("政策底")[0].tagName).toBe("STRONG");
+    expect(screen.queryByText("### 宏观判断")).toBeNull();
+    expect(screen.queryByText("**政策底** 明确")).toBeNull();
+    expect(screen.getAllByText("AI")[0].tagName).toBe("CODE");
+  });
+
   it("shows lifecycle badges and batch promotes selected research outputs", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -121,11 +144,13 @@ describe("ResearchPage", () => {
 
     expect(await screen.findByText("eligible")).toBeInTheDocument();
     expect(screen.getByText("already_in_quant")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "纳入量化观察" }).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole("button", { name: "忽略自动纳入" }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("columnheader", { name: "Actions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add to watchlist" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "纳入量化" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "忽略自动纳入" })).toHaveLength(1);
     fireEvent.click(screen.getByRole("checkbox", { name: "Select 平安银行" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "纳入量化观察" })[0]);
-    expect(screen.getByRole("dialog", { name: "确认纳入量化观察" })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "纳入量化" })[0]);
+    expect(screen.getByRole("dialog", { name: "确认纳入量化" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认纳入" }));
 
     await waitFor(() => {
@@ -140,7 +165,7 @@ describe("ResearchPage", () => {
     expect(screen.getAllByText("already_in_quant").length).toBeGreaterThan(0);
   });
 
-  it("supports row click selection and isolates single watchlist action", async () => {
+  it("supports row click selection and keeps stock output operations batch-only", async () => {
     const runPageAction = vi.fn().mockResolvedValue(researchSnapshot);
     const client = {
       getPageSnapshot: vi.fn().mockResolvedValue(researchSnapshot),
@@ -157,12 +182,7 @@ describe("ResearchPage", () => {
 
     fireEvent.click(screen.getByText("银行"));
     expect(checkbox).toBeChecked();
-
-    fireEvent.click(screen.getByRole("button", { name: "Add to watchlist" }));
-    await waitFor(() => {
-      expect(runPageAction).toHaveBeenCalledWith("research", "item-watchlist", { code: "000001" });
-    });
-    expect(checkbox).toBeChecked();
+    expect(screen.queryByRole("button", { name: "Add to watchlist" })).toBeNull();
 
     fireEvent.click(screen.getAllByRole("button", { name: "Add selected to watchlist" })[0]);
     await waitFor(() => {
@@ -170,3 +190,4 @@ describe("ResearchPage", () => {
     });
   });
 });
+

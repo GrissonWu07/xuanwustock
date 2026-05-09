@@ -109,12 +109,10 @@ beforeAll(() => {
     })),
   });
 });
-
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
-
 function renderDiscoverPage(client: ApiClient) {
   const router = createMemoryRouter(
     [
@@ -129,6 +127,33 @@ function renderDiscoverPage(client: ApiClient) {
 }
 
 describe("DiscoverPage", () => {
+  it("loads ten candidates by default and filters by discovery method", async () => {
+    const getPageSnapshot = vi.fn().mockResolvedValue(discoverSnapshot);
+    const client = {
+      getPageSnapshot,
+      runPageAction: vi.fn().mockResolvedValue(discoverSnapshot),
+      getTaskStatus: vi.fn(),
+    } as unknown as ApiClient;
+
+    renderDiscoverPage(client);
+
+    await screen.findByRole("link", { name: "600519" });
+    await waitFor(() => {
+      expect(getPageSnapshot).toHaveBeenCalledWith("discover", { search: "", page: 1, pageSize: 10 });
+    });
+
+    fireEvent.change(screen.getByLabelText("Discovery method"), { target: { value: "low_price_bull" } });
+
+    await waitFor(() => {
+      expect(getPageSnapshot).toHaveBeenCalledWith("discover", {
+        search: "",
+        page: 1,
+        pageSize: 10,
+        strategyKey: "low_price_bull",
+      });
+    });
+  });
+
   it("shows lifecycle eligibility badges and promotes selected candidates with row-level partial results", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -151,19 +176,17 @@ describe("DiscoverPage", () => {
     expect(screen.getByText("already_in_quant")).toBeInTheDocument();
     expect(screen.getByText("skipped")).toBeInTheDocument();
     expect(screen.getByText("cooling_blocked")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "仅看 eligible" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "纳入量化观察" }).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole("button", { name: "忽略自动纳入" }).length).toBeGreaterThan(0);
-
-    fireEvent.click(screen.getByRole("button", { name: "仅看 eligible" }));
-    expect(screen.getByText("eligible 股")).toBeInTheDocument();
-    expect(screen.queryByText("已入池股")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "仅看 eligible" }));
+    expect(screen.queryByRole("button", { name: "仅看 eligible" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Actions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Analyze" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add to watchlist" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "纳入量化" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "忽略自动纳入" })).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Select eligible 股" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select 跳过股" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "纳入量化观察" })[0]);
-    expect(screen.getByRole("dialog", { name: "确认纳入量化观察" })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "纳入量化" })[0]);
+    expect(screen.getByRole("dialog", { name: "确认纳入量化" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认纳入" }));
 
     await waitFor(() => {
@@ -178,12 +201,11 @@ describe("DiscoverPage", () => {
     expect(screen.getByText("600001")).toBeInTheDocument();
     expect(screen.getAllByText("already_in_quant").length).toBeGreaterThan(0);
     expect(screen.getByText("基础信息缺失")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "仅看 eligible" }));
     expect(screen.getByText("600001")).toBeInTheDocument();
     expect(screen.getByText("600003")).toBeInTheDocument();
   });
 
-  it("supports row click selection and isolates single watchlist action", async () => {
+  it("supports row click selection and keeps candidate operations batch-only", async () => {
     const runPageAction = vi.fn().mockResolvedValue(discoverSnapshot);
     const client = {
       getPageSnapshot: vi.fn().mockResolvedValue(discoverSnapshot),
@@ -199,14 +221,15 @@ describe("DiscoverPage", () => {
 
     fireEvent.click(screen.getByText("白酒"));
     expect(checkbox).toBeChecked();
-
-    fireEvent.click(screen.getByRole("button", { name: "Add to watchlist" }));
-    await waitFor(() => {
-      expect(runPageAction).toHaveBeenCalledWith("discover", "item-watchlist", { code: "600519" });
-    });
-    expect(checkbox).toBeChecked();
+    expect(screen.queryByRole("button", { name: "Add to watchlist" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Analyze" })).toBeNull();
 
     const toolbar = screen.getByTestId("discover-candidate-toolbar");
+    fireEvent.click(within(toolbar).getByRole("button", { name: "Analyze selected" }));
+    await waitFor(() => {
+      expect(runPageAction).toHaveBeenCalledWith("workbench", "analysis-batch", { stockCodes: ["600519"] });
+    });
+
     fireEvent.click(within(toolbar).getByRole("button", { name: "Add selected to watchlist" }));
     await waitFor(() => {
       expect(runPageAction).toHaveBeenCalledWith("discover", "batch-watchlist", { codes: ["600519"] });

@@ -150,6 +150,44 @@ def _num_or_dash(value: Any, digits: int = 2) -> str:
         return "--"
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        text = str(value).strip().replace(",", "")
+        if not text or text in {"-", "--", "N/A", "NA", "nan", "None"}:
+            return None
+        number = float(text)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _market_cap_100m_or_dash(value: Any) -> str:
+    number = _float_or_none(value)
+    if number is None:
+        return "--"
+    if abs(number) >= 10_000_000:
+        number = number / 100_000_000
+    return f"{number:.2f}"
+
+
+def _first_metric_value(row: dict[str, Any], aliases: list[str], key_needles: list[tuple[str, ...]]) -> Any:
+    value = _first_non_empty(row, aliases)
+    if value not in (None, ""):
+        return value
+    for key, candidate in row.items():
+        if candidate in (None, ""):
+            continue
+        normalized_key = str(key).strip().lower().replace(" ", "")
+        if not normalized_key:
+            continue
+        for needles in key_needles:
+            if all(needle.lower() in normalized_key for needle in needles):
+                return candidate
+    return None
+
+
 def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at: str | None) -> dict[str, Any] | None:
     code = _discover_code(
         _first_non_empty(
@@ -209,37 +247,25 @@ def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at:
             ],
         )
     )
-    market_cap = _num_or_dash(
-        _first_non_empty(
+    market_cap = _market_cap_100m_or_dash(
+        _first_metric_value(
             row,
-            [
-                "总市值",
-                "market_cap",
-                "marketCap",
-                "市值",
-            ],
+            ["总市值", "market_cap", "marketCap", "total_market_value", "total_market_cap", "市值"],
+            [("总市值",), ("market", "cap")],
         )
     )
     pe = _num_or_dash(
-        _first_non_empty(
+        _first_metric_value(
             row,
-            [
-                "市盈率",
-                "pe",
-                "pe_ratio",
-                "PE",
-            ],
+            ["市盈率", "市盈率TTM", "pe", "pe_ratio", "pe_ttm", "PE", "PE(TTM)"],
+            [("市盈率",)],
         )
     )
     pb = _num_or_dash(
-        _first_non_empty(
+        _first_metric_value(
             row,
-            [
-                "市净率",
-                "pb",
-                "pb_ratio",
-                "PB",
-            ],
+            ["市净率", "pb", "pb_ratio", "PB"],
+            [("市净率",)],
         )
     )
     reason = _txt(
@@ -269,6 +295,9 @@ def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at:
         "industry": industry,
         "source": source,
         "latestPrice": latest_price,
+        "marketCap": market_cap,
+        "peRatio": pe,
+        "pbRatio": pb,
         "reason": reason,
         "selectedAt": _system_time(selected_at, ""),
     }
@@ -281,17 +310,18 @@ def _discover_rows_from_main_force(result: dict[str, Any], selected_at: str | No
         if not isinstance(item, dict):
             continue
         stock = item.get("stock_data", {}) if isinstance(item.get("stock_data"), dict) else {}
-        row = _discover_row_from_mapping(
+        source_row = dict(stock)
+        source_row.update(
             {
                 "股票代码": stock.get("股票代码") or item.get("code") or item.get("stock_code") or item.get("symbol"),
                 "股票简称": stock.get("股票简称") or item.get("name"),
                 "所属同花顺行业": stock.get("所属同花顺行业") or stock.get("所属行业") or item.get("industry"),
                 "最新价": stock.get("最新价") or item.get("latestPrice") or item.get("latest_price"),
-                "总市值": stock.get("总市值[20260410]") or stock.get("总市值") or item.get("market_cap"),
-                "市盈率": stock.get("市盈率(pe)[20260410]") or stock.get("市盈率") or item.get("pe_ratio"),
-                "市净率": stock.get("市净率(pb)[20260410]") or stock.get("市净率") or item.get("pb_ratio"),
                 "reason": item.get("highlights") or item.get("reason") or ", ".join(item.get("reasons", [])),
-            },
+            }
+        )
+        row = _discover_row_from_mapping(
+            source_row,
             source=_txt(item.get("source") or t("Main force selection")),
             selected_at=selected_at,
         )
@@ -483,27 +513,54 @@ def _discover_rows(context: Any) -> list[dict[str, Any]]:
     return enrich_lifecycle_entry_rows(context, rows)
 
 
+def _strategy_filter_value(table_query: dict[str, Any] | None) -> str:
+    raw = _query_value(table_query, "strategy_key") or _query_value(table_query, "strategyKey") or _query_value(table_query, "strategy")
+    value = _txt(raw).strip().lower()
+    return "" if value in {"", "all"} else value
+
+
+def _filter_rows_by_strategy(rows: list[dict[str, Any]], strategy_filter: str) -> list[dict[str, Any]]:
+    if not strategy_filter:
+        return rows
+    return [
+        row
+        for row in rows
+        if strategy_filter
+        in {
+            _txt(row.get("strategyKey")).strip().lower(),
+            _txt(row.get("strategyName")).strip().lower(),
+            _txt(row.get("source")).strip().lower(),
+        }
+    ]
+
+
 def _optional_float(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    text = str(value).strip().replace(",", "")
-    if text in {"", "-", "--", "N/A", "NA", "nan", "None"}:
-        return None
-    try:
-        number = float(text)
-        return number if math.isfinite(number) else None
-    except (TypeError, ValueError):
-        return None
+    return _float_or_none(value)
 
 
 def _add_discover_row_to_watchlist(context: Any, row: dict[str, Any]) -> None:
+    metadata: dict[str, Any] = {
+        "industry": row.get("industry"),
+        "sector": row.get("industry"),
+        "discover_source": row.get("strategyName") or row.get("source"),
+        "source_strategy": row.get("strategyKey") or row.get("source"),
+        "discovered_at": row.get("selectedAt"),
+    }
+    for metadata_key, row_key in (
+        ("market_cap", "marketCap"),
+        ("pe_ratio", "peRatio"),
+        ("pb_ratio", "pbRatio"),
+    ):
+        value = _optional_float(row.get(row_key))
+        if value is not None:
+            metadata[metadata_key] = value
     add_stock_to_watchlist(
         row["code"],
         row["name"],
         row.get("source") or t("Main force selection"),
         latest_price=_optional_float(row.get("latestPrice")),
         notes=row.get("reason"),
-        metadata={"industry": row.get("industry")},
+        metadata=metadata,
         db_file=context.quant_sim_db_file,
     )
 
@@ -730,7 +787,18 @@ def _run_discover_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
 def _snapshot_discover(context: Any, *, task_job: dict[str, Any] | None = None, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     snapshots = _discover_strategy_snapshots(context)
     rows = _discover_rows(context)
-    page_rows, pagination = _db_page_table_rows(context, "discover.candidates", rows, table_query)
+    strategy_filter = _strategy_filter_value(table_query)
+    filtered_rows = _filter_rows_by_strategy(rows, strategy_filter)
+    discover_table_query = dict(table_query or {})
+    if not discover_table_query.get("_page_size_explicit"):
+        discover_table_query["pageSize"] = 10
+    page_rows, pagination = _db_page_table_rows(
+        context,
+        "discover.candidates",
+        filtered_rows,
+        discover_table_query,
+        default_page_size=10,
+    )
     latest_snapshot = snapshots[0] if snapshots else {}
     latest_row = rows[0] if rows else {}
     latest_selected_at = _system_time(latest_snapshot.get("selected_at") or latest_row.get("selectedAt") or _now())
@@ -829,6 +897,7 @@ def _snapshot_discover(context: Any, *, task_job: dict[str, Any] | None = None, 
         "taskJob": discover_task_manager.job_view(latest_task, txt=_txt, int_fn=_int),
     }
     payload["candidateTable"]["pagination"] = pagination
+    payload["candidateTable"]["activeStrategyKey"] = strategy_filter or "all"
     return payload
 
 

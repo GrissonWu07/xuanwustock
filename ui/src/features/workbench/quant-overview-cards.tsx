@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { WorkbenchCard } from "../../components/ui/workbench-card";
-import { t } from "../../lib/i18n";
+import { t, useI18nLocale } from "../../lib/i18n";
 
 type QuantOverviewItem = {
   stock_code?: string;
@@ -23,11 +22,13 @@ type QuantOverviewPayload = {
 const OVERVIEW_ENDPOINT = "/api/v1/quant/universe/overview";
 
 const CARD_ORDER = [
-  { key: "pending_eligible", label: t("待纳入量化"), target: "/discover?eligible=1" },
-  { key: "trial", label: t("量化观察"), target: "/live-sim?quant_status=trial" },
-  { key: "exit_only", label: t("只出场管理"), target: "/live-sim?quant_status=exit_only" },
-  { key: "cooling", label: t("冷却中"), target: "/live-sim?quant_status=cooling" },
-  { key: "retired", label: t("已退出待重评估"), target: "/live-sim?quant_status=retired" },
+  { key: "pending_eligible", labelKey: "Pending quant entry", target: "/discover?eligible=1" },
+  { key: "trial", labelKey: "Quant", target: "/live-sim?quant_status=trial" },
+  { key: "active", labelKey: "Quant running", target: "/live-sim?quant_status=active" },
+  { key: "exit_only", labelKey: "Exit-only management", target: "/live-sim?quant_status=exit_only" },
+  { key: "cooling", labelKey: "Cooling", target: "/live-sim?quant_status=cooling" },
+  { key: "manual_paused", labelKey: "Manual paused", target: "/live-sim?quant_status=manual_paused" },
+  { key: "retired", labelKey: "Retired pending review", target: "/live-sim?quant_status=retired" },
 ] as const;
 
 const normalizeCards = (payload: QuantOverviewPayload | null) =>
@@ -35,7 +36,7 @@ const normalizeCards = (payload: QuantOverviewPayload | null) =>
     const card = payload?.cards?.[definition.key] ?? {};
     return {
       ...definition,
-      label: card.label || definition.label,
+      label: card.label || t(definition.labelKey),
       count: Number(card.count ?? 0),
       topItems: (card.top_items ?? []).slice(0, 3),
       latestReason: card.latest_reason || "",
@@ -44,9 +45,10 @@ const normalizeCards = (payload: QuantOverviewPayload | null) =>
 
 export function QuantOverviewCards({ baseUrl = "" }: { baseUrl?: string }) {
   const navigate = useNavigate();
+  const locale = useI18nLocale();
   const [payload, setPayload] = useState<QuantOverviewPayload | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const cards = useMemo(() => normalizeCards(payload), [payload]);
+  const cards = useMemo(() => normalizeCards(payload), [payload, locale]);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,51 +77,24 @@ export function QuantOverviewCards({ baseUrl = "" }: { baseUrl?: string }) {
   }, [baseUrl]);
 
   return (
-    <section className="quant-overview" aria-label={t("Quant universe overview")}>
-      <div className="toolbar toolbar--compact">
+    <section className="quant-command-strip" aria-label={t("Quant universe overview")}>
+      <div className="quant-command-strip__header">
         <div>
-          <h2 className="section-card__title" style={{ margin: 0 }}>
-            {t("Quant overview")}
-          </h2>
+          <h3 className="section-card__title" style={{ margin: 0 }}>
+            {t("Quant status")}
+          </h3>
           <p className="section-card__description" style={{ marginBottom: 0 }}>
-            {status === "error" ? t("Quant overview failed to load.") : t("Current quant universe lifecycle snapshot.")}
+            {status === "error" ? t("Quant status failed to load.") : t("Selected stocks can enter quant or be forced out from here.")}
           </p>
         </div>
       </div>
-      <div className="metric-grid quant-overview__grid" style={{ marginTop: "10px" }}>
+      <div className="quant-command-strip__chips">
         {cards.map((card) => (
-          <WorkbenchCard className="metric-card quant-overview__card" key={card.key}>
-            <button
-              className="button button--ghost quant-overview__button"
-              type="button"
-              onClick={() => navigate(card.target)}
-              style={{
-                width: "100%",
-                display: "grid",
-                gap: "8px",
-                justifyItems: "start",
-                textAlign: "left",
-                background: "transparent",
-                border: 0,
-                padding: 0,
-                color: "inherit",
-              }}
-            >
-              <span className="metric-card__label">{card.label}</span>
-              <span className="metric-card__value">{status === "loading" ? "--" : card.count}</span>
-              {card.latestReason ? <span className="summary-item__meta">{card.latestReason}</span> : null}
-              {card.topItems.length > 0 ? (
-                <span className="summary-list" style={{ gap: "4px", width: "100%" }}>
-                  {card.topItems.map((item) => (
-                    <span className="summary-item__body" key={`${card.key}-${item.stock_code}`}>
-                      {item.stock_code} · {item.stock_name || "--"}
-                      {item.latest_reason ? <span className="summary-item__meta"> {item.latest_reason}</span> : null}
-                    </span>
-                  ))}
-                </span>
-              ) : null}
-            </button>
-          </WorkbenchCard>
+          <button className="quant-command-chip" type="button" onClick={() => navigate(card.target)} key={card.key}>
+            <span className="quant-command-chip__label">{card.label}</span>
+            <span className="quant-command-chip__count">{status === "loading" ? "--" : card.count}</span>
+            {card.latestReason ? <span className="quant-command-chip__reason">{card.latestReason}</span> : null}
+          </button>
         ))}
       </div>
     </section>

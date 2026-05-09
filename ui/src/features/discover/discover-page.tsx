@@ -12,9 +12,7 @@ import { t } from "../../lib/i18n";
 import {
   BatchPromoteDialog,
   EligibleBadge,
-  entryStatusOf,
   ignoreResultOverrides,
-  isEligibleEntry,
   postQuantEntryAction,
   promoteResultOverrides,
   type EntryStatusOverride,
@@ -123,13 +121,13 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
   const [search, setSearch] = useState("");
   const [batching, setBatching] = useState(false);
   const [promotingToTrial, setPromotingToTrial] = useState(false);
-  const [eligibleOnly, setEligibleOnly] = useState(false);
   const [promoteDialogOpen, setPromoteDialogOpen] = useState(false);
   const [promoteTargetCodes, setPromoteTargetCodes] = useState<string[]>([]);
   const [entryOverrides, setEntryOverrides] = useState<Record<string, EntryStatusOverride>>({});
   const [runningStrategy, setRunningStrategy] = useState(false);
   const [resettingList, setResettingList] = useState(false);
   const [runStrategySelection, setRunStrategySelection] = useState<string>("all");
+  const [discoveryMethodFilter, setDiscoveryMethodFilter] = useState<string>("all");
   const [runFeedback, setRunFeedback] = useState<string>("");
   const [analysisFeedback, setAnalysisFeedback] = useState<string>("");
   const [analysisSnapshot, setAnalysisSnapshot] = useState<WorkbenchSnapshot["analysis"] | null>(null);
@@ -139,7 +137,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
   const [currentPage, setCurrentPage] = useState(0);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const analysisPanelRef = useRef<HTMLElement | null>(null);
-  const pageSize = 6;
+  const pageSize = 10;
 
   const snapshot = tableSnapshot ?? resource.data;
   const runStrategyOptions = [
@@ -150,6 +148,10 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
     { value: "profit_growth", label: t("Profit growth") },
     { value: "value_stock", label: t("Value") },
     { value: "ai_scanner", label: t("AI stock selection") },
+  ];
+  const discoveryMethodOptions = [
+    { value: "all", label: t("All discovery methods") },
+    ...runStrategyOptions.filter((option) => option.value !== "all"),
   ];
   const searchTerm = search.trim();
   const sourceRows = snapshot?.candidateTable.rows ?? [];
@@ -178,10 +180,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
   );
   const totalRows = Number(snapshot?.candidateTable.pagination?.totalRows ?? sourceRows.length);
   const totalPages = Math.max(1, Number(snapshot?.candidateTable.pagination?.totalPages ?? 1));
-  const visibleRows = useMemo(
-    () => (eligibleOnly ? sourceRows.filter((row) => Boolean(entryOverrides[row.id]) || isEligibleEntry(row, entryOverrides[row.id])) : sourceRows),
-    [eligibleOnly, entryOverrides, sourceRows],
-  );
+  const visibleRows = sourceRows;
   const rowIds = useMemo(() => visibleRows.map((row) => row.id), [visibleRows]);
   const selection = useSelection(rowIds);
   const selectedRows = visibleRows.filter((row) => selection.isSelected(row.id));
@@ -210,21 +209,28 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
         ? t(snapshot.candidateTable.emptyMessage)
         : undefined;
   const currentPageLabel = t("Page {current}/{total}", { current: Math.min(Number(snapshot?.candidateTable.pagination?.page ?? currentPage + 1), totalPages), total: totalPages });
+  const tableQuery = useMemo(() => {
+    const query: Record<string, string | number> = {
+      search: searchTerm,
+      page: currentPage + 1,
+      pageSize,
+    };
+    if (discoveryMethodFilter !== "all") {
+      query.strategyKey = discoveryMethodFilter;
+    }
+    return query;
+  }, [currentPage, discoveryMethodFilter, pageSize, searchTerm]);
 
   useEffect(() => {
     if (!resource.data) return;
     let cancelled = false;
-    void taskClient.getPageSnapshot<DiscoverSnapshot>("discover", {
-      search: searchTerm,
-      page: currentPage + 1,
-      pageSize,
-    }).then((next) => {
+    void taskClient.getPageSnapshot<DiscoverSnapshot>("discover", tableQuery).then((next) => {
       if (!cancelled) setTableSnapshot(next);
     }).catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [currentPage, pageSize, resource.data, searchTerm, taskClient]);
+  }, [resource.data, tableQuery, taskClient]);
 
   const handleBatchWatchlist = async () => {
     if (!canBatchWatchlist || batching) return;
@@ -243,6 +249,33 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
       setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBatching(false);
+    }
+  };
+
+  const handleBatchAnalyzeCandidates = async () => {
+    if (selectedCodes.length === 0 || analyzingCode) return;
+    setAnalyzingCode(selectedCodes.join(","));
+    setAnalysisFeedback(t("Analyzing {code}...", { code: selectedCodes.join(", ") }));
+    try {
+      const result = (await taskClient.runPageAction("workbench", "analysis-batch", { stockCodes: selectedCodes })) as {
+        analysis?: WorkbenchSnapshot["analysis"];
+      };
+      if (result.analysis) {
+        setAnalysisSnapshot(result.analysis);
+        setAnalysisFeedback(t("Analysis for {code} completed. Summary/indicators/decision are shown below.", { code: selectedCodes.join(", ") }));
+        window.requestAnimationFrame(() => {
+          if (typeof analysisPanelRef.current?.scrollIntoView === "function") {
+            analysisPanelRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        });
+      } else {
+        setAnalysisFeedback(t("Analysis for {code} submitted but result is not returned yet.", { code: selectedCodes.join(", ") }));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAnalysisFeedback(t("Stock analysis failed: {message}", { message }));
+    } finally {
+      setAnalyzingCode("");
     }
   };
 
@@ -280,46 +313,6 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
       setRunFeedback(t("Auto-entry candidate ignored."));
     } catch (error) {
       setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
-  const handleSingleWatchlist = async (code: string) => {
-    try {
-      const result = await resource.runAction("item-watchlist", { code });
-      if (!result) {
-        setRunFeedback(t("Failed"));
-        return;
-      }
-      setRunFeedback(t("Added to watchlist"));
-    } catch (error) {
-      setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
-  const handleAnalyzeCandidate = async (code: string) => {
-    if (analyzingCode) return;
-    setAnalyzingCode(code);
-    setAnalysisFeedback(t("Analyzing {code}...", { code }));
-    try {
-      const result = (await taskClient.runPageAction("workbench", "analysis", { stockCode: code })) as {
-        analysis?: WorkbenchSnapshot["analysis"];
-      };
-      if (result.analysis) {
-        setAnalysisSnapshot(result.analysis);
-        setAnalysisFeedback(t("Analysis for {code} completed. Summary/indicators/decision are shown below.", { code }));
-        window.requestAnimationFrame(() => {
-          if (typeof analysisPanelRef.current?.scrollIntoView === "function") {
-            analysisPanelRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-          }
-        });
-      } else {
-        setAnalysisFeedback(t("Analysis for {code} submitted but result is not returned yet.", { code }));
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setAnalysisFeedback(t("Stock analysis failed: {message}", { message }));
-    } finally {
-      setAnalyzingCode("");
     }
   };
 
@@ -396,7 +389,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
 
   useEffect(() => {
     setCurrentPage(0);
-  }, [searchTerm]);
+  }, [discoveryMethodFilter, searchTerm]);
 
   useEffect(() => {
     setCurrentPage((current) => Math.min(current, totalPages - 1));
@@ -408,14 +401,10 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void taskClient.getPageSnapshot<DiscoverSnapshot>("discover", {
-        search: searchTerm,
-        page: currentPage + 1,
-        pageSize,
-      }).then((next) => setTableSnapshot(next)).catch(() => undefined);
+      void taskClient.getPageSnapshot<DiscoverSnapshot>("discover", tableQuery).then((next) => setTableSnapshot(next)).catch(() => undefined);
     }, DISCOVER_AUTO_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [currentPage, pageSize, searchTerm, taskClient]);
+  }, [tableQuery, taskClient]);
 
   if (resource.status === "loading" && !snapshot) {
     return <PageLoadingState title={t("Discover loading...")} description={t("Loading strategies, candidate stocks, and recent recommendations.")} />;
@@ -516,7 +505,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                 {t("Candidate stocks")}
               </h2>
               <p className="table__caption" style={{ marginBottom: 0 }}>
-                {localizeDiscoverText("Supports row-level analysis, batch add to watchlist, and preserving source strategy for follow-up quant flow.")}
+                {localizeDiscoverText("Supports batch analysis, batch add to watchlist, and preserving source strategy for follow-up quant flow.")}
               </p>
             </div>
           </div>
@@ -529,6 +518,19 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
               />
+              <select
+                className="input discover-strategy-select"
+                aria-label={t("Discovery method")}
+                data-size="compact-select"
+                value={discoveryMethodFilter}
+                onChange={(event) => setDiscoveryMethodFilter(event.target.value)}
+              >
+                {discoveryMethodOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
               <IconButton
                 icon="⭐"
                 label={t("Add selected to watchlist")}
@@ -536,13 +538,9 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                 onClick={() => void handleBatchWatchlist()}
                 disabled={!canBatchWatchlist || batching}
               />
-              <button
-                className={`button ${eligibleOnly ? "button--primary" : "button--secondary"}`}
-                type="button"
-                aria-pressed={eligibleOnly}
-                onClick={() => setEligibleOnly((current) => !current)}
-              >
-                {t("仅看 eligible")}</button>
+              <button className="button button--secondary" type="button" onClick={() => void handleBatchAnalyzeCandidates()} disabled={selectedCodes.length === 0 || Boolean(analyzingCode)}>
+                {t("Analyze selected")}
+              </button>
               <button
                 className="button button--primary"
                 type="button"
@@ -552,7 +550,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                 }}
                 disabled={!canBatchPromoteToTrial || promotingToTrial}
               >
-                {t("纳入量化观察")}</button>
+                {t("纳入量化")}</button>
               <button
                 className="button button--secondary"
                 type="button"
@@ -588,25 +586,15 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                     <th key={column}>{t(column)}</th>
                   ))}
                   <th>{t("Quant status")}</th>
-                  <th className="table__actions-head">{t("Actions")}</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleRows.length === 0 ? (
                   <tr>
-                    <td className="table__empty" colSpan={candidateColumns.length + 3}>
+                    <td className="table__empty" colSpan={candidateColumns.length + 2}>
                       <div className="summary-item">
                         <div className="summary-item__title">{candidateEmptyLabel}</div>
                         {candidateEmptyMessage ? <div className="summary-item__body">{candidateEmptyMessage}</div> : null}
-                      </div>
-                    </td>
-                  </tr>
-                ) : visibleRows.length === 0 ? (
-                  <tr>
-                    <td className="table__empty" colSpan={candidateColumns.length + 3}>
-                      <div className="summary-item">
-                        <div className="summary-item__title">{t("Current page has no candidate stocks")}</div>
-                        <div className="summary-item__body">{t("You can switch page to view other candidates.")}</div>
                       </div>
                     </td>
                   </tr>
@@ -646,58 +634,6 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                       ) : null}
                       <td>
                         <EligibleBadge row={row} override={entryOverrides[row.id]} />
-                      </td>
-                      <td>
-                        <div className="table__actions">
-                          <button
-                            className="button button--secondary"
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void handleAnalyzeCandidate(row.id);
-                            }}
-                            disabled={analyzingCode === row.id}
-                          >
-                            <span aria-hidden="true">🔎</span>
-                            <span>{analyzingCode === row.id ? t("Analyze in progress") : t("Analyze")}</span>
-                          </button>
-                          <button
-                            className="button button--secondary"
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void handleSingleWatchlist(row.id);
-                            }}
-                          >
-                            <span aria-hidden="true">{row.actions?.[0]?.icon ?? "⭐"}</span>
-                            <span>{row.actions?.[0]?.label ? t(row.actions[0].label) : t("Add to watchlist")}</span>
-                          </button>
-                          {entryStatusOf(row, entryOverrides[row.id]) === "eligible" ? (
-                            <>
-                              <button
-                                className="button button--secondary"
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setPromoteTargetCodes([row.id]);
-                                  setPromoteDialogOpen(true);
-                                }}
-                              >
-                                <span>{t("纳入量化观察")}</span>
-                              </button>
-                              <button
-                                className="button button--secondary"
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void handleIgnoreAutoEntry([row.id]);
-                                }}
-                              >
-                                <span>{t("忽略自动纳入")}</span>
-                              </button>
-                            </>
-                          ) : null}
-                        </div>
                       </td>
                     </tr>
                   ))

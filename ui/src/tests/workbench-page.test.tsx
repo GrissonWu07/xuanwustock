@@ -106,10 +106,16 @@ const quantOverviewPayload = {
       latest_reason: "2 只候选待确认",
     },
     trial: {
-      label: "量化观察",
+      label: "量化",
       count: 1,
-      top_items: [{ stock_code: "600003", stock_name: "观察A", latest_reason: "观察中" }],
-      latest_reason: "轻仓观察",
+      top_items: [{ stock_code: "600003", stock_name: "量化A", latest_reason: "已纳入量化" }],
+      latest_reason: "已纳入量化",
+    },
+    active: {
+      label: "量化运行",
+      count: 2,
+      top_items: [{ stock_code: "600006", stock_name: "运行A", latest_reason: "正常扫描" }],
+      latest_reason: "正常扫描",
     },
     exit_only: {
       label: "只出场管理",
@@ -118,6 +124,7 @@ const quantOverviewPayload = {
       latest_reason: "禁止新买",
     },
     cooling: { label: "冷却中", count: 3, top_items: [], latest_reason: "等待重评估" },
+    manual_paused: { label: "手工暂停", count: 1, top_items: [], latest_reason: "用户暂停" },
     retired: { label: "已退出待重评估", count: 4, top_items: [], latest_reason: "达到退出条件" },
   },
 };
@@ -142,12 +149,14 @@ describe("WorkbenchPage", () => {
     renderWorkbenchPage(client);
 
     expect(await screen.findByRole("button", { name: /待纳入量化/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /量化观察/ })).toBeInTheDocument();
+    expect(screen.getByText(/量化状态|Quant status/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /量化/ }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /量化运行/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /只出场管理/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /冷却中/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /手工暂停/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /已退出待重评估/ })).toBeInTheDocument();
-    expect(await screen.findByText(/600001 · 候选A/)).toBeInTheDocument();
-    expect(screen.getByText("评分达标")).toBeInTheDocument();
+    expect(screen.getByText("2 只候选待确认")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/quant/universe/overview", expect.objectContaining({ method: "GET" }));
     expect(getPageSnapshot).toHaveBeenCalledWith("workbench", { search: "", page: 1, pageSize: 20 });
   });
@@ -178,6 +187,41 @@ describe("WorkbenchPage", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /只出场管理/ }));
     expect(screen.getByTestId("live-sim-route")).toHaveTextContent("/live-sim?quant_status=exit_only");
+  });
+
+  it("supports manual quant entry and force exit from selected workbench stocks", async () => {
+    vi.stubGlobal("fetch", mockQuantOverviewFetch());
+    const getPageSnapshot = vi.fn().mockResolvedValue(workbenchSnapshot);
+    const runPageAction = vi.fn().mockResolvedValue(workbenchSnapshot);
+    const client = {
+      getPageSnapshot,
+      runPageAction,
+      baseUrl: "",
+    } as unknown as ApiClient;
+
+    renderWorkbenchPage(client);
+
+    await screen.findByRole("link", { name: "600519" });
+    expect(screen.queryByRole("button", { name: /^(纳入量化|Enter quant)$/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /登记持仓|Register holdings/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /强制出池|Force exit quant/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /批量删除|Delete selected/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /清空选择|Clear selection/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select 贵州茅台" }));
+    expect(screen.getByText(/已选择 1 只股票|1 selected stocks/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^(纳入量化|Enter quant)$/ }));
+    await waitFor(() => {
+      expect(runPageAction).toHaveBeenCalledWith("workbench", "batch-quant", { codes: ["600519"] });
+    });
+
+    runPageAction.mockClear();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: /强制出池|Force exit quant/ }));
+    await waitFor(() => {
+      expect(runPageAction).toHaveBeenCalledWith("workbench", "force-exit-quant", { codes: ["600519"] });
+    });
   });
 
   it("requests watchlist table data with a maximum page size of 20", async () => {
@@ -276,7 +320,7 @@ describe("WorkbenchPage", () => {
     expect(document.querySelectorAll(".watchlist-workflow-badge")).toHaveLength(2);
   });
 
-  it("moves watchlist row actions to the toolbar and supports batch delete", async () => {
+  it("keeps watchlist row actions out of the table and supports batch delete from the selection panel", async () => {
     const getPageSnapshot = vi.fn().mockResolvedValue(workbenchSnapshot);
     const runPageAction = vi.fn().mockResolvedValue(workbenchSnapshot);
     const client = {
@@ -290,6 +334,7 @@ describe("WorkbenchPage", () => {
 
     expect(screen.queryByRole("columnheader", { name: "操作" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete 600519" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete selected" })).toBeNull();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Select 贵州茅台" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete selected" }));

@@ -342,7 +342,7 @@ def test_backend_api_dataflow_from_discover_and_research_to_watchlist_and_quant_
     assert {"600519", "000001"}.issubset(candidate_codes)
 
     replay = client.get("/api/v1/quant/his-replay").json()
-    assert replay["candidatePool"]["columns"] == ["股票代码", "股票名称", "最新价格"]
+    assert replay["candidatePool"]["columns"] == ["股票代码", "股票名称"]
     for row in replay["candidatePool"]["rows"]:
         assert "actions" not in row or not row["actions"]
 

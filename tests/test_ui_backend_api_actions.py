@@ -55,9 +55,9 @@ def _seed_discover_result(base_dir: Path) -> None:
                             "股票简称": "贵州茅台",
                             "最新价": "1453.96",
                             "所属同花顺行业": "食品饮料-白酒",
-                            "总市值[20260410]": 18200.0,
-                            "市盈率(pe)[20260410]": 26.1,
-                            "市净率(pb)[20260410]": 9.8,
+                            "总市值[20260509]": 1_820_000_000_000.0,
+                            "市盈率(pe)[20260509]": 26.1,
+                            "市净率(pb)[20260509]": 9.8,
                         },
                     }
                 ],
@@ -560,14 +560,15 @@ def test_workbench_watchlist_uses_decision_table_columns(tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["watchlist"]["columns"] == ["代码", "名称", "行情", "板块", "分析", "信号", "工作流", "更新"]
+    assert payload["watchlist"]["columns"] == ["代码", "名称", "行情", "板块", "总市值(亿)", "市盈率", "市净率", "分析", "信号", "工作流", "更新"]
     row = payload["watchlist"]["rows"][0]
     assert row["cells"][2] == "1453.96 +1.23%"
-    assert "今日已分析" in row["cells"][4]
-    assert "买入" in row["cells"][4]
-    assert row["cells"][5] == "BUY"
-    assert "实时量化股票" in row["cells"][6]
-    assert row["analysisStatus"] == row["cells"][4]
+    assert row["cells"][4:7] == ["--", "--", "--"]
+    assert "今日已分析" in row["cells"][7]
+    assert "买入" in row["cells"][7]
+    assert row["cells"][8] == "BUY"
+    assert "实时量化股票" in row["cells"][9]
+    assert row["analysisStatus"] == row["cells"][7]
     assert row["signalStatus"] == "BUY"
     assert "实时量化股票" in row["workflowBadges"]
     assert row["actions"] == []
@@ -1373,8 +1374,29 @@ def test_discover_snapshot_aggregates_selector_results(tmp_path):
     payload = response.json()
     rows = payload["candidateTable"]["rows"]
     assert [row["code"] for row in rows][:2] == ["000001", "600519"]
+    assert payload["candidateTable"]["pagination"]["pageSize"] == 10
+    rows_by_code = {row["code"]: row for row in rows}
+    assert rows_by_code["600519"]["cells"][5:8] == ["18200.00", "26.10", "9.80"]
     assert any(strategy["name"] == "主力选股" and strategy["status"].startswith("最近推荐") for strategy in payload["strategies"])
     assert "已汇总 2 个发现策略的最新结果" in payload["summary"]["body"]
+
+    filtered = client.get("/api/v1/discover?strategyKey=low_price_bull")
+    assert filtered.status_code == 200
+    filtered_payload = filtered.json()
+    assert [row["code"] for row in filtered_payload["candidateTable"]["rows"]] == ["000001"]
+    assert filtered_payload["candidateTable"]["pagination"]["totalRows"] == 1
+
+    add_response = client.post("/api/v1/discover/actions/item-watchlist", json={"code": "600519"})
+    assert add_response.status_code == 200
+    workbench = client.get("/api/v1/workbench")
+    assert workbench.status_code == 200
+    watchlist_payload = workbench.json()["watchlist"]
+    watch_rows = {row["code"]: row for row in watchlist_payload["rows"]}
+    assert watchlist_payload["columns"][4:7] == ["总市值(亿)", "市盈率", "市净率"]
+    assert watch_rows["600519"]["cells"][4:7] == ["18200.00", "26.10", "9.80"]
+    assert watch_rows["600519"]["marketCap"] == "18200.00"
+    assert watch_rows["600519"]["peRatio"] == "26.10"
+    assert watch_rows["600519"]["pbRatio"] == "9.80"
 
 
 def test_discover_snapshot_exposes_read_only_lifecycle_entry_fields(tmp_path):

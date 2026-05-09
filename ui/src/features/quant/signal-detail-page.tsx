@@ -1707,7 +1707,7 @@ export function SignalDetailPage() {
               type="button"
               onClick={() => navigate(decision.source === "replay" ? "/his-replay" : "/live-sim")}
             >
-              {decision.source === "replay" ? t("历史回放") : t("实时模拟")}
+              {decision.source === "replay" ? t("历史回放") : t("实时量化")}
             </button>
           </div>
         }

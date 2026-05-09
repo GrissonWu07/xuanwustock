@@ -96,8 +96,8 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
       </div>
       <div className="workbench-layout">
         <div className="stack">
-          <QuantOverviewCards baseUrl={activeClient.baseUrl} />
           <WatchlistPanel
+            quantOverview={<QuantOverviewCards baseUrl={activeClient.baseUrl} />}
             watchlist={snapshot.watchlist}
             onAddWatchlist={async (code) => {
               const result = await resource.runAction("add-watchlist", { code });
@@ -111,6 +111,9 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
             }}
             onBatchQuant={(codes) => {
               void resource.runAction("batch-quant", { codes }).then(() => setTableSnapshot(null));
+            }}
+            onBatchForceExitQuant={(codes) => {
+              void resource.runAction("force-exit-quant", { codes }).then(() => setTableSnapshot(null));
             }}
             onBatchRemoveWatchlist={(codes) => {
               void resource.runAction("delete-watchlist", { codes }).then(() => setTableSnapshot(null));

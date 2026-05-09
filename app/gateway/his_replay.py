@@ -154,6 +154,104 @@ def _replay_signal_execution_metrics(summary: dict[str, Any] | None) -> list[dic
     ]
 
 
+def _run_stock_scope_rows_from_metadata(metadata: dict[str, Any] | None) -> list[dict[str, Any]]:
+    item = metadata if isinstance(metadata, dict) else {}
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    raw_scope = item.get("candidate_scope")
+    if isinstance(raw_scope, list):
+        for index, candidate in enumerate(raw_scope):
+            if not isinstance(candidate, dict):
+                continue
+            code = _txt(candidate.get("stock_code") or candidate.get("code")).strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            name = _txt(candidate.get("stock_name") or candidate.get("name") or code, code).strip() or code
+            rows.append(
+                {
+                    "id": code,
+                    "cells": [code, name],
+                    "code": code,
+                    "name": name,
+                    "source": "run_metadata",
+                    "order": index,
+                }
+            )
+    raw_codes = item.get("stock_codes")
+    if isinstance(raw_codes, list):
+        for index, raw_code in enumerate(raw_codes):
+            code = _txt(raw_code).strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            rows.append(
+                {
+                    "id": code,
+                    "cells": [code, code],
+                    "code": code,
+                    "name": code,
+                    "source": "run_metadata",
+                    "order": len(rows) + index,
+                }
+            )
+    return rows
+
+
+def _stock_scope_search_matches(row: dict[str, Any], keyword: str) -> bool:
+    search = _txt(keyword).lower()
+    if not search:
+        return True
+    values = [_txt(row.get("code")), _txt(row.get("name")), *[_txt(cell) for cell in row.get("cells", [])]]
+    return any(search in value.lower() for value in values if value)
+
+
+def _build_his_replay_candidate_pool_table(
+    context: UIApiContext,
+    run: dict[str, Any] | None,
+    table_query: dict[str, Any] | None,
+) -> dict[str, Any]:
+    query = table_query or {}
+    page_size = _normalize_replay_table_page_size(query.get("candidate_page_size") or query.get("pageSize"), default=20)
+    page = _normalize_replay_table_page(query.get("candidate_page") or query.get("page"))
+    search = _txt(query.get("candidate_search") or query.get("search"))
+    run_metadata = run.get("metadata") if isinstance((run or {}).get("metadata"), dict) else {}
+    scope_rows = _run_stock_scope_rows_from_metadata(run_metadata)
+
+    if scope_rows:
+        matched_rows = [row for row in scope_rows if _stock_scope_search_matches(row, search)]
+        pagination = _replay_table_pagination(page, page_size, len(matched_rows))
+        start = (pagination["page"] - 1) * page_size
+        table = _table(["股票代码", "股票名称"], matched_rows[start : start + page_size], "暂无任务量化股票")
+        table["pagination"] = pagination
+        return table
+
+    candidate_total = context.candidate_pool().count_candidates(status="active", search=search)
+    pagination = _replay_table_pagination(page, page_size, candidate_total)
+    candidate_rows = [
+        {
+            "id": _txt(item.get("stock_code"), str(i)),
+            "cells": [
+                _txt(item.get("stock_code")),
+                _txt(item.get("stock_name")),
+            ],
+            "code": _txt(item.get("stock_code")),
+            "name": _txt(item.get("stock_name")),
+        }
+        for i, item in enumerate(
+            context.candidate_pool().list_candidates(
+                status="active",
+                limit=page_size,
+                offset=(pagination["page"] - 1) * page_size,
+                search=search,
+            )
+        )
+    ]
+    table = _table(["股票代码", "股票名称"], candidate_rows, "暂无任务量化股票")
+    table["pagination"] = pagination
+    return table
+
+
 def _build_his_replay_task_items(
     db: QuantSimDB,
     runs: list[dict[str, Any]],
@@ -236,6 +334,7 @@ def _build_his_replay_task_items(
             "strategyProfileId": _txt(item.get("selected_strategy_profile_id")),
             "strategyProfileName": _txt(item.get("selected_strategy_profile_name")),
             "strategyProfileVersionId": _txt(item.get("selected_strategy_profile_version_id")),
+            "stockScope": _run_stock_scope_rows_from_metadata(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
         }
 
         terminal_liquidation_items: list[dict[str, Any]] = []
@@ -749,34 +848,7 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
     run = db.get_sim_run(requested_run_id) if requested_run_id is not None else None
     if run is None:
         run = runs[0] if runs else None
-    candidate_page_size = _normalize_replay_table_page_size((table_query or {}).get("candidate_page_size") or (table_query or {}).get("pageSize"), default=20)
-    candidate_page = _normalize_replay_table_page((table_query or {}).get("candidate_page") or (table_query or {}).get("page"))
-    candidate_search = _txt((table_query or {}).get("candidate_search") or (table_query or {}).get("search"))
-    candidate_total = context.candidate_pool().count_candidates(status="active", search=candidate_search)
-    candidate_pagination = _replay_table_pagination(candidate_page, candidate_page_size, candidate_total)
-    candidate_rows = [
-        {
-            "id": _txt(item.get("stock_code"), str(i)),
-            "cells": [
-                _txt(item.get("stock_code")),
-                _txt(item.get("stock_name")),
-                _num(item.get("latest_price")),
-            ],
-            "code": _txt(item.get("stock_code")),
-            "name": _txt(item.get("stock_name")),
-            "latestPrice": _num(item.get("latest_price")),
-        }
-        for i, item in enumerate(
-            context.candidate_pool().list_candidates(
-                status="active",
-                limit=candidate_page_size,
-                offset=(candidate_pagination["page"] - 1) * candidate_page_size,
-                search=candidate_search,
-            )
-        )
-    ]
-    candidate_pool_table = _table(["股票代码", "股票名称", "最新价格"], candidate_rows, "暂无候选股票")
-    candidate_pool_table["pagination"] = candidate_pagination
+    candidate_pool_table = _build_his_replay_candidate_pool_table(context, run, table_query)
 
     if not run:
         return {

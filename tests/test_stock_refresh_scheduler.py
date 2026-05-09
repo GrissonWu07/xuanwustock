@@ -296,6 +296,9 @@ def test_run_once_uses_fresh_runtime_cache_without_remote_fetch(monkeypatch, tmp
                 "stock_code": "000001",
                 "stock_name": "平安银行",
                 "latest_price": 12.34,
+                "market_cap": 1200.0,
+                "pe_ratio": 6.5,
+                "pb_ratio": 0.8,
                 "sector": "银行",
                 "price_as_of": "2026-05-05T01:00:00Z",
                 "data_source": "tdx_realtime",
@@ -345,6 +348,65 @@ def test_run_once_uses_fresh_runtime_cache_without_remote_fetch(monkeypatch, tmp
     assert summary["cacheHit"] == 1
     assert summary["remoteFetched"] == 0
     assert updates[0]["latest_price"] == 12.34
+
+
+def test_run_once_updates_watchlist_metrics_from_basic_info_interface(monkeypatch, tmp_path):
+    updates: list[dict[str, object]] = []
+
+    class FakeWatchlistService:
+        def list_watches(self):
+            return [{"stock_code": "000001"}]
+
+        def update_watch_snapshot(self, code, *, latest_price=None, stock_name=None, metadata=None):
+            updates.append({"code": code, "latest_price": latest_price, "stock_name": stock_name, "metadata": metadata})
+
+    class FakeQuantDB:
+        def get_candidates(self, status=None):
+            return []
+
+        def get_positions(self):
+            return []
+
+        def update_candidate_snapshot(self, *args, **kwargs):
+            return None
+
+        def update_position_market_price(self, *args, **kwargs):
+            return None
+
+    class FakePortfolioManager:
+        def get_all_stocks(self):
+            return []
+
+    context = SimpleNamespace(
+        selector_result_dir=tmp_path,
+        research_result_key="research",
+        watchlist=lambda: FakeWatchlistService(),
+        portfolio_manager=lambda: FakePortfolioManager(),
+        quant_db=lambda: FakeQuantDB(),
+        scheduler=lambda: SimpleNamespace(get_status=lambda: {"market": "CN"}),
+    )
+    monkeypatch.setattr(UnifiedStockRefreshScheduler, "_is_trading_time", staticmethod(lambda market: True))
+    monkeypatch.setattr(UnifiedStockRefreshScheduler, "_fetch_realtime_quote", staticmethod(lambda code, preferred_name=None: {"current_price": 12.34, "name": "平安银行"}))
+    monkeypatch.setattr(
+        UnifiedStockRefreshScheduler,
+        "_fetch_basic_info",
+        staticmethod(lambda code: {"industry": "银行", "总市值": 120_000_000_000, "市盈率": 6.5, "市净率": 0.8}),
+    )
+
+    summary = UnifiedStockRefreshScheduler(lambda: context).run_once(context=context, run_reason="scheduled")
+    entries = load_stock_runtime_entries(base_dir=tmp_path)
+
+    assert summary["remoteFetched"] == 1
+    assert updates[0]["metadata"] == {
+        "industry": "银行",
+        "sector": "银行",
+        "market_cap": 120_000_000_000,
+        "pe_ratio": 6.5,
+        "pb_ratio": 0.8,
+    }
+    assert entries["000001"]["market_cap"] == 120_000_000_000
+    assert entries["000001"]["pe_ratio"] == 6.5
+    assert entries["000001"]["pb_ratio"] == 0.8
 
 
 def test_run_once_respects_failure_cooldown_without_remote_retry(monkeypatch, tmp_path):

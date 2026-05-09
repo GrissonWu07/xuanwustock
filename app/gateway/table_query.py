@@ -40,7 +40,8 @@ def _replay_table_query_from_request(request: Request | None) -> dict[str, Any]:
     if request is None:
         return {}
     params = request.query_params
-    page_size = _normalize_replay_table_page_size(params.get("pageSize") or params.get("page_size"))
+    page_size_raw = params.get("pageSize") or params.get("page_size")
+    page_size = _normalize_replay_table_page_size(page_size_raw)
     trade_page_size = _normalize_replay_table_page_size(
         params.get("tradePageSize") or params.get("trade_page_size") or page_size,
         default=page_size,
@@ -51,6 +52,8 @@ def _replay_table_query_from_request(request: Request | None) -> dict[str, Any]:
     )
     return {
         "search": params.get("search") or "",
+        "strategy_key": params.get("strategyKey") or params.get("strategy_key") or params.get("strategy") or "",
+        "_page_size_explicit": page_size_raw not in (None, ""),
         "quant_status": params.get("quant_status") or params.get("quantStatus") or "",
         "page": _normalize_replay_table_page(params.get("page")),
         "pageSize": page_size,

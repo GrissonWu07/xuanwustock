@@ -579,6 +579,12 @@ class QuantSimReplayService:
         status_message: str,
     ) -> int:
         profile_binding = context.get("strategy_profile_binding") if isinstance(context.get("strategy_profile_binding"), dict) else {}
+        stock_codes = [
+            str(code).strip()
+            for code in (context.get("stock_codes") if isinstance(context.get("stock_codes"), list) else [])
+            if str(code).strip()
+        ]
+        candidates = context.get("candidates") if isinstance(context.get("candidates"), list) else []
         return self.db.create_sim_run(
             mode=mode,
             timeframe=timeframe,
@@ -598,6 +604,15 @@ class QuantSimReplayService:
             strategy_profile_snapshot=profile_binding.get("config") if isinstance(profile_binding.get("config"), dict) else None,
             metadata={
                 "candidate_count": len(context["candidates"]),
+                "stock_codes": stock_codes,
+                "candidate_scope": [
+                    {
+                        "stock_code": str(candidate.get("stock_code") or "").strip(),
+                        "stock_name": str(candidate.get("stock_name") or candidate.get("stock_code") or "").strip(),
+                    }
+                    for candidate in candidates
+                    if str(candidate.get("stock_code") or "").strip()
+                ],
                 "strategy_mode": context["strategy_mode"],
                 "checkpoint_market": market,
                 "checkpoint_timezone": market_timezone_name(market),

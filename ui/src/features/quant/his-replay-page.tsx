@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiClient, type ApiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
@@ -252,6 +253,57 @@ function withCodeName(rows: TableRow[], codeColumnIndex: number): TableRow[] {
   });
 }
 
+function stockDetailPath(code: string) {
+  return `/portfolio/position/${encodeURIComponent(code)}`;
+}
+
+function replayStockScopeLabel(row: TableRow) {
+  const code = String(row.code ?? row.cells[0] ?? "").trim();
+  const name = String(row.name ?? row.cells[1] ?? "").trim();
+  if (name && code && name !== code) {
+    return `${name}（${code}）`;
+  }
+  return code || name || "--";
+}
+
+function ReplayStockScopeCard({ rows }: { rows: TableRow[] }) {
+  return (
+    <WorkbenchCard>
+      <div className="replay-stock-scope__header">
+        <div>
+          <h2 className="section-card__title replay-stock-scope__title">{t("当前任务量化股票")}</h2>
+          <p className="section-card__description replay-stock-scope__description">
+            {t("回放任务启动时记录的量化股票范围，任务内只处理这些股票。")}
+          </p>
+        </div>
+        <span className="badge badge--neutral">{t("共 {v0} 只", { v0: rows.length })}</span>
+      </div>
+      {rows.length ? (
+        <div className="replay-stock-scope__list" aria-label={t("当前任务量化股票")}>
+          {rows.map((row, index) => {
+            const code = String(row.code ?? row.cells[0] ?? "").trim();
+            const label = replayStockScopeLabel(row);
+            return (
+              <Link
+                className="replay-stock-scope__chip"
+                key={`${code || row.id || "stock"}-${index}`}
+                to={stockDetailPath(code || label)}
+              >
+                {label}
+              </Link>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="summary-item summary-item--accent">
+          <div className="summary-item__title">{t("暂无任务量化股票")}</div>
+          <div className="summary-item__body">{t("新回放任务会在启动时记录当时已启用量化的股票范围。")}</div>
+        </div>
+      )}
+    </WorkbenchCard>
+  );
+}
+
 function removeExecutionResultColumn(table: TableSection): TableSection {
   const targetIndex = table.columns.findIndex((column) => {
     const normalized = String(column || "").trim().toLowerCase();
@@ -484,6 +536,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const replayActionError = resource.status === "error" && resource.data ? resource.error : null;
   const runningProgress = Math.max(0, Math.min(Number(runningTask?.progress ?? 0), 100));
   const selectedTask = snapshot.tasks.find((task) => task.id === selectedTaskId) ?? snapshot.tasks[0] ?? null;
+  const selectedTaskStockScope = selectedTask ? (selectedTask.stockScope?.length ? selectedTask.stockScope : snapshot.candidatePool.rows) : [];
   const selectedTaskCapitalPool = checkpointSnapshot?.capitalPool ?? selectedTask?.capitalPool;
   const checkpointItems = checkpointSnapshot?.checkpoints.items ?? [];
   const checkpointPagination = checkpointSnapshot?.checkpoints.pagination;
@@ -920,15 +973,6 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             ) : null}
           </WorkbenchCard>
 
-          <QuantTableSectionCard
-            title={t("回放股票范围")}
-            description={t("历史回放在任务启动时记录当前已启用量化的股票范围快照，任务内只对这批股票执行检查点，不影响实时模拟。")}
-            table={snapshot.candidatePool}
-            emptyTitle={snapshot.candidatePool.emptyLabel ?? t("暂无回放股票")}
-            emptyDescription={snapshot.candidatePool.emptyMessage ?? t("先在股票池中批量启用量化，再重新发起回放。")}
-            meta={[t("表内 {v0} 只", { v0: snapshot.candidatePool.rows.length }), t("区间 {v0}", { v0: snapshot.config.range })]}
-          />
-
         </div>
 
         <div className="stack">
@@ -1063,6 +1107,8 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               </div>
             )}
           </WorkbenchCard>
+
+          <ReplayStockScopeCard rows={selectedTaskStockScope} />
 
           {selectedTaskCapitalPool ? (
             <ReplayCapitalPoolPanel capitalPool={selectedTaskCapitalPool} />

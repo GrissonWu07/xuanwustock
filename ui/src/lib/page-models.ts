@@ -521,6 +521,7 @@ export type ReplaySnapshot = {
     profitLossByStock?: TableRow[];
     capitalPool?: ReplayCapitalPool;
     terminalLiquidation?: Record<string, string | number | null | undefined>;
+    stockScope?: TableRow[];
   }[];
   tradingAnalysis: {
     title: string;

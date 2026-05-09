@@ -21,6 +21,7 @@ REFRESH_INTERVAL_MINUTES = 2
 DEFAULT_POLL_SECONDS = 20.0
 MAX_FETCH_WORKERS = max(1, int(os.getenv("UNIFIED_STOCK_REFRESH_WORKERS", "6")))
 QUOTE_REALTIME_TTL_SECONDS = 120
+BASIC_INFO_TTL_SECONDS = 24 * 60 * 60
 REMOTE_FAILURE_COOLDOWN_SECONDS = 600
 _SCHEDULER_INSTANCE: "UnifiedStockRefreshScheduler | None" = None
 
@@ -43,6 +44,45 @@ def _price(value: Any) -> float | None:
         return number if number > 0 else None
     except (TypeError, ValueError):
         return None
+
+
+def _metric_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        text = str(value).strip().replace(",", "")
+        if not text or text in {"N/A", "NA", "-", "--", "None", "nan"}:
+            return None
+        number = float(text)
+        return number if number == number else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_metric(mapping: dict[str, Any], keys: list[str]) -> float | None:
+    for key in keys:
+        value = _metric_float(mapping.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _has_basic_metrics(entry: dict[str, Any] | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return all(_metric_float(entry.get(key)) is not None for key in ("market_cap", "pe_ratio", "pb_ratio"))
+
+
+def _is_basic_info_check_recent(entry: dict[str, Any] | None, *, now_utc: datetime | None = None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    checked_at = _parse_utc_timestamp(entry.get("basic_info_checked_at"))
+    if checked_at is None:
+        return False
+    base = now_utc or datetime.now(timezone.utc)
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    return (base.astimezone(timezone.utc) - checked_at).total_seconds() < BASIC_INFO_TTL_SECONDS
 
 
 def _valid_name(value: Any) -> str:
@@ -128,10 +168,14 @@ def save_stock_runtime_entries(
             "stock_code": code,
             "stock_name": _valid_name(item.get("stock_name")) or code,
             "latest_price": _price(item.get("latest_price")),
+            "market_cap": _metric_float(item.get("market_cap")),
+            "pe_ratio": _metric_float(item.get("pe_ratio")),
+            "pb_ratio": _metric_float(item.get("pb_ratio")),
             "sector": _valid_sector(item.get("sector")),
             "price_as_of": _txt(item.get("price_as_of")),
             "data_source": _txt(item.get("data_source")),
             "updated_at": _txt(item.get("updated_at"), updated_at or _now()),
+            "basic_info_checked_at": _txt(item.get("basic_info_checked_at")),
         }
         for key in ("refresh_status", "failure_at", "failure_reason", "failure_count"):
             if item.get(key) not in (None, ""):
@@ -298,7 +342,9 @@ class UnifiedStockRefreshScheduler:
                         next_entries[code] = {**existing_entry, "cache_status": "negative_hit"}
                     cooldown_skipped += 1
                     continue
-                if self._is_runtime_entry_fresh(existing_entry):
+                if self._is_runtime_entry_fresh(existing_entry) and (
+                    _has_basic_metrics(existing_entry) or _is_basic_info_check_recent(existing_entry)
+                ):
                     fetched[code] = {**existing_entry, "cache_status": "hit"}
                     cache_hits += 1
                     continue
@@ -363,6 +409,9 @@ class UnifiedStockRefreshScheduler:
                 if sector:
                     metadata["industry"] = sector
                     metadata["sector"] = sector
+                for key in ("market_cap", "pe_ratio", "pb_ratio"):
+                    if _metric_float(entry.get(key)) is not None:
+                        metadata[key] = entry.get(key)
                 watchlist_service.update_watch_snapshot(
                     code,
                     latest_price=latest_price,
@@ -374,6 +423,9 @@ class UnifiedStockRefreshScheduler:
             if sector:
                 candidate_metadata["industry"] = sector
                 candidate_metadata["sector"] = sector
+            for key in ("market_cap", "pe_ratio", "pb_ratio"):
+                if _metric_float(entry.get(key)) is not None:
+                    candidate_metadata[key] = entry.get(key)
             candidate_name = resolved_name if resolved_name and resolved_name.upper() != code.upper() else None
             if hasattr(quant_db, "update_candidate_snapshot"):
                 quant_db.update_candidate_snapshot(
@@ -531,10 +583,11 @@ class UnifiedStockRefreshScheduler:
         if not (stop_event and stop_event.is_set()):
             quote = UnifiedStockRefreshScheduler._fetch_realtime_quote(stock_code, existing_name or None)
 
-        need_basic_info = not existing_sector or not existing_name
+        need_basic_info = (not existing_sector or not existing_name or not _has_basic_metrics(existing_entry)) and not _is_basic_info_check_recent(existing_entry)
         basic_info: dict[str, Any] = {}
         if need_basic_info and not (stop_event and stop_event.is_set()):
             basic_info = UnifiedStockRefreshScheduler._fetch_basic_info(stock_code)
+        basic_info_checked_at = _now() if need_basic_info else _txt(existing_entry.get("basic_info_checked_at"))
 
         quote_name = _valid_name(quote.get("name"))
         if quote_name.upper() == stock_code.upper():
@@ -577,14 +630,33 @@ class UnifiedStockRefreshScheduler:
             or _txt(quote.get("data_source"))
             or _txt(existing_entry.get("data_source"))
         )
+        market_cap = (
+            _first_metric(basic_info, ["market_cap", "marketCap", "total_market_cap", "total_market_value", "总市值", "市值"])
+            or _first_metric(quote, ["market_cap", "marketCap", "total_market_cap", "total_market_value", "总市值", "市值"])
+            or _metric_float(existing_entry.get("market_cap"))
+        )
+        pe_ratio = (
+            _first_metric(basic_info, ["pe_ratio", "pe", "pe_ttm", "PE", "市盈率", "市盈率TTM"])
+            or _first_metric(quote, ["pe_ratio", "pe", "pe_ttm", "PE", "市盈率", "市盈率TTM"])
+            or _metric_float(existing_entry.get("pe_ratio"))
+        )
+        pb_ratio = (
+            _first_metric(basic_info, ["pb_ratio", "pb", "PB", "市净率"])
+            or _first_metric(quote, ["pb_ratio", "pb", "PB", "市净率"])
+            or _metric_float(existing_entry.get("pb_ratio"))
+        )
 
         return {
             "stock_code": stock_code,
             "stock_name": stock_name,
             "latest_price": latest_price,
+            "market_cap": market_cap,
+            "pe_ratio": pe_ratio,
+            "pb_ratio": pb_ratio,
             "sector": sector,
             "price_as_of": price_as_of,
             "data_source": data_source,
+            "basic_info_checked_at": basic_info_checked_at,
             "updated_at": _now(),
         }
 

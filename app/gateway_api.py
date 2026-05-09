@@ -28,7 +28,7 @@ from app.discover.discover import action_discover_batch as _action_discover_batc
 import app.discover.discover as _discover_gateway_module
 from app.gateway.research import action_research_batch as _action_research_batch, action_research_item as _action_research_item, action_research_reset as _action_research_reset, action_research_run_module as _gateway_research_run_module, research_task_manager, snapshot_research as _snapshot_research
 import app.gateway.research as _gateway_research_module
-from app.gateway.workbench import action_workbench_add_watchlist as _action_workbench_add_watchlist, action_workbench_analysis as _action_workbench_analysis, action_workbench_batch_portfolio as _action_workbench_batch_portfolio, action_workbench_batch_quant as _action_workbench_batch_quant, action_workbench_delete as _action_workbench_delete, action_workbench_refresh as _action_workbench_refresh
+from app.gateway.workbench import action_workbench_add_watchlist as _action_workbench_add_watchlist, action_workbench_analysis as _action_workbench_analysis, action_workbench_batch_portfolio as _action_workbench_batch_portfolio, action_workbench_batch_quant as _action_workbench_batch_quant, action_workbench_delete as _action_workbench_delete, action_workbench_force_exit_quant as _action_workbench_force_exit_quant, action_workbench_refresh as _action_workbench_refresh
 from app.gateway.workbench_analysis import _analysis_options, _hydrate_cached_workbench_analysis, _run_single_workbench_analysis, _snapshot_workbench, action_workbench_analysis_batch_compat as _action_workbench_analysis_batch_compat
 from app.portfolio_rebalance_tasks import portfolio_rebalance_task_manager
 from app.quant_sim.engine import QuantSimEngine
@@ -147,6 +147,7 @@ ACTION_BUILDERS = {
     ("workbench", "add-watchlist"): _action_workbench_add_watchlist,
     ("workbench", "refresh-watchlist"): _action_workbench_refresh,
     ("workbench", "batch-quant"): _action_workbench_batch_quant,
+    ("workbench", "force-exit-quant"): _action_workbench_force_exit_quant,
     ("workbench", "batch-portfolio"): _action_workbench_batch_portfolio,
     ("workbench", "analysis"): _action_workbench_analysis,
     ("workbench", "analysis-batch"): _action_workbench_analysis_batch_compat,
@@ -483,6 +484,7 @@ ACTION_ROUTES = [
     ("/api/v1/workbench/actions/add-watchlist", "workbench", "add-watchlist"),
     ("/api/v1/workbench/actions/refresh-watchlist", "workbench", "refresh-watchlist"),
     ("/api/v1/workbench/actions/batch-quant", "workbench", "batch-quant"),
+    ("/api/v1/workbench/actions/force-exit-quant", "workbench", "force-exit-quant"),
     ("/api/v1/workbench/actions/batch-portfolio", "workbench", "batch-portfolio"),
     ("/api/v1/workbench/actions/analysis", "workbench", "analysis"),
     ("/api/v1/workbench/actions/analysis-batch", "workbench", "analysis-batch"),

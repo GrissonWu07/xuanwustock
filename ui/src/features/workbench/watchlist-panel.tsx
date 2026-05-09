@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { IconButton } from "../../components/ui/icon-button";
@@ -9,9 +10,11 @@ import { t } from "../../lib/i18n";
 
 type WatchlistPanelProps = {
   watchlist: TableSection;
+  quantOverview?: ReactNode;
   onAddWatchlist: (code: string) => Promise<void> | void;
   onRefresh: (codes: string[]) => void;
   onBatchQuant: (codes: string[]) => void;
+  onBatchForceExitQuant: (codes: string[]) => void;
   onBatchRemoveWatchlist: (codes: string[]) => void;
   onBatchPortfolio: (codes: string[], options?: { costPrice?: string; quantity?: string }) => Promise<void> | void;
   onClearSelection: () => void;
@@ -71,11 +74,50 @@ const isLegacySourceColumn = (column: unknown) => {
   return normalized === "source" || normalized === t("来源");
 };
 
+const LEGACY_COLUMN_LABELS = {
+  quote: t("行情"),
+  sector: t("板块"),
+  marketCap: t("总市值(亿)"),
+  pe: t("市盈率"),
+  pb: t("市净率"),
+  analysis: t("分析"),
+  signal: t("信号"),
+  workflow: t("工作流"),
+};
+
+const findColumnIndex = (columns: string[], keys: string[]) =>
+  columns.findIndex((column) => {
+    const value = String(column ?? "").trim();
+    return keys.some((key) => value === key || value === t(key));
+  });
+
+const columnClassName = (column: string, index: number) => {
+  if (index === 0) return "watchlist-table__col--code";
+  if (index === 1) return "watchlist-table__col--name";
+  const value = String(column ?? "");
+  if (value === t("Quote") || value === "Quote" || value === LEGACY_COLUMN_LABELS.quote) return "watchlist-table__col--quote";
+  if (value === t("Sector") || value === "Sector" || value === LEGACY_COLUMN_LABELS.sector) return "watchlist-table__col--sector";
+  if (
+    value === t("Market cap (100M)") ||
+    value === t("P/E") ||
+    value === t("P/B") ||
+    ["Market cap (100M)", "P/E", "P/B", LEGACY_COLUMN_LABELS.marketCap, LEGACY_COLUMN_LABELS.pe, LEGACY_COLUMN_LABELS.pb].includes(value)
+  ) {
+    return "watchlist-table__col--valuation";
+  }
+  if (value === t("Analysis") || value === "Analysis" || value === LEGACY_COLUMN_LABELS.analysis) return "watchlist-table__col--analysis";
+  if (value === t("Signal") || value === "Signal" || value === LEGACY_COLUMN_LABELS.signal) return "watchlist-table__col--signal";
+  if (value === t("Workflow") || value === "Workflow" || value === LEGACY_COLUMN_LABELS.workflow) return "watchlist-table__col--workflow";
+  return "watchlist-table__col--updated";
+};
+
 export function WatchlistPanel({
   watchlist,
+  quantOverview,
   onAddWatchlist,
   onRefresh,
   onBatchQuant,
+  onBatchForceExitQuant,
   onBatchRemoveWatchlist,
   onBatchPortfolio,
   onClearSelection,
@@ -102,6 +144,14 @@ export function WatchlistPanel({
   const displayColumns = useMemo(
     () => (sourceColumnIndex >= 0 ? watchlist.columns.filter((_, index) => index !== sourceColumnIndex) : watchlist.columns),
     [sourceColumnIndex, watchlist.columns],
+  );
+  const analysisColumnIndex = useMemo(() => findColumnIndex(displayColumns, ["Analysis", LEGACY_COLUMN_LABELS.analysis]), [displayColumns]);
+  const signalColumnIndex = useMemo(() => findColumnIndex(displayColumns, ["Signal", LEGACY_COLUMN_LABELS.signal]), [displayColumns]);
+  const workflowColumnIndex = useMemo(() => findColumnIndex(displayColumns, ["Workflow", LEGACY_COLUMN_LABELS.workflow]), [displayColumns]);
+  const compactStatusColumnIndex = analysisColumnIndex >= 0 ? analysisColumnIndex : Math.min(4, Math.max(0, displayColumns.length - 1));
+  const compactDetailIndexes = useMemo(
+    () => displayColumns.map((_, index) => index).filter((index) => ![0, 1, compactStatusColumnIndex].includes(index)),
+    [compactStatusColumnIndex, displayColumns],
   );
   const pageRows = useMemo(
     () =>
@@ -153,13 +203,13 @@ export function WatchlistPanel({
     if (index === 0) {
       return renderStockCodeLink(row);
     }
-    if (index === 4) {
+    if (index === analysisColumnIndex) {
       return <span className={`badge badge--${row.analysisTone || "neutral"} watchlist-analysis-badge`}>{t(cell)}</span>;
     }
-    if (index === 5) {
+    if (index === signalColumnIndex) {
       return <span className={`badge badge--${signalBadgeTone(row.signalStatus || cell)} watchlist-signal-badge`}>{t(row.signalStatus || cell)}</span>;
     }
-    if (index === 6) {
+    if (index === workflowColumnIndex) {
       return renderWorkflowCell(row, cell);
     }
     return typeof cell === "string" ? t(cell) : cell;
@@ -204,6 +254,14 @@ export function WatchlistPanel({
     }
   };
 
+  const handleBatchForceExitQuant = () => {
+    if (selectedCodes.length === 0) return;
+    if (!window.confirm(t("Force selected stocks out of quant? Holdings will enter exit-only management until cleared."))) {
+      return;
+    }
+    onBatchForceExitQuant(selectedCodes);
+  };
+
   const handleBatchDelete = () => {
     if (selectedCodes.length > 0) {
       onBatchRemoveWatchlist(selectedCodes);
@@ -215,6 +273,12 @@ export function WatchlistPanel({
     const targetCodes = (selectedCodes.length > 0 ? selectedCodes : pageRows.map((row) => row.id)).filter(Boolean);
     if (targetCodes.length === 0) return;
     onRefresh(targetCodes);
+  };
+
+  const openPortfolioDialog = () => {
+    setPortfolioDialogOpen(true);
+    setPortfolioCostPrice(selectedRows.length === 1 ? resolveRowPrice(selectedRows[0]) : "");
+    setPortfolioQuantity("100");
   };
 
   const toggleExpandedRow = (rowId: string) => {
@@ -246,8 +310,10 @@ export function WatchlistPanel({
     <WorkbenchCard>
       <div style={panelStyle}>
         <div>
-          <h2 className="section-card__title">{t("My watchlist")}</h2>
+          <h2 className="section-card__title">{t("Stock workbench")}</h2>
+          <p className="section-card__description">{t("Maintain the stock pool, enter quant, register holdings, or force weak symbols out without leaving this page.")}</p>
         </div>
+        {quantOverview}
 
         <div className="watchlist-toolbar" data-testid="watchlist-toolbar">
           <div className="watchlist-toolbar__cluster" data-testid="watchlist-toolbar-cluster">
@@ -271,48 +337,46 @@ export function WatchlistPanel({
                 }}
               />
               <IconButton icon="↻" label={t("Refresh stock info")} tone="neutral" onClick={handleRefresh} />
-              <IconButton
-                icon="🧪"
-                label={t("Add to quant candidates")}
-                tone="accent"
-                onClick={handleBatchQuant}
-                disabled={selectedCodes.length === 0}
-              />
-              <IconButton
-                icon="🗑"
-                label={t("Delete selected")}
-                tone="danger"
-                onClick={handleBatchDelete}
-                disabled={selectedCodes.length === 0}
-              />
-              <button
-                className="button button--secondary"
-                type="button"
-                onClick={() => {
-                  setPortfolioDialogOpen(true);
-                  setPortfolioCostPrice(selectedRows.length === 1 ? resolveRowPrice(selectedRows[0]) : "");
-                  setPortfolioQuantity("100");
-                }}
-                disabled={selectedCodes.length === 0}
-                style={{ minHeight: "38px", padding: "0 12px" }}
-              >
-                {t("Register holdings")}
-              </button>
-              <IconButton
-                icon="✕"
-                label={t("Clear selection")}
-                tone="neutral"
-                onClick={() => {
-                  selection.clear();
-                  onClearSelection();
-                }}
-              />
             </div>
             <div className="watchlist-toolbar__status" data-testid="watchlist-toolbar-status">
               <span className="watchlist-toolbar__count">{t("Selected {count} stocks", { count: selectedCodes.length })}</span>
             </div>
           </div>
         </div>
+        {selectedRows.length > 0 ? (
+          <div className="workbench-selection-panel">
+            <div>
+              <div className="summary-item__title">{t("Selected {count} stocks", { count: selectedCodes.length })}</div>
+              <div className="summary-item__body">
+                {t("Selected stocks can run quant, register holdings, be deleted, or be forced out in batch.", { count: selectedCodes.length })}
+              </div>
+            </div>
+            <div className="workbench-selection-panel__actions">
+              <button className="button button--secondary" type="button" onClick={handleBatchQuant}>
+                {t("Enter quant")}
+              </button>
+              <button className="button button--secondary" type="button" onClick={openPortfolioDialog}>
+                {t("Register holdings")}
+              </button>
+              <button className="button button--danger" type="button" onClick={handleBatchForceExitQuant}>
+                {t("Force exit quant")}
+              </button>
+              <button className="button button--secondary" type="button" onClick={handleBatchDelete}>
+                {t("Delete selected")}
+              </button>
+              <button
+                className="button button--secondary"
+                type="button"
+                onClick={() => {
+                  selection.clear();
+                  onClearSelection();
+                }}
+              >
+                {t("Clear selection")}
+              </button>
+            </div>
+          </div>
+        ) : null}
         {portfolioDialogOpen ? (
           <div className="summary-item">
             <div className="summary-item__title">{t("Register holdings")}</div>
@@ -390,14 +454,9 @@ export function WatchlistPanel({
             {!isCompactLayout ? (
               <colgroup>
                 <col className="watchlist-table__col watchlist-table__col--checkbox" />
-                <col className="watchlist-table__col watchlist-table__col--code" />
-                <col className="watchlist-table__col watchlist-table__col--name" />
-                <col className="watchlist-table__col watchlist-table__col--quote" />
-                <col className="watchlist-table__col watchlist-table__col--sector" />
-                <col className="watchlist-table__col watchlist-table__col--analysis" />
-                <col className="watchlist-table__col watchlist-table__col--signal" />
-                <col className="watchlist-table__col watchlist-table__col--workflow" />
-                <col className="watchlist-table__col watchlist-table__col--updated" />
+                {displayColumns.map((column, index) => (
+                  <col className={`watchlist-table__col ${columnClassName(String(column), index)}`} key={`${column}-${index}`} />
+                ))}
               </colgroup>
             ) : null}
             <thead>
@@ -413,9 +472,9 @@ export function WatchlistPanel({
                 </th>
                 {isCompactLayout ? (
                   <>
-                    <th>{t(String(watchlist.columns[0] ?? "Code"))}</th>
-                    <th>{t(String(watchlist.columns[1] ?? "Name"))}</th>
-                    <th>{t(String(watchlist.columns[4] ?? "Analysis"))}</th>
+                    <th>{t(String(displayColumns[0] ?? "Code"))}</th>
+                    <th>{t(String(displayColumns[1] ?? "Name"))}</th>
+                    <th>{t(String(displayColumns[compactStatusColumnIndex] ?? "Analysis"))}</th>
                     <th className="table__compact-actions-head">{t("Detail")}</th>
                   </>
                 ) : (
@@ -505,7 +564,7 @@ export function WatchlistPanel({
                           </td>
                           <td className="table__cell-strong">{renderStockCodeLink(row)}</td>
                           <td>{typeof row.cells[1] === "string" ? t(String(row.cells[1])) : row.cells[1]}</td>
-                          <td>{renderCell(row, String(row.cells[4] ?? "-"), 4)}</td>
+                          <td>{renderCell(row, String(row.cells[compactStatusColumnIndex] ?? "-"), compactStatusColumnIndex)}</td>
                           <td className="table__compact-control-cell">
                             <button
                               className="button button--secondary button--small table__expand-button"
@@ -528,7 +587,7 @@ export function WatchlistPanel({
                         <tr key={`${row.id}-detail`} className="table__compact-detail-row">
                           <td colSpan={5} className="table__compact-detail-cell">
                             <div className="compact-detail-grid">
-                              {[2, 3, 5, 6, 7].map((index) => (
+                              {compactDetailIndexes.map((index) => (
                                 <div className="compact-detail-item" key={`${row.id}-detail-${index}`}>
                                   <div className="compact-detail-item__label">{t(String(displayColumns[index] ?? `col-${index}`))}</div>
                                   <div className="compact-detail-item__value">{renderCell(row, String(row.cells[index] ?? "-"), index)}</div>
@@ -619,14 +678,6 @@ export function WatchlistPanel({
             </button>
           </div>
         </div>
-        {selectedRows.length > 0 ? (
-          <div className="summary-item summary-item--accent">
-            <div className="summary-item__title">{t("Current selection")}</div>
-            <div className="summary-item__body">
-              {selectedRows.map((row) => `${row.cells[0]} ${row.cells[1]} · ${row.cells[3]}`).join(", ")}
-            </div>
-          </div>
-        ) : null}
       </div>
     </WorkbenchCard>
   );

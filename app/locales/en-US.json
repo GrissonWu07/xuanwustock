@@ -111,7 +111,7 @@
   "Profit growth": "Profit growth",
   "Quant candidates": "Quant candidates",
   "Quant jobs": "Quant jobs",
-  "Quant simulation": "Quant simulation",
+  "Quant simulation": "Real-time quant",
   "Quotes support manual refresh. Quant scheduler also writes latest prices and signals here.": "Quotes support manual refresh. Quant scheduler also writes latest prices and signals here.",
   "Watchlist refresh updates name, price, and sector in batch. Quant scheduler also writes latest prices and signals here.": "Watchlist refresh updates name, price, and sector in batch. Quant scheduler also writes latest prices and signals here.",
   "Relative activity versus historical average volume.": "Relative activity versus historical average volume.",
@@ -224,5 +224,7 @@
   "Configuration validated": "Configuration validated",
   "AI scanner returned no selected stocks": "AI scanner returned no selected stocks",
   "Scanner score: {score}": "Scanner score: {score}",
-  "AI scanner selected candidate": "AI scanner selected candidate"
+  "AI scanner selected candidate": "AI scanner selected candidate",
+  "Force exit quant": "Force exit quant",
+  "Force exit completed: {count} stocks.": "Force exit completed: {count} stocks."
 }

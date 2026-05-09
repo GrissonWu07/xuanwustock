@@ -424,7 +424,7 @@ def build_live_sim_capital_pool(db: QuantSimDB, *, sync_slots: bool = True) -> d
             "status": "live",
             "checkpoint": _now(),
             "timeframe": _txt(scheduler_config.get("analysis_timeframe"), "30m"),
-            "range": "实时模拟当前快照",
+            "range": "实时量化当前快照",
             "strategy": _txt(scheduler_config.get("strategy_profile_id") or scheduler_config.get("strategy_mode"), "--"),
         },
         "pool": {

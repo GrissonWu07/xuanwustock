@@ -1447,7 +1447,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                 <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "量化生命周期" : "Quant lifecycle"}</h2>
                 <div className="strategy-config-card__subtitle">
                   {locale === "zh-CN"
-                    ? t("控制候选股票从待纳入、量化观察、只出场、冷却到退出的策略级阈值；全局自动入池/自动出池开关不属于本区块。")
+                    ? t("控制候选股票从待纳入、量化、只出场、冷却到退出的策略级阈值；全局自动入池/自动出池开关不属于本区块。")
                     : "Profile-level thresholds for pending, trial, exit-only, cooling and retired states. Global auto-entry/auto-exit switches are configured elsewhere."}
                 </div>
               </div>
@@ -1654,3 +1654,4 @@ FusionConfidence = FusionConfidence_base × (1 - Penalty)`}</pre>
     </div>
   );
 }
+

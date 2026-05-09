@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiClient, type ApiClient } from "../../lib/api-client";
 import { IconButton } from "../../components/ui/icon-button";
+import { MarkdownBlock } from "../../components/ui/markdown-block";
 import { PageHeader } from "../../components/ui/page-header";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
@@ -12,7 +13,6 @@ import { t } from "../../lib/i18n";
 import {
   BatchPromoteDialog,
   EligibleBadge,
-  entryStatusOf,
   ignoreResultOverrides,
   postQuantEntryAction,
   promoteResultOverrides,
@@ -391,15 +391,6 @@ export function ResearchPage({ client }: ResearchPageProps) {
     }
   };
 
-  const handleSingleWatchlist = async (code: string) => {
-    try {
-      await resource.runAction("item-watchlist", { code });
-      setRunFeedback(t("Added to watchlist"));
-    } catch (error) {
-      setRunFeedback(`${t("Failed")}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
   const handleRunModule = async (moduleName?: string) => {
     if (isRegenerating || researchBusy || resettingList) return;
     setIsRegenerating(true);
@@ -537,7 +528,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
               }}
               disabled={!canBatchPromoteToTrial || promotingToTrial || resettingList}
             >
-              {t("纳入量化观察")}</button>
+              {t("纳入量化")}</button>
             <button className="button button--secondary" type="button" onClick={() => void handleIgnoreAutoEntry(selectedCodes)} disabled={selectedCodes.length === 0 || resettingList}>
               {t("忽略自动纳入")}</button>
           </>
@@ -608,12 +599,12 @@ export function ResearchPage({ client }: ResearchPageProps) {
                       {selectedModule.sections.map((section, index) => (
                         <div className="research-module-card__insight-item" key={`${section.title}-${index}`}>
                           <div className="research-module-card__insight-item-title">{localizeResearchText(section.title)}</div>
-                          <div className="research-module-card__insight-item-body">{section.body}</div>
+                          <MarkdownBlock className="research-module-card__insight-item-body markdown-body" content={section.body} />
                         </div>
                       ))}
                     </div>
                   ) : selectedModule.note && hasStructuredText(selectedModule.note) ? (
-                    <div className="research-module-card__detail-body">{localizeResearchText(selectedModule.note)}</div>
+                    <MarkdownBlock className="research-module-card__detail-body markdown-body" content={localizeResearchText(selectedModule.note)} />
                   ) : selectedModule.note ? (
                     <p className="research-module-card__empty-note">{localizeResearchText(selectedModule.note)}</p>
                   ) : selectedModule.outputDetail ? (
@@ -629,7 +620,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                         {selectedModule.insights.map((insight, index) => (
                           <div className="research-module-card__insight-item" key={`${insight.title}-${index}`}>
                             <div className="research-module-card__insight-item-title">{localizeResearchText(insight.title)}</div>
-                            <div className="research-module-card__insight-item-body">{localizeResearchText(insight.body)}</div>
+                            <MarkdownBlock className="research-module-card__insight-item-body markdown-body" content={localizeResearchText(insight.body)} />
                           </div>
                         ))}
                       </div>
@@ -643,7 +634,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
 
         <WorkbenchCard>
           <h2 className="section-card__title">{t("Research summary")}</h2>
-          <p className="section-card__description">{localizeResearchText(snapshot.summary.body)}</p>
+          <MarkdownBlock className="section-card__description markdown-body research-summary-markdown" content={localizeResearchText(snapshot.summary.body)} />
           <div className="summary-list">
             <div className="summary-item">
               <div className="summary-item__title">{t("Summary")}</div>
@@ -703,7 +694,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
             <button className="button button--secondary" type="button" disabled={outputCurrentPage <= 1} onClick={() => setOutputPage((page) => Math.max(1, page - 1))}>
               ←
             </button>
-            <span className="badge badge--neutral">{`第 ${outputCurrentPage} / ${outputTotalPages} 页`}</span>
+            <span className="badge badge--neutral">{t("Page {current}/{total}", { current: outputCurrentPage, total: outputTotalPages })}</span>
             <button className="button button--secondary" type="button" disabled={outputCurrentPage >= outputTotalPages} onClick={() => setOutputPage((page) => Math.min(outputTotalPages, page + 1))}>
               →
             </button>
@@ -725,13 +716,12 @@ export function ResearchPage({ client }: ResearchPageProps) {
                     <th key={column}>{localizeResearchText(column)}</th>
                   ))}
                   <th>{t("Quant status")}</th>
-                  <th className="table__actions-head">{t("Actions")}</th>
                 </tr>
               </thead>
               <tbody>
                 {sourceRows.length === 0 ? (
                   <tr>
-                    <td className="table__empty" colSpan={snapshot.outputTable.columns.length + 3}>
+                    <td className="table__empty" colSpan={snapshot.outputTable.columns.length + 2}>
                       <div className="summary-item">
                         <div className="summary-item__title">{outputEmptyLabel}</div>
                         {outputEmptyMessage ? <div className="summary-item__body">{outputEmptyMessage}</div> : null}
@@ -772,46 +762,6 @@ export function ResearchPage({ client }: ResearchPageProps) {
                       <td>
                         <EligibleBadge row={row} override={entryOverrides[row.id]} />
                       </td>
-                      <td>
-                        <div className="table__actions">
-                          <button
-                            className="button button--secondary"
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void handleSingleWatchlist(row.id);
-                            }}
-                          >
-                            <span aria-hidden="true">{row.actions?.[0]?.icon ?? "⭐"}</span>
-                            <span>{localizeResearchText(row.actions?.[0]?.label) || t("Add to watchlist")}</span>
-                          </button>
-                          {entryStatusOf(row, entryOverrides[row.id]) === "eligible" ? (
-                            <>
-                              <button
-                                className="button button--secondary"
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setPromoteTargetCodes([row.id]);
-                                  setPromoteDialogOpen(true);
-                                }}
-                              >
-                                <span>{t("纳入量化观察")}</span>
-                              </button>
-                              <button
-                                className="button button--secondary"
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void handleIgnoreAutoEntry([row.id]);
-                                }}
-                              >
-                                <span>{t("忽略自动纳入")}</span>
-                              </button>
-                            </>
-                          ) : null}
-                        </div>
-                      </td>
                     </tr>
                     );
                   })
@@ -833,7 +783,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
 
         <WorkbenchCard>
           <h2 className="section-card__title">{t("Latest result summary")}</h2>
-          <p className="section-card__description">{localizeResearchText(snapshot.summary.body)}</p>
+          <MarkdownBlock className="section-card__description markdown-body research-summary-markdown" content={localizeResearchText(snapshot.summary.body)} />
           <div className="summary-list">
             <div className="summary-item">
               <div className="summary-item__title">{localizeResearchText(snapshot.summary.title)}</div>
@@ -870,3 +820,4 @@ export function ResearchPage({ client }: ResearchPageProps) {
     </div>
   );
 }
+

@@ -36,7 +36,7 @@ def quant_universe_state(
 
 def quant_universe_overview(context: UIApiContext) -> dict[str, Any]:
     cards = context.quant_db().get_quant_universe_overview()
-    allowed_keys = ("pending_eligible", "trial", "exit_only", "cooling", "retired")
+    allowed_keys = ("pending_eligible", "trial", "active", "exit_only", "cooling", "manual_paused", "retired")
     return {"cards": {key: _light_card(cards.get(key)) for key in allowed_keys}}
 
 

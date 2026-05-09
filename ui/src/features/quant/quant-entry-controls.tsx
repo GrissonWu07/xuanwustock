@@ -74,9 +74,9 @@ export function BatchPromoteDialog({
         padding: "24px",
       }}
     >
-      <section className="card section-card" role="dialog" aria-modal="true" aria-label={t("确认纳入量化观察")}>
-        <h2 className="section-card__title">{t("确认纳入量化观察")}</h2>
-        <p className="section-card__description">{t("将选中的")}{count} {t("只股票纳入量化观察名单，成功和跳过结果会保留在当前列表中。")}</p>
+      <section className="card section-card" role="dialog" aria-modal="true" aria-label={t("确认纳入量化")}>
+        <h2 className="section-card__title">{t("确认纳入量化")}</h2>
+        <p className="section-card__description">{t("将选中的")}{count} {t("只股票纳入量化名单，成功和跳过结果会保留在当前列表中。")}</p>
         <div className="toolbar toolbar--compact">
           <button className="button button--secondary" type="button" onClick={onCancel} disabled={pending}>
             {t("取消")}</button>
@@ -136,3 +136,4 @@ export function ignoreResultOverrides(codes: string[], result?: QuantEntryAction
   });
   return updates;
 }
+

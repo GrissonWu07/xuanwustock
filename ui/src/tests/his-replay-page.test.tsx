@@ -348,6 +348,47 @@ describe("HisReplayPage", () => {
     );
   });
 
+  it("shows the selected replay task stock scope under the task panel", async () => {
+    const scopedSnapshot = {
+      ...initialSnapshot,
+      candidatePool: {
+        columns: ["股票代码", "股票名称"],
+        rows: [
+          { id: "fallback", cells: ["000001", "平安银行"], code: "000001", name: "平安银行" },
+        ],
+        emptyLabel: "暂无任务量化股票",
+        emptyMessage: "暂无任务量化股票",
+      },
+      tasks: [
+        {
+          ...initialSnapshot.tasks[0],
+          stockScope: [
+            { id: "600519", cells: ["600519", "贵州茅台"], code: "600519", name: "贵州茅台" },
+            { id: "300750", cells: ["300750", "宁德时代"], code: "300750", name: "宁德时代" },
+          ],
+        },
+      ],
+    };
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(scopedSnapshot),
+      runPageAction: vi.fn(),
+    } as unknown as ApiClient;
+
+    renderHisReplayPage(client);
+
+    const stockScopeTitle = await screen.findByText("当前任务量化股票");
+    expect(screen.queryByText("回放股票范围")).not.toBeInTheDocument();
+    const stockScopeCard = stockScopeTitle.closest(".section-card");
+    expect(stockScopeCard).toBeTruthy();
+    expect(within(stockScopeCard as HTMLElement).getByText("共 2 只")).toBeInTheDocument();
+    expect(within(stockScopeCard as HTMLElement).getByRole("link", { name: "贵州茅台（600519）" })).toHaveAttribute("href", "/portfolio/position/600519");
+    expect(within(stockScopeCard as HTMLElement).getByRole("link", { name: "宁德时代（300750）" })).toHaveAttribute("href", "/portfolio/position/300750");
+    expect(within(stockScopeCard as HTMLElement).queryByText("平安银行（000001）")).not.toBeInTheDocument();
+
+    const taskCard = screen.getByText("回放任务").closest(".section-card");
+    expect(taskCard && (taskCard.compareDocumentPosition(stockScopeCard as Node) & Node.DOCUMENT_POSITION_FOLLOWING)).toBeTruthy();
+  });
+
   it("shows immediate feedback while a replay start request is being submitted", async () => {
     let resolveStart!: (value: typeof startedSnapshot) => void;
     const startPromise = new Promise<typeof startedSnapshot>((resolve) => {

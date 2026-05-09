@@ -27,7 +27,7 @@ export const QUANT_STATUS_OPTIONS = ["trial", "active", "exit_only", "cooling", 
 export const DEFAULT_QUANT_STATUS_FILTERS = ["trial", "active", "exit_only"];
 
 const statusLabels: Record<string, string> = {
-  trial: t("量化观察"),
+  trial: t("Quant"),
   active: t("正常扫描"),
   exit_only: t("只出场"),
   cooling: t("冷却"),
@@ -145,17 +145,17 @@ export function QuantStatusBadge({ status }: { status: string | undefined }) {
   return <span className={`badge ${statusTone[normalized] ?? "badge--neutral"}`}>{quantStatusLabel(normalized)}</span>;
 }
 
-export function HealthScoreBar({ value }: { value: number | undefined }) {
+export function HealthScoreBar({ value, compact = false }: { value: number | undefined; compact?: boolean }) {
   const score = clampScore(value);
   const tone = score >= 65 ? "success" : score >= 35 ? "warning" : "danger";
   return (
-    <span className={`health-score health-score--${tone}`} aria-label={t("健康 {v0}", { v0: Math.round(score) })}>
-      <span>{t("健康 {score}", { score: Math.round(score) })}</span>
+    <span className={`health-score health-score--${tone}${compact ? " health-score--compact" : ""}`} aria-label={t("健康 {v0}", { v0: Math.round(score) })}>
+      <span>{Math.round(score)}</span>
       <span
         aria-hidden="true"
         style={{
           display: "block",
-          width: "72px",
+          width: compact ? "34px" : "72px",
           height: "6px",
           borderRadius: "999px",
           background: "rgba(148, 163, 184, 0.24)",
@@ -194,7 +194,7 @@ export function AutoManageToggle({
 
 export function RestoreToTrialButton({ stockCode, onRestore }: { stockCode: string; onRestore: () => void }) {
   return (
-    <button className="icon-button icon-button--accent" type="button" aria-label={t("恢复到量化观察 {v0}", { v0: stockCode })} onClick={onRestore}>
+    <button className="icon-button icon-button--accent" type="button" aria-label={t("恢复到量化 {v0}", { v0: stockCode })} onClick={onRestore}>
       ↩
     </button>
   );
@@ -203,3 +203,4 @@ export function RestoreToTrialButton({ stockCode, onRestore }: { stockCode: stri
 export function LifecycleReason({ children }: { children: ReactNode }) {
   return <span className="table-cell-muted">{children || "--"}</span>;
 }
+

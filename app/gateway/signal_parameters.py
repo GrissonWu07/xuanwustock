@@ -132,7 +132,7 @@ def _build_parameter_details(
                         "股票分析上下文",
                         "使用" if stock_analysis_context.get("used") else "未使用",
                         "explainability.stock_analysis_context.used",
-                        "实时模拟可使用最近有效股票分析作为外部分析维度；历史回放默认禁用，避免当前分析污染历史决策。",
+                        "实时量化可使用最近有效股票分析作为外部分析维度；历史回放默认禁用，避免当前分析污染历史决策。",
                     ),
                     _item(
                         "股票分析记录ID",

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import type { ApiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
@@ -10,15 +11,12 @@ import { QuantTableSectionCard } from "./quant-table-section";
 import { ReplayCapitalPoolPanel } from "./replay-capital-pool-panel";
 import { t } from "../../lib/i18n";
 import {
-  AutoManageToggle,
   DEFAULT_LIFECYCLE_SETTINGS,
   DEFAULT_QUANT_STATUS_FILTERS,
   HealthScoreBar,
-  LifecycleReason,
   LifecycleSummaryBadgeGroup,
   QUANT_STATUS_OPTIONS,
   QuantStatusBadge,
-  RestoreToTrialButton,
   StatusFilterChips,
   normalizeLifecycleSettings,
   type QuantLifecyclePayload,
@@ -200,7 +198,7 @@ type LifecycleTableRow = TableRow & {
 
 const lifecycleOf = (row: TableRow): QuantLifecyclePayload => (row as LifecycleTableRow).lifecycle ?? {};
 const lifecycleStatusOf = (row: TableRow) => ((row as LifecycleTableRow).lifecycle ? String(lifecycleOf(row).quant_status || "active") : "active");
-const isLifecycleRestoreStatus = (status: string) => status === "cooling" || status === "manual_paused" || status === "retired";
+const stockDetailPath = (code: string) => `/portfolio/position/${encodeURIComponent(code)}`;
 
 async function requestQuantUniverse<T>(path: string, payload?: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -217,6 +215,88 @@ async function requestQuantUniverse<T>(path: string, payload?: unknown): Promise
 type LiveSimPageProps = {
   client?: ApiClient;
 };
+
+type LiveQuantStockListProps = {
+  table: TableSection;
+  title: string;
+  description: string;
+  emptyTitle: string;
+  emptyDescription: string;
+  meta: string[];
+  toolbar: ReactNode;
+};
+
+function LiveQuantStockList({
+  table,
+  title,
+  description,
+  emptyTitle,
+  emptyDescription,
+  meta,
+  toolbar,
+}: LiveQuantStockListProps) {
+  const codeIndex = findColumnIndex(table, [t("股票代码"), t("代码"), "code"], 0);
+  const nameIndex = findColumnIndex(table, [t("股票名称"), t("名称"), "name"], 1);
+  const priceIndex = findColumnIndex(table, [t("最新价格"), t("价格"), "price"], 2);
+
+  return (
+    <WorkbenchCard>
+      <div className="toolbar">
+        <div>
+          <h2 className="section-card__title" style={{ margin: 0 }}>
+            {title}
+          </h2>
+          <p className="table__caption" style={{ marginBottom: 0 }}>
+            {description}
+          </p>
+          <div className="chip-row" style={{ marginTop: "10px" }}>
+            {meta.map((item) => (
+              <span className="badge badge--neutral" key={item}>
+                {item}
+              </span>
+            ))}
+          </div>
+        </div>
+        <span className="toolbar__spacer" />
+        {toolbar}
+      </div>
+      {table.rows.length === 0 ? (
+        <div className="summary-item summary-item--accent">
+          <div className="summary-item__title">{emptyTitle}</div>
+          <div className="summary-item__body">{emptyDescription}</div>
+        </div>
+      ) : (
+        <div className="live-quant-stock-list">
+          {table.rows.map((row) => {
+            const lifecycle = lifecycleOf(row);
+            const code = String(row.code || row.id || row.cells[codeIndex] || "");
+            const name = String(row.cells[nameIndex] || "--");
+            const price = String(row.cells[priceIndex] || "--");
+            const status = lifecycleStatusOf(row);
+            const showStatusBadge = status !== "trial" && status !== "active";
+            return (
+              <article className="live-quant-stock-card" key={row.id}>
+                <div className="live-quant-stock-card__identity">
+                  <Link className="stock-link live-quant-stock-card__code" to={stockDetailPath(code)}>
+                    {code}
+                  </Link>
+                  <span className="live-quant-stock-card__name">{name}</span>
+                </div>
+                <div className="live-quant-stock-card__price">
+                  <strong>{price}</strong>
+                </div>
+                <div className="live-quant-stock-card__state">
+                  {showStatusBadge ? <QuantStatusBadge status={status} /> : null}
+                  <HealthScoreBar value={lifecycle.health_score} compact />
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </WorkbenchCard>
+  );
+}
 
 export function LiveSimPage({ client }: LiveSimPageProps) {
   const resource = usePageData("live-sim", client);
@@ -239,7 +319,6 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const [capitalHighPriceMaxSlotUnits, setCapitalHighPriceMaxSlotUnits] = useState(2);
   const [lifecycleSettings, setLifecycleSettings] = useState<QuantLifecycleSettings>(DEFAULT_LIFECYCLE_SETTINGS);
   const [selectedQuantStatuses, setSelectedQuantStatuses] = useState<string[]>(DEFAULT_QUANT_STATUS_FILTERS);
-  const [lifecycleActionPending, setLifecycleActionPending] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState<"save" | "reset" | "start" | "stop" | null>(null);
   const [signalTable, setSignalTable] = useState<TableSection>(emptyLiveSignalTable());
   const [signalLoading, setSignalLoading] = useState(false);
@@ -381,14 +460,14 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   }, [tradeStockFilter, tradeActionFilter, snapshotVersion]);
 
   if (resource.status === "loading" && !resource.data) {
-    return <PageLoadingState title={t("实时模拟加载中")} description={t("正在读取定时任务配置、候选池和账户结果。")} />;
+    return <PageLoadingState title={t("实时量化加载中")} description={t("正在读取定时任务配置、量化股票和账户结果。")} />;
   }
 
   if (resource.status === "error" && !resource.data) {
     return (
       <PageErrorState
-        title={t("实时模拟加载失败")}
-        description={resource.error ?? t("无法加载实时模拟数据，请稍后重试。")}
+        title={t("实时量化加载失败")}
+        description={resource.error ?? t("无法加载实时量化数据，请稍后重试。")}
         actionLabel={t("重新加载")}
         onAction={resource.refresh}
       />
@@ -396,7 +475,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   }
 
   if (!snapshot) {
-    return <PageEmptyState title={t("实时模拟暂无数据")} description={t("后台尚未返回实时模拟快照。")} actionLabel={t("刷新")} onAction={resource.refresh} />;
+    return <PageEmptyState title={t("实时量化暂无数据")} description={t("后台尚未返回实时量化快照。")} actionLabel={t("刷新")} onAction={resource.refresh} />;
   }
 
   const candidateCount = toDisplayCount(snapshot.status.candidateCount, snapshot.candidatePool.rows.length);
@@ -607,35 +686,6 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
       return [...current, status];
     });
   };
-  const setLifecycleOverride = async (row: TableRow) => {
-    const code = row.code || row.id;
-    const lifecycle = lifecycleOf(row);
-    const autoManaged = lifecycle.quant_auto_managed !== false && lifecycle.quant_manual_override !== "manual_pause";
-    const overrideType = autoManaged ? "manual_pause" : "none";
-    if (!window.confirm(t("{v0} {v1} 的自动生命周期管理？", { v0: autoManaged ? t("暂停") : t("恢复"), v1: code }))) {
-      return;
-    }
-    setLifecycleActionPending(`${code}:override`);
-    try {
-      await requestQuantUniverse("/api/v1/quant/universe/actions/set-override", { stock_code: code, override_type: overrideType });
-      await resource.refresh();
-    } finally {
-      setLifecycleActionPending(null);
-    }
-  };
-  const restoreToTrial = async (row: TableRow) => {
-    const code = row.code || row.id;
-    if (!window.confirm(t("恢复 {v0} 到量化观察？", { v0: code }))) {
-      return;
-    }
-    setLifecycleActionPending(`${code}:restore`);
-    try {
-      await requestQuantUniverse("/api/v1/quant/universe/actions/restore-to-trial", { stock_code: code });
-      await resource.refresh();
-    } finally {
-      setLifecycleActionPending(null);
-    }
-  };
   const systemTimezone = snapshot.timeContext?.systemTimezone ?? "system";
   const snapshotTimeLabel = snapshot.timeContext?.updatedAtSystem ?? snapshot.updatedAt;
   const lastRunLabel = snapshot.status.lastRunSystem ?? snapshot.status.lastRun;
@@ -644,7 +694,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   return (
     <div>
       <PageHeader
-        eyebrow={t("实时模拟")}
+        eyebrow={t("实时量化")}
         title={t("运行状态：{state}", { state: runningState })}
         description={t("最近执行：{lastRun}；下次执行：{nextRun}。", { lastRun: lastRunLabel, nextRun: nextRunLabel })}
         actions={
@@ -661,7 +711,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           <WorkbenchCard>
             <h2 className="section-card__title">{t("定时任务配置")}</h2>
             <p className="section-card__description">
-              {t("资金池、粒度和自动执行统一放在这里配置。启动后会从当前时点开始做真实模拟。")}
+              {t("资金池、粒度和自动执行统一放在这里配置。启动后会从当前时点开始执行实时量化。")}
             </p>
             <div className="mini-metric-grid">
               <div className="mini-metric">
@@ -688,7 +738,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             <div className="card-divider" />
             <LifecycleSummaryBadgeGroup settings={lifecycleSettings} />
             <p className="section-card__description">
-              {t("基于评分的股票量化自动化为系统级设置：开启后会自动纳入量化观察并执行生命周期出池；这里仅展示实时模拟读取到的当前口径。")}</p>
+              {t("基于评分的股票量化自动化为系统级设置：开启后会自动纳入量化并执行生命周期出池；这里仅展示实时量化读取到的当前口径。")}</p>
             <div className="card-divider" />
             <div className="summary-list">
               <label className="field">
@@ -853,7 +903,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                   }
                 }}
               >
-                {actionPending === "stop" ? t("停止中...") : t("停止模拟")}
+                {actionPending === "stop" ? t("停止中...") : t("停止量化")}
               </button>
               <button
                 className="button button--primary button--hero"
@@ -868,67 +918,19 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                   }
                 }}
               >
-                {actionPending === "start" ? t("启动中...") : isRunning ? t("运行中") : t("启动模拟")}
+                {actionPending === "start" ? t("启动中...") : isRunning ? t("运行中") : t("启动量化")}
               </button>
             </div>
           </WorkbenchCard>
 
-          <QuantTableSectionCard
+          <LiveQuantStockList
             title={t("实时量化股票")}
-            description={t("来自统一股票池中已启用实时量化的股票，实时模拟会按这批标的扫描。")}
+            description={t("来自统一股票池中已启用实时量化的股票，实时量化会按这批标的扫描。")}
             table={candidatePoolTable}
             emptyTitle={candidatePoolTable.emptyLabel ?? t("暂无实时量化股票")}
-            emptyDescription={candidatePoolTable.emptyMessage ?? t("先在股票池中批量启用实时量化，再启动实时模拟。")}
+            emptyDescription={candidatePoolTable.emptyMessage ?? t("先在股票池中批量启用实时量化，再启动实时量化。")}
             meta={[t("表内 {v0} 只", { v0: candidatePoolTable.rows.length }), t("待量化 {v0}", { v0: candidateCount })]}
-            actionsHead={t("操作")}
-            actionsColumnSize="icon"
-            compactConfig={{ coreColumnIndexes: [0, 1, 2], detailColumnIndexes: [] }}
             toolbar={<StatusFilterChips available={availableQuantStatuses} selected={selectedQuantStatuses} onToggle={toggleQuantStatus} />}
-            renderCell={({ row, cell, column }) => {
-              if (column === t("状态")) {
-                return <QuantStatusBadge status={lifecycleStatusOf(row)} />;
-              }
-              if (column === t("健康度")) {
-                return <HealthScoreBar value={lifecycleOf(row).health_score} />;
-              }
-              if (column === t("生命周期原因")) {
-                return <LifecycleReason>{cell}</LifecycleReason>;
-              }
-              return undefined;
-            }}
-            renderActions={(row) => {
-              const lifecycle = lifecycleOf(row);
-              const status = lifecycleStatusOf(row);
-              const code = row.code || row.id;
-              const autoManaged = lifecycle.quant_auto_managed !== false && lifecycle.quant_manual_override !== "manual_pause";
-              return (
-                <>
-                  <AutoManageToggle
-                    autoManaged={autoManaged}
-                    stockCode={code}
-                    onToggle={() => void setLifecycleOverride(row)}
-                  />
-                  {isLifecycleRestoreStatus(status) ? (
-                    <RestoreToTrialButton stockCode={code} onRestore={() => void restoreToTrial(row)} />
-                  ) : null}
-                  <button
-                    className="icon-button icon-button--danger"
-                    type="button"
-                    aria-label={t("删除候选股")}
-                    disabled={lifecycleActionPending !== null}
-                    onClick={() => void resource.runAction("delete-candidate", row.id)}
-                  >
-                    🗑
-                  </button>
-                </>
-              );
-            }}
-            onRowAction={(row, action) => {
-              if (action.action !== "delete-candidate") {
-                return;
-              }
-              void resource.runAction("delete-candidate", row.id);
-            }}
           />
         </div>
 
@@ -1028,3 +1030,4 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     </div>
   );
 }
+
