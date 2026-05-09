@@ -688,7 +688,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             <div className="card-divider" />
             <LifecycleSummaryBadgeGroup settings={lifecycleSettings} />
             <p className="section-card__description">
-              {t("自动入池和自动出池是系统级量化策略开关，请到“设置 / 量化策略自动化”调整；这里仅展示实时模拟当前读取到的口径。")}</p>
+              {t("基于评分的股票量化自动化为系统级设置：开启后会自动纳入量化观察并执行生命周期出池；这里仅展示实时模拟读取到的当前口径。")}</p>
             <div className="card-divider" />
             <div className="summary-list">
               <label className="field">

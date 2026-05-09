@@ -8,11 +8,11 @@ import { usePageData } from "../../lib/use-page-data";
 import type { ConfigSettingItem } from "../../lib/page-models";
 import { t } from "../../lib/i18n";
 import {
-  AutoEntryModeSelect,
-  AutoExitSwitch,
-  LifecycleMasterSwitch,
   LifecycleSummaryBadgeGroup,
+  ScoreBasedQuantAutomationSwitch,
+  isScoreBasedQuantAutomationEnabled,
   normalizeLifecycleSettings,
+  withScoreBasedQuantAutomation,
   type QuantLifecycleSettings,
 } from "../quant/quant-lifecycle-controls";
 
@@ -316,24 +316,16 @@ export function SettingsPage({ client }: SettingsPageProps) {
             <h2 className="section-card__title settings-card__title" style={{ margin: 0 }}>{t("量化策略自动化")}</h2>
           </div>
           <p className="section-card__description">
-            {t("自动入池是系统级开关，控制发现页和研究页的候选股票是否只记录、等待确认，或自动纳入量化观察。策略配置页只负责不同策略模型的阈值和仓位参数；实时模拟和历史回放只读取当前设置，不在运行页修改这个开关。")}</p>
+            {t("开启后，系统会按候选评分自动纳入量化观察，并启用生命周期出池；关闭后只记录候选事件，不自动进入实时量化。")}</p>
           <LifecycleSummaryBadgeGroup settings={quantLifecycleSettings} />
           <div className="summary-list">
-            <LifecycleMasterSwitch
-              checked={quantLifecycleSettings.quant_universe_lifecycle_enabled}
-              onChange={(checked) => setQuantLifecycleSettings((prev) => normalizeLifecycleSettings({ ...prev, quant_universe_lifecycle_enabled: checked }))}
-            />
-            <AutoEntryModeSelect
-              value={quantLifecycleSettings.auto_entry_mode}
-              onChange={(value) => setQuantLifecycleSettings((prev) => normalizeLifecycleSettings({ ...prev, auto_entry_mode: value }))}
-            />
-            <AutoExitSwitch
-              checked={quantLifecycleSettings.auto_exit_enabled}
-              onChange={(checked) => setQuantLifecycleSettings((prev) => normalizeLifecycleSettings({ ...prev, auto_exit_enabled: checked }))}
+            <ScoreBasedQuantAutomationSwitch
+              checked={isScoreBasedQuantAutomationEnabled(quantLifecycleSettings)}
+              onChange={(checked) => setQuantLifecycleSettings(withScoreBasedQuantAutomation(checked))}
             />
           </div>
           <p className="section-card__description">
-            {t("手动模式只留下候选事件；确认模式会在页面标记可纳入股票并等待批量确认；自动纳入观察会让达标股票直接进入实时量化扫描范围。")}</p>
+            {t("这个开关是一个完整自动化口径：入池、出池和生命周期同步开启或关闭。")}</p>
         </WorkbenchCard>
 
         <div className="settings-layout">

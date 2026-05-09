@@ -52,7 +52,7 @@ def ingest_lifecycle_entry_rows(
     if not settings.get("quant_universe_lifecycle_enabled"):
         summary["skipped"].append({"reason": "lifecycle_disabled"})
         return summary
-    auto_entry_mode = str(settings.get("auto_entry_mode") or "confirm_first")
+    auto_entry_mode = str(settings.get("auto_entry_mode") or "auto_trial")
 
     manager = QuantUniverseManager(
         db=db,

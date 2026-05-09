@@ -375,7 +375,7 @@ class QuantSimDB:
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     quant_universe_lifecycle_enabled INTEGER DEFAULT 1,
                     auto_exit_enabled INTEGER DEFAULT 1,
-                    auto_entry_mode TEXT DEFAULT 'confirm_first',
+                    auto_entry_mode TEXT DEFAULT 'auto_trial',
                     updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
                 )
                 """
@@ -5924,7 +5924,7 @@ class QuantSimDB:
         return {
             "quant_universe_lifecycle_enabled": bool(row["quant_universe_lifecycle_enabled"]),
             "auto_exit_enabled": bool(row["auto_exit_enabled"]),
-            "auto_entry_mode": row["auto_entry_mode"] or "confirm_first",
+            "auto_entry_mode": row["auto_entry_mode"] or "auto_trial",
             "updated_at": row["updated_at"],
         }
 
@@ -6173,7 +6173,7 @@ class QuantSimDB:
                     id, quant_universe_lifecycle_enabled,
                     auto_exit_enabled, auto_entry_mode, updated_at
                 )
-                VALUES (1, 1, 1, 'confirm_first', ?)
+                VALUES (1, 1, 1, 'auto_trial', ?)
                 """,
                 (self._now(),),
             )

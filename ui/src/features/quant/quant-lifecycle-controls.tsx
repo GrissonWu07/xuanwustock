@@ -19,18 +19,12 @@ export type QuantLifecyclePayload = {
 
 export const DEFAULT_LIFECYCLE_SETTINGS: QuantLifecycleSettings = {
   quant_universe_lifecycle_enabled: true,
-  auto_entry_mode: "confirm_first",
+  auto_entry_mode: "auto_trial",
   auto_exit_enabled: true,
 };
 
 export const QUANT_STATUS_OPTIONS = ["trial", "active", "exit_only", "cooling", "retired", "manual_paused"];
 export const DEFAULT_QUANT_STATUS_FILTERS = ["trial", "active", "exit_only"];
-
-const AUTO_ENTRY_MODE_OPTIONS = [
-  { value: "manual_only", label: t("只记录候选") },
-  { value: "confirm_first", label: t("确认后纳入") },
-  { value: "auto_trial", label: t("自动纳入观察") },
-];
 
 const statusLabels: Record<string, string> = {
   trial: t("量化观察"),
@@ -66,12 +60,24 @@ export function normalizeLifecycleSettings(value: Partial<QuantLifecycleSettings
   };
 }
 
+export function isScoreBasedQuantAutomationEnabled(settings: QuantLifecycleSettings) {
+  return Boolean(settings.quant_universe_lifecycle_enabled && settings.auto_entry_mode === "auto_trial" && settings.auto_exit_enabled);
+}
+
+export function withScoreBasedQuantAutomation(enabled: boolean): QuantLifecycleSettings {
+  return normalizeLifecycleSettings({
+    quant_universe_lifecycle_enabled: enabled,
+    auto_entry_mode: enabled ? "auto_trial" : "manual_only",
+    auto_exit_enabled: enabled,
+  });
+}
+
 export function quantStatusLabel(status: string | undefined) {
   const normalized = String(status || "inactive");
   return statusLabels[normalized] ?? normalized;
 }
 
-export function LifecycleMasterSwitch({
+export function ScoreBasedQuantAutomationSwitch({
   checked,
   disabled,
   onChange,
@@ -82,9 +88,9 @@ export function LifecycleMasterSwitch({
 }) {
   return (
     <label className="field">
-      <span className="field__label">{t("量化生命周期")}</span>
+      <span className="field__label">{t("基于评分的股票量化自动化")}</span>
       <input
-        aria-label={t("量化生命周期")}
+        aria-label={t("基于评分的股票量化自动化")}
         type="checkbox"
         checked={checked}
         disabled={disabled}
@@ -94,62 +100,12 @@ export function LifecycleMasterSwitch({
   );
 }
 
-export function AutoEntryModeSelect({
-  value,
-  disabled,
-  onChange,
-}: {
-  value: string;
-  disabled?: boolean;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="field">
-      <span className="field__label">{t("自动入池模式")}</span>
-      <select
-        aria-label={t("自动入池模式")}
-        className="input"
-        value={value}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        {AUTO_ENTRY_MODE_OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-export function AutoExitSwitch({
-  checked,
-  disabled,
-  onChange,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <label className="field">
-      <span className="field__label">{t("自动出池")}</span>
-      <input aria-label={t("自动出池")} type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
-    </label>
-  );
-}
-
 export function LifecycleSummaryBadgeGroup({ settings }: { settings: QuantLifecycleSettings }) {
-  const entryMode = AUTO_ENTRY_MODE_OPTIONS.find((option) => option.value === settings.auto_entry_mode)?.label ?? settings.auto_entry_mode;
+  const enabled = isScoreBasedQuantAutomationEnabled(settings);
   return (
-    <div className="chip-row" aria-label={t("量化生命周期摘要")}>
-      <span className={settings.quant_universe_lifecycle_enabled ? "badge badge--success" : "badge badge--neutral"}>
-        {settings.quant_universe_lifecycle_enabled ? t("生命周期开启") : t("生命周期关闭")}
-      </span>
-      <span className="badge badge--accent">{entryMode}</span>
-      <span className={settings.auto_exit_enabled ? "badge badge--warning" : "badge badge--neutral"}>
-        {settings.auto_exit_enabled ? t("自动出池开启") : t("自动出池关闭")}
+    <div className="chip-row" aria-label={t("股票量化自动化摘要")}>
+      <span className={enabled ? "badge badge--success" : "badge badge--neutral"}>
+        {enabled ? t("基于评分的股票量化自动化：开启") : t("基于评分的股票量化自动化：关闭")}
       </span>
     </div>
   );

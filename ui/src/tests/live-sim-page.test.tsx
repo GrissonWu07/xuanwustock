@@ -267,7 +267,7 @@ describe("LiveSimPage", () => {
           headers: new Headers({ "content-type": "application/json" }),
           json: async () => ({
             quant_universe_lifecycle_enabled: true,
-            auto_entry_mode: "confirm_first",
+            auto_entry_mode: "auto_trial",
             auto_exit_enabled: true,
           }),
         });
@@ -301,9 +301,10 @@ describe("LiveSimPage", () => {
 
     renderLiveSimPage(client);
 
-    expect(await screen.findByText("生命周期开启")).toBeInTheDocument();
-    expect(screen.getAllByText("确认后纳入").length).toBeGreaterThan(0);
-    expect(screen.getByText("自动出池开启")).toBeInTheDocument();
+    expect(await screen.findByText("基于评分的股票量化自动化：开启")).toBeInTheDocument();
+    expect(screen.queryByText("生命周期开启")).not.toBeInTheDocument();
+    expect(screen.queryByText("自动纳入观察")).not.toBeInTheDocument();
+    expect(screen.queryByText("自动出池开启")).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "量化生命周期" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("自动入池模式")).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "自动出池" })).not.toBeInTheDocument();
