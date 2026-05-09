@@ -1778,7 +1778,7 @@ git commit -m "feat: add live quant drill launcher"
 - No new production files expected.
 - May modify tests for final alignment if a contract mismatch is found.
 
-- [ ] **Step 1: Run backend drill tests**
+- [x] **Step 1: Run backend drill tests**
 
 ```powershell
 pytest tests/test_live_quant_drill_db.py tests/test_live_quant_drill_candidates.py tests/test_live_quant_drill_service.py tests/test_live_quant_drill_gateway.py -q
@@ -1786,7 +1786,7 @@ pytest tests/test_live_quant_drill_db.py tests/test_live_quant_drill_candidates.
 
 Expected: pass.
 
-- [ ] **Step 2: Run related existing backend tests**
+- [x] **Step 2: Run related existing backend tests**
 
 ```powershell
 pytest tests/test_quant_universe_lifecycle_manager.py tests/test_quant_sim_scheduler.py -q
@@ -1798,7 +1798,7 @@ Expected: pass. If `tests/test_quant_sim_scheduler.py` does not exist in this ch
 pytest tests -q -k "quant_universe or replay or live_quant"
 ```
 
-- [ ] **Step 3: Run frontend tests**
+- [x] **Step 3: Run frontend tests**
 
 ```powershell
 npm test -- live-sim-page.test.tsx his-replay-page.test.tsx i18n-static.test.ts -- --runInBand
@@ -1806,7 +1806,7 @@ npm test -- live-sim-page.test.tsx his-replay-page.test.tsx i18n-static.test.ts 
 
 Expected: pass.
 
-- [ ] **Step 4: Build frontend**
+- [x] **Step 4: Build frontend**
 
 ```powershell
 npm run build
@@ -1814,7 +1814,7 @@ npm run build
 
 Expected: TypeScript and Vite build pass. Existing chunk-size warnings are acceptable.
 
-- [ ] **Step 5: Manual local smoke**
+- [x] **Step 5: Manual local smoke**
 
 Start backend and frontend using the project’s usual commands. Then verify:
 
@@ -1824,7 +1824,7 @@ Start backend and frontend using the project’s usual commands. Then verify:
 4. `/his-replay?runId=<id>` shows task type `实时量化演练`.
 5. live-sim account summary is unchanged after the drill completes.
 
-- [ ] **Step 6: Commit final adjustments**
+- [x] **Step 6: Commit final adjustments**
 
 If any final test-only or UI-copy changes were made:
 
@@ -1839,17 +1839,17 @@ If no files changed, skip this commit.
 
 ## Self-Review Checklist
 
-- [ ] The plan has a task for every spec area: run type, DB tables, candidate source gates, candidate frequency, run-local state, lifecycle execution, API, UI, and result display.
-- [ ] Drill does not write live-sim state.
-- [ ] Candidate source names do not directly affect `candidate_score`.
-- [ ] `multi_source_bonus` is disabled or bypassed in drill mode.
-- [ ] Candidate generation defaults to daily first checkpoint, not every 30m checkpoint.
-- [ ] `sim_run_quant_summary` is persisted and used for lifecycle overview.
-- [ ] His-replay drill results include lifecycle trend plus 入池事件、出池与降级事件、股票最终状态、数据风险 tables.
-- [ ] `cooling` opportunistic review runs after main scan and is bounded.
-- [ ] `quant-states / quant-events / candidate-events` are independent endpoints.
-- [ ] `confirmLongRunning=false` blocks drills with `estimated_strategy_invocations > 3000`.
-- [ ] Source availability tests cover low_price, small_cap, low_valuation, profit_growth, main_force, historical_research, manual_seed, current discover, and current AI.
-- [ ] Historical backtest and live quant drill are mutually exclusive.
-- [ ] Profile snapshot is locked at run start.
-- [ ] All new Chinese UI text is wrapped in i18n.
+- [x] The plan has a task for every spec area: run type, DB tables, candidate source gates, candidate frequency, run-local state, lifecycle execution, API, UI, and result display.
+- [x] Drill does not write live-sim state.
+- [x] Candidate source names do not directly affect `candidate_score`.
+- [x] `multi_source_bonus` is disabled or bypassed in drill mode.
+- [x] Candidate generation defaults to daily first checkpoint, not every 30m checkpoint.
+- [x] `sim_run_quant_summary` is persisted and used for lifecycle overview.
+- [x] His-replay drill results include lifecycle trend plus 入池事件、出池与降级事件、股票最终状态、数据风险 tables.
+- [x] `cooling` opportunistic review runs after main scan and is bounded.
+- [x] `quant-states / quant-events / candidate-events` are independent endpoints.
+- [x] `confirmLongRunning=false` blocks drills with `estimated_strategy_invocations > 3000`.
+- [x] Source availability tests cover low_price, small_cap, low_valuation, profit_growth, main_force, historical_research, manual_seed, current discover, and current AI.
+- [x] Historical backtest and live quant drill are mutually exclusive.
+- [x] Profile snapshot is locked at run start.
+- [x] All new Chinese UI text is wrapped in i18n.
