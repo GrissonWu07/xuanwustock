@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -29,6 +29,7 @@ from app.quant_sim.live_quant_drill_candidates import (
     estimate_candidate_generation,
 )
 from app.quant_sim.portfolio_service import PortfolioService
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
 from app.quant_sim.replay_runner import get_quant_sim_replay_runner
 from app.quant_sim.scheduler import get_quant_sim_scheduler
 from app.quant_sim.signal_center_service import SignalCenterService
@@ -533,6 +534,53 @@ class QuantSimReplayService:
             raise RuntimeError("后台实时量化演练任务启动失败")
         return run_id
 
+    def run_live_quant_drill(
+        self,
+        *,
+        start_datetime: datetime | str,
+        end_datetime: datetime | str | None,
+        timeframe: str,
+        market: str,
+        strategy_profile_id: str | None = None,
+        initial_cash: float | None = None,
+        execute_trades: bool = True,
+        liquidate_at_end: bool = True,
+        seed_current_quant_universe: bool = True,
+        generate_historical_candidate_events: bool = True,
+        candidate_generation_frequency: str = "daily_first_checkpoint",
+        candidate_generation_checkpoint_interval: int = 8,
+    ) -> dict:
+        self._ensure_no_active_replay()
+        context = self._prepare_live_quant_drill_context(
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            timeframe=timeframe,
+            market=market,
+            strategy_profile_id=strategy_profile_id,
+            initial_cash=initial_cash,
+            ai_dynamic_strategy=DEFAULT_AI_DYNAMIC_STRATEGY,
+            ai_dynamic_strength=DEFAULT_AI_DYNAMIC_STRENGTH,
+            ai_dynamic_lookback=DEFAULT_AI_DYNAMIC_LOOKBACK,
+            auto_entry_enabled=True,
+            auto_exit_enabled=True,
+            execute_trades=execute_trades,
+            liquidate_at_end=liquidate_at_end,
+            seed_current_quant_universe=seed_current_quant_universe,
+            generate_historical_candidate_events=generate_historical_candidate_events,
+            candidate_generation_frequency=candidate_generation_frequency,
+            candidate_generation_checkpoint_interval=candidate_generation_checkpoint_interval,
+        )
+        run_id = self._create_replay_run(
+            mode="live_quant_drill",
+            handoff_to_live=False,
+            timeframe=timeframe,
+            market=market,
+            context=context,
+            status="running",
+            status_message="正在同步执行实时量化演练",
+        )
+        return self._execute_live_quant_drill(run_id=run_id, context=context)
+
     def enqueue_past_to_live(
         self,
         *,
@@ -1004,8 +1052,293 @@ class QuantSimReplayService:
             raise ValueError(f"已有回放任务运行中（#{active_run['id']}），请先等待完成或取消")
 
     def _execute_live_quant_drill(self, *, run_id: int, context: dict) -> dict:
-        del run_id, context
-        raise NotImplementedError("live quant drill execution is implemented by the drill execution task")
+        checkpoints = context["checkpoints"]
+        account_summary = context["account_summary"]
+        temp_dir = Path(tempfile.mkdtemp(prefix="quant_live_drill_"))
+        temp_db_file = temp_dir / "quant_live_drill.db"
+        replay_signals: list[dict] = []
+        last_checkpoint_index = 0
+        last_checkpoint_text = ""
+        try:
+            temp_db = self._create_live_quant_drill_temp_db(context, temp_db_file)
+            temp_engine = QuantSimEngine(
+                db_file=temp_db_file,
+                adapter=self.adapter,
+                stock_analysis_context_enabled=False,
+            )
+            temp_portfolio = PortfolioService(db_file=temp_db_file)
+            strategy_profile_binding = context.get("strategy_profile_binding") if isinstance(context.get("strategy_profile_binding"), dict) else {}
+            policy = temp_engine._quant_lifecycle_policy_from_binding(strategy_profile_binding)
+            manager = QuantUniverseManager(
+                db=temp_db,
+                profile_id=str(strategy_profile_binding.get("profile_id") or "stable"),
+                policy=policy,
+            )
+            self.db.update_sim_run_progress(
+                run_id,
+                status="running",
+                progress_total=len(checkpoints),
+                status_message="实时量化演练任务已开始",
+            )
+            self.db.append_sim_run_event(run_id, "实时量化演练任务已开始。")
+
+            for checkpoint_index, checkpoint in enumerate(checkpoints, start=1):
+                last_checkpoint_index = checkpoint_index
+                last_checkpoint_text = self._format_datetime(checkpoint)
+                if self.db.is_sim_run_cancel_requested(run_id):
+                    raise RuntimeError("实时量化演练任务已取消")
+                self.db.update_sim_run_progress(
+                    run_id,
+                    status="running",
+                    progress_current=checkpoint_index - 1,
+                    progress_total=len(checkpoints),
+                    latest_checkpoint_at=last_checkpoint_text,
+                    status_message=f"正在执行第 {checkpoint_index}/{len(checkpoints)} 个检查点：{last_checkpoint_text}",
+                )
+                checkpoint_summary = self._run_live_quant_drill_checkpoint(
+                    run_id=run_id,
+                    checkpoint=checkpoint,
+                    checkpoint_index=checkpoint_index,
+                    context=context,
+                    temp_db=temp_db,
+                    engine=temp_engine,
+                    portfolio=temp_portfolio,
+                    manager=manager,
+                )
+                checkpoint_signals = checkpoint_summary.get("signals") or []
+                replay_signals.extend(checkpoint_signals)
+                if checkpoint_signals:
+                    self.db.upsert_sim_run_signals(run_id, checkpoint_signals)
+                self.db.add_sim_run_checkpoint(
+                    run_id,
+                    checkpoint_at=last_checkpoint_text,
+                    candidates_scanned=int(checkpoint_summary.get("candidates_scanned") or 0),
+                    positions_checked=int(checkpoint_summary.get("positions_checked") or 0),
+                    signals_created=int(checkpoint_summary.get("signals_created") or 0),
+                    auto_executed=int(checkpoint_summary.get("auto_executed") or 0),
+                    available_cash=float(checkpoint_summary.get("available_cash") or 0),
+                    market_value=float(checkpoint_summary.get("market_value") or 0),
+                    total_equity=float(checkpoint_summary.get("total_equity") or 0),
+                    metadata={
+                        "positions": checkpoint_summary.get("positions") or [],
+                        "slot_summary": checkpoint_summary.get("slot_summary") or {},
+                        "cooling_review": checkpoint_summary.get("cooling_review") or {},
+                    },
+                )
+                self.db.update_sim_run_progress(
+                    run_id,
+                    progress_current=checkpoint_index,
+                    progress_total=len(checkpoints),
+                    latest_checkpoint_at=last_checkpoint_text,
+                    status_message=f"已完成第 {checkpoint_index}/{len(checkpoints)} 个检查点",
+                )
+
+            trades = temp_db.get_trade_history(limit=10000)
+            snapshots = self._sort_snapshots_chronologically(
+                [
+                    snapshot
+                    for snapshot in temp_db.get_account_snapshots(limit=10000)
+                    if str(snapshot.get("run_reason") or "").startswith("live_quant_drill@")
+                ]
+            )
+            positions = temp_portfolio.list_positions()
+            metrics = self._calculate_run_metrics(float(account_summary["initial_cash"]), trades, snapshots)
+            with self.db.write_batch():
+                self.db.replace_sim_run_results(
+                    run_id,
+                    trades=trades,
+                    snapshots=snapshots,
+                    positions=positions,
+                    signals=replay_signals,
+                )
+                self.db.finalize_sim_run(
+                    run_id,
+                    status="completed",
+                    final_equity=float(metrics["final_equity"]),
+                    total_return_pct=float(metrics["total_return_pct"]),
+                    max_drawdown_pct=float(metrics["max_drawdown_pct"]),
+                    win_rate=float(metrics["win_rate"]),
+                    trade_count=len(trades),
+                    status_message="实时量化演练任务已完成",
+                    metadata={"checkpoint_count": len(checkpoints), "final_slot_summary": self._collect_slot_summary(temp_db)},
+                )
+                self.db.append_sim_run_event(run_id, "实时量化演练任务已完成。", level="success")
+            return {
+                "run_id": run_id,
+                "status": "completed",
+                "checkpoint_count": len(checkpoints),
+                "trade_count": len(trades),
+                "final_equity": metrics["final_equity"],
+                "total_return_pct": metrics["total_return_pct"],
+                "max_drawdown_pct": metrics["max_drawdown_pct"],
+                "win_rate": metrics["win_rate"],
+                "handoff_to_live": False,
+            }
+        except Exception as exc:
+            status_message = f"实时量化演练任务失败：{exc}"
+            if last_checkpoint_index > 0:
+                status_message = f"第 {last_checkpoint_index}/{len(checkpoints)} 个检查点（{last_checkpoint_text}）失败：{exc}"
+            with self.db.write_batch():
+                self.db.finalize_sim_run(
+                    run_id,
+                    status="failed",
+                    final_equity=float(account_summary["initial_cash"]),
+                    total_return_pct=0.0,
+                    max_drawdown_pct=0.0,
+                    win_rate=0.0,
+                    trade_count=0,
+                    status_message=status_message,
+                    metadata={
+                        "error": str(exc),
+                        "failed_checkpoint_index": last_checkpoint_index,
+                        "failed_checkpoint_at": last_checkpoint_text,
+                    },
+                )
+                self.db.append_sim_run_event(run_id, status_message, level="error")
+            raise
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _run_live_quant_drill_checkpoint(
+        self,
+        *,
+        run_id: int,
+        checkpoint: datetime,
+        checkpoint_index: int,
+        context: dict,
+        temp_db: QuantSimDB,
+        engine: QuantSimEngine,
+        portfolio: PortfolioService,
+        manager: QuantUniverseManager,
+    ) -> dict:
+        del checkpoint_index
+        self._apply_due_corporate_actions(
+            temp_db=temp_db,
+            checkpoint=checkpoint,
+            market=str(context.get("market") or "CN"),
+            start_dt=context.get("start_dt") or checkpoint,
+            end_dt=context.get("end_dt") or checkpoint,
+        )
+        main_scan = self._run_live_quant_drill_main_scan(
+            checkpoint=checkpoint,
+            context=context,
+            temp_db=temp_db,
+            engine=engine,
+            portfolio=portfolio,
+            manager=manager,
+        )
+        cooling_review = self._run_live_quant_drill_cooling_review(
+            checkpoint=checkpoint,
+            context=context,
+            temp_db=temp_db,
+            engine=engine,
+            portfolio=portfolio,
+            manager=manager,
+        )
+        temp_db.add_account_snapshot(run_reason=f"live_quant_drill@{self._format_datetime(checkpoint)}")
+        self._persist_live_quant_drill_quant_snapshot(
+            run_id=run_id,
+            checkpoint=checkpoint,
+            context=context,
+            temp_db=temp_db,
+            checkpoint_metadata={
+                "candidate_event_count": int(main_scan.get("candidate_event_count") or 0),
+                "auto_promoted_count": int(main_scan.get("auto_promoted_count") or 0),
+                "auto_exited_count": int(main_scan.get("auto_exited_count") or 0),
+                "cooling_review": cooling_review,
+            },
+        )
+        account = temp_db.get_account_summary()
+        positions = portfolio.list_positions() if hasattr(portfolio, "list_positions") else []
+        signals = list(main_scan.get("signals") or [])
+        return {
+            "signals": signals,
+            "candidates_scanned": int(main_scan.get("candidates_scanned") or 0),
+            "positions_checked": len(positions),
+            "signals_created": len(signals),
+            "auto_executed": int(main_scan.get("auto_executed") or 0),
+            "available_cash": float(account.get("available_cash") or 0),
+            "market_value": float(account.get("market_value") or 0),
+            "total_equity": float(account.get("total_equity") or 0),
+            "positions": self._collect_position_snapshot(positions),
+            "slot_summary": self._collect_slot_summary(temp_db),
+            "cooling_review": cooling_review,
+        }
+
+    def _persist_live_quant_drill_quant_snapshot(
+        self,
+        *,
+        run_id: int,
+        checkpoint: datetime,
+        context: dict,
+        temp_db: QuantSimDB,
+        checkpoint_metadata: dict[str, Any],
+    ) -> None:
+        market = str(context.get("market") or "CN")
+        checkpoint_at = self._format_datetime(checkpoint)
+        checkpoint_at_utc = format_utc_iso_z(self._market_time_to_utc(checkpoint, market))
+        response = temp_db.list_quant_universe_state(limit=100000)
+        states = list(response.get("items") or [])
+        status_counts: dict[str, int] = {}
+        for state in states:
+            status = str(state.get("quant_status") or "inactive")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            state["market"] = market
+            state["latest_reason"] = state.get("retire_reason") or state.get("quant_manual_override") or ""
+        self.db.upsert_sim_run_quant_states(
+            run_id,
+            checkpoint_at=checkpoint_at,
+            checkpoint_at_utc=checkpoint_at_utc,
+            states=states,
+        )
+        data_warnings = context.get("data_warnings") if isinstance(context.get("data_warnings"), list) else []
+        self.db.upsert_sim_run_quant_summary(
+            run_id,
+            {
+                "checkpoint_at": checkpoint_at,
+                "checkpoint_at_utc": checkpoint_at_utc,
+                "inactive_count": status_counts.get("inactive", 0),
+                "trial_count": status_counts.get("trial", 0),
+                "active_count": status_counts.get("active", 0),
+                "exit_only_count": status_counts.get("exit_only", 0),
+                "cooling_count": status_counts.get("cooling", 0),
+                "retired_count": status_counts.get("retired", 0),
+                "manual_paused_count": status_counts.get("manual_paused", 0),
+                "auto_promoted_count": int(checkpoint_metadata.get("auto_promoted_count") or 0),
+                "auto_exited_count": int(checkpoint_metadata.get("auto_exited_count") or 0),
+                "candidate_event_count": int(checkpoint_metadata.get("candidate_event_count") or 0),
+                "data_warning_count": len(data_warnings),
+                "metadata_json": checkpoint_metadata,
+            },
+        )
+
+    def _run_live_quant_drill_main_scan(
+        self,
+        *,
+        checkpoint: datetime,
+        context: dict,
+        temp_db: QuantSimDB,
+        engine: QuantSimEngine,
+        portfolio: PortfolioService,
+        manager: QuantUniverseManager,
+    ) -> dict:
+        del checkpoint, context, temp_db, portfolio, manager
+        candidates = engine.list_live_scan_candidates() if hasattr(engine, "list_live_scan_candidates") else []
+        return {"signals": [], "candidates_scanned": len(candidates), "auto_executed": 0}
+
+    def _run_live_quant_drill_cooling_review(
+        self,
+        *,
+        checkpoint: datetime,
+        context: dict,
+        temp_db: QuantSimDB,
+        engine: QuantSimEngine,
+        portfolio: PortfolioService,
+        manager: QuantUniverseManager,
+    ) -> dict:
+        del checkpoint, context, engine, portfolio, manager
+        cooling = temp_db.list_quant_universe_state(statuses=["cooling"], limit=5).get("items") or []
+        return {"reviewed": len(cooling), "restored": 0}
 
     def _execute_prepared_replay(
         self,

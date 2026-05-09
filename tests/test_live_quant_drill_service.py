@@ -207,3 +207,76 @@ def test_live_quant_drill_initializes_run_local_quant_state(tmp_path):
     assert candidate["stock_code"] == "600519"
     assert cooling_state["quant_status"] == "cooling"
     assert [row["stock_code"] for row in scan_candidates] == ["600519"]
+
+
+def test_live_quant_drill_execution_does_not_write_live_account(tmp_path):
+    live_db_file = tmp_path / "live.db"
+    replay_db_file = tmp_path / "replay.db"
+    live_db = QuantSimDB(str(live_db_file))
+    live_db.configure_account(50000)
+    live_db.add_watch(stock_code="600519", stock_name="贵州茅台", source="manual")
+    live_db.upsert_quant_universe_state("600519", {"quant_status": "active", "health_score": 85.0})
+    before = live_db.get_account_summary()
+
+    service = QuantSimReplayService(db_file=str(live_db_file), replay_db_file=str(replay_db_file))
+    result = service.run_live_quant_drill(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        initial_cash=50000,
+        seed_current_quant_universe=True,
+        generate_historical_candidate_events=False,
+        execute_trades=True,
+    )
+
+    after = live_db.get_account_summary()
+    run = service.db.get_sim_run(result["run_id"])
+    assert result["run_id"] > 0
+    assert result["status"] == "completed"
+    assert run["mode"] == "live_quant_drill"
+    assert after["available_cash"] == before["available_cash"]
+    assert after["total_equity"] == before["total_equity"]
+    assert live_db.get_trade_history(limit=10) == []
+    quant_summary = service.db.list_sim_run_quant_summary(result["run_id"])
+    quant_states = service.db.list_sim_run_quant_states(result["run_id"], page_size=10)
+    assert quant_summary
+    assert quant_summary[0]["active_count"] == 1
+    assert quant_states["items"][0]["stock_code"] == "600519"
+    assert quant_states["items"][0]["quant_status"] == "active"
+
+
+def test_live_quant_drill_runs_cooling_opportunistic_review_after_main_scan(tmp_path, monkeypatch):
+    service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
+    call_order: list[str] = []
+
+    def fake_main_scan(*args, **kwargs):
+        call_order.append("main_scan")
+        return {"signals": [], "candidates_scanned": 1}
+
+    def fake_cooling_review(*args, **kwargs):
+        call_order.append("cooling_review")
+        return {"reviewed": 2, "restored": 1}
+
+    monkeypatch.setattr(service, "_run_live_quant_drill_main_scan", fake_main_scan)
+    monkeypatch.setattr(service, "_run_live_quant_drill_cooling_review", fake_cooling_review)
+
+    service._run_live_quant_drill_checkpoint(
+        run_id=1,
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        checkpoint_index=1,
+        context={
+            "checkpoints": [datetime(2026, 1, 5, 10, 0)],
+            "timeframe": "30m",
+            "market": "CN",
+            "start_dt": datetime(2026, 1, 5, 10, 0),
+            "end_dt": datetime(2026, 1, 5, 10, 0),
+            "execute_trades": True,
+        },
+        temp_db=QuantSimDB(str(tmp_path / "temp.db")),
+        engine=object(),
+        portfolio=object(),
+        manager=object(),
+    )
+
+    assert call_order == ["main_scan", "cooling_review"]

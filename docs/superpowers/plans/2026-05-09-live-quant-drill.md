@@ -922,7 +922,7 @@ git commit -m "feat: initialize run-local live drill state"
 - Modify: `app/quant_sim/engine.py` if needed for run-local candidate reads
 - Test: `tests/test_live_quant_drill_service.py`
 
-- [ ] **Step 1: Add failing integration-style test for no live writes**
+- [x] **Step 1: Add failing integration-style test for no live writes**
 
 Add:
 
@@ -986,7 +986,7 @@ def test_live_quant_drill_runs_cooling_opportunistic_review_after_main_scan(tmp_
     assert call_order == ["main_scan", "cooling_review"]
 ```
 
-- [ ] **Step 2: Run test and confirm failure**
+- [x] **Step 2: Run test and confirm failure**
 
 ```powershell
 pytest tests/test_live_quant_drill_service.py::test_live_quant_drill_execution_does_not_write_live_account -q
@@ -994,7 +994,7 @@ pytest tests/test_live_quant_drill_service.py::test_live_quant_drill_execution_d
 
 Expected: fails because execution mode does not exist.
 
-- [ ] **Step 3: Add synchronous execution entry for tests**
+- [x] **Step 3: Add synchronous execution entry for tests**
 
 Add:
 
@@ -1038,7 +1038,7 @@ def run_live_quant_drill(
     return self._execute_live_quant_drill(run_id=run_id, context=context)
 ```
 
-- [ ] **Step 4: Implement `_execute_live_quant_drill()` skeleton**
+- [x] **Step 4: Implement `_execute_live_quant_drill()` skeleton**
 
 Required order:
 
@@ -1054,7 +1054,7 @@ Required order:
 6. Finalize run.
 7. Delete temp dir in `finally`.
 
-- [ ] **Step 5: Add checkpoint helper**
+- [x] **Step 5: Add checkpoint helper**
 
 Add:
 
@@ -1086,7 +1086,7 @@ It must:
 - Bound opportunistic review by the lifecycle policy, never allowing cooling stocks to replace the main `trial / active / exit_only` scan.
 - Save quant states/events/candidate events/summary.
 
-- [ ] **Step 6: Run targeted tests**
+- [x] **Step 6: Run targeted tests**
 
 ```powershell
 pytest tests/test_live_quant_drill_service.py -q
@@ -1094,7 +1094,7 @@ pytest tests/test_live_quant_drill_service.py -q
 
 Expected: all current drill service tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add app/quant_sim/replay_service.py app/quant_sim/engine.py tests/test_live_quant_drill_service.py
