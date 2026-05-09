@@ -1,4 +1,5 @@
 import type { TableRow } from "../../lib/page-models";
+import { t } from "../../lib/i18n";
 
 export type EntryStatusOverride = {
   status: string;
@@ -73,15 +74,14 @@ export function BatchPromoteDialog({
         padding: "24px",
       }}
     >
-      <section className="card section-card" role="dialog" aria-modal="true" aria-label="确认纳入量化试运行">
-        <h2 className="section-card__title">确认纳入量化试运行</h2>
-        <p className="section-card__description">将选中的 {count} 只股票纳入 trial，成功和跳过结果会保留在当前列表中。</p>
+      <section className="card section-card" role="dialog" aria-modal="true" aria-label={t("确认纳入量化观察")}>
+        <h2 className="section-card__title">{t("确认纳入量化观察")}</h2>
+        <p className="section-card__description">{t("将选中的")}{count} {t("只股票纳入量化观察名单，成功和跳过结果会保留在当前列表中。")}</p>
         <div className="toolbar toolbar--compact">
           <button className="button button--secondary" type="button" onClick={onCancel} disabled={pending}>
-            取消
-          </button>
+            {t("取消")}</button>
           <button className="button button--primary" type="button" onClick={onConfirm} disabled={pending || count <= 0}>
-            {pending ? "纳入中..." : "确认纳入"}
+            {pending ? t("纳入中...") : t("确认纳入")}
           </button>
         </div>
       </section>
@@ -124,11 +124,11 @@ export function promoteResultOverrides(result: QuantEntryActionResult) {
 export function ignoreResultOverrides(codes: string[], result?: QuantEntryActionResult) {
   const updates: Record<string, EntryStatusOverride> = {};
   codes.forEach((code) => {
-    updates[code] = { status: "skipped", reason: "已忽略" };
+    updates[code] = { status: "skipped", reason: t("已忽略") };
   });
   (result?.success ?? []).forEach((item) => {
     const code = resultCodeOf(item);
-    if (code) updates[code] = { status: "skipped", reason: "已忽略" };
+    if (code) updates[code] = { status: "skipped", reason: t("已忽略") };
   });
   (result?.failed ?? []).forEach((item) => {
     const code = resultCodeOf(item);

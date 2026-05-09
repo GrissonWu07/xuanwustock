@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ChartPoint } from "../../lib/page-models";
+import { t } from "../../lib/i18n";
 
 type SparklineProps = {
   points: ChartPoint[];
@@ -39,8 +40,8 @@ const formatPct = (value: number) => {
 
 const formatVolume = (value?: number) => {
   if (!isFiniteNumber(value)) return "--";
-  if (Math.abs(value) >= 1_0000_0000) return `${(value / 1_0000_0000).toFixed(2)}亿`;
-  if (Math.abs(value) >= 1_0000) return `${(value / 1_0000).toFixed(2)}万`;
+  if (Math.abs(value) >= 1_0000_0000) return t("{v0}亿", { v0: (value / 1_0000_0000).toFixed(2) });
+  if (Math.abs(value) >= 1_0000) return t("{v0}万", { v0: (value / 1_0000).toFixed(2) });
   return value.toFixed(0);
 };
 
@@ -160,13 +161,13 @@ export function Sparkline({ points, height = 88 }: SparklineProps) {
     return (
       <div className="sparkline sparkline--kline">
         <div className="sparkline__meta" aria-live="polite">
-          <span>{`时间 ${activePoint.label || "--"}`}</span>
-          <span>{`开 ${formatPrice(activePoint.open)}  高 ${formatPrice(activePoint.high)}  低 ${formatPrice(activePoint.low)}  收 ${formatPrice(activePoint.close)}`}</span>
-          <span>{`涨跌 ${formatSigned(diff)} (${formatPct(diffPct)})`}</span>
-          <span>{`成交量 ${formatVolume(activePoint.volume)}`}</span>
+          <span>{t("时间 {v0}", { v0: activePoint.label || "--" })}</span>
+          <span>{t("开 {v0}  高 {v1}  低 {v2}  收 {v3}", { v0: formatPrice(activePoint.open), v1: formatPrice(activePoint.high), v2: formatPrice(activePoint.low), v3: formatPrice(activePoint.close) })}</span>
+          <span>{t("涨跌 {v0} ({v1})", { v0: formatSigned(diff), v1: formatPct(diffPct) })}</span>
+          <span>{t("成交量 {v0}", { v0: formatVolume(activePoint.volume) })}</span>
         </div>
         <div className="sparkline__chart sparkline__chart--kline" style={{ height: chartHeight }} onMouseLeave={() => setHoveredIndex(null)}>
-          <svg className="sparkline__svg" viewBox={`0 0 ${width} ${chartHeight}`} preserveAspectRatio="none" role="img" aria-label="K线图">
+          <svg className="sparkline__svg" viewBox={`0 0 ${width} ${chartHeight}`} preserveAspectRatio="none" role="img" aria-label={t("K线图")}>
             <line x1={0} y1={topGridY} x2={width} y2={topGridY} className="sparkline__grid" />
             <line x1={0} y1={midGridY} x2={width} y2={midGridY} className="sparkline__grid" />
             <line x1={0} y1={bottomGridY} x2={width} y2={bottomGridY} className="sparkline__grid" />
@@ -247,8 +248,7 @@ export function Sparkline({ points, height = 88 }: SparklineProps) {
   if (points.length < 2) {
     return (
       <div className="empty-note" style={{ minHeight: height }}>
-        暂无曲线数据
-      </div>
+        {t("暂无曲线数据")}</div>
     );
   }
 
@@ -282,13 +282,13 @@ export function Sparkline({ points, height = 88 }: SparklineProps) {
   return (
     <div className="sparkline">
       <div className="sparkline__meta" aria-live="polite">
-        <span>{`时间 ${activePoint.label || "--"}`}</span>
-        <span>{`权益 ${formatPrice(activePoint.value)}`}</span>
-        <span>{`区间盈亏 ${formatSigned(activePnl)} (${formatPct(activePnlPct)})`}</span>
+        <span>{t("时间 {v0}", { v0: activePoint.label || "--" })}</span>
+        <span>{t("权益 {v0}", { v0: formatPrice(activePoint.value) })}</span>
+        <span>{t("区间盈亏 {v0} ({v1})", { v0: formatSigned(activePnl), v1: formatPct(activePnlPct) })}</span>
         <span>{`最高 ${formatPrice(max)} / 最低 ${formatPrice(min)}`}</span>
       </div>
       <div className="sparkline__chart" style={{ height }} onMouseLeave={() => setHoveredIndex(null)}>
-        <svg className="sparkline__svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="曲线">
+        <svg className="sparkline__svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t("曲线")}>
           <line x1={0} y1={topGridY} x2={width} y2={topGridY} className="sparkline__grid" />
           <line x1={0} y1={midGridY} x2={width} y2={midGridY} className="sparkline__grid" />
           <line x1={0} y1={bottomGridY} x2={width} y2={bottomGridY} className="sparkline__grid" />
@@ -309,7 +309,7 @@ export function Sparkline({ points, height = 88 }: SparklineProps) {
                 onFocus={() => setHoveredIndex(index)}
                 onBlur={() => setHoveredIndex(null)}
               >
-                <title>{`${points[index].label} | 权益 ${formatPrice(pointValue)} | 区间盈亏 ${formatSigned(pointPnl)} (${formatPct(pointPnlPct)})`}</title>
+                <title>{t("{v0} | 权益 {v1} | 区间盈亏 {v2} ({v3})", { v0: points[index].label, v1: formatPrice(pointValue), v2: formatSigned(pointPnl), v3: formatPct(pointPnlPct) })}</title>
               </circle>
             );
           })}

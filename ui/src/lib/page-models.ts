@@ -575,6 +575,11 @@ export type SettingsSnapshot = {
   dataSources: ConfigSettingItem[];
   modelConfig: ConfigSettingItem[];
   runtimeParams: ConfigSettingItem[];
+  quantLifecycleSettings?: {
+    quant_universe_lifecycle_enabled?: boolean;
+    auto_entry_mode?: string;
+    auto_exit_enabled?: boolean;
+  };
   strategyProfiles?: {
     id: string;
     name: string;

@@ -8,20 +8,21 @@ import type { ReplayCapitalPoolSnapshot, ReplaySnapshot, SummaryMetric, TableRow
 import { summarizeTaskStatuses, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
 import { ReplayCapitalPoolPanel } from "./replay-capital-pool-panel";
+import { t } from "../../lib/i18n";
 
 const REPLAY_MODE_OPTIONS = [
-  { value: "historical_range", label: "历史区间回放" },
+  { value: "historical_range", label: t("历史区间回放") },
 ];
 
 const TIMEFRAME_OPTIONS = [
-  { value: "30m", label: "30分钟" },
-  { value: "1d", label: "日线" },
-  { value: "1d+30m", label: "日线方向 + 30分钟确认" },
+  { value: "30m", label: t("30分钟") },
+  { value: "1d", label: t("日线") },
+  { value: "1d+30m", label: t("日线方向 + 30分钟确认") },
 ];
 
 const AI_DYNAMIC_STRATEGY_OPTIONS = [
-  { value: "off", label: "关闭" },
-  { value: "hybrid", label: "开启" },
+  { value: "off", label: t("关闭") },
+  { value: "hybrid", label: t("开启") },
 ];
 
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
@@ -42,29 +43,29 @@ const INITIAL_REPLAY_TABLE_QUERY = {
   signalStock: "",
 };
 const REPLAY_SUMMARY_METRIC_LABELS = new Set([
-  "初始资金",
-  "最终权益",
-  "最终现金",
-  "持仓市值",
-  "浮动盈亏",
-  "总盈亏",
-  "总收益率",
-  "期末持仓数",
-  "期末清算毛额",
-  "期末清算费用",
-  "期末清算盈亏",
-  "清算后现金",
-  "清算后总盈亏",
-  "清算后收益率",
+  t("初始资金"),
+  t("最终权益"),
+  t("最终现金"),
+  t("持仓市值"),
+  t("浮动盈亏"),
+  t("总盈亏"),
+  t("总收益率"),
+  t("期末持仓数"),
+  t("期末清算毛额"),
+  t("期末清算费用"),
+  t("期末清算盈亏"),
+  t("清算后现金"),
+  t("清算后总盈亏"),
+  t("清算后收益率"),
 ]);
-const EXECUTION_HERO_METRIC_LABELS = ["实现盈亏", "买入总成本", "卖出到账", "总费用"];
+const EXECUTION_HERO_METRIC_LABELS = [t("实现盈亏"), t("买入总成本"), t("卖出到账"), t("总费用")];
 const EXECUTION_STAT_GROUPS = [
-  { title: "成本拆解", labels: ["买入毛额", "手续费"] },
-  { title: "收入拆解", labels: ["卖出毛额", "印花税"] },
-  { title: "交易背景", labels: ["交易笔数", "胜率", "买入笔数", "卖出笔数", "加仓次数"] },
-  { title: "信号执行", labels: ["交易信号", "BUY信号", "SELL信号", "已执行信号", "忽略信号", "忽略BUY", "忽略SELL", "待执行信号"] },
-  { title: "Lot / Slot", labels: ["买入lot", "卖出lot", "剩余lot", "占用slot", "释放slot", "最大占用slot", "平均占用slot"] },
-  { title: "期末资金", labels: ["Slot数量", "单Slot预算", "最大Slot", "高价双Slot线", "最终空闲", "最终占用", "最终待结算"] },
+  { title: t("成本拆解"), labels: [t("买入毛额"), t("手续费")] },
+  { title: t("收入拆解"), labels: [t("卖出毛额"), t("印花税")] },
+  { title: t("交易背景"), labels: [t("交易笔数"), t("胜率"), t("买入笔数"), t("卖出笔数"), t("加仓次数")] },
+  { title: t("信号执行"), labels: [t("交易信号"), t("BUY信号"), t("SELL信号"), t("已执行信号"), t("忽略信号"), t("忽略BUY"), t("忽略SELL"), t("待执行信号")] },
+  { title: "Lot / Slot", labels: [t("买入lot"), t("卖出lot"), t("剩余lot"), t("占用slot"), t("释放slot"), t("最大占用slot"), t("平均占用slot")] },
+  { title: t("期末资金"), labels: [t("Slot数量"), t("单Slot预算"), t("最大Slot"), t("高价双Slot线"), t("最终空闲"), t("最终占用"), t("最终待结算")] },
 ];
 type ReplayProgressSnapshot = Pick<ReplaySnapshot, "updatedAt" | "tasks"> &
   Partial<Pick<ReplaySnapshot, "holdings" | "trades" | "signals" | "tradeCostSummary">>;
@@ -116,8 +117,8 @@ function normalizeMarket(value: string) {
 
 function normalizeAiDynamicStrategy(value: string) {
   const normalized = String(value).trim().toLowerCase();
-  if (!normalized || normalized === "off" || normalized.includes("关")) return "off";
-  if (normalized === "template" || normalized === "weights" || normalized === "hybrid" || normalized.includes("开")) return "hybrid";
+  if (!normalized || normalized === "off" || normalized.includes(t("关"))) return "off";
+  if (normalized === "template" || normalized === "weights" || normalized === "hybrid" || normalized.includes(t("开"))) return "hybrid";
   return "off";
 }
 
@@ -212,7 +213,7 @@ function parseReplayStageLabel(stage: string) {
     return { checkpoint: "", detail: text || "--" };
   }
   return {
-    checkpoint: `检查点 ${match[1]}`,
+    checkpoint: t("检查点 {v0}", { v0: match[1] }),
     detail: match[2],
   };
 }
@@ -223,11 +224,11 @@ type HisReplayPageProps = {
 
 function localizeTaskStatus(status: string) {
   const normalized = String(status || "").trim().toLowerCase();
-  if (normalized === "completed") return "已完成";
-  if (normalized === "running") return "进行中";
-  if (normalized === "queued") return "排队中";
-  if (normalized === "cancelled" || normalized === "canceled") return "已取消";
-  if (normalized === "failed") return "失败";
+  if (normalized === "completed") return t("已完成");
+  if (normalized === "running") return t("进行中");
+  if (normalized === "queued") return t("排队中");
+  if (normalized === "cancelled" || normalized === "canceled") return t("已取消");
+  if (normalized === "failed") return t("失败");
   return status || "--";
 }
 
@@ -254,7 +255,7 @@ function withCodeName(rows: TableRow[], codeColumnIndex: number): TableRow[] {
 function removeExecutionResultColumn(table: TableSection): TableSection {
   const targetIndex = table.columns.findIndex((column) => {
     const normalized = String(column || "").trim().toLowerCase();
-    return normalized === "执行结果" || normalized === "execution result";
+    return normalized === t("执行结果") || normalized === "execution result";
   });
   if (targetIndex < 0) {
     return table;
@@ -330,7 +331,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         setCheckpointSnapshot(next);
         setCheckpointPage(next.checkpoints.pagination.page);
       } catch (error) {
-        setCheckpointError(error instanceof Error ? error.message : "检查点资金池加载失败");
+        setCheckpointError(error instanceof Error ? error.message : t("检查点资金池加载失败"));
       } finally {
         setCheckpointLoading(false);
       }
@@ -455,26 +456,26 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   }, [signalStockFilter, signalActionFilter]);
 
   if (resource.status === "loading" && !resource.data) {
-    return <PageLoadingState title="历史回放加载中" description="正在读取回放任务、候选池和交易结果。" />;
+    return <PageLoadingState title={t("历史回放加载中")} description={t("正在读取回放任务、候选池和交易结果。")} />;
   }
 
   if (resource.status === "error" && !resource.data) {
     return (
       <PageErrorState
-        title="历史回放加载失败"
-        description={resource.error ?? "无法加载历史回放数据，请稍后重试。"}
-        actionLabel="重新加载"
+        title={t("历史回放加载失败")}
+        description={resource.error ?? t("无法加载历史回放数据，请稍后重试。")}
+        actionLabel={t("重新加载")}
         onAction={resource.refresh}
       />
     );
   }
 
   if (!snapshot) {
-    return <PageEmptyState title="历史回放暂无数据" description="后台尚未返回历史回放快照。" actionLabel="刷新" onAction={resource.refresh} />;
+    return <PageEmptyState title={t("历史回放暂无数据")} description={t("后台尚未返回历史回放快照。")} actionLabel={t("刷新")} onAction={resource.refresh} />;
   }
 
   const taskSummary = summarizeTaskStatuses(snapshot.tasks);
-  const replayTaskLabel = taskSummary.running > 0 ? `进行中 ${taskSummary.running}` : `已完成 ${taskSummary.completed}`;
+  const replayTaskLabel = taskSummary.running > 0 ? t("进行中 {v0}", { v0: taskSummary.running }) : t("已完成 {v0}", { v0: taskSummary.completed });
   const runningTask = snapshot.tasks.find((task) => String(task.status).toLowerCase() === "running") ?? null;
   const hasActiveReplayTask = snapshot.tasks.some((task) => {
     const normalized = String(task.status || "").trim().toLowerCase();
@@ -506,42 +507,42 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const selectedTaskLiquidation = selectedTask?.terminalLiquidation ?? {};
   const selectedTaskLiquidationMetrics = [
     {
-      label: "清算后现金",
-      value: formatSummaryNumber(selectedTaskLiquidation.liquidation_cash ?? findMetricValue(snapshot.tradeCostSummary, "清算后现金")),
+      label: t("清算后现金"),
+      value: formatSummaryNumber(selectedTaskLiquidation.liquidation_cash ?? findMetricValue(snapshot.tradeCostSummary, t("清算后现金"))),
     },
     {
-      label: "清算后总盈亏",
-      value: formatSummaryNumber(selectedTaskLiquidation.liquidation_total_pnl ?? findMetricValue(snapshot.tradeCostSummary, "清算后总盈亏")),
+      label: t("清算后总盈亏"),
+      value: formatSummaryNumber(selectedTaskLiquidation.liquidation_total_pnl ?? findMetricValue(snapshot.tradeCostSummary, t("清算后总盈亏"))),
     },
     {
-      label: "期末清算费用",
-      value: formatSummaryNumber(selectedTaskLiquidation.fee_total ?? findMetricValue(snapshot.tradeCostSummary, "期末清算费用")),
+      label: t("期末清算费用"),
+      value: formatSummaryNumber(selectedTaskLiquidation.fee_total ?? findMetricValue(snapshot.tradeCostSummary, t("期末清算费用"))),
     },
     {
-      label: "清算后收益率",
-      value: formatSummaryPercent(selectedTaskLiquidation.liquidation_return_pct ?? findMetricValue(snapshot.tradeCostSummary, "清算后收益率")),
+      label: t("清算后收益率"),
+      value: formatSummaryPercent(selectedTaskLiquidation.liquidation_return_pct ?? findMetricValue(snapshot.tradeCostSummary, t("清算后收益率"))),
     },
   ];
   const selectedTaskMetrics = selectedTask
     ? [
-        { label: "收益率", value: selectedTask.returnPct || "--" },
-        { label: "总权益", value: selectedTask.finalEquity || "--" },
-        { label: "现金", value: selectedTask.cashValue || "--" },
-        { label: "持仓市值", value: selectedTask.marketValue || "--" },
-        { label: "已实现", value: selectedTask.realizedPnl || "--" },
-        { label: "浮动盈亏", value: selectedTask.unrealizedPnl || "--" },
-        { label: "BUY信号", value: toDisplayText(selectedTask.buySignalCount, "0") },
-        { label: "忽略BUY", value: toDisplayText(selectedTask.ignoredBuySignalCount, "0") },
-        { label: "忽略SELL", value: toDisplayText(selectedTask.ignoredSellSignalCount, "0") },
+        { label: t("收益率"), value: selectedTask.returnPct || "--" },
+        { label: t("总权益"), value: selectedTask.finalEquity || "--" },
+        { label: t("现金"), value: selectedTask.cashValue || "--" },
+        { label: t("持仓市值"), value: selectedTask.marketValue || "--" },
+        { label: t("已实现"), value: selectedTask.realizedPnl || "--" },
+        { label: t("浮动盈亏"), value: selectedTask.unrealizedPnl || "--" },
+        { label: t("BUY信号"), value: toDisplayText(selectedTask.buySignalCount, "0") },
+        { label: t("忽略BUY"), value: toDisplayText(selectedTask.ignoredBuySignalCount, "0") },
+        { label: t("忽略SELL"), value: toDisplayText(selectedTask.ignoredSellSignalCount, "0") },
         ...selectedTaskLiquidationMetrics,
       ]
     : [];
   const executionCostSummary = (snapshot.tradeCostSummary ?? []).filter((metric) => !REPLAY_SUMMARY_METRIC_LABELS.has(metric.label));
   const executionHeroMetrics = pickMetrics(executionCostSummary, EXECUTION_HERO_METRIC_LABELS);
-  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === "实现盈亏");
-  const executionWinRateMetric = executionCostSummary.find((metric) => metric.label === "胜率");
-  const executionTradeCountMetric = executionCostSummary.find((metric) => metric.label === "交易笔数");
-  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== "实现盈亏");
+  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === t("实现盈亏"));
+  const executionWinRateMetric = executionCostSummary.find((metric) => metric.label === t("胜率"));
+  const executionTradeCountMetric = executionCostSummary.find((metric) => metric.label === t("交易笔数"));
+  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== t("实现盈亏"));
   const executionHeroMetricLabels = new Set(executionHeroMetrics.map((metric) => metric.label));
   const executionGroupMetricLabels = new Set(EXECUTION_STAT_GROUPS.flatMap((group) => group.labels));
   const executionStatGroups = EXECUTION_STAT_GROUPS.map((group) => ({
@@ -552,27 +553,27 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     (metric) => !executionHeroMetricLabels.has(metric.label) && !executionGroupMetricLabels.has(metric.label),
   );
   const selectedTaskTopWinningTrades: TableSection = {
-    columns: ["时间", "信号ID", "代码", "卖出价", "净盈亏", "盈亏率", "执行明细"],
+    columns: [t("时间"), t("信号ID"), t("代码"), t("卖出价"), t("净盈亏"), t("盈亏率"), t("执行明细")],
     rows: withCodeName(selectedTask?.topWinningTrades ?? [], 2),
-    emptyLabel: "暂无盈利交易",
-    emptyMessage: "选中任务里还没有已兑现的盈利卖出交易。",
+    emptyLabel: t("暂无盈利交易"),
+    emptyMessage: t("选中任务里还没有已兑现的盈利卖出交易。"),
   };
   const selectedTaskTopLosingTrades: TableSection = {
-    columns: ["时间", "信号ID", "代码", "卖出价", "净盈亏", "盈亏率", "执行明细"],
+    columns: [t("时间"), t("信号ID"), t("代码"), t("卖出价"), t("净盈亏"), t("盈亏率"), t("执行明细")],
     rows: withCodeName(selectedTask?.topLosingTrades ?? [], 2),
-    emptyLabel: "暂无亏损交易",
-    emptyMessage: "选中任务里还没有已兑现的亏损卖出交易。",
+    emptyLabel: t("暂无亏损交易"),
+    emptyMessage: t("选中任务里还没有已兑现的亏损卖出交易。"),
   };
   const selectedTaskProfitLossByStock: TableSection = {
-    columns: ["代码", "名称", "合计盈亏", "已实现", "浮动盈亏", "买入成本", "卖出到账", "费用", "成交"],
+    columns: [t("代码"), t("名称"), t("合计盈亏"), t("已实现"), t("浮动盈亏"), t("买入成本"), t("卖出到账"), t("费用"), t("成交")],
     rows: selectedTask?.profitLossByStock ?? [],
-    emptyLabel: "暂无盈亏构成",
-    emptyMessage: "选中任务还没有可归集到股票的成交或期末持仓。",
+    emptyLabel: t("暂无盈亏构成"),
+    emptyMessage: t("选中任务还没有可归集到股票的成交或期末持仓。"),
   };
   const tradeRows = withCodeName(snapshot.trades.rows, 2);
   const signalTable = removeExecutionResultColumn(snapshot.signals);
   const signalRows = signalTable.rows;
-  const signalActionColumnIndex = findColumnIndex(signalTable, ["动作", "action"], 4);
+  const signalActionColumnIndex = findColumnIndex(signalTable, [t("动作"), "action"], 4);
   const tradeActionOptions = Array.from(
     new Set(
       snapshot.trades.rows
@@ -603,13 +604,13 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   };
   const toolbarControlHeight = "40px";
   const renderPager = (page: number, pages: number, setPage: (value: number) => void) => (
-    <div className="table-toolbar-compact__pager" aria-label="分页控制">
+    <div className="table-toolbar-compact__pager" aria-label={t("分页控制")}>
       <button
         className="icon-button icon-button--neutral table-toolbar-compact__pager-button"
         type="button"
         style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, width: toolbarControlHeight, minWidth: toolbarControlHeight }}
-        aria-label="上一页"
-        title="上一页"
+        aria-label={t("上一页")}
+        title={t("上一页")}
         disabled={page <= 1}
         onClick={() => setPage(page - 1)}
       >
@@ -626,14 +627,14 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
           padding: "0 16px",
         }}
       >
-        {`第 ${page} / ${pages} 页`}
+        {t("第 {v0} / {v1} 页", { v0: page, v1: pages })}
       </span>
       <button
         className="icon-button icon-button--neutral table-toolbar-compact__pager-button"
         type="button"
         style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, width: toolbarControlHeight, minWidth: toolbarControlHeight }}
-        aria-label="下一页"
-        title="下一页"
+        aria-label={t("下一页")}
+        title={t("下一页")}
         disabled={page >= pages}
         onClick={() => setPage(page + 1)}
       >
@@ -658,7 +659,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         className="input"
         style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
         data-size="compact-input"
-        placeholder="按代码/名称过滤"
+        placeholder={t("按代码/名称过滤")}
         value={stockFilter}
         onChange={(event) => setStockFilter(event.target.value)}
       />
@@ -670,7 +671,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         onChange={(event) => setActionFilter(event.target.value)}
       >
         {includeTradePreset ? <option value="TRADE">BUY/SELL</option> : null}
-        <option value="ALL">全部动作</option>
+        <option value="ALL">{t("全部动作")}</option>
         {actionOptions.map((option) => (
           <option key={option} value={option}>
             {option}
@@ -718,14 +719,14 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     <div>
       <PageHeader
         eyebrow="Replay"
-        title="历史回放"
-        description="围绕统一股票池中启用量化的股票回放历史区间，核对任务、成交、费用和信号落库结果。"
+        title={t("历史回放")}
+        description={t("围绕统一股票池中启用量化的股票回放历史区间，核对任务、成交、费用和信号落库结果。")}
         actions={
           <div className="chip-row">
-            <span className="badge badge--neutral">快照 {snapshot.updatedAt}</span>
-            <span className="badge badge--accent">任务 {snapshot.tasks.length}</span>
+            <span className="badge badge--neutral">{t("快照")}{snapshot.updatedAt}</span>
+            <span className="badge badge--accent">{t("任务")}{snapshot.tasks.length}</span>
             <span className={`badge ${runningTask ? "badge--accent" : "badge--success"}`}>
-              {runningTask ? `执行中 ${runningProgress}%` : replayTaskLabel}
+              {runningTask ? t("执行中 {v0}%", { v0: runningProgress }) : replayTaskLabel}
             </span>
             {runningTask?.stage ? <span className="badge badge--neutral">{runningTask.stage}</span> : null}
           </div>
@@ -734,10 +735,10 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
       <div className="section-grid section-grid--sidebar">
         <div className="stack">
           <WorkbenchCard>
-            <h2 className="section-card__title">回放配置</h2>
+            <h2 className="section-card__title">{t("回放配置")}</h2>
             <div className="summary-list">
               <label className="field">
-                <span className="field__label">回放模式</span>
+                <span className="field__label">{t("回放模式")}</span>
                 <select className="input" value={replayMode} onChange={(event) => setReplayMode(event.target.value)}>
                   {REPLAY_MODE_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -748,40 +749,40 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               </label>
               <div className="section-grid">
                 <label className="field">
-                  <span className="field__label">开始日期</span>
+                  <span className="field__label">{t("开始日期")}</span>
                   <input className="input" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
                 </label>
                 {replayUntilNow ? (
                   <div className="summary-item summary-item--accent">
-                    <div className="summary-item__title">结束日期</div>
-                    <div className="summary-item__body">当前模式下结束日期自动取当前日期时间。</div>
+                    <div className="summary-item__title">{t("结束日期")}</div>
+                    <div className="summary-item__body">{t("当前模式下结束日期自动取当前日期时间。")}</div>
                   </div>
                 ) : (
                   <label className="field">
-                    <span className="field__label">结束日期</span>
+                    <span className="field__label">{t("结束日期")}</span>
                     <input className="input" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
                   </label>
                 )}
               </div>
               <div className="section-grid">
                 <label className="field">
-                  <span className="field__label">开始时间</span>
+                  <span className="field__label">{t("开始时间")}</span>
                   <input className="input" type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} />
                 </label>
                 {replayUntilNow ? (
                   <div className="summary-item summary-item--accent">
-                    <div className="summary-item__title">结束时间</div>
-                    <div className="summary-item__body">结束时间将自动取当前时刻。</div>
+                    <div className="summary-item__title">{t("结束时间")}</div>
+                    <div className="summary-item__body">{t("结束时间将自动取当前时刻。")}</div>
                   </div>
                 ) : (
                   <label className="field">
-                    <span className="field__label">结束时间</span>
+                    <span className="field__label">{t("结束时间")}</span>
                     <input className="input" type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} />
                   </label>
                 )}
               </div>
               <label className="field">
-                <span className="field__label">回放粒度</span>
+                <span className="field__label">{t("回放粒度")}</span>
                 <select className="input" value={timeframe} onChange={(event) => setTimeframe(event.target.value)}>
                   {TIMEFRAME_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -791,7 +792,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                 </select>
               </label>
               <label className="field">
-                <span className="field__label">市场</span>
+                <span className="field__label">{t("市场")}</span>
                 <select className="input" value={market} onChange={(event) => setMarket(event.target.value as (typeof MARKET_OPTIONS)[number])}>
                   {MARKET_OPTIONS.map((option) => (
                     <option key={option} value={option}>
@@ -801,7 +802,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                 </select>
               </label>
               <label className="field">
-                <span className="field__label">策略配置</span>
+                <span className="field__label">{t("策略配置")}</span>
                 <select className="input" value={strategyProfileId} onChange={(event) => setStrategyProfileId(event.target.value)}>
                   {(snapshot.config.strategyProfiles ?? []).map((item) => (
                     <option key={item.id} value={item.id}>
@@ -811,7 +812,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                 </select>
               </label>
               <label className="field">
-                <span className="field__label">回放资金池(元)</span>
+                <span className="field__label">{t("回放资金池(元)")}</span>
                 <input
                   className="input"
                   min={20000}
@@ -822,7 +823,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                 />
               </label>
               <label className="field">
-                <span className="field__label">AI动态策略</span>
+                <span className="field__label">{t("AI动态策略")}</span>
                 <select className="input" value={aiDynamicStrategy} onChange={(event) => setAiDynamicStrategy(event.target.value)}>
                   {AI_DYNAMIC_STRATEGY_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -832,7 +833,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                 </select>
               </label>
               <label className="field">
-                <span className="field__label">手续费率(%)</span>
+                <span className="field__label">{t("手续费率(%)")}</span>
                 <input
                   className="input"
                   min={0}
@@ -844,7 +845,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                 />
               </label>
               <label className="field">
-                <span className="field__label">卖出税费率(%)</span>
+                <span className="field__label">{t("卖出税费率(%)")}</span>
                 <input
                   className="input"
                   min={0}
@@ -858,8 +859,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: "10px" }}>
                 <input type="checkbox" checked={replayUntilNow} onChange={(event) => setReplayUntilNow(event.target.checked)} />
                 <span className="field__label" style={{ marginBottom: 0 }}>
-                  结束时间留空则回放到当前时刻
-                </span>
+                  {t("结束时间留空则回放到当前时刻")}</span>
               </label>
             </div>
             <div className="card-divider" />
@@ -870,7 +870,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                 disabled={isReplayStarting || resource.status === "loading" || hasActiveReplayTask}
                 onClick={() => void handleReplayStart()}
               >
-                {isReplayStarting ? "提交中..." : "开始回溯"}
+                {isReplayStarting ? t("提交中...") : t("开始回溯")}
               </button>
               <button
                 className="button button--secondary"
@@ -878,8 +878,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                 disabled={resource.status === "loading"}
                 onClick={() => void resource.runAction("cancel")}
               >
-                取消
-              </button>
+                {t("取消")}</button>
               <span className="toolbar__spacer" />
               <button
                 className="button button--secondary"
@@ -887,48 +886,47 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                 disabled={resource.status === "loading"}
                 onClick={() => void resource.runAction("delete")}
               >
-                删除
-              </button>
+                {t("删除")}</button>
             </div>
             {hasActiveReplayTask ? (
               <div className="summary-item summary-item--accent" style={{ marginTop: "12px" }}>
-                <div className="summary-item__title">已有回放任务在执行</div>
-                <div className="summary-item__body">当前存在进行中或排队中的回放任务。请先等待完成，或取消后再开始新的回放。</div>
+                <div className="summary-item__title">{t("已有回放任务在执行")}</div>
+                <div className="summary-item__body">{t("当前存在进行中或排队中的回放任务。请先等待完成，或取消后再开始新的回放。")}</div>
               </div>
             ) : null}
             {replayStartStatus === "submitting" ? (
               <div className="summary-item summary-item--accent" style={{ marginTop: "12px" }}>
-                <div className="summary-item__title">回放任务正在提交</div>
-                <div className="summary-item__body">后台已接收请求前，前端会保持提交状态；任务创建后会自动切到最新任务进度。</div>
+                <div className="summary-item__title">{t("回放任务正在提交")}</div>
+                <div className="summary-item__body">{t("后台已接收请求前，前端会保持提交状态；任务创建后会自动切到最新任务进度。")}</div>
               </div>
             ) : null}
             {replayStartStatus === "submitted" ? (
               <div className="summary-item summary-item--success" style={{ marginTop: "12px" }}>
-                <div className="summary-item__title">回放任务已提交</div>
-                <div className="summary-item__body">已切换到最新回放任务；运行期间进度会每 1 分钟自动刷新一次。</div>
+                <div className="summary-item__title">{t("回放任务已提交")}</div>
+                <div className="summary-item__body">{t("已切换到最新回放任务；运行期间进度会每 1 分钟自动刷新一次。")}</div>
               </div>
             ) : null}
             {replayStartStatus === "error" ? (
               <div className="summary-item summary-item--danger" style={{ marginTop: "12px" }}>
-                <div className="summary-item__title">回放任务提交失败</div>
-                <div className="summary-item__body">后台没有返回新的任务快照，请查看操作失败信息或稍后重试。</div>
+                <div className="summary-item__title">{t("回放任务提交失败")}</div>
+                <div className="summary-item__body">{t("后台没有返回新的任务快照，请查看操作失败信息或稍后重试。")}</div>
               </div>
             ) : null}
             {replayActionError ? (
               <div className="summary-item summary-item--danger" style={{ marginTop: "12px" }}>
-                <div className="summary-item__title">操作失败</div>
+                <div className="summary-item__title">{t("操作失败")}</div>
                 <div className="summary-item__body">{replayActionError}</div>
               </div>
             ) : null}
           </WorkbenchCard>
 
           <QuantTableSectionCard
-            title="回放股票范围"
-            description="历史回放从统一股票池中已启用量化的股票冻结范围，任务内只对这批股票执行检查点。"
+            title={t("回放股票范围")}
+            description={t("历史回放在任务启动时记录当前已启用量化的股票范围快照，任务内只对这批股票执行检查点，不影响实时模拟。")}
             table={snapshot.candidatePool}
-            emptyTitle={snapshot.candidatePool.emptyLabel ?? "暂无回放股票"}
-            emptyDescription={snapshot.candidatePool.emptyMessage ?? "先在股票池中批量启用量化，再重新发起回放。"}
-            meta={[`表内 ${snapshot.candidatePool.rows.length} 只`, `区间 ${snapshot.config.range}`]}
+            emptyTitle={snapshot.candidatePool.emptyLabel ?? t("暂无回放股票")}
+            emptyDescription={snapshot.candidatePool.emptyMessage ?? t("先在股票池中批量启用量化，再重新发起回放。")}
+            meta={[t("表内 {v0} 只", { v0: snapshot.candidatePool.rows.length }), t("区间 {v0}", { v0: snapshot.config.range })]}
           />
 
         </div>
@@ -936,16 +934,16 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         <div className="stack">
           <WorkbenchCard>
             <div className="replay-task-card-header">
-              <h2 className="section-card__title replay-task-card-title">回放任务</h2>
+              <h2 className="section-card__title replay-task-card-title">{t("回放任务")}</h2>
               <div className="replay-task-card-controls">
                 <div className="chip-row replay-task-card-badges">
-                  <span className="badge badge--neutral">已完成 {taskSummary.completed}</span>
-                  <span className="badge badge--accent">进行中 {taskSummary.running}</span>
-                  <span className="badge badge--neutral">排队 {taskSummary.queued}</span>
+                  <span className="badge badge--neutral">{t("已完成")}{taskSummary.completed}</span>
+                  <span className="badge badge--accent">{t("进行中")}{taskSummary.running}</span>
+                  <span className="badge badge--neutral">{t("排队")}{taskSummary.queued}</span>
                 </div>
                 {snapshot.tasks.length > 0 ? (
                   <label className="field replay-task-selector">
-                    <span className="field__label replay-task-selector__label">选择任务</span>
+                    <span className="field__label replay-task-selector__label">{t("选择任务")}</span>
                     <select className="input replay-task-selector__input" value={selectedTask?.id ?? ""} onChange={(event) => setSelectedTaskId(event.target.value)}>
                       {snapshot.tasks.map((task) => (
                         <option key={task.id} value={task.id}>
@@ -960,11 +958,11 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             {snapshot.tasks.length > 0 ? (
               <div className="summary-list">
                 {selectedTask ? (
-                  <div className="summary-list" aria-label="已选回放任务详情">
+                  <div className="summary-list" aria-label={t("已选回放任务详情")}>
                     <div className="summary-item replay-task-overview">
                       <div className="replay-task-overview__topline">
                         <div>
-                          <div className="summary-item__title">回放结论与进度</div>
+                          <div className="summary-item__title">{t("回放结论与进度")}</div>
                           <div className="summary-item__body">{`${selectedTask.id} · ${selectedTaskStatusLabel}`}</div>
                         </div>
                         <span className="badge badge--accent">{`${selectedTaskProgressPct}%`}</span>
@@ -975,33 +973,33 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                         ) : null}
                         <div className="replay-task-stage__detail">{selectedTaskStageParts.detail}</div>
                       </div>
-                      <div className="replay-task-progress" aria-label={`回放进度 ${selectedTaskProgressPct}%`}>
+                      <div className="replay-task-progress" aria-label={t("回放进度 {v0}%", { v0: selectedTaskProgressPct })}>
                         <div className="replay-task-progress__bar">
                           <div className="replay-task-progress__fill" style={{ width: `${selectedTaskProgressPct}%` }} />
                         </div>
                         <div className="replay-task-progress__meta">
-                          <span>{`检查点进度：${selectedTaskProgressText} · ${selectedTaskProgressPct}%`}</span>
-                          <span>{`已写入：${selectedTaskCheckpointCount}`}</span>
+                          <span>{t("检查点进度：{v0} · {v1}%", { v0: selectedTaskProgressText, v1: selectedTaskProgressPct })}</span>
+                          <span>{t("已写入：{v0}", { v0: selectedTaskCheckpointCount })}</span>
                         </div>
                         {hasReplayCheckpointLoader ? (
                           <div className="replay-task-checkpoint-controls">
                             <label className="field replay-task-checkpoint-controls__select">
-                              <span className="field__label">检查点</span>
+                              <span className="field__label">{t("检查点")}</span>
                               <select
                                 className="input"
                                 value={selectedCheckpointAt}
-                                aria-label="检查点"
+                                aria-label={t("检查点")}
                                 disabled={checkpointLoading || !checkpointItems.length}
                                 onChange={(event) => void loadReplayCheckpointPage(checkpointPage, event.target.value)}
                               >
                                 {checkpointItems.length ? (
                                   checkpointItems.map((item) => (
                                     <option key={item.id} value={item.checkpointAt}>
-                                      {`${item.label} · 权益 ${item.totalEquity ?? "--"}`}
+                                      {t("{v0} · 权益 {v1}", { v0: item.label, v1: item.totalEquity ?? "--" })}
                                     </option>
                                   ))
                                 ) : (
-                                  <option value={selectedCheckpointAt}>{selectedCheckpointAt || "暂无检查点"}</option>
+                                  <option value={selectedCheckpointAt}>{selectedCheckpointAt || t("暂无检查点")}</option>
                                 )}
                               </select>
                             </label>
@@ -1009,38 +1007,41 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                               <button
                                 type="button"
                                 className="icon-button icon-button--neutral"
-                                aria-label="上一组检查点"
+                                aria-label={t("上一组检查点")}
                                 disabled={checkpointLoading || !checkpointPagination || checkpointPagination.page <= 1}
                                 onClick={() => void loadReplayCheckpointPage(Math.max(1, checkpointPage - 1))}
                               >
                                 ←
                               </button>
-                              <span>{checkpointPagination ? `第 ${checkpointPagination.page} / ${checkpointPagination.totalPages} 页` : "第 -- / -- 页"}</span>
+                              <span>{checkpointPagination ? `第 ${checkpointPagination.page} / ${checkpointPagination.totalPages} 页` : t("第 -- / -- 页")}</span>
                               <button
                                 type="button"
                                 className="icon-button icon-button--neutral"
-                                aria-label="下一组检查点"
+                                aria-label={t("下一组检查点")}
                                 disabled={checkpointLoading || !checkpointPagination || checkpointPagination.page >= checkpointPagination.totalPages}
                                 onClick={() => void loadReplayCheckpointPage(checkpointPage + 1)}
                               >
                                 →
                               </button>
                             </div>
-                            {checkpointLoading ? <span className="badge badge--neutral">加载中</span> : null}
+                            {checkpointLoading ? <span className="badge badge--neutral">{t("加载中")}</span> : null}
                             {checkpointError ? <span className="badge badge--danger">{checkpointError}</span> : null}
                           </div>
                         ) : null}
                       </div>
                       <div className="replay-task-overview__grid">
-                        <div className="summary-item__body">{`开始时间：${selectedTaskStartedAt}`}</div>
-                        <div className="summary-item__body">{`结束时间：${selectedTaskEndedAt}`}</div>
-                        <div className="summary-item__body">{`最近检查点：${selectedTaskLatestCheckpointAt}`}</div>
-                        <div className="summary-item__body">{`已写入检查点：${selectedTaskCheckpointCount}`}</div>
-                        <div className="summary-item__body">{`回放节点：${selectedTaskProgressTotal > 0 ? selectedTaskProgressTotal : selectedTaskCheckpointCount}`}</div>
-                        <div className="summary-item__body">{`区间：${selectedTaskRange}`}</div>
-                        <div className="summary-item__body">{`模式：${selectedTaskModeLabel} · 粒度：${selectedTaskTimeframe} · 市场：${selectedTaskMarket}`}</div>
+                        <div className="summary-item__body">{t("开始时间：{v0}", { v0: selectedTaskStartedAt })}</div>
+                        <div className="summary-item__body">{t("结束时间：{v0}", { v0: selectedTaskEndedAt })}</div>
+                        <div className="summary-item__body">{t("最近检查点：{v0}", { v0: selectedTaskLatestCheckpointAt })}</div>
+                        <div className="summary-item__body">{t("已写入检查点：{v0}", { v0: selectedTaskCheckpointCount })}</div>
+                        <div className="summary-item__body">{t("回放节点：{v0}", { v0: selectedTaskProgressTotal > 0 ? selectedTaskProgressTotal : selectedTaskCheckpointCount })}</div>
+                        <div className="summary-item__body">{t("区间：{v0}", { v0: selectedTaskRange })}</div>
+                        <div className="summary-item__body">{t("模式：{v0} · 粒度：{v1} · 市场：{v2}", { v0: selectedTaskModeLabel, v1: selectedTaskTimeframe, v2: selectedTaskMarket })}</div>
                         <div className="summary-item__body replay-task-overview__wide">
-                          {`策略配置：${selectedTask.strategyProfileName || selectedTask.strategyProfileId || strategyProfileId || "--"}${selectedTask.strategyProfileVersionId ? ` · 版本#${selectedTask.strategyProfileVersionId}` : ""}`}
+                          {t("策略配置：{profile}{version}", {
+                            profile: selectedTask.strategyProfileName || selectedTask.strategyProfileId || strategyProfileId || "--",
+                            version: selectedTask.strategyProfileVersionId ? t(" · 版本#{id}", { id: selectedTask.strategyProfileVersionId }) : "",
+                          })}
                         </div>
                       </div>
                     </div>
@@ -1057,8 +1058,8 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               </div>
             ) : (
               <div className="summary-item summary-item--accent">
-                <div className="summary-item__title">暂无回放任务</div>
-                <div className="summary-item__body">当前没有排队中的历史回放任务，点击“开始回溯”后会在这里创建新任务。</div>
+                <div className="summary-item__title">{t("暂无回放任务")}</div>
+                <div className="summary-item__body">{t("当前没有排队中的历史回放任务，点击“开始回溯”后会在这里创建新任务。")}</div>
               </div>
             )}
           </WorkbenchCard>
@@ -1069,19 +1070,18 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
 
           {executionCostSummary.length ? (
             <WorkbenchCard>
-              <h2 className="section-card__title">费用与执行统计</h2>
-              <p className="section-card__description">按买入成本、卖出到账、费用和实现盈亏归集，成交笔数仅作为执行背景。</p>
-              <div className="execution-summary execution-summary--finance" aria-label="费用与执行统计">
+              <h2 className="section-card__title">{t("费用与执行统计")}</h2>
+              <p className="section-card__description">{t("按买入成本、卖出到账、费用和实现盈亏归集，成交笔数仅作为执行背景。")}</p>
+              <div className="execution-summary execution-summary--finance" aria-label={t("费用与执行统计")}>
                 {executionHeroMetrics.length ? (
                   <div className="execution-summary__hero">
                     {primaryExecutionMetric ? (
                       <div className="execution-summary__hero-card execution-summary__hero-card--primary" key={primaryExecutionMetric.label}>
-                        <span>收益结果</span>
+                        <span>{t("收益结果")}</span>
                         <strong>{primaryExecutionMetric.value}</strong>
                         <em>
-                          已扣手续费与印花税
-                          {executionTradeCountMetric ? ` · ${executionTradeCountMetric.label} ${executionTradeCountMetric.value}` : ""}
-                          {executionWinRateMetric ? ` · 胜率 ${executionWinRateMetric.value}` : ""}
+                          {t("已扣手续费与印花税")}{executionTradeCountMetric ? ` · ${executionTradeCountMetric.label} ${executionTradeCountMetric.value}` : ""}
+                          {executionWinRateMetric ? t(" · 胜率 {v0}", { v0: executionWinRateMetric.value }) : ""}
                         </em>
                       </div>
                     ) : null}
@@ -1109,7 +1109,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                   ))}
                   {executionOtherMetrics.length ? (
                     <section className="execution-summary__group">
-                      <h3>其他</h3>
+                      <h3>{t("其他")}</h3>
                       <div className="execution-summary__rows">
                         {executionOtherMetrics.map((metric) => (
                           <div className="execution-summary__row" key={metric.label}>
@@ -1126,11 +1126,11 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
           ) : null}
 
           <QuantTableSectionCard
-            title="盈亏构成"
-            description="按股票归集本次任务的已实现盈亏、期末浮动盈亏、成本、到账和费用，用来判断收益主要来自哪些标的。"
+            title={t("盈亏构成")}
+            description={t("按股票归集本次任务的已实现盈亏、期末浮动盈亏、成本、到账和费用，用来判断收益主要来自哪些标的。")}
             table={selectedTaskProfitLossByStock}
-            emptyTitle={selectedTaskProfitLossByStock.emptyLabel ?? "暂无盈亏构成"}
-            emptyDescription={selectedTaskProfitLossByStock.emptyMessage ?? "选中任务还没有可归集到股票的成交或期末持仓。"}
+            emptyTitle={selectedTaskProfitLossByStock.emptyLabel ?? t("暂无盈亏构成")}
+            emptyDescription={selectedTaskProfitLossByStock.emptyMessage ?? t("选中任务还没有可归集到股票的成交或期末持仓。")}
             tableLayout="auto"
             compactConfig={{ coreColumnIndexes: [0, 2, 3, 4], detailColumnIndexes: [1, 5, 6, 7, 8] }}
             signalDetailSource="replay"
@@ -1138,22 +1138,22 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
 
           <div className="section-grid">
             <QuantTableSectionCard
-              title="Top 5 盈利交易"
-              description="只统计本次回放中已卖出并兑现盈利的交易，按净盈亏从高到低排序。"
+              title={t("Top 5 盈利交易")}
+              description={t("只统计本次回放中已卖出并兑现盈利的交易，按净盈亏从高到低排序。")}
               table={selectedTaskTopWinningTrades}
-              emptyTitle={selectedTaskTopWinningTrades.emptyLabel ?? "暂无盈利交易"}
-              emptyDescription={selectedTaskTopWinningTrades.emptyMessage ?? "选中任务没有盈利交易。"}
+              emptyTitle={selectedTaskTopWinningTrades.emptyLabel ?? t("暂无盈利交易")}
+              emptyDescription={selectedTaskTopWinningTrades.emptyMessage ?? t("选中任务没有盈利交易。")}
               tableLayout="auto"
               compactConfig={{ coreColumnIndexes: [2, 4, 5], detailColumnIndexes: [0, 1, 3, 6] }}
               signalDetailSource="replay"
             />
 
             <QuantTableSectionCard
-              title="Top 5 亏损交易"
-              description="只统计本次回放中已卖出并兑现亏损的交易，按净亏损从大到小排序。"
+              title={t("Top 5 亏损交易")}
+              description={t("只统计本次回放中已卖出并兑现亏损的交易，按净亏损从大到小排序。")}
               table={selectedTaskTopLosingTrades}
-              emptyTitle={selectedTaskTopLosingTrades.emptyLabel ?? "暂无亏损交易"}
-              emptyDescription={selectedTaskTopLosingTrades.emptyMessage ?? "选中任务没有亏损交易。"}
+              emptyTitle={selectedTaskTopLosingTrades.emptyLabel ?? t("暂无亏损交易")}
+              emptyDescription={selectedTaskTopLosingTrades.emptyMessage ?? t("选中任务没有亏损交易。")}
               tableLayout="auto"
               compactConfig={{ coreColumnIndexes: [2, 4, 5], detailColumnIndexes: [0, 1, 3, 6] }}
               signalDetailSource="replay"
@@ -1161,10 +1161,10 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
           </div>
 
           <QuantTableSectionCard
-            title="成交明细"
+            title={t("成交明细")}
             table={pagedTrades}
-            emptyTitle={snapshot.trades.emptyLabel ?? "成交明细暂无数据"}
-            emptyDescription={snapshot.trades.emptyMessage ?? "历史回放执行后，所有成交会统一落在这里。"}
+            emptyTitle={snapshot.trades.emptyLabel ?? t("成交明细暂无数据")}
+            emptyDescription={snapshot.trades.emptyMessage ?? t("历史回放执行后，所有成交会统一落在这里。")}
             tableLayout="auto"
             compactConfig={{ coreColumnIndexes: [0, 2, 3, 11], detailColumnIndexes: [1, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14] }}
             signalDetailSource="replay"
@@ -1177,16 +1177,16 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               effectiveTradePage,
               tradePages,
               setTradePage,
-              `DB筛选 ${tradeTotalRows} 条`,
+              t("DB筛选 {v0} 条", { v0: tradeTotalRows }),
               false,
             )}
           />
 
           <QuantTableSectionCard
-            title="信号记录"
+            title={t("信号记录")}
             table={pagedSignals}
-            emptyTitle={snapshot.signals.emptyLabel ?? "信号记录暂无数据"}
-            emptyDescription={snapshot.signals.emptyMessage ?? "回放过程中生成的信号会展示在这里，便于快速核对执行结果。"}
+            emptyTitle={snapshot.signals.emptyLabel ?? t("信号记录暂无数据")}
+            emptyDescription={snapshot.signals.emptyMessage ?? t("回放过程中生成的信号会展示在这里，便于快速核对执行结果。")}
             tableLayout="auto"
             compactConfig={{ coreColumnIndexes: [0, 2, 3, 4], detailColumnIndexes: [1, 5, 6, 7, 8, 9, 10, 11, 12] }}
             toolbar={renderFilterToolbar(
@@ -1198,7 +1198,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               effectiveSignalPage,
               signalPages,
               setSignalPage,
-              `DB筛选 ${signalTotalRows} 条`,
+              t("DB筛选 {v0} 条", { v0: signalTotalRows }),
               true,
             )}
             signalDetailSource="replay"

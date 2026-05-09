@@ -8,14 +8,12 @@ import type { SummaryMetric, TableRow, TableSection } from "../../lib/page-model
 import { toDisplayCount, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
 import { ReplayCapitalPoolPanel } from "./replay-capital-pool-panel";
+import { t } from "../../lib/i18n";
 import {
-  AutoEntryModeSelect,
-  AutoExitSwitch,
   AutoManageToggle,
   DEFAULT_LIFECYCLE_SETTINGS,
   DEFAULT_QUANT_STATUS_FILTERS,
   HealthScoreBar,
-  LifecycleMasterSwitch,
   LifecycleReason,
   LifecycleSummaryBadgeGroup,
   QUANT_STATUS_OPTIONS,
@@ -28,24 +26,24 @@ import {
 } from "./quant-lifecycle-controls";
 
 const ANALYSIS_TIMEFRAME_OPTIONS = [
-  { value: "30m", label: "30分钟" },
-  { value: "1d", label: "日线" },
-  { value: "1d+30m", label: "日线方向 + 30分钟确认" },
+  { value: "30m", label: t("30分钟") },
+  { value: "1d", label: t("日线") },
+  { value: "1d+30m", label: t("日线方向 + 30分钟确认") },
 ];
 
 const AI_DYNAMIC_STRATEGY_OPTIONS = [
-  { value: "off", label: "关闭" },
-  { value: "hybrid", label: "开启" },
+  { value: "off", label: t("关闭") },
+  { value: "hybrid", label: t("开启") },
 ];
 
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
 const SIGNAL_PAGE_SIZE = 20;
-const EXECUTION_HERO_METRIC_LABELS = ["实现盈亏", "买入总成本", "卖出到账", "总费用"];
+const EXECUTION_HERO_METRIC_LABELS = [t("实现盈亏"), t("买入总成本"), t("卖出到账"), t("总费用")];
 const EXECUTION_STAT_GROUPS = [
-  { title: "成本拆解", labels: ["买入毛额", "手续费"] },
-  { title: "收入拆解", labels: ["卖出毛额", "印花税"] },
-  { title: "交易背景", labels: ["交易笔数", "胜率", "买入笔数", "卖出笔数", "加仓次数"] },
-  { title: "Lot / Slot", labels: ["买入lot", "卖出lot", "剩余lot", "占用slot", "释放slot", "最大占用slot", "平均占用slot"] },
+  { title: t("成本拆解"), labels: [t("买入毛额"), t("手续费")] },
+  { title: t("收入拆解"), labels: [t("卖出毛额"), t("印花税")] },
+  { title: t("交易背景"), labels: [t("交易笔数"), t("胜率"), t("买入笔数"), t("卖出笔数"), t("加仓次数")] },
+  { title: "Lot / Slot", labels: [t("买入lot"), t("卖出lot"), t("剩余lot"), t("占用slot"), t("释放slot"), t("最大占用slot"), t("平均占用slot")] },
 ];
 
 function parseIntervalMinutes(value: string) {
@@ -55,8 +53,8 @@ function parseIntervalMinutes(value: string) {
 
 function normalizeAnalysisTimeframe(value: string) {
   const normalized = String(value).trim().toLowerCase();
-  if (normalized === "日线") return "1d";
-  if (normalized.includes("30分钟")) return "1d+30m";
+  if (normalized === t("日线")) return "1d";
+  if (normalized.includes(t("30分钟"))) return "1d+30m";
   return ANALYSIS_TIMEFRAME_OPTIONS.find((option) => option.value === normalized)?.value ?? "30m";
 }
 
@@ -67,8 +65,8 @@ function normalizeMarket(value: string) {
 
 function normalizeAiDynamicStrategy(value: string) {
   const normalized = String(value).trim().toLowerCase();
-  if (!normalized || normalized === "off" || normalized.includes("关")) return "off";
-  if (normalized === "template" || normalized === "weights" || normalized === "hybrid" || normalized.includes("开")) return "hybrid";
+  if (!normalized || normalized === "off" || normalized.includes(t("关"))) return "off";
+  if (normalized === "template" || normalized === "weights" || normalized === "hybrid" || normalized.includes(t("开"))) return "hybrid";
   return "off";
 }
 
@@ -135,7 +133,7 @@ function findColumnIndex(table: TableSection, candidates: string[], fallback: nu
 function removeStrategyColumn(table: TableSection): TableSection {
   const strategyIndexes = table.columns
     .map((column, index) => ({ normalized: String(column ?? "").trim().toLowerCase(), index }))
-    .filter(({ normalized }) => normalized.includes("策略") || normalized === "strategy")
+    .filter(({ normalized }) => normalized.includes(t("策略")) || normalized === "strategy")
     .map(({ index }) => index);
 
   if (strategyIndexes.length === 0) {
@@ -155,12 +153,12 @@ function removeStrategyColumn(table: TableSection): TableSection {
 function mergeTradeRemarksIntoDetails(table: TableSection): TableSection {
   const remarkIndex = table.columns.findIndex((column) => {
     const normalized = String(column ?? "").trim().toLowerCase();
-    return normalized === "备注" || normalized === "note";
+    return normalized === t("备注") || normalized === "note";
   });
   if (remarkIndex < 0) {
     return table;
   }
-  const detailIndex = table.columns.findIndex((column) => String(column ?? "").includes("执行明细"));
+  const detailIndex = table.columns.findIndex((column) => String(column ?? "").includes(t("执行明细")));
   return {
     ...table,
     columns: table.columns.filter((_, index) => index !== remarkIndex),
@@ -178,20 +176,20 @@ function mergeTradeRemarksIntoDetails(table: TableSection): TableSection {
   };
 }
 
-function emptyLiveSignalTable(message = "暂无信号"): TableSection {
+function emptyLiveSignalTable(message = t("暂无信号")): TableSection {
   return {
-    columns: ["信号ID", "时间", "代码", "动作", "状态"],
+    columns: [t("信号ID"), t("时间"), t("代码"), t("动作"), t("状态")],
     rows: [],
-    emptyLabel: "暂无信号",
+    emptyLabel: t("暂无信号"),
     emptyMessage: message,
   };
 }
 
-function emptyLiveTradeTable(message = "暂无交易记录"): TableSection {
+function emptyLiveTradeTable(message = t("暂无交易记录")): TableSection {
   return {
-    columns: ["时间", "代码", "动作", "数量", "价格", "备注"],
+    columns: [t("时间"), t("代码"), t("动作"), t("数量"), t("价格"), t("备注")],
     rows: [],
-    emptyLabel: "暂无交易记录",
+    emptyLabel: t("暂无交易记录"),
     emptyMessage: message,
   };
 }
@@ -240,7 +238,6 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const [capitalHighPriceThreshold, setCapitalHighPriceThreshold] = useState(100);
   const [capitalHighPriceMaxSlotUnits, setCapitalHighPriceMaxSlotUnits] = useState(2);
   const [lifecycleSettings, setLifecycleSettings] = useState<QuantLifecycleSettings>(DEFAULT_LIFECYCLE_SETTINGS);
-  const [lifecycleSettingsPending, setLifecycleSettingsPending] = useState(false);
   const [selectedQuantStatuses, setSelectedQuantStatuses] = useState<string[]>(DEFAULT_QUANT_STATUS_FILTERS);
   const [lifecycleActionPending, setLifecycleActionPending] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState<"save" | "reset" | "start" | "stop" | null>(null);
@@ -250,9 +247,9 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const [signalActionFilter, setSignalActionFilter] = useState("TRADE");
   const [signalPage, setSignalPage] = useState(1);
   const [tradeTable, setTradeTable] = useState<TableSection>({
-    columns: ["时间", "代码", "动作", "数量", "价格", "备注"],
+    columns: [t("时间"), t("代码"), t("动作"), t("数量"), t("价格"), t("备注")],
     rows: [],
-    emptyLabel: "暂无交易记录",
+    emptyLabel: t("暂无交易记录"),
   });
   const [tradeLoading, setTradeLoading] = useState(false);
   const [tradeStockFilter, setTradeStockFilter] = useState("");
@@ -324,7 +321,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         }
       } catch {
         if (mounted) {
-          setSignalTable(emptyLiveSignalTable("信号加载失败，请稍后重试。"));
+          setSignalTable(emptyLiveSignalTable(t("信号加载失败，请稍后重试。")));
         }
       } finally {
         if (mounted) {
@@ -365,7 +362,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         }
       } catch {
         if (mounted) {
-          setTradeTable(emptyLiveTradeTable("成交记录加载失败，请稍后重试。"));
+          setTradeTable(emptyLiveTradeTable(t("成交记录加载失败，请稍后重试。")));
         }
       } finally {
         if (mounted) {
@@ -384,36 +381,36 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   }, [tradeStockFilter, tradeActionFilter, snapshotVersion]);
 
   if (resource.status === "loading" && !resource.data) {
-    return <PageLoadingState title="实时模拟加载中" description="正在读取定时任务配置、候选池和账户结果。" />;
+    return <PageLoadingState title={t("实时模拟加载中")} description={t("正在读取定时任务配置、候选池和账户结果。")} />;
   }
 
   if (resource.status === "error" && !resource.data) {
     return (
       <PageErrorState
-        title="实时模拟加载失败"
-        description={resource.error ?? "无法加载实时模拟数据，请稍后重试。"}
-        actionLabel="重新加载"
+        title={t("实时模拟加载失败")}
+        description={resource.error ?? t("无法加载实时模拟数据，请稍后重试。")}
+        actionLabel={t("重新加载")}
         onAction={resource.refresh}
       />
     );
   }
 
   if (!snapshot) {
-    return <PageEmptyState title="实时模拟暂无数据" description="后台尚未返回实时模拟快照。" actionLabel="刷新" onAction={resource.refresh} />;
+    return <PageEmptyState title={t("实时模拟暂无数据")} description={t("后台尚未返回实时模拟快照。")} actionLabel={t("刷新")} onAction={resource.refresh} />;
   }
 
   const candidateCount = toDisplayCount(snapshot.status.candidateCount, snapshot.candidatePool.rows.length);
-  const runningState = toDisplayText(snapshot.status.running, "未知");
+  const runningState = toDisplayText(snapshot.status.running, t("未知"));
   const runningNormalized = String(snapshot.status.running ?? "").trim().toLowerCase();
-  const isRunning = runningNormalized.includes("运行中") || runningNormalized.includes("running");
+  const isRunning = runningNormalized.includes(t("运行中")) || runningNormalized.includes("running");
   const candidatePoolBaseTable = withoutTableColumns(snapshot.candidatePool, (column) => {
     const normalized = column.trim().toLowerCase();
-    return normalized === "来源" || normalized === "source";
+    return normalized === t("来源") || normalized === "source";
   });
   const availableQuantStatuses = (snapshot.quant_status_filters?.available ?? QUANT_STATUS_OPTIONS).filter((status) => QUANT_STATUS_OPTIONS.includes(status));
   const candidatePoolTable: TableSection = {
     ...candidatePoolBaseTable,
-    columns: [...candidatePoolBaseTable.columns, "状态", "健康度", "生命周期原因"],
+    columns: [...candidatePoolBaseTable.columns, t("状态"), t("健康度"), t("生命周期原因")],
     rows: snapshot.candidatePool.rows
       .filter((row) => selectedQuantStatuses.includes(lifecycleStatusOf(row)))
       .map((row) => {
@@ -424,14 +421,14 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           cells: [
             ...baseCells,
             lifecycleStatusOf(row),
-            `健康 ${Math.round(Number(lifecycle.health_score ?? 100))}`,
+            t("健康 {v0}", { v0: Math.round(Number(lifecycle.health_score ?? 100)) }),
             String(lifecycle.latest_reason || "--"),
           ],
           actions: (row.actions ?? []).filter((action) => action.action === "delete-candidate"),
         };
       }),
   };
-  const signalActionColumnIndex = findColumnIndex(signalTable, ["动作", "action"], 4);
+  const signalActionColumnIndex = findColumnIndex(signalTable, [t("动作"), "action"], 4);
   const signalActionOptions = Array.from(new Set(signalTable.rows.map((row) => normalizeSignalAction(String(row.cells[signalActionColumnIndex] ?? ""))).filter(Boolean)));
   const tradeActionOptions = Array.from(new Set(tradeTable.rows.map((row) => normalizeSignalAction(String(row.cells[2] ?? ""))).filter(Boolean)));
   const signalPages = Math.max(1, Number(signalTable.pagination?.totalPages ?? 1));
@@ -446,10 +443,10 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const tradeTotalRows = Number(tradeTable.pagination?.totalRows ?? tradeTable.rows.length);
   const tradeCostSummary = snapshot.tradeCostSummary ?? [];
   const executionHeroMetrics = pickMetrics(tradeCostSummary, EXECUTION_HERO_METRIC_LABELS);
-  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === "实现盈亏");
-  const executionTradeCountMetric = tradeCostSummary.find((metric) => metric.label === "交易笔数");
-  const executionWinRateMetric = tradeCostSummary.find((metric) => metric.label === "胜率");
-  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== "实现盈亏");
+  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === t("实现盈亏"));
+  const executionTradeCountMetric = tradeCostSummary.find((metric) => metric.label === t("交易笔数"));
+  const executionWinRateMetric = tradeCostSummary.find((metric) => metric.label === t("胜率"));
+  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== t("实现盈亏"));
   const executionHeroMetricLabels = new Set(executionHeroMetrics.map((metric) => metric.label));
   const executionGroupMetricLabels = new Set(EXECUTION_STAT_GROUPS.flatMap((group) => group.labels));
   const executionStatGroups = EXECUTION_STAT_GROUPS.map((group) => ({
@@ -469,8 +466,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         disabled={currentSignalPage <= 1}
         onClick={() => setSignalPage((page) => Math.max(1, page - 1))}
       >
-        上一页
-      </button>
+        {t("上一页")}</button>
       <span
         className="badge badge--neutral"
         style={{
@@ -482,7 +478,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           padding: "0 16px",
         }}
       >
-        {`第 ${currentSignalPage} / ${signalPages} 页`}
+        {t("第 {v0} / {v1} 页", { v0: currentSignalPage, v1: signalPages })}
       </span>
       <button
         className="button button--secondary button--small"
@@ -491,8 +487,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         disabled={currentSignalPage >= signalPages}
         onClick={() => setSignalPage((page) => Math.min(signalPages, page + 1))}
       >
-        下一页
-      </button>
+        {t("下一页")}</button>
     </div>
   );
   const renderSignalToolbar = () => (
@@ -501,7 +496,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         className="input"
         style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
         data-size="compact-input"
-        placeholder="按代码/名称过滤"
+        placeholder={t("按代码/名称过滤")}
         value={signalStockFilter}
         onChange={(event) => setSignalStockFilter(event.target.value)}
       />
@@ -513,7 +508,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         onChange={(event) => setSignalActionFilter(event.target.value)}
       >
         <option value="TRADE">BUY/SELL</option>
-        <option value="ALL">全部动作</option>
+        <option value="ALL">{t("全部动作")}</option>
         {signalActionOptions.map((option) => (
           <option key={option} value={option}>
             {option}
@@ -522,7 +517,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
       </select>
       {renderSignalPager()}
       <span className="summary-item__body table-toolbar-compact__count" style={{ margin: 0 }}>
-        {signalLoading ? "加载中..." : `DB筛选 ${signalTotalRows} 条`}
+        {signalLoading ? t("加载中...") : t("DB筛选 {v0} 条", { v0: signalTotalRows })}
       </span>
     </div>
   );
@@ -532,7 +527,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         className="input"
         style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
         data-size="compact-input"
-        placeholder="按代码/名称过滤"
+        placeholder={t("按代码/名称过滤")}
         value={tradeStockFilter}
         onChange={(event) => setTradeStockFilter(event.target.value)}
       />
@@ -543,7 +538,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         value={tradeActionFilter}
         onChange={(event) => setTradeActionFilter(event.target.value)}
       >
-        <option value="ALL">全部动作</option>
+        <option value="ALL">{t("全部动作")}</option>
         {tradeActionOptions.map((option) => (
           <option key={option} value={option}>
             {option}
@@ -561,7 +556,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           ←
         </button>
         <span className="badge badge--neutral" style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}>
-          {`第 ${currentTradePage} / ${tradePages} 页`}
+          {t("第 {v0} / {v1} 页", { v0: currentTradePage, v1: tradePages })}
         </span>
         <button
           className="button button--secondary button--small"
@@ -574,7 +569,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
         </button>
       </div>
       <span className="summary-item__body table-toolbar-compact__count" style={{ margin: 0 }}>
-        {tradeLoading ? "加载中..." : `DB筛选 ${tradeTotalRows} 条`}
+        {tradeLoading ? t("加载中...") : t("DB筛选 {v0} 条", { v0: tradeTotalRows })}
       </span>
     </div>
   );
@@ -603,20 +598,6 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     capitalHighPriceMaxSlotUnits,
     capitalSellCashReusePolicy: "next_batch",
   };
-  const updateLifecycleSettings = async (patch: Partial<QuantLifecycleSettings>) => {
-    const previous = lifecycleSettings;
-    const next = normalizeLifecycleSettings({ ...lifecycleSettings, ...patch });
-    setLifecycleSettings(next);
-    setLifecycleSettingsPending(true);
-    try {
-      const saved = await requestQuantUniverse<Partial<QuantLifecycleSettings>>("/api/v1/quant/universe/settings", patch);
-      setLifecycleSettings(normalizeLifecycleSettings(saved));
-    } catch {
-      setLifecycleSettings(previous);
-    } finally {
-      setLifecycleSettingsPending(false);
-    }
-  };
   const toggleQuantStatus = (status: string) => {
     setSelectedQuantStatuses((current) => {
       if (current.includes(status)) {
@@ -631,7 +612,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     const lifecycle = lifecycleOf(row);
     const autoManaged = lifecycle.quant_auto_managed !== false && lifecycle.quant_manual_override !== "manual_pause";
     const overrideType = autoManaged ? "manual_pause" : "none";
-    if (!window.confirm(`${autoManaged ? "暂停" : "恢复"} ${code} 的自动生命周期管理？`)) {
+    if (!window.confirm(t("{v0} {v1} 的自动生命周期管理？", { v0: autoManaged ? t("暂停") : t("恢复"), v1: code }))) {
       return;
     }
     setLifecycleActionPending(`${code}:override`);
@@ -644,7 +625,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   };
   const restoreToTrial = async (row: TableRow) => {
     const code = row.code || row.id;
-    if (!window.confirm(`恢复 ${code} 到量化试运行？`)) {
+    if (!window.confirm(t("恢复 {v0} 到量化观察？", { v0: code }))) {
       return;
     }
     setLifecycleActionPending(`${code}:restore`);
@@ -656,7 +637,6 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     }
   };
   const systemTimezone = snapshot.timeContext?.systemTimezone ?? "system";
-  const marketTimezone = snapshot.timeContext?.marketTimezone ?? snapshot.config.market;
   const snapshotTimeLabel = snapshot.timeContext?.updatedAtSystem ?? snapshot.updatedAt;
   const lastRunLabel = snapshot.status.lastRunSystem ?? snapshot.status.lastRun;
   const nextRunLabel = snapshot.status.nextRunSystem ?? snapshot.status.nextRun;
@@ -664,14 +644,14 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   return (
     <div>
       <PageHeader
-        eyebrow="实时模拟"
-        title={`运行状态：${runningState}`}
-        description={`最近执行：${lastRunLabel}；下次执行：${nextRunLabel}。交易时间按 ${marketTimezone} 判断，页面显示按 ${systemTimezone}。`}
+        eyebrow={t("实时模拟")}
+        title={t("运行状态：{state}", { state: runningState })}
+        description={t("最近执行：{lastRun}；下次执行：{nextRun}。", { lastRun: lastRunLabel, nextRun: nextRunLabel })}
         actions={
           <div className="chip-row">
-            <span className="badge badge--neutral">快照 {snapshotTimeLabel}</span>
-            <span className="badge badge--neutral">系统时区 {systemTimezone}</span>
-            <span className="badge badge--accent">候选 {candidateCount}</span>
+            <span className="badge badge--neutral">{t("快照")}{snapshotTimeLabel}</span>
+            <span className="badge badge--neutral">{t("系统时区")}{systemTimezone}</span>
+            <span className="badge badge--accent">{t("候选")}{candidateCount}</span>
             <span className={isRunning ? "badge badge--success" : "badge badge--neutral"}>{runningState}</span>
           </div>
         }
@@ -679,55 +659,40 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
       <div className="section-grid section-grid--sidebar">
         <div className="stack">
           <WorkbenchCard>
-            <h2 className="section-card__title">定时任务配置</h2>
+            <h2 className="section-card__title">{t("定时任务配置")}</h2>
             <p className="section-card__description">
-              {`资金池、粒度和自动执行统一放在这里配置。启动后会从当前时点开始做真实模拟。`}
+              {t("资金池、粒度和自动执行统一放在这里配置。启动后会从当前时点开始做真实模拟。")}
             </p>
             <div className="mini-metric-grid">
               <div className="mini-metric">
-                <div className="mini-metric__label">间隔</div>
+                <div className="mini-metric__label">{t("间隔")}</div>
                 <div className="mini-metric__value">{snapshot.config.interval}</div>
               </div>
               <div className="mini-metric">
-                <div className="mini-metric__label">分析粒度</div>
+                <div className="mini-metric__label">{t("分析粒度")}</div>
                 <div className="mini-metric__value">{snapshot.config.timeframe}</div>
               </div>
               <div className="mini-metric">
-                <div className="mini-metric__label">手续费</div>
+                <div className="mini-metric__label">{t("手续费")}</div>
                 <div className="mini-metric__value">{`${parseRatePercent(snapshot.config.commissionRatePct, commissionRatePct).toFixed(4)}%`}</div>
               </div>
               <div className="mini-metric">
-                <div className="mini-metric__label">卖出税费</div>
+                <div className="mini-metric__label">{t("卖出税费")}</div>
                 <div className="mini-metric__value">{`${parseRatePercent(snapshot.config.sellTaxRatePct, sellTaxRatePct).toFixed(4)}%`}</div>
               </div>
               <div className="mini-metric">
-                <div className="mini-metric__label">最大Slot</div>
+                <div className="mini-metric__label">{t("最大Slot")}</div>
                 <div className="mini-metric__value">{capitalMaxSlots}</div>
               </div>
             </div>
             <div className="card-divider" />
             <LifecycleSummaryBadgeGroup settings={lifecycleSettings} />
-            <div className="summary-list">
-              <LifecycleMasterSwitch
-                checked={lifecycleSettings.quant_universe_lifecycle_enabled}
-                disabled={lifecycleSettingsPending}
-                onChange={(checked) => void updateLifecycleSettings({ quant_universe_lifecycle_enabled: checked })}
-              />
-              <AutoEntryModeSelect
-                value={lifecycleSettings.auto_entry_mode}
-                disabled={lifecycleSettingsPending}
-                onChange={(value) => void updateLifecycleSettings({ auto_entry_mode: value })}
-              />
-              <AutoExitSwitch
-                checked={lifecycleSettings.auto_exit_enabled}
-                disabled={lifecycleSettingsPending}
-                onChange={(checked) => void updateLifecycleSettings({ auto_exit_enabled: checked })}
-              />
-            </div>
+            <p className="section-card__description">
+              {t("自动入池和自动出池是系统级量化策略开关，请到“设置 / 量化策略自动化”调整；这里仅展示实时模拟当前读取到的口径。")}</p>
             <div className="card-divider" />
             <div className="summary-list">
               <label className="field">
-                <span className="field__label">间隔(分钟)</span>
+                <span className="field__label">{t("间隔(分钟)")}</span>
                 <input
                   className="input"
                   min={5}
@@ -739,7 +704,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                 />
               </label>
               <label className="field">
-                <span className="field__label">分析粒度</span>
+                <span className="field__label">{t("分析粒度")}</span>
                 <select className="input" value={analysisTimeframe} onChange={(event) => setAnalysisTimeframe(event.target.value)}>
                   {ANALYSIS_TIMEFRAME_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -749,7 +714,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                 </select>
               </label>
               <label className="field">
-                <span className="field__label">策略配置</span>
+                <span className="field__label">{t("策略配置")}</span>
                 <select className="input" value={strategyProfileId} onChange={(event) => setStrategyProfileId(event.target.value)}>
                   {(snapshot.config.strategyProfiles ?? []).map((item) => (
                     <option key={item.id} value={item.id}>
@@ -759,7 +724,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                 </select>
               </label>
               <label className="field">
-                <span className="field__label">AI动态策略</span>
+                <span className="field__label">{t("AI动态策略")}</span>
                 <select className="input" value={aiDynamicStrategy} onChange={(event) => setAiDynamicStrategy(event.target.value)}>
                   {AI_DYNAMIC_STRATEGY_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -769,7 +734,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                 </select>
               </label>
               <label className="field">
-                <span className="field__label">市场</span>
+                <span className="field__label">{t("市场")}</span>
                 <select
                   className="input"
                   value={market}
@@ -783,7 +748,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                 </select>
               </label>
               <label className="field">
-                <span className="field__label">初始资金池(元)</span>
+                <span className="field__label">{t("初始资金池(元)")}</span>
                 <input
                   className="input"
                   min={10000}
@@ -794,7 +759,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                 />
               </label>
               <label className="field">
-                <span className="field__label">手续费率(%)</span>
+                <span className="field__label">{t("手续费率(%)")}</span>
                 <input
                   className="input"
                   min={0}
@@ -806,7 +771,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                 />
               </label>
               <label className="field">
-                <span className="field__label">卖出税费率(%)</span>
+                <span className="field__label">{t("卖出税费率(%)")}</span>
                 <input
                   className="input"
                   min={0}
@@ -818,23 +783,23 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                 />
               </label>
               <label className="field">
-                <span className="field__label">最大Slot数</span>
+                <span className="field__label">{t("最大Slot数")}</span>
                 <input className="input" min={1} step={1} type="number" value={capitalMaxSlots} onChange={(event) => setCapitalMaxSlots(Number(event.target.value) || 25)} />
               </label>
               <label className="field">
-                <span className="field__label">满Slot分数边际</span>
+                <span className="field__label">{t("满Slot分数边际")}</span>
                 <input className="input" min={0.01} max={1} step={0.01} type="number" value={capitalFullBuyEdge} onChange={(event) => setCapitalFullBuyEdge(Number(event.target.value) || 0.25)} />
               </label>
               <label className="field">
-                <span className="field__label">置信度权重</span>
+                <span className="field__label">{t("置信度权重")}</span>
                 <input className="input" min={0} max={1} step={0.05} type="number" value={capitalConfidenceWeight} onChange={(event) => setCapitalConfidenceWeight(Number(event.target.value) || 0.35)} />
               </label>
               <label className="field">
-                <span className="field__label">高价股阈值(元)</span>
+                <span className="field__label">{t("高价股阈值(元)")}</span>
                 <input className="input" min={0} step={1} type="number" value={capitalHighPriceThreshold} onChange={(event) => setCapitalHighPriceThreshold(Number(event.target.value) || 100)} />
               </label>
               <label className="field">
-                <span className="field__label">高价股最大Slot</span>
+                <span className="field__label">{t("高价股最大Slot")}</span>
                 <input className="input" min={1} max={5} step={0.5} type="number" value={capitalHighPriceMaxSlotUnits} onChange={(event) => setCapitalHighPriceMaxSlotUnits(Number(event.target.value) || 2)} />
               </label>
             </div>
@@ -853,7 +818,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                   }
                 }}
               >
-                {actionPending === "save" ? "保存中..." : "保存"}
+                {actionPending === "save" ? t("保存中...") : t("保存")}
               </button>
               <button
                 className="button button--secondary"
@@ -872,7 +837,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                   }
                 }}
               >
-                {actionPending === "reset" ? "重置中..." : "重置"}
+                {actionPending === "reset" ? t("重置中...") : t("重置")}
               </button>
               <span className="toolbar__spacer" />
               <button
@@ -888,7 +853,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                   }
                 }}
               >
-                {actionPending === "stop" ? "停止中..." : "停止模拟"}
+                {actionPending === "stop" ? t("停止中...") : t("停止模拟")}
               </button>
               <button
                 className="button button--primary button--hero"
@@ -903,30 +868,30 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                   }
                 }}
               >
-                {actionPending === "start" ? "启动中..." : isRunning ? "运行中" : "启动模拟"}
+                {actionPending === "start" ? t("启动中...") : isRunning ? t("运行中") : t("启动模拟")}
               </button>
             </div>
           </WorkbenchCard>
 
           <QuantTableSectionCard
-            title="实时量化股票"
-            description="来自统一股票池中已启用实时量化的股票，实时模拟会按这批标的扫描。"
+            title={t("实时量化股票")}
+            description={t("来自统一股票池中已启用实时量化的股票，实时模拟会按这批标的扫描。")}
             table={candidatePoolTable}
-            emptyTitle={candidatePoolTable.emptyLabel ?? "暂无实时量化股票"}
-            emptyDescription={candidatePoolTable.emptyMessage ?? "先在股票池中批量启用实时量化，再启动实时模拟。"}
-            meta={[`表内 ${candidatePoolTable.rows.length} 只`, `待量化 ${candidateCount}`]}
-            actionsHead="操作"
+            emptyTitle={candidatePoolTable.emptyLabel ?? t("暂无实时量化股票")}
+            emptyDescription={candidatePoolTable.emptyMessage ?? t("先在股票池中批量启用实时量化，再启动实时模拟。")}
+            meta={[t("表内 {v0} 只", { v0: candidatePoolTable.rows.length }), t("待量化 {v0}", { v0: candidateCount })]}
+            actionsHead={t("操作")}
             actionsColumnSize="icon"
             compactConfig={{ coreColumnIndexes: [0, 1, 2], detailColumnIndexes: [] }}
             toolbar={<StatusFilterChips available={availableQuantStatuses} selected={selectedQuantStatuses} onToggle={toggleQuantStatus} />}
             renderCell={({ row, cell, column }) => {
-              if (column === "状态") {
+              if (column === t("状态")) {
                 return <QuantStatusBadge status={lifecycleStatusOf(row)} />;
               }
-              if (column === "健康度") {
+              if (column === t("健康度")) {
                 return <HealthScoreBar value={lifecycleOf(row).health_score} />;
               }
-              if (column === "生命周期原因") {
+              if (column === t("生命周期原因")) {
                 return <LifecycleReason>{cell}</LifecycleReason>;
               }
               return undefined;
@@ -949,7 +914,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                   <button
                     className="icon-button icon-button--danger"
                     type="button"
-                    aria-label="删除候选股"
+                    aria-label={t("删除候选股")}
                     disabled={lifecycleActionPending !== null}
                     onClick={() => void resource.runAction("delete-candidate", row.id)}
                   >
@@ -978,11 +943,11 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           </div>
 
           <QuantTableSectionCard
-            title="信号记录"
-            description="点击信号ID进入统一信号详情页，股票代码和名称进入股票详情。"
+            title={t("信号记录")}
+            description={t("点击信号ID进入统一信号详情页，股票代码和名称进入股票详情。")}
             table={pagedSignalTable}
-            emptyTitle={signalTable.emptyLabel ?? "暂无信号"}
-            emptyDescription={signalTable.emptyMessage ?? "当前没有可查看的信号记录。"}
+            emptyTitle={signalTable.emptyLabel ?? t("暂无信号")}
+            emptyDescription={signalTable.emptyMessage ?? t("当前没有可查看的信号记录。")}
             tableLayout="auto"
             compactConfig={{ coreColumnIndexes: [0, 2, 3, 4], detailColumnIndexes: [1, 5, 6, 7, 8, 9, 10, 11, 12] }}
             signalDetailSource="live"
@@ -992,10 +957,10 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           {snapshot.capitalPool ? <ReplayCapitalPoolPanel capitalPool={snapshot.capitalPool} showPositionSummary /> : null}
 
           <QuantTableSectionCard
-            title="成交记录"
+            title={t("成交记录")}
             table={tradeTable}
-            emptyTitle={tradeTable.emptyLabel ?? "成交记录暂无数据"}
-            emptyDescription={tradeTable.emptyMessage ?? "如果调度还没有生成新的成交，这里会先保持为空。"}
+            emptyTitle={tradeTable.emptyLabel ?? t("成交记录暂无数据")}
+            emptyDescription={tradeTable.emptyMessage ?? t("如果调度还没有生成新的成交，这里会先保持为空。")}
             compactConfig={{ coreColumnIndexes: [0, 1, 2, 10], detailColumnIndexes: [3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14] }}
             shellClassName="table-shell--trade-details"
             toolbar={renderTradeToolbar()}
@@ -1003,19 +968,18 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
 
           {tradeCostSummary.length ? (
             <WorkbenchCard>
-              <h2 className="section-card__title">费用与执行统计</h2>
-              <p className="section-card__description">按买入成本、卖出到账、费用和实现盈亏归集，成交笔数仅作为执行背景。</p>
-              <div className="execution-summary execution-summary--finance" aria-label="费用与执行统计">
+              <h2 className="section-card__title">{t("费用与执行统计")}</h2>
+              <p className="section-card__description">{t("按买入成本、卖出到账、费用和实现盈亏归集，成交笔数仅作为执行背景。")}</p>
+              <div className="execution-summary execution-summary--finance" aria-label={t("费用与执行统计")}>
                 {executionHeroMetrics.length ? (
                   <div className="execution-summary__hero">
                     {primaryExecutionMetric ? (
                       <div className="execution-summary__hero-card execution-summary__hero-card--primary" key={primaryExecutionMetric.label}>
-                        <span>收益结果</span>
+                        <span>{t("收益结果")}</span>
                         <strong>{primaryExecutionMetric.value}</strong>
                         <em>
-                          已扣手续费与印花税
-                          {executionTradeCountMetric ? ` · ${executionTradeCountMetric.label} ${executionTradeCountMetric.value}` : ""}
-                          {executionWinRateMetric ? ` · 胜率 ${executionWinRateMetric.value}` : ""}
+                          {t("已扣手续费与印花税")}{executionTradeCountMetric ? ` · ${executionTradeCountMetric.label} ${executionTradeCountMetric.value}` : ""}
+                          {executionWinRateMetric ? t(" · 胜率 {v0}", { v0: executionWinRateMetric.value }) : ""}
                         </em>
                       </div>
                     ) : null}
@@ -1043,7 +1007,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                   ))}
                   {executionOtherMetrics.length ? (
                     <section className="execution-summary__group">
-                      <h3>其他</h3>
+                      <h3>{t("其他")}</h3>
                       <div className="execution-summary__rows">
                         {executionOtherMetrics.map((metric) => (
                           <div className="execution-summary__row" key={metric.label}>

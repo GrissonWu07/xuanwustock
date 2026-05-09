@@ -7,6 +7,14 @@ import { PageEmptyState, PageErrorState, PageLoadingState } from "../../componen
 import { usePageData } from "../../lib/use-page-data";
 import type { ConfigSettingItem } from "../../lib/page-models";
 import { t } from "../../lib/i18n";
+import {
+  AutoEntryModeSelect,
+  AutoExitSwitch,
+  LifecycleMasterSwitch,
+  LifecycleSummaryBadgeGroup,
+  normalizeLifecycleSettings,
+  type QuantLifecycleSettings,
+} from "../quant/quant-lifecycle-controls";
 
 type SettingsPageProps = {
   client?: ApiClient;
@@ -59,7 +67,7 @@ const parseValue = (item: ConfigSettingItem): string => {
     return "";
   }
 
-  const legacyMarkers = ["当前值:", "Current value:", "Value:"];
+  const legacyMarkers = [t("当前值:"), "Current value:", "Value:"];
   for (const marker of legacyMarkers) {
     const markerIndex = body.lastIndexOf(marker);
     if (markerIndex >= 0) {
@@ -174,6 +182,8 @@ export function SettingsPage({ client }: SettingsPageProps) {
   const resource = usePageData("settings", effectiveClient);
   const [values, setValues] = useState<Record<string, string>>({});
   const [savedValues, setSavedValues] = useState<Record<string, string>>({});
+  const [quantLifecycleSettings, setQuantLifecycleSettings] = useState<QuantLifecycleSettings>(() => normalizeLifecycleSettings(undefined));
+  const [savedQuantLifecycleSettings, setSavedQuantLifecycleSettings] = useState<QuantLifecycleSettings>(() => normalizeLifecycleSettings(undefined));
 
   const dataSources = useMemo(
     () => (resource.data?.dataSources ?? []).map((item, index) => normalizeField(item, index)),
@@ -218,6 +228,12 @@ export function SettingsPage({ client }: SettingsPageProps) {
     setSavedValues(nextValues);
   }, [dataSources, modelConfig, runtimeParams]);
 
+  useEffect(() => {
+    const nextSettings = normalizeLifecycleSettings(resource.data?.quantLifecycleSettings);
+    setQuantLifecycleSettings((prev) => (JSON.stringify(prev) === JSON.stringify(nextSettings) ? prev : nextSettings));
+    setSavedQuantLifecycleSettings(nextSettings);
+  }, [resource.data?.quantLifecycleSettings]);
+
   const dirty = useMemo(() => {
     const current = values;
     const saved = savedValues;
@@ -229,8 +245,8 @@ export function SettingsPage({ client }: SettingsPageProps) {
       }
     }
 
-    return false;
-  }, [savedValues, values]);
+    return JSON.stringify(quantLifecycleSettings) !== JSON.stringify(savedQuantLifecycleSettings);
+  }, [quantLifecycleSettings, savedQuantLifecycleSettings, savedValues, values]);
 
   if (resource.status === "loading" && !resource.data) {
     return <PageLoadingState title={t("Settings loading...")} description={t("Loading model, data source, and runtime params.")} />;
@@ -257,6 +273,7 @@ export function SettingsPage({ client }: SettingsPageProps) {
       "save",
       {
         env: Object.fromEntries([...dataSources, ...modelConfig, ...runtimeParams].map((item) => [item.key, values[item.key] ?? item.value])),
+        quantLifecycleSettings,
       },
     );
   };
@@ -292,6 +309,31 @@ export function SettingsPage({ client }: SettingsPageProps) {
         <WorkbenchCard className="settings-card settings-card--highlight">
           <h2 className="section-card__title settings-card__title">{t("Output count settings")}</h2>
           {renderFields("Output count settings", pinnedRuntimeParams, values, onChange)}
+        </WorkbenchCard>
+
+        <WorkbenchCard className="settings-card settings-card--highlight">
+          <div className="toolbar">
+            <h2 className="section-card__title settings-card__title" style={{ margin: 0 }}>{t("量化策略自动化")}</h2>
+          </div>
+          <p className="section-card__description">
+            {t("自动入池是系统级开关，控制发现页和研究页的候选股票是否只记录、等待确认，或自动纳入量化观察。策略配置页只负责不同策略模型的阈值和仓位参数；实时模拟和历史回放只读取当前设置，不在运行页修改这个开关。")}</p>
+          <LifecycleSummaryBadgeGroup settings={quantLifecycleSettings} />
+          <div className="summary-list">
+            <LifecycleMasterSwitch
+              checked={quantLifecycleSettings.quant_universe_lifecycle_enabled}
+              onChange={(checked) => setQuantLifecycleSettings((prev) => normalizeLifecycleSettings({ ...prev, quant_universe_lifecycle_enabled: checked }))}
+            />
+            <AutoEntryModeSelect
+              value={quantLifecycleSettings.auto_entry_mode}
+              onChange={(value) => setQuantLifecycleSettings((prev) => normalizeLifecycleSettings({ ...prev, auto_entry_mode: value }))}
+            />
+            <AutoExitSwitch
+              checked={quantLifecycleSettings.auto_exit_enabled}
+              onChange={(checked) => setQuantLifecycleSettings((prev) => normalizeLifecycleSettings({ ...prev, auto_exit_enabled: checked }))}
+            />
+          </div>
+          <p className="section-card__description">
+            {t("手动模式只留下候选事件；确认模式会在页面标记可纳入股票并等待批量确认；自动纳入观察会让达标股票直接进入实时量化扫描范围。")}</p>
         </WorkbenchCard>
 
         <div className="settings-layout">

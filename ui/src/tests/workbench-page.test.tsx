@@ -106,10 +106,10 @@ const quantOverviewPayload = {
       latest_reason: "2 只候选待确认",
     },
     trial: {
-      label: "试运行股票",
+      label: "量化观察",
       count: 1,
-      top_items: [{ stock_code: "600003", stock_name: "试运行A", latest_reason: "观察中" }],
-      latest_reason: "轻仓试运行",
+      top_items: [{ stock_code: "600003", stock_name: "观察A", latest_reason: "观察中" }],
+      latest_reason: "轻仓观察",
     },
     exit_only: {
       label: "只出场管理",
@@ -142,7 +142,7 @@ describe("WorkbenchPage", () => {
     renderWorkbenchPage(client);
 
     expect(await screen.findByRole("button", { name: /待纳入量化/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /试运行股票/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /量化观察/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /只出场管理/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /冷却中/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /已退出待重评估/ })).toBeInTheDocument();

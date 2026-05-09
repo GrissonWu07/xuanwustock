@@ -5,6 +5,7 @@ import { PageHeader } from "../../components/ui/page-header";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
 import { usePageData } from "../../lib/use-page-data";
+import { t } from "../../lib/i18n";
 
 type PortfolioPageProps = {
   client?: ApiClient;
@@ -79,51 +80,51 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
   }, [resource.refresh]);
 
   if (resource.status === "loading" && !snapshot) {
-    return <PageLoadingState title="持仓列表加载中" description="正在读取全部持仓股票列表与组合状态。" />;
+    return <PageLoadingState title={t("持仓列表加载中")} description={t("正在读取全部持仓股票列表与组合状态。")} />;
   }
 
   if (resource.status === "error" && !snapshot) {
     return (
       <PageErrorState
-        title="持仓列表加载失败"
-        description={resource.error ?? "无法加载持仓列表。"}
-        actionLabel="重试"
+        title={t("持仓列表加载失败")}
+        description={resource.error ?? t("无法加载持仓列表。")}
+        actionLabel={t("重试")}
         onAction={resource.refresh}
       />
     );
   }
 
   if (!snapshot) {
-    return <PageEmptyState title="暂无持仓数据" description="后台尚未返回持仓列表。" actionLabel="刷新" onAction={resource.refresh} />;
+    return <PageEmptyState title={t("暂无持仓数据")} description={t("后台尚未返回持仓列表。")} actionLabel={t("刷新")} onAction={resource.refresh} />;
   }
 
   return (
     <div>
-      <PageHeader eyebrow="Portfolio v2" title="持仓列表" description="全面查看所有持仓股票，点击任意股票进入详情页。" />
+      <PageHeader eyebrow="Portfolio v2" title={t("持仓列表")} description={t("全面查看所有持仓股票，点击任意股票进入详情页。")} />
       <div className="stack">
         <WorkbenchCard>
           {job ? (
             <div className="summary-item" style={{ marginBottom: 12 }}>
-              <div className="summary-item__title">仓位分析任务</div>
+              <div className="summary-item__title">{t("仓位分析任务")}</div>
               <div className="summary-item__body">
-                {job.message || "任务已提交"}（{job.status} / {job.stage || "-"} / {job.progress ?? 0}%）
+                {job.message || t("任务已提交")}（{job.status} / {job.stage || "-"} / {job.progress ?? 0}%）
               </div>
             </div>
           ) : null}
           <div className="summary-item summary-item--accent">
-            <div className="summary-item__title">组合仓位建议</div>
-            <div className="summary-item__body">{snapshot.portfolioDecision?.summary ?? "暂无组合级仓位建议。"}</div>
+            <div className="summary-item__title">{t("组合仓位建议")}</div>
+            <div className="summary-item__body">{snapshot.portfolioDecision?.summary ?? t("暂无组合级仓位建议。")}</div>
             <div className="chip-row" style={{ marginTop: 8 }}>
-              <span className="chip chip--active">建议动作：{snapshot.portfolioDecision?.action ?? "--"}</span>
-              <span className="chip chip--active">目标仓位：{snapshot.portfolioDecision?.targetExposurePct ?? "--"}</span>
+              <span className="chip chip--active">{t("建议动作：")}{snapshot.portfolioDecision?.action ?? "--"}</span>
+              <span className="chip chip--active">{t("目标仓位：")}{snapshot.portfolioDecision?.targetExposurePct ?? "--"}</span>
             </div>
             <div className="summary-item__body" style={{ marginTop: 8 }}>
-              看多 {snapshot.portfolioDecision?.bullishCount ?? 0} / 中性 {snapshot.portfolioDecision?.neutralCount ?? 0} / 看空 {snapshot.portfolioDecision?.bearishCount ?? 0}
+              {t("看多")}{snapshot.portfolioDecision?.bullishCount ?? 0} {t("/ 中性")}{snapshot.portfolioDecision?.neutralCount ?? 0} {t("/ 看空")}{snapshot.portfolioDecision?.bearishCount ?? 0}
             </div>
             <div className="summary-item__body">
               {typeof snapshot.portfolioDecision?.score === "number"
-                ? `综合得分 ${snapshot.portfolioDecision.score >= 0 ? "+" : ""}${snapshot.portfolioDecision.score.toFixed(2)}（按仓位和置信度加权）`
-                : "综合得分 --"}
+                ? t("综合得分 {v0}{v1}（按仓位和置信度加权）", { v0: snapshot.portfolioDecision.score >= 0 ? "+" : "", v1: snapshot.portfolioDecision.score.toFixed(2) })
+                : t("综合得分 --")}
             </div>
           </div>
         </WorkbenchCard>
@@ -143,7 +144,7 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
               <input
                 className="input"
                 data-size="compact-input"
-                placeholder="按代码/名称/板块搜索"
+                placeholder={t("按代码/名称/板块搜索")}
                 value={query}
                 onChange={(event) => {
                   setQuery(event.target.value);
@@ -163,15 +164,13 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
               >
                 {PAGE_SIZE_OPTIONS.map((size) => (
                   <option value={size} key={size}>
-                    {size}/页
-                  </option>
+                    {size}{t("/页")}</option>
                 ))}
               </select>
             </label>
             <span className="toolbar__spacer" />
             <button className="button button--secondary" type="button" onClick={() => void resource.runAction("refresh-portfolio")}>
-              刷新组合
-            </button>
+              {t("刷新组合")}</button>
             <button
               className="button button--secondary"
               type="button"
@@ -183,11 +182,9 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
                 })
               }
             >
-              刷新技术指标
-            </button>
+              {t("刷新技术指标")}</button>
             <button className="button button--secondary" type="button" onClick={() => void resource.runAction("analyze", { mode: "parallel" })}>
-              实时分析仓位
-            </button>
+              {t("实时分析仓位")}</button>
           </div>
 
           <div className="table-shell">
@@ -197,14 +194,14 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
                   {snapshot.holdings.columns.map((column) => (
                     <th key={column}>{column}</th>
                   ))}
-                  <th className="table__actions-head">操作</th>
+                  <th className="table__actions-head">{t("操作")}</th>
                 </tr>
               </thead>
               <tbody>
                 {pageRows.length === 0 ? (
                   <tr>
                     <td colSpan={snapshot.holdings.columns.length + 1} className="table__empty">
-                      {snapshot.holdings.emptyLabel ?? "暂无持仓"}
+                      {snapshot.holdings.emptyLabel ?? t("暂无持仓")}
                     </td>
                   </tr>
                 ) : (
@@ -227,20 +224,18 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
                                 navigate(`/portfolio/position/${encodeURIComponent(symbol)}`);
                               }}
                             >
-                              详情
-                            </button>
+                              {t("详情")}</button>
                             <button
                               className="chip chip--danger"
                               type="button"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 if (!symbol) return;
-                                if (!window.confirm(`确认删除持仓 ${symbol} ?`)) return;
+                                if (!window.confirm(t("确认删除持仓 {v0} ?", { v0: symbol }))) return;
                                 void resource.runAction("delete-position", { code: symbol });
                               }}
                             >
-                              删除
-                            </button>
+                              {t("删除")}</button>
                           </div>
                         </td>
                       </tr>
@@ -252,31 +247,28 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
           </div>
           <div className="watchlist-pagination" style={{ marginTop: 12 }}>
             <div className="watchlist-pagination__summary">
-              共 {totalRows} 条 · 第 {safePage + 1} / {totalPages} 页
-            </div>
+              {t("共")}{totalRows} {t("条 · 第")}{safePage + 1} / {totalPages} {t("页")}</div>
             <div className="watchlist-pagination__controls">
               <button className="button button--secondary" type="button" disabled={safePage <= 0} onClick={() => setPageIndex((value) => Math.max(0, value - 1))}>
-                上一页
-              </button>
+                {t("上一页")}</button>
               <button
                 className="button button--secondary"
                 type="button"
                 disabled={safePage >= totalPages - 1}
                 onClick={() => setPageIndex((value) => Math.min(totalPages - 1, value + 1))}
               >
-                下一页
-              </button>
+                {t("下一页")}</button>
             </div>
           </div>
         </WorkbenchCard>
 
         <WorkbenchCard>
-          <h2 className="section-card__title">市场重点实时新闻</h2>
+          <h2 className="section-card__title">{t("市场重点实时新闻")}</h2>
           <div className="summary-list">
             {marketNews.length === 0 ? (
               <div className="summary-item">
-                <div className="summary-item__title">暂无市场新闻</div>
-                <div className="summary-item__body">当前没有可展示的重点新闻。</div>
+                <div className="summary-item__title">{t("暂无市场新闻")}</div>
+                <div className="summary-item__body">{t("当前没有可展示的重点新闻。")}</div>
               </div>
             ) : (
               marketNews.map((item, index) => (
@@ -288,8 +280,7 @@ export function PortfolioPage({ client }: PortfolioPageProps) {
                     <span className="badge badge--neutral">{item.time || "--"}</span>
                     {item.url ? (
                       <a className="badge badge--neutral" href={item.url} target="_blank" rel="noreferrer">
-                        原文
-                      </a>
+                        {t("原文")}</a>
                     ) : null}
                   </div>
                 </div>

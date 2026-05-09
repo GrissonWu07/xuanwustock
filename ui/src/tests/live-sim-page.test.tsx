@@ -133,13 +133,13 @@ const lifecycleSnapshot = {
     rows: [
       {
         id: "600001",
-        cells: ["600001", "试运行股", "discover", "10.00"],
+        cells: ["600001", "观察股", "discover", "10.00"],
         code: "600001",
-        name: "试运行股",
+        name: "观察股",
         lifecycle: {
           quant_status: "trial",
           health_score: 82,
-          latest_reason: "新发现已进入试运行",
+          latest_reason: "新发现已进入量化观察",
           quant_auto_managed: true,
           quant_manual_override: "",
         },
@@ -259,7 +259,7 @@ const emptyTradeTable = () => ({
 });
 
 describe("LiveSimPage", () => {
-  it("renders lifecycle controls, status chips, health fields, and scoped restore actions", async () => {
+  it("renders lifecycle summary, status chips, health fields, and scoped restore actions", async () => {
     const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
       if (String(url).includes("/api/v1/quant/universe/settings")) {
         return Promise.resolve({
@@ -301,34 +301,25 @@ describe("LiveSimPage", () => {
 
     renderLiveSimPage(client);
 
-    expect(await screen.findByRole("checkbox", { name: "量化生命周期" })).toBeChecked();
-    expect(screen.getByLabelText("自动入池模式")).toHaveValue("confirm_first");
-    expect(screen.getByRole("checkbox", { name: "自动出池" })).toBeChecked();
-    expect(screen.getAllByText("手工确认").length).toBeGreaterThan(0);
+    expect(await screen.findByText("生命周期开启")).toBeInTheDocument();
+    expect(screen.getAllByText("确认后纳入").length).toBeGreaterThan(0);
+    expect(screen.getByText("自动出池开启")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "量化生命周期" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("自动入池模式")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "自动出池" })).not.toBeInTheDocument();
 
-    const statusNames = ["trial", "active", "exit_only", "cooling", "retired", "manual_paused"];
+    const statusNames = ["量化观察", "正常扫描", "只出场", "冷却", "已退出", "手工暂停"];
     statusNames.forEach((status) => expect(screen.getByRole("button", { name: new RegExp(status) })).toBeInTheDocument());
-    expect(screen.getByRole("button", { name: /trial/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /active/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /exit_only/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /manual_paused/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /量化观察/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /正常扫描/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /只出场/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /手工暂停/ })).toHaveAttribute("aria-pressed", "false");
 
     expect(screen.getByText("健康 82")).toBeInTheDocument();
-    expect(screen.getByText("新发现已进入试运行")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "恢复到试运行 600001" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "恢复到试运行 600002" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "恢复到试运行 600003" })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("checkbox", { name: "自动出池" }));
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/v1/quant/universe/settings",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({ auto_exit_enabled: false }),
-        }),
-      );
-    });
+    expect(screen.getByText("新发现已进入量化观察")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "恢复到量化观察 600001" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "恢复到量化观察 600002" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "恢复到量化观察 600003" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "暂停自动管理 600001" }));
     await waitFor(() => {
@@ -341,14 +332,14 @@ describe("LiveSimPage", () => {
       );
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /cooling/ }));
-    fireEvent.click(screen.getByRole("button", { name: /manual_paused/ }));
-    fireEvent.click(screen.getByRole("button", { name: /retired/ }));
-    expect(screen.getByRole("button", { name: "恢复到试运行 600004" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "恢复到试运行 600005" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "恢复到试运行 600006" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /冷却/ }));
+    fireEvent.click(screen.getByRole("button", { name: /手工暂停/ }));
+    fireEvent.click(screen.getByRole("button", { name: /已退出/ }));
+    expect(screen.getByRole("button", { name: "恢复到量化观察 600004" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "恢复到量化观察 600005" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "恢复到量化观察 600006" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "恢复到试运行 600004" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复到量化观察 600004" }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/v1/quant/universe/actions/restore-to-trial",

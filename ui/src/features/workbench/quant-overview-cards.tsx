@@ -23,11 +23,11 @@ type QuantOverviewPayload = {
 const OVERVIEW_ENDPOINT = "/api/v1/quant/universe/overview";
 
 const CARD_ORDER = [
-  { key: "pending_eligible", label: "待纳入量化", target: "/discover?eligible=1" },
-  { key: "trial", label: "试运行股票", target: "/live-sim?quant_status=trial" },
-  { key: "exit_only", label: "只出场管理", target: "/live-sim?quant_status=exit_only" },
-  { key: "cooling", label: "冷却中", target: "/live-sim?quant_status=cooling" },
-  { key: "retired", label: "已退出待重评估", target: "/live-sim?quant_status=retired" },
+  { key: "pending_eligible", label: t("待纳入量化"), target: "/discover?eligible=1" },
+  { key: "trial", label: t("量化观察"), target: "/live-sim?quant_status=trial" },
+  { key: "exit_only", label: t("只出场管理"), target: "/live-sim?quant_status=exit_only" },
+  { key: "cooling", label: t("冷却中"), target: "/live-sim?quant_status=cooling" },
+  { key: "retired", label: t("已退出待重评估"), target: "/live-sim?quant_status=retired" },
 ] as const;
 
 const normalizeCards = (payload: QuantOverviewPayload | null) =>

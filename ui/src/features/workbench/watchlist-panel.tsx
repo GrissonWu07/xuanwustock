@@ -60,15 +60,15 @@ const workflowBadgeTone = (label: string) => {
 
 const signalBadgeTone = (label: string) => {
   const normalized = label.trim().toUpperCase();
-  if (normalized === "BUY" || normalized.includes("买入")) return "success";
-  if (normalized === "SELL" || normalized.includes("卖出")) return "danger";
-  if (normalized === "HOLD" || normalized.includes("持有")) return "neutral";
+  if (normalized === "BUY" || normalized.includes(t("买入"))) return "success";
+  if (normalized === "SELL" || normalized.includes(t("卖出"))) return "danger";
+  if (normalized === "HOLD" || normalized.includes(t("持有"))) return "neutral";
   return "warning";
 };
 
 const isLegacySourceColumn = (column: unknown) => {
   const normalized = String(column ?? "").trim().toLowerCase();
-  return normalized === "source" || normalized === "来源";
+  return normalized === "source" || normalized === t("来源");
 };
 
 export function WatchlistPanel({
@@ -599,7 +599,7 @@ export function WatchlistPanel({
                   type="button"
                   onClick={() => setPage(item)}
                   aria-current={item === currentPage ? "page" : undefined}
-                  aria-label={`第 ${item} 页`}
+                  aria-label={t("第 {v0} 页", { v0: item })}
                 >
                   {item}
                 </button>

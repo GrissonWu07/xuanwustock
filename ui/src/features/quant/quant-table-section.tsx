@@ -63,20 +63,20 @@ const rowStockCode = (row: TableRow) =>
 
 const isStockReferenceColumn = (column: string, index: number) => {
   const normalized = String(column).trim().toLowerCase();
-  if (normalized.includes("信号id") || normalized === "id") return false;
+  if (normalized.includes(t("信号id")) || normalized === "id") return false;
   return (
-    normalized.includes("代码")
-    || normalized.includes("股票")
+    normalized.includes(t("代码"))
+    || normalized.includes(t("股票"))
     || normalized === "code"
     || normalized === "symbol"
-    || normalized.includes("名称")
+    || normalized.includes(t("名称"))
     || normalized === "name"
   );
 };
 
 const isSignalReferenceColumn = (column: string) => {
   const normalized = String(column).trim().toLowerCase();
-  return normalized.includes("信号id") || normalized === "signalid" || normalized === "signal_id";
+  return normalized.includes(t("信号id")) || normalized === "signalid" || normalized === "signal_id";
 };
 
 export function QuantTableSectionCard({
@@ -163,8 +163,8 @@ export function QuantTableSectionCard({
       return <>{customCell}</>;
     }
     const normalizedColumn = String(column).toLowerCase();
-    const isActionColumn = normalizedColumn.includes("动作") || normalizedColumn === "action";
-    const isStrategyColumn = normalizedColumn.includes("策略") || normalizedColumn === "strategy";
+    const isActionColumn = normalizedColumn.includes(t("动作")) || normalizedColumn === "action";
+    const isStrategyColumn = normalizedColumn.includes(t("策略")) || normalizedColumn === "strategy";
     const code = rowStockCode(row);
     const signalId = signalDetailSource && isSignalReferenceColumn(column) ? normalizeSignalId(cell) : "";
     if (signalId && signalDetailSource) {
@@ -284,8 +284,8 @@ export function QuantTableSectionCard({
               {(compactEnabled ? compactCoreIndexes.map((index) => table.columns[index]) : table.columns).map((column) => (
                 <th key={column}>{column}</th>
               ))}
-              {compactEnabled && compactDetailIndexes.length > 0 ? <th className="table__compact-actions-head">详情</th> : null}
-              {showActions ? <th className={compactEnabled ? "table__compact-actions-head" : "table__actions-head"}>{actionsHead ?? "操作"}</th> : null}
+              {compactEnabled && compactDetailIndexes.length > 0 ? <th className="table__compact-actions-head">{t("详情")}</th> : null}
+              {showActions ? <th className={compactEnabled ? "table__compact-actions-head" : "table__actions-head"}>{actionsHead ?? t("操作")}</th> : null}
             </tr>
           </thead>
           <tbody>

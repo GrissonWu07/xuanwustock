@@ -155,7 +155,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
   const sourceRows = snapshot?.candidateTable.rows ?? [];
   const strategyBusy = Boolean(taskJob && ["queued", "running"].includes(taskJob.status));
   const candidateColumnsFromBackend = snapshot?.candidateTable.columns ?? [];
-  const discoveredAtColumnKeys = new Set([t("Discovered at"), "Discovered at", "发现时间"]);
+  const discoveredAtColumnKeys = new Set([t("Discovered at"), "Discovered at", t("发现时间")]);
   const hasBackendSelectedAtColumn = candidateColumnsFromBackend.some((column) => discoveredAtColumnKeys.has(column));
   const getRowSelectedAt = (row: (typeof sourceRows)[number]) => {
     const rawSelectedAt = row.selectedAt;
@@ -542,8 +542,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                 aria-pressed={eligibleOnly}
                 onClick={() => setEligibleOnly((current) => !current)}
               >
-                仅看 eligible
-              </button>
+                {t("仅看 eligible")}</button>
               <button
                 className="button button--primary"
                 type="button"
@@ -553,16 +552,14 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                 }}
                 disabled={!canBatchPromoteToTrial || promotingToTrial}
               >
-                纳入量化试运行
-              </button>
+                {t("纳入量化观察")}</button>
               <button
                 className="button button--secondary"
                 type="button"
                 onClick={() => void handleIgnoreAutoEntry(selectedCodes)}
                 disabled={selectedCodes.length === 0}
               >
-                忽略自动纳入
-              </button>
+                {t("忽略自动纳入")}</button>
             </div>
             <span className="badge badge--neutral discover-candidate-toolbar__summary">
               {t("Selected / candidate {selected} / {total}", { selected: selection.selectedCount, total: totalRows })}
@@ -686,7 +683,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                                   setPromoteDialogOpen(true);
                                 }}
                               >
-                                <span>纳入 trial</span>
+                                <span>{t("纳入量化观察")}</span>
                               </button>
                               <button
                                 className="button button--secondary"
@@ -696,7 +693,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                                   void handleIgnoreAutoEntry([row.id]);
                                 }}
                               >
-                                <span>忽略自动纳入</span>
+                                <span>{t("忽略自动纳入")}</span>
                               </button>
                             </>
                           ) : null}

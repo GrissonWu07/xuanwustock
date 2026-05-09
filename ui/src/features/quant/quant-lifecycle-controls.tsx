@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { t } from "../../lib/i18n";
 
 export type QuantStatus = "trial" | "active" | "exit_only" | "cooling" | "retired" | "manual_paused" | string;
 
@@ -26,18 +27,18 @@ export const QUANT_STATUS_OPTIONS = ["trial", "active", "exit_only", "cooling", 
 export const DEFAULT_QUANT_STATUS_FILTERS = ["trial", "active", "exit_only"];
 
 const AUTO_ENTRY_MODE_OPTIONS = [
-  { value: "manual_only", label: "手动纳入" },
-  { value: "confirm_first", label: "手工确认" },
-  { value: "auto_trial", label: "自动试运行" },
+  { value: "manual_only", label: t("只记录候选") },
+  { value: "confirm_first", label: t("确认后纳入") },
+  { value: "auto_trial", label: t("自动纳入观察") },
 ];
 
 const statusLabels: Record<string, string> = {
-  trial: "试运行",
-  active: "正常扫描",
-  exit_only: "只出场",
-  cooling: "冷却",
-  retired: "已退出",
-  manual_paused: "手工暂停",
+  trial: t("量化观察"),
+  active: t("正常扫描"),
+  exit_only: t("只出场"),
+  cooling: t("冷却"),
+  retired: t("已退出"),
+  manual_paused: t("手工暂停"),
 };
 
 const statusTone: Record<string, string> = {
@@ -81,9 +82,9 @@ export function LifecycleMasterSwitch({
 }) {
   return (
     <label className="field">
-      <span className="field__label">量化生命周期</span>
+      <span className="field__label">{t("量化生命周期")}</span>
       <input
-        aria-label="量化生命周期"
+        aria-label={t("量化生命周期")}
         type="checkbox"
         checked={checked}
         disabled={disabled}
@@ -104,9 +105,9 @@ export function AutoEntryModeSelect({
 }) {
   return (
     <label className="field">
-      <span className="field__label">自动入池模式</span>
+      <span className="field__label">{t("自动入池模式")}</span>
       <select
-        aria-label="自动入池模式"
+        aria-label={t("自动入池模式")}
         className="input"
         value={value}
         disabled={disabled}
@@ -133,8 +134,8 @@ export function AutoExitSwitch({
 }) {
   return (
     <label className="field">
-      <span className="field__label">自动出池</span>
-      <input aria-label="自动出池" type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
+      <span className="field__label">{t("自动出池")}</span>
+      <input aria-label={t("自动出池")} type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
     </label>
   );
 }
@@ -142,13 +143,13 @@ export function AutoExitSwitch({
 export function LifecycleSummaryBadgeGroup({ settings }: { settings: QuantLifecycleSettings }) {
   const entryMode = AUTO_ENTRY_MODE_OPTIONS.find((option) => option.value === settings.auto_entry_mode)?.label ?? settings.auto_entry_mode;
   return (
-    <div className="chip-row" aria-label="量化生命周期摘要">
+    <div className="chip-row" aria-label={t("量化生命周期摘要")}>
       <span className={settings.quant_universe_lifecycle_enabled ? "badge badge--success" : "badge badge--neutral"}>
-        {settings.quant_universe_lifecycle_enabled ? "生命周期开启" : "生命周期关闭"}
+        {settings.quant_universe_lifecycle_enabled ? t("生命周期开启") : t("生命周期关闭")}
       </span>
       <span className="badge badge--accent">{entryMode}</span>
       <span className={settings.auto_exit_enabled ? "badge badge--warning" : "badge badge--neutral"}>
-        {settings.auto_exit_enabled ? "自动出池开启" : "自动出池关闭"}
+        {settings.auto_exit_enabled ? t("自动出池开启") : t("自动出池关闭")}
       </span>
     </div>
   );
@@ -164,7 +165,7 @@ export function StatusFilterChips({
   onToggle: (status: string) => void;
 }) {
   return (
-    <div className="chip-row" aria-label="生命周期状态筛选">
+    <div className="chip-row" aria-label={t("生命周期状态筛选")}>
       {available.map((status) => {
         const active = selected.includes(status);
         return (
@@ -175,7 +176,6 @@ export function StatusFilterChips({
             aria-pressed={active}
             onClick={() => onToggle(status)}
           >
-            <span>{status}</span>
             <span>{quantStatusLabel(status)}</span>
           </button>
         );
@@ -193,8 +193,8 @@ export function HealthScoreBar({ value }: { value: number | undefined }) {
   const score = clampScore(value);
   const tone = score >= 65 ? "success" : score >= 35 ? "warning" : "danger";
   return (
-    <span className={`health-score health-score--${tone}`} aria-label={`健康 ${Math.round(score)}`}>
-      <span>健康 {Math.round(score)}</span>
+    <span className={`health-score health-score--${tone}`} aria-label={t("健康 {v0}", { v0: Math.round(score) })}>
+      <span>{t("健康 {score}", { score: Math.round(score) })}</span>
       <span
         aria-hidden="true"
         style={{
@@ -230,7 +230,7 @@ export function AutoManageToggle({
   onToggle: () => void;
 }) {
   return (
-    <button className="icon-button icon-button--neutral" type="button" aria-label={`${autoManaged ? "暂停自动管理" : "启用自动管理"} ${stockCode}`} onClick={onToggle}>
+    <button className="icon-button icon-button--neutral" type="button" aria-label={t("{v0} {v1}", { v0: autoManaged ? t("暂停自动管理") : t("启用自动管理"), v1: stockCode })} onClick={onToggle}>
       {autoManaged ? "⏸" : "▶"}
     </button>
   );
@@ -238,7 +238,7 @@ export function AutoManageToggle({
 
 export function RestoreToTrialButton({ stockCode, onRestore }: { stockCode: string; onRestore: () => void }) {
   return (
-    <button className="icon-button icon-button--accent" type="button" aria-label={`恢复到试运行 ${stockCode}`} onClick={onRestore}>
+    <button className="icon-button icon-button--accent" type="button" aria-label={t("恢复到量化观察 {v0}", { v0: stockCode })} onClick={onRestore}>
       ↩
     </button>
   );

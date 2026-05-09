@@ -537,11 +537,9 @@ export function ResearchPage({ client }: ResearchPageProps) {
               }}
               disabled={!canBatchPromoteToTrial || promotingToTrial || resettingList}
             >
-              纳入量化试运行
-            </button>
+              {t("纳入量化观察")}</button>
             <button className="button button--secondary" type="button" onClick={() => void handleIgnoreAutoEntry(selectedCodes)} disabled={selectedCodes.length === 0 || resettingList}>
-              忽略自动纳入
-            </button>
+              {t("忽略自动纳入")}</button>
           </>
         }
       />
@@ -798,7 +796,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                                   setPromoteDialogOpen(true);
                                 }}
                               >
-                                <span>纳入 trial</span>
+                                <span>{t("纳入量化观察")}</span>
                               </button>
                               <button
                                 className="button button--secondary"
@@ -808,7 +806,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
                                   void handleIgnoreAutoEntry([row.id]);
                                 }}
                               >
-                                <span>忽略自动纳入</span>
+                                <span>{t("忽略自动纳入")}</span>
                               </button>
                             </>
                           ) : null}

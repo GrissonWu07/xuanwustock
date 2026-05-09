@@ -369,7 +369,7 @@ const PORTFOLIO_EXECUTION_GUARD_FIELDS: ProfitProtectionField[] = [
 ];
 
 const QUANT_UNIVERSE_LIFECYCLE_FIELDS: ProfitProtectionField[] = [
-  { key: "trial_threshold", label: { zh: "试运行准入阈值 trial_threshold", en: "Trial threshold trial_threshold" }, type: "number", path: ["trial_threshold"], step: 0.01 },
+  { key: "trial_threshold", label: { zh: "观察准入阈值 trial_threshold", en: "Trial threshold trial_threshold" }, type: "number", path: ["trial_threshold"], step: 0.01 },
   { key: "strong_candidate_threshold", label: { zh: "强候选阈值 strong_candidate_threshold", en: "Strong candidate threshold strong_candidate_threshold" }, type: "number", path: ["strong_candidate_threshold"], step: 0.01 },
   { key: "high_reentry_threshold", label: { zh: "二次入池高门槛 high_reentry_threshold", en: "High reentry threshold high_reentry_threshold" }, type: "number", path: ["high_reentry_threshold"], step: 0.01 },
   { key: "active_upgrade_threshold", label: { zh: "升级 active 健康分 active_upgrade_threshold", en: "Active upgrade health active_upgrade_threshold" }, type: "number", path: ["active_upgrade_threshold"], step: 1 },
@@ -378,11 +378,11 @@ const QUANT_UNIVERSE_LIFECYCLE_FIELDS: ProfitProtectionField[] = [
   { key: "exit_only_threshold", label: { zh: "只出场阈值 exit_only_threshold", en: "Exit-only threshold exit_only_threshold" }, type: "number", path: ["exit_only_threshold"], step: 1 },
   { key: "cooling_threshold", label: { zh: "冷却阈值 cooling_threshold", en: "Cooling threshold cooling_threshold" }, type: "number", path: ["cooling_threshold"], step: 1 },
   { key: "retire_threshold", label: { zh: "退出阈值 retire_threshold", en: "Retire threshold retire_threshold" }, type: "number", path: ["retire_threshold"], step: 1 },
-  { key: "trial_min_dwell_checkpoints", label: { zh: "试运行最短停留 trial_min_dwell_checkpoints", en: "Trial min dwell trial_min_dwell_checkpoints" }, type: "number", path: ["trial_min_dwell_checkpoints"], step: 1 },
+  { key: "trial_min_dwell_checkpoints", label: { zh: "观察最短停留 trial_min_dwell_checkpoints", en: "Trial min dwell trial_min_dwell_checkpoints" }, type: "number", path: ["trial_min_dwell_checkpoints"], step: 1 },
   { key: "cooling_min_dwell_days", label: { zh: "冷却最短天数 cooling_min_dwell_days", en: "Cooling min days cooling_min_dwell_days" }, type: "number", path: ["cooling_min_dwell_days"], step: 1 },
   { key: "cooling_review_interval_minutes", label: { zh: "冷却复评间隔 cooling_review_interval_minutes", en: "Cooling review minutes cooling_review_interval_minutes" }, type: "number", path: ["cooling_review_interval_minutes"], step: 5 },
-  { key: "trial_position_multiplier", label: { zh: "试运行仓位倍率 trial_position_multiplier", en: "Trial size multiplier trial_position_multiplier" }, type: "number", path: ["trial_position_multiplier"], step: 0.05 },
-  { key: "trial_max_position_pct", label: { zh: "试运行仓位上限 trial_max_position_pct", en: "Trial max position pct trial_max_position_pct" }, type: "number", path: ["trial_max_position_pct"], step: 0.5 },
+  { key: "trial_position_multiplier", label: { zh: "观察仓位倍率 trial_position_multiplier", en: "Trial size multiplier trial_position_multiplier" }, type: "number", path: ["trial_position_multiplier"], step: 0.05 },
+  { key: "trial_max_position_pct", label: { zh: "观察仓位上限 trial_max_position_pct", en: "Trial max position pct trial_max_position_pct" }, type: "number", path: ["trial_max_position_pct"], step: 0.5 },
 ];
 
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -775,8 +775,8 @@ const AI_DYNAMIC_STRATEGY_OPTIONS = [
 
 function normalizeAiDynamicStrategy(value: string) {
   const normalized = String(value).trim().toLowerCase();
-  if (!normalized || normalized === "off" || normalized.includes("关")) return "off";
-  if (normalized === "template" || normalized === "weights" || normalized === "hybrid" || normalized.includes("开")) return "hybrid";
+  if (!normalized || normalized === "off" || normalized.includes(t("关"))) return "off";
+  if (normalized === "template" || normalized === "weights" || normalized === "hybrid" || normalized.includes(t("开"))) return "hybrid";
   return "off";
 }
 
@@ -948,7 +948,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
         </div>
         <div className="strategy-config-card__meta">
           {locale === "zh-CN"
-            ? `组权重总和：${trackGroupWeightSum(trackPath, Object.keys(groups)).toFixed(4)}（已归一化）`
+            ? t("组权重总和：{v0}（已归一化）", { v0: trackGroupWeightSum(trackPath, Object.keys(groups)).toFixed(4) })
             : `Category weight sum: ${trackGroupWeightSum(trackPath, Object.keys(groups)).toFixed(4)} (normalized)`}
         </div>
       </div>
@@ -1231,7 +1231,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                 <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "融合参数（决策门控）" : "Fusion parameters (decision gates)"}</h2>
                 <div className="strategy-config-card__subtitle">
                   {locale === "zh-CN"
-                    ? "用于控制技术轨 + 环境轨如何融合，以及 BUY/SELL/HOLD 的阈值与置信度门槛"
+                    ? t("用于控制技术轨 + 环境轨如何融合，以及 BUY/SELL/HOLD 的阈值与置信度门槛")
                     : "Controls how technical/context tracks are fused and how BUY/SELL/HOLD thresholds and confidence gates are applied."}
                 </div>
               </div>
@@ -1288,7 +1288,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                 <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "浮盈保护" : "Profit protection"}</h2>
                 <div className="strategy-config-card__subtitle">
                   {locale === "zh-CN"
-                    ? "仅对持仓生效。通过峰值浮盈、峰值回撤、价格价差和实际浮盈金额决定是否把 SELL 升级为强制卖出。"
+                    ? t("仅对持仓生效。通过峰值浮盈、峰值回撤、价格价差和实际浮盈金额决定是否把 SELL 升级为强制卖出。")
                     : "Position-only gates. Uses peak profit, drawdown, price gain and realized profit scale to decide whether SELL becomes a forced exit."}
                 </div>
               </div>
@@ -1341,7 +1341,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                 <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "个股执行反馈" : "Stock execution feedback"}</h2>
                 <div className="strategy-config-card__subtitle">
                   {locale === "zh-CN"
-                    ? "针对同一股票近期止损、累计亏损和假突破再买进行冷却或降仓；信号来源仅用于入池，不参与加分。"
+                    ? t("针对同一股票近期止损、累计亏损和假突破再买进行冷却或降仓；信号来源仅用于入池，不参与加分。")
                     : "Cools down or down-sizes reentry after recent stop losses, realized losses, and weak breakouts. Signal source is metadata only."}
                 </div>
               </div>
@@ -1394,7 +1394,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                 <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "组合防守与 BUY 分层" : "Portfolio guard and BUY tiers"}</h2>
                 <div className="strategy-config-card__subtitle">
                   {locale === "zh-CN"
-                    ? "把技术 BUY 分成弱、普通、强三档；组合连续止损、权益回撤或亏损预算触发时，自动降级、缩仓或暂停新开仓。"
+                    ? t("把技术 BUY 分成弱、普通、强三档；组合连续止损、权益回撤或亏损预算触发时，自动降级、缩仓或暂停新开仓。")
                     : "Classifies BUY signals into weak, normal, and strong tiers; recent stop losses, drawdown, or loss budget can downgrade, down-size, or pause new entries."}
                 </div>
               </div>
@@ -1447,7 +1447,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                 <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "量化生命周期" : "Quant lifecycle"}</h2>
                 <div className="strategy-config-card__subtitle">
                   {locale === "zh-CN"
-                    ? "控制候选股票从待纳入、试运行、只出场、冷却到退出的策略级阈值；全局自动入池/自动出池开关不属于本区块。"
+                    ? t("控制候选股票从待纳入、量化观察、只出场、冷却到退出的策略级阈值；全局自动入池/自动出池开关不属于本区块。")
                     : "Profile-level thresholds for pending, trial, exit-only, cooling and retired states. Global auto-entry/auto-exit switches are configured elsewhere."}
                 </div>
               </div>
@@ -1524,7 +1524,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                 <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "AI动态策略参数" : "AI dynamic strategy parameters"}</h2>
                 <div className="strategy-config-card__subtitle">
                   {locale === "zh-CN"
-                    ? "控制 AI 对当前策略模板的动态调整幅度与观察窗口。"
+                    ? t("控制 AI 对当前策略模板的动态调整幅度与观察窗口。")
                     : "Controls AI dynamic adjustment strength and lookback window on top of the selected strategy profile."}
                 </div>
               </div>
@@ -1638,11 +1638,7 @@ FusionConfidence = FusionConfidence_base × (1 - Penalty)`}</pre>
 
             <div className={formulaCardClass(4)}>
               <div className="strategy-config-formula__title">4. {locale === "zh-CN" ? "动作门控（BUY / SELL / HOLD）" : "Action gates"}</div>
-              <pre>{`先应用 Hard Veto（最高优先级）
-FusionConfidence < 最小置信度 ⇒ HOLD
-BUY: FusionScore ≥ BUY_threshold 且各轨道 BUY 门控通过
-SELL: FusionScore ≤ SELL_threshold
-否则 ⇒ HOLD`}</pre>
+              <pre>{t("先应用 Hard Veto（最高优先级）\nFusionConfidence < 最小置信度 ⇒ HOLD\nBUY: FusionScore ≥ BUY_threshold 且各轨道 BUY 门控通过\nSELL: FusionScore ≤ SELL_threshold\n否则 ⇒ HOLD")}</pre>
             </div>
 
             <label className="strategy-config-formula__highlight-toggle">

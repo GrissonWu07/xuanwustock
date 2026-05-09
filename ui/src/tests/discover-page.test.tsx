@@ -152,7 +152,7 @@ describe("DiscoverPage", () => {
     expect(screen.getByText("skipped")).toBeInTheDocument();
     expect(screen.getByText("cooling_blocked")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "仅看 eligible" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "纳入 trial" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "纳入量化观察" }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("button", { name: "忽略自动纳入" }).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "仅看 eligible" }));
@@ -162,8 +162,8 @@ describe("DiscoverPage", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Select eligible 股" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select 跳过股" }));
-    fireEvent.click(screen.getByRole("button", { name: "纳入量化试运行" }));
-    expect(screen.getByRole("dialog", { name: "确认纳入量化试运行" })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "纳入量化观察" })[0]);
+    expect(screen.getByRole("dialog", { name: "确认纳入量化观察" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认纳入" }));
 
     await waitFor(() => {

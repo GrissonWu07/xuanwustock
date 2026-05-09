@@ -54,7 +54,7 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
   );
 
   if (resource.status === "loading" && !resource.data) {
-    return <PageLoadingState title={t("Workbench loading...")} description="正在加载关注池和下一步入口。" />;
+    return <PageLoadingState title={t("Workbench loading...")} description={t("正在加载关注池和下一步入口。")} />;
   }
 
   if (resource.status === "error" && !resource.data) {
@@ -84,7 +84,7 @@ export function WorkbenchPage({ client }: WorkbenchPageProps) {
       <PageHeader
         eyebrow={t("AI Stock Analyst Team")}
         title={t("Workbench")}
-        description="先维护关注池，再进入股票详情完成单股分析、发现、研究和量化验证。"
+        description={t("先维护关注池，再进入股票详情完成单股分析、发现、研究和量化验证。")}
       />
       <div className="metric-grid">
         {snapshot.metrics.map((item) => (

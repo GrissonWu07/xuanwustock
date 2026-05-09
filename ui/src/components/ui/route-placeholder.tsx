@@ -1,5 +1,6 @@
 import { PageHeader } from "./page-header";
 import { WorkbenchCard } from "./workbench-card";
+import { t } from "../../lib/i18n";
 
 type RoutePlaceholderPageProps = {
   title: string;
@@ -12,7 +13,7 @@ export function RoutePlaceholderPage({ title, description, note }: RoutePlacehol
     <div>
       <PageHeader eyebrow="Preview" title={title} description={description} />
       <WorkbenchCard>
-        <h2 className="section-card__title">页面入口已保留</h2>
+        <h2 className="section-card__title">{t("页面入口已保留")}</h2>
         <p className="section-card__description" style={{ marginBottom: 0 }}>
           {note}
         </p>

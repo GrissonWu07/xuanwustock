@@ -121,11 +121,11 @@ describe("ResearchPage", () => {
 
     expect(await screen.findByText("eligible")).toBeInTheDocument();
     expect(screen.getByText("already_in_quant")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "纳入 trial" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "纳入量化观察" }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("button", { name: "忽略自动纳入" }).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("checkbox", { name: "Select 平安银行" }));
-    fireEvent.click(screen.getByRole("button", { name: "纳入量化试运行" }));
-    expect(screen.getByRole("dialog", { name: "确认纳入量化试运行" })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "纳入量化观察" })[0]);
+    expect(screen.getByRole("dialog", { name: "确认纳入量化观察" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认纳入" }));
 
     await waitFor(() => {

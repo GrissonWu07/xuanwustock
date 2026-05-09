@@ -30,6 +30,7 @@ def _snapshot_settings(context: UIApiContext) -> dict[str, Any]:
 
     db = context.quant_db()
     scheduler_cfg = db.get_scheduler_config()
+    quant_lifecycle_settings = db.get_quant_universe_settings()
     profile_rows = db.list_strategy_profiles(include_disabled=True)
     strategy_profiles: list[dict[str, Any]] = []
     for row in profile_rows:
@@ -65,6 +66,7 @@ def _snapshot_settings(context: UIApiContext) -> dict[str, Any]:
         "runtimeParams": pick(runtime_keys),
         "strategyProfiles": strategy_profiles,
         "selectedStrategyProfileId": _txt(scheduler_cfg.get("strategy_profile_id")),
+        "quantLifecycleSettings": quant_lifecycle_settings,
         "paths": [
             str(context.quant_sim_db_file),
             str(context.monitor_db_file),
@@ -82,7 +84,7 @@ def _action_settings_save(context: UIApiContext, payload: dict[str, Any]) -> dic
         env_payload = {
             str(key): value
             for key, value in body.items()
-            if str(key) not in {"strategyProfileId", "strategy_profile_id", "env"}
+            if str(key) not in {"strategyProfileId", "strategy_profile_id", "env", "quantLifecycleSettings"}
         }
     if env_payload:
         persisted = context.config_manager.write_env(
@@ -94,4 +96,7 @@ def _action_settings_save(context: UIApiContext, payload: dict[str, Any]) -> dic
     strategy_profile_id = _txt(body.get("strategyProfileId") if "strategyProfileId" in body else body.get("strategy_profile_id")).strip()
     if strategy_profile_id:
         context.quant_db().update_scheduler_config(strategy_profile_id=strategy_profile_id)
+    lifecycle_payload = body.get("quantLifecycleSettings")
+    if isinstance(lifecycle_payload, dict):
+        context.quant_db().update_quant_universe_settings(lifecycle_payload)
     return _snapshot_settings(context)

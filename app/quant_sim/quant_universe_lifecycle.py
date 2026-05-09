@@ -499,7 +499,7 @@ class QuantUniverseManager:
             source_type=str(event.get("source_type") or "candidate_event"),
             source_key=event.get("source_key"),
             reason_code="auto_trial",
-            reason_text=event.get("reason_text") or "候选事件自动纳入 trial",
+            reason_text=event.get("reason_text") or "候选事件自动纳入量化观察",
             candidate_score=evaluation["candidate_score"],
         )
         return {**evaluation, "decision": "promoted_to_trial", **promoted}
@@ -583,7 +583,7 @@ class QuantUniverseManager:
                 source_type=source_type,
                 source_key=source_key,
                 reason_code="manual_promote_to_trial",
-                reason_text="用户批量纳入 trial",
+                reason_text="用户批量纳入量化观察",
                 candidate_score=evaluation["candidate_score"],
             )
             success.append(code)
