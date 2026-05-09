@@ -252,6 +252,140 @@ def _build_his_replay_candidate_pool_table(
     return table
 
 
+def _drill_table_payload(items: list[dict[str, Any]], total: int | None = None, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+    return {"items": items, "total": int(total if total is not None else len(items)), "page": page, "pageSize": page_size}
+
+
+def _drill_distinct_stock_count(events: list[dict[str, Any]], statuses: set[str]) -> int:
+    return len({_txt(event.get("stock_code")) for event in events if _txt(event.get("to_status")) in statuses and _txt(event.get("stock_code"))})
+
+
+def _build_live_quant_drill_payload(db: QuantSimDB, run: dict[str, Any], run_id: int) -> dict[str, Any]:
+    metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
+    summary_rows = db.list_sim_run_quant_summary(run_id)
+    last_summary = summary_rows[-1] if summary_rows else {}
+    candidate_events = db.list_sim_run_candidate_events(run_id, page_size=1)
+    promoted_candidate_events = db.list_sim_run_candidate_events(run_id, status="consumed", page_size=20)
+    quant_events = db.list_sim_run_quant_events(run_id, page_size=10000)
+    quant_event_items = quant_events.get("items", [])
+    exit_event_items = [
+        event
+        for event in quant_event_items
+        if _txt(event.get("to_status")) in {"exit_only", "cooling", "retired"}
+    ]
+    auto_promoted_count = (
+        sum(int(row.get("auto_promoted_count") or 0) for row in summary_rows)
+        if summary_rows
+        else sum(1 for event in quant_event_items if _txt(event.get("to_status")) == "trial")
+    )
+    auto_exited_count = (
+        sum(int(row.get("auto_exited_count") or 0) for row in summary_rows)
+        if summary_rows
+        else sum(1 for event in quant_event_items if _txt(event.get("to_status")) in {"cooling", "retired"})
+    )
+    final_states_response = (
+        db.list_sim_run_quant_states(run_id, checkpoint_at=last_summary.get("checkpoint_at_utc"), page_size=50)
+        if last_summary.get("checkpoint_at_utc")
+        else {"items": [], "total": 0, "page": 1, "pageSize": 50}
+    )
+    data_warnings = metadata.get("data_warnings") if isinstance(metadata.get("data_warnings"), list) else []
+    disabled_sources = metadata.get("disabled_candidate_sources") if isinstance(metadata.get("disabled_candidate_sources"), list) else []
+    data_risk_items: list[dict[str, Any]] = []
+    for warning in data_warnings:
+        if isinstance(warning, dict):
+            data_risk_items.append(
+                {
+                    "stockCode": _txt(warning.get("stock_code") or warning.get("code")),
+                    "domain": _txt(warning.get("domain") or warning.get("data_domain") or "data_warning"),
+                    "provider": _txt(warning.get("provider") or warning.get("source")),
+                    "reason": _txt(warning.get("reason") or warning.get("message") or warning),
+                }
+            )
+        else:
+            data_risk_items.append({"stockCode": "", "domain": "data_warning", "provider": "", "reason": _txt(warning)})
+    for source in disabled_sources:
+        data_risk_items.append({"stockCode": "", "domain": "candidate_source", "provider": _txt(source), "reason": "source_not_historical"})
+
+    return {
+        "runType": "live_quant_drill",
+        "typeLabel": "实时量化演练",
+        "title": "实时量化演练",
+        "lifecycleSummary": {
+            "initialQuantCount": len(metadata.get("initial_quant_universe_snapshot") or metadata.get("stock_codes") or []),
+            "candidateEventCount": int(candidate_events.get("total") or 0),
+            "autoPromotedCount": auto_promoted_count,
+            "autoExitedCount": auto_exited_count,
+            "exitOnlyCount": _drill_distinct_stock_count(quant_event_items, {"exit_only"}),
+            "coolingCount": _drill_distinct_stock_count(quant_event_items, {"cooling"}),
+            "retiredCount": _drill_distinct_stock_count(quant_event_items, {"retired"}),
+            "dataWarningCount": len(data_risk_items),
+        },
+        "lifecycleSeries": [
+            {
+                "checkpointAt": _system_time_text(row.get("checkpoint_at") or row.get("checkpoint_at_utc"), "--"),
+                "trialCount": int(row.get("trial_count") or 0),
+                "activeCount": int(row.get("active_count") or 0),
+                "exitOnlyCount": int(row.get("exit_only_count") or 0),
+                "coolingCount": int(row.get("cooling_count") or 0),
+                "retiredCount": int(row.get("retired_count") or 0),
+            }
+            for row in summary_rows
+        ],
+        "candidateEventsTable": _drill_table_payload(
+            [
+                {
+                    "checkpointAt": _system_time_text(event.get("checkpoint_at") or event.get("checkpoint_at_utc"), "--"),
+                    "stockCode": _txt(event.get("stock_code")),
+                    "stockName": _txt(event.get("stock_name")),
+                    "sourceType": _txt(event.get("source_type")),
+                    "candidateScore": event.get("candidate_score"),
+                    "statusChange": "candidate -> trial",
+                    "reason": _txt(event.get("reason_text")),
+                }
+                for event in promoted_candidate_events.get("items", [])
+            ],
+            total=int(promoted_candidate_events.get("total") or 0),
+            page=int(promoted_candidate_events.get("page") or 1),
+            page_size=int(promoted_candidate_events.get("pageSize") or promoted_candidate_events.get("page_size") or 20),
+        ),
+        "exitEventsTable": _drill_table_payload(
+            [
+                {
+                    "checkpointAt": _system_time_text(event.get("checkpoint_at") or event.get("checkpoint_at_utc"), "--"),
+                    "stockCode": _txt(event.get("stock_code")),
+                    "stockName": _txt(event.get("stock_name")),
+                    "fromStatus": _txt(event.get("from_status")),
+                    "toStatus": _txt(event.get("to_status")),
+                    "healthScore": event.get("health_score_after"),
+                    "reason": _txt(event.get("reason_code") or event.get("reason_text")),
+                }
+                for event in exit_event_items[:20]
+            ],
+            total=len(exit_event_items),
+            page=1,
+            page_size=20,
+        ),
+        "finalStatesTable": _drill_table_payload(
+            [
+                {
+                    "stockCode": _txt(state.get("stock_code")),
+                    "stockName": _txt(state.get("stock_name")),
+                    "finalStatus": _txt(state.get("quant_status")),
+                    "realizedPnl": state.get("realized_pnl"),
+                    "liquidationPnl": state.get("liquidation_pnl"),
+                    "stateChangeCount": state.get("state_change_count"),
+                    "latestReason": _txt(state.get("latest_reason") or state.get("retire_reason")),
+                }
+                for state in final_states_response.get("items", [])
+            ],
+            total=int(final_states_response.get("total") or 0),
+            page=int(final_states_response.get("page") or 1),
+            page_size=int(final_states_response.get("pageSize") or final_states_response.get("page_size") or 50),
+        ),
+        "dataRisksTable": _drill_table_payload(data_risk_items, total=len(data_risk_items), page=1, page_size=max(1, len(data_risk_items) or 20)),
+    }
+
+
 def _build_his_replay_task_items(
     db: QuantSimDB,
     runs: list[dict[str, Any]],
@@ -336,6 +470,9 @@ def _build_his_replay_task_items(
             "strategyProfileVersionId": _txt(item.get("selected_strategy_profile_version_id")),
             "stockScope": _run_stock_scope_rows_from_metadata(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
         }
+        run_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        if item.get("mode") == "live_quant_drill" or run_metadata.get("run_type") == "live_quant_drill":
+            task.update(_build_live_quant_drill_payload(db, item, run_id))
 
         terminal_liquidation_items: list[dict[str, Any]] = []
         if include_positions:

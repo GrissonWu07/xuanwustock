@@ -1481,7 +1481,7 @@ git commit -m "feat: add live quant drill gateway actions"
 - Modify: `ui/src/features/quant/his-replay-page.tsx`
 - Test: `ui/src/tests/his-replay-page.test.tsx`
 
-- [ ] **Step 1: Add failing UI fixture expectations**
+- [x] **Step 1: Add failing UI fixture expectations**
 
 In `ui/src/tests/his-replay-page.test.tsx`, add a run fixture with:
 
@@ -1553,7 +1553,7 @@ expect(screen.getByText("股票最终状态")).toBeInTheDocument();
 expect(screen.getByText("数据风险")).toBeInTheDocument();
 ```
 
-- [ ] **Step 2: Run UI test and confirm failure**
+- [x] **Step 2: Run UI test and confirm failure**
 
 ```powershell
 npm test -- his-replay-page.test.tsx -- --runInBand
@@ -1561,7 +1561,7 @@ npm test -- his-replay-page.test.tsx -- --runInBand
 
 Expected: fails because UI does not render drill lifecycle sections.
 
-- [ ] **Step 3: Extend backend snapshot**
+- [x] **Step 3: Extend backend snapshot**
 
 In `_build_his_replay_task_items()` and selected run payload:
 
@@ -1577,7 +1577,7 @@ In `_build_his_replay_task_items()` and selected run payload:
 
 Do not use `estimated_*` as completed actuals.
 
-- [ ] **Step 4: Extend page models**
+- [x] **Step 4: Extend page models**
 
 In `ui/src/lib/page-models.ts`, add:
 
@@ -1614,7 +1614,7 @@ finalStatesTable?: ReplayDrillTable;
 dataRisksTable?: ReplayDrillTable;
 ```
 
-- [ ] **Step 5: Render lifecycle summary, trend, and detail tables**
+- [x] **Step 5: Render lifecycle summary, trend, and detail tables**
 
 In `HisReplayPage`, when selected task `runType === "live_quant_drill"`, render:
 
@@ -1645,7 +1645,7 @@ Detail tables:
 
 Each table must support empty state text and pagination when the backend returns `total > pageSize`.
 
-- [ ] **Step 6: Run UI test**
+- [x] **Step 6: Run UI test**
 
 ```powershell
 npm test -- his-replay-page.test.tsx i18n-static.test.ts -- --runInBand
@@ -1653,7 +1653,7 @@ npm test -- his-replay-page.test.tsx i18n-static.test.ts -- --runInBand
 
 Expected: pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add app/gateway/his_replay.py ui/src/lib/page-models.ts ui/src/features/quant/his-replay-page.tsx ui/src/tests/his-replay-page.test.tsx ui/src/locales/zh-CN.json ui/src/locales/en-US.json
