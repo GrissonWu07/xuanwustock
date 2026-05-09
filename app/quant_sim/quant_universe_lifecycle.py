@@ -471,10 +471,18 @@ class QuantUniverseDomainError(Exception):
 
 
 class QuantUniverseManager:
-    def __init__(self, *, db: Any, profile_id: str, policy: QuantUniverseLifecyclePolicy) -> None:
+    def __init__(
+        self,
+        *,
+        db: Any,
+        profile_id: str,
+        policy: QuantUniverseLifecyclePolicy,
+        drill_mode: bool = False,
+    ) -> None:
         self.db = db
         self.profile_id = profile_id
         self.policy = policy
+        self.drill_mode = bool(drill_mode)
 
     def ingest_candidate_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         event = self.db.add_candidate_event({**payload, "status": payload.get("status") or "active"})
@@ -519,7 +527,7 @@ class QuantUniverseManager:
             "in_cooldown": _is_future((state or {}).get("cooling_until"), None),
             "manual_priority": any(str(event.get("source_type")) == "manual" for event in events),
         }
-        score = calculate_candidate_score(events, snapshot, self.policy)
+        score = calculate_candidate_score(events, snapshot, self.policy, drill_mode=self.drill_mode)
         if state is not None:
             self.db.upsert_quant_universe_state(
                 code,

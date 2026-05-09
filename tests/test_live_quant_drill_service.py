@@ -280,3 +280,91 @@ def test_live_quant_drill_runs_cooling_opportunistic_review_after_main_scan(tmp_
     )
 
     assert call_order == ["main_scan", "cooling_review"]
+
+
+def test_live_quant_drill_new_trial_is_scanned_in_same_checkpoint(tmp_path, monkeypatch):
+    service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
+    scanned_codes: list[str] = []
+
+    def fake_generate(*args, **kwargs):
+        return [
+            {
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "source_type": "low_price",
+                "source_key": "low_price:2026-01-05",
+                "candidate_score": 0.95,
+                "confidence": 0.90,
+                "trend": "up",
+                "status": "active",
+                "reason_text": "historical low price candidate",
+                "evidence_json": {"price_structure": "strong"},
+            }
+        ]
+
+    monkeypatch.setattr(service, "_generate_live_quant_drill_candidate_events", fake_generate)
+    monkeypatch.setattr(
+        service,
+        "_evaluate_drill_candidate",
+        lambda candidate, *args, **kwargs: scanned_codes.append(candidate["stock_code"]),
+    )
+
+    result = service.run_live_quant_drill(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        seed_current_quant_universe=False,
+        generate_historical_candidate_events=True,
+        execute_trades=False,
+    )
+
+    assert "600519" in scanned_codes
+    candidate_events = service.db.list_sim_run_candidate_events(result["run_id"], page_size=10)
+    assert candidate_events["items"][0]["stock_code"] == "600519"
+    assert candidate_events["items"][0]["status"] == "consumed"
+
+
+def test_live_quant_drill_auto_entry_disabled_keeps_candidate_out_of_scan(tmp_path, monkeypatch):
+    service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
+    scanned_codes: list[str] = []
+
+    monkeypatch.setattr(
+        service,
+        "_generate_live_quant_drill_candidate_events",
+        lambda *args, **kwargs: [
+            {
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "source_type": "low_price",
+                "source_key": "low_price:2026-01-05",
+                "candidate_score": 0.95,
+                "confidence": 0.90,
+                "trend": "up",
+                "status": "active",
+                "reason_text": "historical low price candidate",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "_evaluate_drill_candidate",
+        lambda candidate, *args, **kwargs: scanned_codes.append(candidate["stock_code"]),
+    )
+
+    result = service.run_live_quant_drill(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        seed_current_quant_universe=False,
+        generate_historical_candidate_events=True,
+        auto_entry_enabled=False,
+        execute_trades=False,
+    )
+
+    candidate_events = service.db.list_sim_run_candidate_events(result["run_id"], page_size=10)
+    states = service.db.list_sim_run_quant_states(result["run_id"], stock="600519")
+    assert scanned_codes == []
+    assert candidate_events["items"][0]["status"] == "active"
+    assert {item["quant_status"] for item in states["items"]} == {"inactive"}

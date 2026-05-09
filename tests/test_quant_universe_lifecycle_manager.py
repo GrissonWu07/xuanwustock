@@ -325,9 +325,19 @@ def test_manual_paused_is_not_auto_restored_and_active_to_retired_is_forbidden()
     assert forbidden.reason_code == "forbidden_direct_retire"
 
 
-def _manager(tmp_path, policy: QuantUniverseLifecyclePolicy | None = None) -> QuantUniverseManager:
+def _manager(
+    tmp_path,
+    policy: QuantUniverseLifecyclePolicy | None = None,
+    *,
+    drill_mode: bool = False,
+) -> QuantUniverseManager:
     db = QuantSimDB(tmp_path / "quant_sim.db")
-    return QuantUniverseManager(db=db, profile_id="stable", policy=policy or QuantUniverseLifecyclePolicy.stable_defaults())
+    return QuantUniverseManager(
+        db=db,
+        profile_id="stable",
+        policy=policy or QuantUniverseLifecyclePolicy.stable_defaults(),
+        drill_mode=drill_mode,
+    )
 
 
 def test_manager_confirm_first_marks_eligible_without_promoting(tmp_path):
@@ -376,6 +386,42 @@ def test_manager_auto_trial_promotes_eligible_candidate(tmp_path):
     assert result["decision"] == "promoted_to_trial"
     assert state["quant_status"] == "trial"
     assert state["quant_enabled"] is True
+
+
+def test_manager_drill_mode_does_not_promote_by_source_count_bonus(tmp_path):
+    manager = _manager(tmp_path, drill_mode=True)
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+
+    first = manager.ingest_candidate_event(
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_key": "main_force",
+            "source_score": 0.6,
+            "confidence": 0.4,
+            "trend": "up",
+            "reason_text": "first historical candidate",
+        }
+    )
+    second = manager.ingest_candidate_event(
+        {
+            "stock_code": "600000",
+            "source_type": "research",
+            "source_key": "low_price",
+            "source_score": 0.6,
+            "confidence": 0.4,
+            "trend": "up",
+            "reason_text": "second historical candidate",
+        }
+    )
+
+    state = manager.db.get_quant_universe_state("600000")
+    assert first["decision"] == "skipped"
+    assert second["decision"] == "skipped"
+    assert second["candidate_score"] < manager.policy.trial_threshold
+    assert second["breakdown"]["multi_source_bonus"] == 0.0
+    assert state is None or state["quant_status"] == "inactive"
 
 
 def test_manager_lifecycle_disabled_records_event_without_auto_promoting(tmp_path):

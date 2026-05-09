@@ -1110,7 +1110,7 @@ git commit -m "feat: execute live quant drill in run-local state"
 - Modify: `app/quant_sim/live_quant_drill_candidates.py`
 - Test: `tests/test_live_quant_drill_service.py`
 
-- [ ] **Step 1: Add failing test for same-checkpoint trial visibility**
+- [x] **Step 1: Add failing test for same-checkpoint trial visibility**
 
 Add:
 
@@ -1150,7 +1150,7 @@ def test_live_quant_drill_new_trial_is_scanned_in_same_checkpoint(tmp_path, monk
     assert "600519" in scanned_codes
 ```
 
-- [ ] **Step 2: Run test and confirm failure**
+- [x] **Step 2: Run test and confirm failure**
 
 ```powershell
 pytest tests/test_live_quant_drill_service.py::test_live_quant_drill_new_trial_is_scanned_in_same_checkpoint -q
@@ -1158,7 +1158,7 @@ pytest tests/test_live_quant_drill_service.py::test_live_quant_drill_new_trial_i
 
 Expected: fails until candidate events are promoted before scan and visible in run-local DB.
 
-- [ ] **Step 3: Implement candidate event generation hook**
+- [x] **Step 3: Implement candidate event generation hook**
 
 Add `_generate_live_quant_drill_candidate_events()`:
 
@@ -1181,7 +1181,7 @@ Initial implementation can support:
 
 Unsupported sources must append to `context["disabled_candidate_sources"]`.
 
-- [ ] **Step 4: Mark consumed events**
+- [x] **Step 4: Mark consumed events**
 
 When manager promotes a candidate to `trial`:
 
@@ -1189,7 +1189,7 @@ When manager promotes a candidate to `trial`:
 - Update run-local candidate event state to consumed.
 - Call `mark_sim_run_candidate_events_consumed()` on replay DB for persisted event rows.
 
-- [ ] **Step 5: Run service tests**
+- [x] **Step 5: Run service tests**
 
 ```powershell
 pytest tests/test_live_quant_drill_service.py -q
@@ -1197,7 +1197,7 @@ pytest tests/test_live_quant_drill_service.py -q
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add app/quant_sim/replay_service.py app/quant_sim/live_quant_drill_candidates.py tests/test_live_quant_drill_service.py
