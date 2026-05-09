@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../lib/api-client";
+import { setI18nLocale } from "../lib/i18n";
 import { HisReplayPage } from "../features/quant/his-replay-page";
 
 const emptyTable = {
@@ -315,6 +316,7 @@ const completedReplayProgress = {
 };
 
 beforeAll(() => {
+  setI18nLocale("zh-CN");
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     value: vi.fn().mockImplementation(() => ({

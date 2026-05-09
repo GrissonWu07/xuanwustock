@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
-import type { ApiClient } from "../../lib/api-client";
+import { Link, useNavigate } from "react-router-dom";
+import { apiClient, type ApiClient } from "../../lib/api-client";
 import { PageHeader } from "../../components/ui/page-header";
 import { WorkbenchCard } from "../../components/ui/workbench-card";
 import { PageEmptyState, PageErrorState, PageLoadingState } from "../../components/ui/page-state";
@@ -47,6 +47,13 @@ const EXECUTION_STAT_GROUPS = [
 function parseIntervalMinutes(value: string) {
   const match = String(value).match(/(\d+)/);
   return match ? Number(match[1]) : 15;
+}
+
+function localDateInput(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function normalizeAnalysisTimeframe(value: string) {
@@ -216,6 +223,13 @@ type LiveSimPageProps = {
   client?: ApiClient;
 };
 
+type LiveQuantDrillResult = {
+  runId?: number | string;
+  runType?: string;
+  status?: string;
+  redirect?: string;
+};
+
 type LiveQuantStockListProps = {
   table: TableSection;
   title: string;
@@ -299,7 +313,9 @@ function LiveQuantStockList({
 }
 
 export function LiveSimPage({ client }: LiveSimPageProps) {
-  const resource = usePageData("live-sim", client);
+  const activeClient = client ?? apiClient;
+  const navigate = useNavigate();
+  const resource = usePageData("live-sim", activeClient);
   const snapshot = resource.data;
   const snapshotVersion = snapshot?.updatedAt ?? "loading";
   const [intervalMinutes, setIntervalMinutes] = useState(15);
@@ -334,6 +350,47 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const [tradeStockFilter, setTradeStockFilter] = useState("");
   const [tradeActionFilter, setTradeActionFilter] = useState("ALL");
   const [tradePage, setTradePage] = useState(1);
+  const [drillDialogOpen, setDrillDialogOpen] = useState(false);
+  const [drillStartDate, setDrillStartDate] = useState("2026-01-01");
+  const [drillEndDate, setDrillEndDate] = useState(localDateInput());
+  const [drillFrequency, setDrillFrequency] = useState("daily_first_checkpoint");
+  const [drillCheckpointInterval, setDrillCheckpointInterval] = useState(8);
+  const [drillConfirmLongRunning, setDrillConfirmLongRunning] = useState(false);
+  const [drillPending, setDrillPending] = useState(false);
+
+  const startDrillPayload = {
+    startDate: drillStartDate,
+    endDate: drillEndDate,
+    market,
+    timeframe: analysisTimeframe,
+    initialCash,
+    strategyProfileId,
+    autoEntryEnabled: true,
+    autoExitEnabled: true,
+    executeTrades: true,
+    liquidateAtEnd: true,
+    seedCurrentQuantUniverse: true,
+    generateHistoricalCandidateEvents: true,
+    candidateGenerationFrequency: drillFrequency,
+    candidateGenerationCheckpointInterval: drillCheckpointInterval,
+    confirmLongRunning: drillConfirmLongRunning,
+  };
+  const drillStrategyProfileLabel =
+    snapshot?.config.strategyProfiles?.find((item) => String(item.id) === String(strategyProfileId))?.name ?? strategyProfileId;
+
+  async function submitLiveQuantDrill() {
+    if (drillPending) return;
+    setDrillPending(true);
+    try {
+      const result = (await activeClient.runPageAction("live-sim", "start-drill", startDrillPayload)) as LiveQuantDrillResult;
+      setDrillDialogOpen(false);
+      if (result?.redirect) {
+        navigate(result.redirect);
+      }
+    } finally {
+      setDrillPending(false);
+    }
+  }
 
   useEffect(() => {
     if (!snapshot) {
@@ -889,6 +946,17 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
               >
                 {actionPending === "reset" ? t("重置中...") : t("重置")}
               </button>
+              <button
+                className="button button--secondary"
+                type="button"
+                disabled={drillPending}
+                onClick={() => {
+                  setDrillEndDate(localDateInput());
+                  setDrillDialogOpen(true);
+                }}
+              >
+                {t("历史演练")}
+              </button>
               <span className="toolbar__spacer" />
               <button
                 className="button button--secondary"
@@ -922,6 +990,87 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
               </button>
             </div>
           </WorkbenchCard>
+
+          {drillDialogOpen ? (
+            <div
+              className="modal-backdrop"
+              style={{
+                position: "fixed",
+                inset: 0,
+                zIndex: 40,
+                display: "grid",
+                placeItems: "center",
+                background: "rgba(15, 23, 42, 0.28)",
+                padding: "24px",
+              }}
+            >
+              <section className="card section-card" role="dialog" aria-modal="true" aria-label={t("实时量化历史演练")}>
+                <h2 className="section-card__title">{t("实时量化历史演练")}</h2>
+                <p className="section-card__description">
+                  {t("用历史 checkpoint 模拟实时量化从指定日期开始上线运行的完整过程，包括入池、出池、交易和生命周期。")}
+                </p>
+                <div className="section-grid">
+                  <label className="field">
+                    <span className="field__label">{t("开始日期")}</span>
+                    <input className="input" type="date" value={drillStartDate} onChange={(event) => setDrillStartDate(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span className="field__label">{t("结束日期")}</span>
+                    <input className="input" type="date" value={drillEndDate} onChange={(event) => setDrillEndDate(event.target.value)} />
+                  </label>
+                </div>
+                <div className="section-grid">
+                  <label className="field">
+                    <span className="field__label">{t("候选生成频率")}</span>
+                    <select className="input" value={drillFrequency} onChange={(event) => setDrillFrequency(event.target.value)}>
+                      <option value="daily_first_checkpoint">{t("每日第一个检查点")}</option>
+                      <option value="every_n_checkpoints">{t("每 N 个检查点")}</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span className="field__label">{t("检查点间隔")}</span>
+                    <input
+                      className="input"
+                      min={1}
+                      step={1}
+                      type="number"
+                      value={drillCheckpointInterval}
+                      onChange={(event) => setDrillCheckpointInterval(Math.max(1, Number(event.target.value) || 8))}
+                    />
+                  </label>
+                </div>
+                <div className="chip-row">
+                  <span className="badge badge--accent">{t("自动入池")}</span>
+                  <span className="badge badge--accent">{t("自动出池")}</span>
+                  <span className="badge badge--accent">{t("模拟交易")}</span>
+                  <span className="badge badge--accent">{t("期末清算")}</span>
+                  <span className="badge badge--accent">{t("使用当前实时量化股票")}</span>
+                  <span className="badge badge--neutral">{t("市场 {v0}", { v0: market })}</span>
+                  <span className="badge badge--neutral">{t("周期 {v0}", { v0: analysisTimeframe })}</span>
+                  <span className="badge badge--neutral">{t("策略 {v0}", { v0: drillStrategyProfileLabel })}</span>
+                  <span className="badge badge--neutral">
+                    {t("资金 {v0}", { v0: Number(initialCash || 0).toLocaleString() })}
+                  </span>
+                </div>
+                <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={drillConfirmLongRunning}
+                    onChange={(event) => setDrillConfirmLongRunning(event.target.checked)}
+                  />
+                  <span className="field__label" style={{ margin: 0 }}>{t("确认长任务")}</span>
+                </label>
+                <div className="toolbar toolbar--compact">
+                  <button className="button button--secondary" type="button" disabled={drillPending} onClick={() => setDrillDialogOpen(false)}>
+                    {t("取消")}
+                  </button>
+                  <button className="button button--primary" type="button" disabled={drillPending} onClick={submitLiveQuantDrill}>
+                    {drillPending ? t("启动中...") : t("开始演练")}
+                  </button>
+                </div>
+              </section>
+            </div>
+          ) : null}
 
           <LiveQuantStockList
             title={t("实时量化股票")}

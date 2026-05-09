@@ -1671,7 +1671,7 @@ git commit -m "feat: show live quant drill replay results"
 - Modify: `ui/src/locales/en-US.json`
 - Test: `ui/src/tests/live-sim-page.test.tsx`
 
-- [ ] **Step 1: Add failing UI test for launch dialog**
+- [x] **Step 1: Add failing UI test for launch dialog**
 
 In `ui/src/tests/live-sim-page.test.tsx`, add:
 
@@ -1706,7 +1706,7 @@ it("starts live quant drill from live sim page", async () => {
 });
 ```
 
-- [ ] **Step 2: Run UI test and confirm failure**
+- [x] **Step 2: Run UI test and confirm failure**
 
 ```powershell
 npm test -- live-sim-page.test.tsx -- --runInBand
@@ -1714,7 +1714,7 @@ npm test -- live-sim-page.test.tsx -- --runInBand
 
 Expected: fails because action/UI do not exist.
 
-- [ ] **Step 3: Add API action mapping**
+- [x] **Step 3: Add API action mapping**
 
 In `ui/src/lib/api-client.ts`:
 
@@ -1722,7 +1722,7 @@ In `ui/src/lib/api-client.ts`:
 pageActionEndpoints["live-sim"]["start-drill"] = "/api/v1/quant/live-sim/actions/start-drill";
 ```
 
-- [ ] **Step 4: Add launch dialog**
+- [x] **Step 4: Add launch dialog**
 
 In `LiveSimPage`:
 
@@ -1742,7 +1742,7 @@ In `LiveSimPage`:
 
 Submit via `runPageAction("live-sim", "start-drill", payload)`.
 
-- [ ] **Step 5: Add i18n entries**
+- [x] **Step 5: Add i18n entries**
 
 Add translations for:
 
@@ -1755,7 +1755,7 @@ Add translations for:
 - `每 N 个检查点`
 - `确认长任务`
 
-- [ ] **Step 6: Run UI tests**
+- [x] **Step 6: Run UI tests**
 
 ```powershell
 npm test -- live-sim-page.test.tsx i18n-static.test.ts -- --runInBand
@@ -1763,7 +1763,7 @@ npm test -- live-sim-page.test.tsx i18n-static.test.ts -- --runInBand
 
 Expected: pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add ui/src/features/quant/live-sim-page.tsx ui/src/lib/api-client.ts ui/src/locales/zh-CN.json ui/src/locales/en-US.json ui/src/tests/live-sim-page.test.tsx
