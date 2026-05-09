@@ -209,7 +209,7 @@ const initialSnapshot = {
     { label: "总费用", value: "18.20" },
     { label: "手续费", value: "8.20" },
     { label: "印花税", value: "10.00" },
-    { label: "实现盈亏", value: "568.52" },
+    { label: "实现盈亏", value: "-568.52" },
     { label: "买入lot", value: "12" },
     { label: "卖出lot", value: "6" },
     { label: "剩余lot", value: "6" },
@@ -294,6 +294,24 @@ const progressedReplayProgress = {
     emptyLabel: "暂无信号",
     emptyMessage: "暂无信号",
   },
+};
+
+const completedReplayProgress = {
+  ...progressedReplayProgress,
+  updatedAt: "2026-04-23 22:12:00",
+  tasks: [
+    {
+      ...progressedReplayProgress.tasks[0],
+      status: "completed",
+      stage: "已完成",
+      progress: 100,
+      progressCurrent: 1992,
+      progressTotal: 1992,
+      checkpointCount: 1992,
+      latestCheckpointAt: "2026-01-06 15:00:00",
+    },
+    ...initialSnapshot.tasks,
+  ],
 };
 
 beforeAll(() => {
@@ -518,10 +536,11 @@ describe("HisReplayPage", () => {
 
     const section = await screen.findByLabelText("费用与执行统计");
     expect(within(section).getByText("收益结果")).toBeInTheDocument();
-    expect(within(section).getByText("568.52")).toBeInTheDocument();
+    expect(within(section).getByText("453.56")).toBeInTheDocument();
+    expect(within(section).getByText("-568.52")).toBeInTheDocument();
     expect(within(section).getByText("买入总成本")).toBeInTheDocument();
     expect(within(section).getByText("卖出到账")).toBeInTheDocument();
-    expect(within(section).getByText("已扣手续费与印花税 · 交易笔数 14 · 胜率 57.1%")).toBeInTheDocument();
+    expect(within(section).getByText("清算后总盈亏口径 · 已扣手续费与印花税 · 交易笔数 14 · 胜率 57.1%")).toBeInTheDocument();
     expect(within(section).getByText("成本拆解")).toBeInTheDocument();
     expect(within(section).getByText("收入拆解")).toBeInTheDocument();
     expect(within(section).getByText("交易背景")).toBeInTheDocument();
@@ -624,7 +643,7 @@ describe("HisReplayPage", () => {
     const nativeSetInterval = window.setInterval.bind(window);
     const nativeClearInterval = window.clearInterval.bind(window);
     vi.spyOn(window, "setInterval").mockImplementation((callback: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      if (timeout === 60 * 1000) {
+      if (timeout === 10 * 1000) {
         intervalCallbacks.push(callback as () => Promise<void>);
         return 1;
       }
@@ -670,5 +689,45 @@ describe("HisReplayPage", () => {
     expect(client.getReplayProgress).toHaveBeenCalledTimes(2);
     expect(client.getPageSnapshot).toHaveBeenCalledTimes(1);
     expect(await screen.findByRole("link", { name: /002463/ })).toHaveAttribute("href", "/portfolio/position/002463");
+  });
+
+  it("stops lightweight replay progress polling when the running task finishes", async () => {
+    const intervalCallbacks: Array<() => Promise<void>> = [];
+    const nativeSetInterval = window.setInterval.bind(window);
+    const nativeClearInterval = window.clearInterval.bind(window);
+    const clearIntervalSpy = vi.spyOn(window, "clearInterval").mockImplementation((handle?: number) => {
+      if (handle === 7) return;
+      nativeClearInterval(handle);
+    });
+    vi.spyOn(window, "setInterval").mockImplementation((callback: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 10 * 1000) {
+        intervalCallbacks.push(callback as () => Promise<void>);
+        return 7;
+      }
+      return nativeSetInterval(callback, timeout, ...args);
+    });
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(startedSnapshot),
+      getReplayProgress: vi.fn()
+        .mockResolvedValueOnce(progressedReplayProgress)
+        .mockResolvedValueOnce(completedReplayProgress),
+      runPageAction: vi.fn(),
+    } as unknown as ApiClient;
+
+    renderHisReplayPage(client);
+
+    const taskDetails = await screen.findByLabelText("已选回放任务详情");
+    expect(intervalCallbacks).toHaveLength(1);
+    expect(await within(taskDetails).findByText("检查点进度：1497/1992 · 75%")).toBeInTheDocument();
+
+    await act(async () => {
+      await intervalCallbacks[0]();
+    });
+
+    expect(await within(taskDetails).findByText("检查点进度：1992/1992 · 100%")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(clearIntervalSpy).toHaveBeenCalledWith(7);
+    });
+    expect(intervalCallbacks).toHaveLength(1);
   });
 });

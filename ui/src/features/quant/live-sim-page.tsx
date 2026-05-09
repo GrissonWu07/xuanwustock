@@ -980,7 +980,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
                         <span>{t("收益结果")}</span>
                         <strong>{primaryExecutionMetric.value}</strong>
                         <em>
-                          {t("已扣手续费与印花税")}{executionTradeCountMetric ? ` · ${executionTradeCountMetric.label} ${executionTradeCountMetric.value}` : ""}
+                          {t("实现盈亏口径")} · {t("已扣手续费与印花税")}{executionTradeCountMetric ? ` · ${executionTradeCountMetric.label} ${executionTradeCountMetric.value}` : ""}
                           {executionWinRateMetric ? t(" · 胜率 {v0}", { v0: executionWinRateMetric.value }) : ""}
                         </em>
                       </div>

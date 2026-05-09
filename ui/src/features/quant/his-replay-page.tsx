@@ -27,7 +27,7 @@ const AI_DYNAMIC_STRATEGY_OPTIONS = [
 ];
 
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
-const REPLAY_PROGRESS_REFRESH_MS = 60 * 1000;
+const REPLAY_PROGRESS_REFRESH_MS = 10 * 1000;
 const REPLAY_CHECKPOINT_PAGE_SIZE = 50;
 const TRADE_PAGE_SIZE = 20;
 const SIGNAL_PAGE_SIZE = 10;
@@ -158,6 +158,10 @@ function findMetricValue(metrics: ReplaySnapshot["tradeCostSummary"], label: str
   return metrics?.find((metric) => metric.label === label)?.value;
 }
 
+function findMetric(metrics: ReplaySnapshot["tradeCostSummary"], label: string) {
+  return metrics?.find((metric) => metric.label === label);
+}
+
 function pickMetrics(metrics: SummaryMetric[], labels: string[]) {
   const byLabel = new Map(metrics.map((metric) => [metric.label, metric]));
   return labels.map((label) => byLabel.get(label)).filter((metric): metric is SummaryMetric => Boolean(metric));
@@ -178,6 +182,18 @@ function pickPreferredReplayTaskId(
     return previousId;
   }
   return tasks[0]?.id ?? "";
+}
+
+function isReplayTaskPollingStatus(status: unknown) {
+  const normalized = String(status || "").trim().toLowerCase();
+  return normalized === "running" || normalized === "queued";
+}
+
+function replayPollingTaskKey(tasks: Array<{ id: string; status?: string }> | undefined) {
+  return (tasks ?? [])
+    .filter((task) => isReplayTaskPollingStatus(task.status))
+    .map((task) => `${task.id}:${String(task.status || "").trim().toLowerCase()}`)
+    .join("|");
 }
 
 function mergeReplayProgress(snapshot: ReplaySnapshot, progress: ReplayProgressSnapshot | null): ReplaySnapshot {
@@ -365,6 +381,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [checkpointPage, setCheckpointPage] = useState(1);
   const [checkpointLoading, setCheckpointLoading] = useState(false);
   const [checkpointError, setCheckpointError] = useState("");
+  const runningReplayTaskKey = replayPollingTaskKey(snapshot?.tasks);
 
   const loadReplayCheckpointPage = useCallback(
     async (page: number, checkpointAt?: string) => {
@@ -442,13 +459,9 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   }, [checkpointTaskLatestCheckpointAt, hasReplayCheckpointLoader, loadReplayCheckpointPage, selectedTaskRunId]);
 
   useEffect(() => {
-    if (!rawSnapshot || typeof activeClient.getReplayProgress !== "function") {
+    if (!rawSnapshot || typeof activeClient.getReplayProgress !== "function" || !runningReplayTaskKey) {
       return;
     }
-    const hasPollingTask = rawSnapshot.tasks.some((task) => {
-      const normalized = String(task.status || "").trim().toLowerCase();
-      return normalized === "running" || normalized === "queued";
-    });
 
     let cancelled = false;
     const replayQuery = {
@@ -475,11 +488,6 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     };
 
     void refreshProgress();
-    if (!hasPollingTask) {
-      return () => {
-        cancelled = true;
-      };
-    }
     const timer = window.setInterval(refreshProgress, REPLAY_PROGRESS_REFRESH_MS);
 
     return () => {
@@ -490,6 +498,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     activeClient,
     snapshotVersion,
     rawSnapshot,
+    runningReplayTaskKey,
     selectedTaskRunId,
     tradePage,
     tradeActionFilter,
@@ -592,10 +601,20 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     : [];
   const executionCostSummary = (snapshot.tradeCostSummary ?? []).filter((metric) => !REPLAY_SUMMARY_METRIC_LABELS.has(metric.label));
   const executionHeroMetrics = pickMetrics(executionCostSummary, EXECUTION_HERO_METRIC_LABELS);
-  const primaryExecutionMetric = executionHeroMetrics.find((metric) => metric.label === t("实现盈亏"));
+  const realizedExecutionMetric = executionHeroMetrics.find((metric) => metric.label === t("实现盈亏"));
+  const primaryExecutionMetric =
+    findMetric(snapshot.tradeCostSummary, t("清算后总盈亏"))
+    ?? findMetric(snapshot.tradeCostSummary, t("总盈亏"))
+    ?? realizedExecutionMetric;
+  const primaryExecutionBasisLabel =
+    primaryExecutionMetric?.label === t("清算后总盈亏")
+      ? t("清算后总盈亏口径")
+      : primaryExecutionMetric?.label === t("总盈亏")
+        ? t("总盈亏口径")
+        : t("实现盈亏口径");
   const executionWinRateMetric = executionCostSummary.find((metric) => metric.label === t("胜率"));
   const executionTradeCountMetric = executionCostSummary.find((metric) => metric.label === t("交易笔数"));
-  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== t("实现盈亏"));
+  const secondaryExecutionHeroMetrics = executionHeroMetrics.filter((metric) => metric.label !== primaryExecutionMetric?.label);
   const executionHeroMetricLabels = new Set(executionHeroMetrics.map((metric) => metric.label));
   const executionGroupMetricLabels = new Set(EXECUTION_STAT_GROUPS.flatMap((group) => group.labels));
   const executionStatGroups = EXECUTION_STAT_GROUPS.map((group) => ({
@@ -1126,7 +1145,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                         <span>{t("收益结果")}</span>
                         <strong>{primaryExecutionMetric.value}</strong>
                         <em>
-                          {t("已扣手续费与印花税")}{executionTradeCountMetric ? ` · ${executionTradeCountMetric.label} ${executionTradeCountMetric.value}` : ""}
+                          {primaryExecutionBasisLabel} · {t("已扣手续费与印花税")}{executionTradeCountMetric ? ` · ${executionTradeCountMetric.label} ${executionTradeCountMetric.value}` : ""}
                           {executionWinRateMetric ? t(" · 胜率 {v0}", { v0: executionWinRateMetric.value }) : ""}
                         </em>
                       </div>

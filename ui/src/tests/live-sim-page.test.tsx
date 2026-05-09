@@ -512,7 +512,7 @@ describe("LiveSimPage", () => {
     expect(within(executionSection).getByText("2368.76")).toBeInTheDocument();
     expect(within(executionSection).getByText("买入总成本")).toBeInTheDocument();
     expect(within(executionSection).getByText("卖出到账")).toBeInTheDocument();
-    expect(within(executionSection).getByText("已扣手续费与印花税 · 交易笔数 2 · 胜率 50.0%")).toBeInTheDocument();
+    expect(within(executionSection).getByText("实现盈亏口径 · 已扣手续费与印花税 · 交易笔数 2 · 胜率 50.0%")).toBeInTheDocument();
     expect(within(executionSection).getByText("成本拆解")).toBeInTheDocument();
     expect(within(executionSection).getByText("收入拆解")).toBeInTheDocument();
     expect(within(executionSection).getByText("交易背景")).toBeInTheDocument();
