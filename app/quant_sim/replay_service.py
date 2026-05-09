@@ -270,6 +270,7 @@ class QuantSimReplayService:
         "current_discover_result",
         "current_research_summary",
     )
+    LIVE_QUANT_DRILL_SCAN_STATUSES = ("trial", "active", "exit_only")
     LIVE_QUANT_DRILL_LONG_RUNNING_INVOCATION_LIMIT = 3000
 
     def __init__(
@@ -715,6 +716,89 @@ class QuantSimReplayService:
             "candidate_generation_frequency": candidate_generation_frequency,
             "candidate_generation_checkpoint_interval": int(candidate_generation_checkpoint_interval),
         }
+
+    def _create_live_quant_drill_temp_db(self, context: dict, temp_db_file: str | Path) -> QuantSimDB:
+        temp_db_path = Path(temp_db_file)
+        temp_db_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_db = QuantSimDB(temp_db_path)
+        temp_db.configure_account(float(context["account_summary"]["initial_cash"]))
+        scheduler_config = context.get("scheduler_config") if isinstance(context.get("scheduler_config"), dict) else {}
+        strategy_profile_binding = context.get("strategy_profile_binding") if isinstance(context.get("strategy_profile_binding"), dict) else {}
+        temp_db.update_scheduler_config(
+            enabled=False,
+            auto_execute=bool(context.get("execute_trades", True)),
+            interval_minutes=int(scheduler_config.get("interval_minutes") or 10),
+            trading_hours_only=True,
+            analysis_timeframe=str(context.get("timeframe") or scheduler_config.get("analysis_timeframe") or "30m"),
+            strategy_mode=str(scheduler_config.get("strategy_mode") or "auto"),
+            strategy_profile_id=str(strategy_profile_binding.get("profile_id") or "") or None,
+            ai_dynamic_strategy=str(context.get("ai_dynamic_strategy") or DEFAULT_AI_DYNAMIC_STRATEGY),
+            ai_dynamic_strength=float(context.get("ai_dynamic_strength") or 0),
+            ai_dynamic_lookback=int(context.get("ai_dynamic_lookback") or DEFAULT_AI_DYNAMIC_LOOKBACK),
+            market=str(context.get("market") or scheduler_config.get("market") or "CN"),
+            commission_rate=float(context.get("commission_rate") or scheduler_config.get("commission_rate") or 0),
+            sell_tax_rate=float(context.get("sell_tax_rate") or scheduler_config.get("sell_tax_rate") or 0),
+            capital_slot_enabled=bool(scheduler_config.get("capital_slot_enabled", True)),
+            capital_pool_min_cash=float(scheduler_config.get("capital_pool_min_cash") or 0),
+            capital_pool_max_cash=float(scheduler_config.get("capital_pool_max_cash") or 0),
+            capital_slot_min_cash=float(scheduler_config.get("capital_slot_min_cash") or 0),
+            capital_max_slots=int(scheduler_config.get("capital_max_slots") or 1),
+            capital_min_buy_slot_fraction=float(scheduler_config.get("capital_min_buy_slot_fraction") or 0.25),
+            capital_full_buy_edge=float(scheduler_config.get("capital_full_buy_edge") or 0.25),
+            capital_confidence_weight=float(scheduler_config.get("capital_confidence_weight") or 0.35),
+            capital_high_price_threshold=float(scheduler_config.get("capital_high_price_threshold") or 100),
+            capital_high_price_max_slot_units=float(scheduler_config.get("capital_high_price_max_slot_units") or 2),
+            capital_sell_cash_reuse_policy=str(scheduler_config.get("capital_sell_cash_reuse_policy") or "next_batch"),
+        )
+        for row in context.get("initial_quant_universe_snapshot") or []:
+            stock_code = str(row.get("stock_code") or "").strip()
+            if not stock_code:
+                continue
+            stock_name = str(row.get("stock_name") or stock_code).strip() or stock_code
+            quant_status = str(row.get("quant_status") or "inactive").strip()
+            source = str(row.get("quant_entry_source") or "seed_current_quant_universe")
+            temp_db.add_watch(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                source=source,
+                metadata={"live_quant_drill_seed": True},
+            )
+            if quant_status in self.LIVE_QUANT_DRILL_SCAN_STATUSES:
+                temp_db.add_candidate(
+                    {
+                        "stock_code": stock_code,
+                        "stock_name": stock_name,
+                        "source": source,
+                        "latest_price": 0,
+                        "notes": "live_quant_drill_seed",
+                        "metadata": {"live_quant_drill_seed": True},
+                        "status": "active",
+                    }
+                )
+            temp_db.upsert_quant_universe_state(
+                stock_code,
+                {
+                    "stock_name": stock_name,
+                    "quant_status": quant_status,
+                    "quant_entry_source": source,
+                    "quant_entry_at": row.get("quant_entry_at"),
+                    "candidate_score": row.get("candidate_score"),
+                    "candidate_confidence": row.get("candidate_confidence"),
+                    "health_score": float(row.get("health_score") if row.get("health_score") is not None else 100.0),
+                    "downtrend_streak": row.get("downtrend_streak"),
+                    "weakening_warning_streak": row.get("weakening_warning_streak"),
+                    "blocked_streak": row.get("blocked_streak"),
+                    "no_buy_days": row.get("no_buy_days"),
+                    "cooling_until": row.get("cooling_until"),
+                    "retired_at": row.get("retired_at"),
+                    "retire_reason": row.get("retire_reason"),
+                    "reentry_watch_until": row.get("reentry_watch_until"),
+                    "last_status_changed_at": row.get("last_status_changed_at"),
+                    "last_health_evaluated_at": row.get("last_health_evaluated_at"),
+                    "snapshot": row.get("snapshot") or row.get("snapshot_json"),
+                },
+            )
+        return temp_db
 
     def _prepare_replay_context(
         self,

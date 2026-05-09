@@ -826,7 +826,7 @@ git commit -m "feat: create live quant drill replay runs"
 - Modify: `app/quant_sim/replay_service.py`
 - Test: `tests/test_live_quant_drill_service.py`
 
-- [ ] **Step 1: Add failing test for run-local DB initialization**
+- [x] **Step 1: Add failing test for run-local DB initialization**
 
 Add:
 
@@ -855,7 +855,7 @@ def test_live_quant_drill_initializes_run_local_quant_state(tmp_path):
     assert candidate["stock_code"] == "600519"
 ```
 
-- [ ] **Step 2: Run targeted test and confirm failure**
+- [x] **Step 2: Run targeted test and confirm failure**
 
 ```powershell
 pytest tests/test_live_quant_drill_service.py::test_live_quant_drill_initializes_run_local_quant_state -q
@@ -863,7 +863,7 @@ pytest tests/test_live_quant_drill_service.py::test_live_quant_drill_initializes
 
 Expected: fails because temp DB initializer does not exist.
 
-- [ ] **Step 3: Implement temp DB initializer**
+- [x] **Step 3: Implement temp DB initializer**
 
 Add:
 
@@ -898,7 +898,7 @@ Rules:
 - Preserve `trial / active / exit_only / cooling / retired / manual_paused` in run-local state.
 - Only `trial / active / exit_only` should be in main scan.
 
-- [ ] **Step 4: Run service tests**
+- [x] **Step 4: Run service tests**
 
 ```powershell
 pytest tests/test_live_quant_drill_service.py -q
@@ -906,7 +906,7 @@ pytest tests/test_live_quant_drill_service.py -q
 
 Expected: pass for context and initialization tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add app/quant_sim/replay_service.py tests/test_live_quant_drill_service.py

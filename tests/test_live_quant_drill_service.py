@@ -148,3 +148,62 @@ def test_live_quant_drill_is_blocked_by_running_historical_backtest(tmp_path):
             timeframe="30m",
             market="CN",
         )
+
+
+def test_live_quant_drill_initializes_run_local_quant_state(tmp_path):
+    live_db_file = tmp_path / "live.db"
+    live_db = QuantSimDB(str(live_db_file))
+    live_db.add_watch(stock_code="600519", stock_name="贵州茅台", source="manual")
+    live_db.upsert_quant_universe_state(
+        "600519",
+        {
+            "stock_name": "贵州茅台",
+            "quant_status": "active",
+            "health_score": 91.0,
+            "candidate_score": 72.0,
+            "candidate_confidence": 0.83,
+        },
+    )
+    live_db.add_watch(stock_code="000001", stock_name="平安银行", source="manual")
+    live_db.upsert_quant_universe_state(
+        "000001",
+        {
+            "stock_name": "平安银行",
+            "quant_status": "cooling",
+            "health_score": 35.0,
+        },
+    )
+
+    service = QuantSimReplayService(db_file=str(live_db_file), replay_db_file=str(tmp_path / "replay.db"))
+    context = service._prepare_live_quant_drill_context(
+        start_datetime=datetime(2026, 1, 5, 9, 30),
+        end_datetime=datetime(2026, 1, 6, 15, 0),
+        timeframe="30m",
+        market="CN",
+        strategy_profile_id=None,
+        initial_cash=100000,
+        ai_dynamic_strategy="off",
+        ai_dynamic_strength=0,
+        ai_dynamic_lookback=24,
+        auto_entry_enabled=True,
+        auto_exit_enabled=True,
+        execute_trades=True,
+        liquidate_at_end=True,
+        seed_current_quant_universe=True,
+        generate_historical_candidate_events=False,
+        candidate_generation_frequency="daily_first_checkpoint",
+        candidate_generation_checkpoint_interval=8,
+    )
+    temp_db = service._create_live_quant_drill_temp_db(context, tmp_path / "temp.db")
+
+    state = temp_db.get_quant_universe_state("600519")
+    candidate = temp_db.get_candidate("600519")
+    cooling_state = temp_db.get_quant_universe_state("000001")
+    scan_candidates = temp_db.get_candidates(quant_statuses=["trial", "active", "exit_only"])
+    assert state["quant_status"] == "active"
+    assert state["health_score"] == 91.0
+    assert state["candidate_score"] == 72.0
+    assert state["candidate_confidence"] == 0.83
+    assert candidate["stock_code"] == "600519"
+    assert cooling_state["quant_status"] == "cooling"
+    assert [row["stock_code"] for row in scan_candidates] == ["600519"]
