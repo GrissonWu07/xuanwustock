@@ -24,7 +24,7 @@ from app.gateway.common import (
     table as _table,
     txt as _txt,
 )
-from app.gateway.quant_universe_entry import enrich_lifecycle_entry_rows
+from app.gateway.quant_universe_entry import enrich_lifecycle_entry_rows, ingest_lifecycle_entry_rows
 from app.i18n import t
 from app.quant_sim.time_utils import format_system_time, parse_system_datetime
 from app.selector_ui_state import (
@@ -680,6 +680,7 @@ def _run_discover_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
     )
     try:
         run_result = _run_discover_strategies(context, payload)
+        ingest_summary = ingest_lifecycle_entry_rows(context, _discover_rows(context), source_type="discover")
         rows = _discover_rows(context)
         failed_items = run_result.get("failed") if isinstance(run_result, dict) and isinstance(run_result.get("failed"), list) else []
         completed_items = run_result.get("completed") if isinstance(run_result, dict) and isinstance(run_result.get("completed"), list) else []
@@ -710,6 +711,7 @@ def _run_discover_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
                 "updatedAt": _now(),
                 "completedStrategies": completed_items,
                 "failedStrategies": failed_items,
+                "quantAutoEntry": ingest_summary,
             },
         )
     except Exception as exc:

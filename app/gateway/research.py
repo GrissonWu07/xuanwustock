@@ -22,7 +22,7 @@ from app.gateway.common import (
     table as _table,
     txt as _txt,
 )
-from app.gateway.quant_universe_entry import enrich_lifecycle_entry_rows
+from app.gateway.quant_universe_entry import enrich_lifecycle_entry_rows, ingest_lifecycle_entry_rows
 from app.i18n import t
 from app.notification_service import notification_service
 from app.research_watchlist_integration import add_research_stock_to_watchlist, add_research_stocks_to_watchlist
@@ -611,6 +611,7 @@ def _run_research_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
                 status="running",
             ),
         )
+        ingest_summary = ingest_lifecycle_entry_rows(context, _research_rows(context), source_type="research")
         output_rows = ((result.get("outputTable") or {}).get("rows") or []) if isinstance(result, dict) else []
         final_message = t("Research task completed. Stock outputs: {count}.", count=len(output_rows))
         _send_research_task_notification(task_id, result, selected)
@@ -632,6 +633,7 @@ def _run_research_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
             result={
                 "moduleCount": len(selected),
                 "outputCount": len(output_rows),
+                "quantAutoEntry": ingest_summary,
                 "updatedAt": _now(),
             },
         )

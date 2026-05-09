@@ -1544,8 +1544,46 @@ def test_discover_run_strategy_executes_real_selector_runners_and_persists_resul
 
     persisted = client.get("/api/v1/discover")
     assert persisted.status_code == 200
-    persisted_codes = {row["code"] for row in persisted.json()["candidateTable"]["rows"]}
+    persisted_rows = {row["code"]: row for row in persisted.json()["candidateTable"]["rows"]}
+    persisted_codes = set(persisted_rows)
     assert {"688111", "000001", "300750", "600519", "600036"}.issubset(persisted_codes)
+    assert persisted_rows["688111"]["eligible_status"] == "eligible"
+    assert context.quant_db().list_candidate_events(stock_code="688111", status="eligible")
+
+
+def test_discover_run_strategy_auto_trial_promotes_discovered_stocks(tmp_path, monkeypatch):
+    context = _make_context(tmp_path)
+    context.quant_db().update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+
+    class FakeLowPriceBullSelector:
+        def get_low_price_stocks(self, top_n=5):
+            return True, pd.DataFrame(
+                [
+                    {
+                        "股票代码": "000001",
+                        "股票简称": "平安银行",
+                        "所属行业": "银行",
+                        "最新价": 10.12,
+                        "总市值": 2000.0,
+                        "市盈率": 4.2,
+                        "市净率": 0.6,
+                        "理由": "低价高弹性",
+                    }
+                ]
+            ), "ok"
+
+    monkeypatch.setattr(gateway_api, "LowPriceBullSelector", FakeLowPriceBullSelector)
+    client = TestClient(create_app(context=context))
+
+    response = client.post("/api/v1/discover/actions/run-strategy", json={"strategies": ["low_price_bull"]})
+
+    assert response.status_code == 200
+    rows = {row["code"]: row for row in response.json()["candidateTable"]["rows"]}
+    assert rows["000001"]["eligible_status"] == "already_in_quant"
+    assert rows["000001"]["already_in_quant"] is True
+    state = context.quant_db().get_quant_universe_state("000001")
+    assert state["quant_status"] == "trial"
+    assert state["quant_enabled"] is True
 
 
 def test_discover_watchlist_action_handles_dash_latest_price(tmp_path):

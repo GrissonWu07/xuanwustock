@@ -4134,6 +4134,7 @@ class QuantSimDB:
             "notes": notes,
             "metadata": metadata or {},
         }
+        basic_info_missing_provided = "basic_info_missing" in payload["metadata"]
         basic_info_missing = 1 if bool(payload["metadata"].get("basic_info_missing")) else 0
         if not payload["stock_code"]:
             raise ValueError("stock_code is required")
@@ -4164,7 +4165,7 @@ class QuantSimDB:
                     payload["latest_price"] if payload["latest_price"] > 0 else float(existing["latest_price"] or 0),
                     payload["notes"] if payload["notes"] is not None else existing["notes"],
                     json.dumps(next_metadata, ensure_ascii=False),
-                    1 if basic_info_missing else int(existing["basic_info_missing"] or 0),
+                    basic_info_missing if basic_info_missing_provided else int(existing["basic_info_missing"] or 0),
                     now_text,
                     int(existing["id"]),
                 ),

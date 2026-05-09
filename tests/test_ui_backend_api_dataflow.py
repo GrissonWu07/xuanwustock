@@ -756,6 +756,7 @@ def test_backend_api_research_run_module_persists_real_snapshot(tmp_path, monkey
         monitor_db_file=tmp_path / "stock_monitor.db",
         smart_monitor_db_file=tmp_path / "smart_monitor.db",
     )
+    context.quant_db().update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
     app = module.create_app(context=context)
     client = TestClient(app)
 
@@ -770,7 +771,9 @@ def test_backend_api_research_run_module_persists_real_snapshot(tmp_path, monkey
     assert "出口链景气延续" in payload["modules"][3]["note"]
     assert not payload["modules"][3]["note"].endswith("…")
     assert [row["code"] for row in payload["outputTable"]["rows"]] == ["002463", "600519", "300750"]
+    assert all(row["eligible_status"] == "already_in_quant" for row in payload["outputTable"]["rows"])
     assert all(row["source"] in {"智瞰龙虎", "新闻流量", "宏观分析"} for row in payload["outputTable"]["rows"])
+    assert context.quant_db().get_quant_universe_state("002463")["quant_status"] == "trial"
     assert payload["summary"]["body"].startswith("已刷新 5 个研究模块，其中 3 只股票有明确输出")
 
     snapshot = client.get("/api/v1/research").json()
