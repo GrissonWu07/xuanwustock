@@ -128,13 +128,27 @@ run_type = historical_backtest
 
 13. `generate_historical_candidate_events`
     - 默认开启
-    - 每个 checkpoint 使用历史可见数据生成候选事件
+    - 按候选生成频率使用历史可见数据生成候选事件
+
+14. `candidate_generation_frequency`
+    - 默认：`daily_first_checkpoint`
+    - 允许值：
+      - `daily_first_checkpoint`：每个交易日第一个 checkpoint 生成一次候选事件
+      - `every_n_checkpoints`：每 N 个 checkpoint 生成一次候选事件
+    - 不允许默认每个 30m checkpoint 全量运行所有发现策略
+
+15. `candidate_generation_checkpoint_interval`
+    - 仅当 `candidate_generation_frequency=every_n_checkpoints` 时生效
+    - 默认：`8`
+    - 最小值：`2`
 
 配置约束：
 
 1. `seed_current_quant_universe` 和 `generate_historical_candidate_events` 可以同时开启。
 2. 若二者都关闭，任务应返回 `400`，因为没有任何股票来源。
 3. 演练期间不读取 live 当前状态变化，只读取任务启动时保存的快照和演练内部状态。
+4. 启动时必须锁定当前策略 profile 快照和版本信息，运行期间不响应用户对 profile 的后续修改。
+5. 若当前 profile 没有显式版本号，metadata 中必须保存完整 profile JSON 作为本次演练的不可变配置。
 
 ## 7. 初始股票池快照
 
@@ -177,20 +191,29 @@ run_type = historical_backtest
 
 ### 8.1 允许的候选来源
 
-1. 历史发现策略
-   - 低价擒牛
-   - 主力资金
-   - 小市值
-   - 低估值
-   - 净利增长
-   - 其他已有发现策略，只要可以基于 checkpoint 当时可见数据运行
+1. 历史发现策略，但必须通过历史可行性检查。
+2. 历史研究输出，但必须有明确历史时间戳。
+3. 手工种子股票，来自任务启动时的当前实时量化股票快照。
 
-2. 历史研究输出
-   - 仅当研究结果本身有明确 `occurred_at`，且 `occurred_at <= checkpoint_at`
-   - 不允许使用任务启动当天才生成的研究结论倒灌到历史 checkpoint
+候选来源历史可行性矩阵：
 
-3. 手工种子股票
-   - 来自任务启动时的当前实时量化股票快照
+| 来源 | 默认是否启用 | 历史可行性要求 | 不满足时行为 |
+|---|---:|---|---|
+| 低价擒牛 | 是 | 有 checkpoint 之前的历史行情、价格、成交量和策略所需过滤字段 | 写入 `disabled_candidate_sources`，跳过 |
+| 小市值 | 条件启用 | 有 as-of 市值数据；若只能拿到当前市值则不可用 | 写入 `disabled_candidate_sources`，跳过 |
+| 低估值 | 条件启用 | 有 as-of PE/PB/财务口径；不能用当前估值回填历史 | 写入 `disabled_candidate_sources`，跳过 |
+| 净利增长 | 条件启用 | 有财报发布日期或可确认的 as-of 财务数据 | 写入 `disabled_candidate_sources`，跳过 |
+| 主力资金 | 条件启用 | provider 支持历史资金流 as-of 查询或已有本地历史资金流缓存 | 写入 `disabled_candidate_sources`，跳过 |
+| 当前发现页结果 | 否 | 当前结果没有历史 occurred_at，不可用于历史 checkpoint | 禁止使用 |
+| 当前 AI 分析 | 否 | 当前 AI 结论包含未来知识，不可倒灌 | 禁止使用 |
+| 历史研究输出 | 条件启用 | 研究记录有 `occurred_at` 且 `occurred_at <= checkpoint_at` | 不满足则跳过该条 |
+| 手工种子股票 | 是 | 来自任务启动时的初始快照 | 作为初始状态，不重复生成候选事件 |
+
+说明：
+
+1. `其他已有发现策略` 只有在能证明它使用 checkpoint 当时可见数据时才允许接入。
+2. 任何依赖当前实时 provider、当前 AI 输出、当前研究总结的候选来源，默认视为不可历史化。
+3. 不可历史化来源必须显式记录，不能静默降级成当前结果。
 
 ### 8.2 禁止的数据来源
 
@@ -199,9 +222,32 @@ run_type = historical_backtest
 3. 当前研究总结。
 4. checkpoint 之后才出现的行情、指标、财务、事件。
 
-### 8.3 候选生成规则
+### 8.3 候选生成频率
 
-每个 checkpoint 执行候选生成时：
+候选事件生成不得默认在每个 checkpoint 全量执行。默认频率：
+
+1. `daily_first_checkpoint`
+   - 每个交易日第一个可交易 checkpoint 执行一次候选生成
+   - A 股 30m 场景下，通常是 `09:30` 或当天第一个实际 checkpoint
+
+2. `every_n_checkpoints`
+   - 每 N 个 checkpoint 执行一次候选生成
+   - `N` 来自 `candidate_generation_checkpoint_interval`
+
+频率约束：
+
+1. 默认值必须是 `daily_first_checkpoint`。
+2. 不允许以 30m checkpoint 为单位全量运行所有发现策略，除非用户显式选择 `every_n_checkpoints` 且 `N >= 2`。
+3. 任务创建时必须估算候选生成次数：
+   - `estimated_candidate_generation_runs`
+   - `enabled_candidate_sources`
+   - `estimated_strategy_invocations`
+4. 若预估策略调用次数超过 `1000`，UI 必须提示运行时间风险。
+5. 若预估策略调用次数超过 `3000`，启动接口必须要求 `confirmLongRunning=true`。
+
+### 8.4 候选生成规则
+
+在候选生成 checkpoint 执行时：
 
 1. 只使用 `checkpoint_at` 之前可见数据。
 2. 生成 `candidate_event`，字段包括：
@@ -216,6 +262,12 @@ run_type = historical_backtest
 3. 同一股票、同一来源、同一 checkpoint 的候选事件必须去重。
 4. 候选事件先写入 run-local 候选事件表，再交给 run-local `QuantUniverseManager` 处理。
 5. 若某类候选策略无法在历史 as-of 口径下运行，必须在任务 metadata 中记录 `disabled_candidate_source`，不能静默使用当前结果。
+6. 同一股票、同一来源若已有未被 consumed 的有效候选事件，且距当前 checkpoint 不足 `candidate_event_dedup_days`，必须跳过本次生成。
+7. `candidate_event_dedup_days` 默认：
+   - aggressive：`3`
+   - stable：`5`
+   - conservative：`7`
+8. 候选事件被成功纳入 `trial`、被用户忽略、过期或进入 retired block 后，视为 consumed 或 closed。
 
 ## 9. 自动入池
 
@@ -266,6 +318,7 @@ run_type = historical_backtest
 
 1. 这里的 `quant_enabled` 是演练 run-local 状态，不回写 live 主库。
 2. 普通历史回放不读取这张状态机，也不写这些状态。
+3. `manual_paused` 在演练过程中不会由系统自动产生；它只可能从任务启动时的初始股票池快照带入。
 
 主扫描范围：
 
@@ -314,7 +367,7 @@ run_type = historical_backtest
 1. 解析 checkpoint 市场时间和 UTC 时间。
 2. 加载 checkpoint 当时可见的行情、K 线、技术指标和公司行为。
 3. 应用除权除息、停牌、涨跌停信息。
-4. 生成历史候选事件。
+4. 若当前 checkpoint 命中候选生成频率，则生成历史候选事件；否则跳过候选生成。
 5. 执行自动入池逻辑。
 6. 获取主扫描股票：
    - `trial`
@@ -342,6 +395,8 @@ run_type = historical_backtest
 1. 候选事件必须在主扫描前处理，否则新入池股票无法在同一 checkpoint 参与扫描。
 2. 生命周期状态必须在交易执行后更新，因为持仓是否清空会影响 `exit_only -> cooling/trial/active`。
 3. `cooling` 复评必须在主扫描后执行，避免冷却股挤占主扫描容量。
+4. 步骤 5 中新进入 `trial` 的股票，必须在步骤 6 到 8 的主扫描范围内立即可见。
+5. 若当前 checkpoint 不生成候选事件，步骤 5 仍需处理此前未 consumed 的 eligible 事件，例如从 `confirm_first` 切换到 `auto_trial` 的 run-local 设置不在本任务中发生，因此通常不会产生新入池。
 
 ## 12. 交易与风控规则
 
@@ -471,7 +526,37 @@ run_type = historical_backtest
 13. `evidence_json`
 14. `created_at`
 
-### 14.4 `sim_runs.metadata_json`
+### 14.4 `sim_run_quant_summary`
+
+用途：保存每个 checkpoint 的生命周期状态预聚合，供 UI 折线图和概览卡片直接读取，避免每次页面交互都从 `sim_run_quant_states` 做聚合。
+
+字段：
+
+1. `id`
+2. `run_id`
+3. `checkpoint_at`
+4. `checkpoint_at_utc`
+5. `inactive_count`
+6. `trial_count`
+7. `active_count`
+8. `exit_only_count`
+9. `cooling_count`
+10. `retired_count`
+11. `manual_paused_count`
+12. `candidate_event_count`
+13. `auto_promoted_count`
+14. `auto_exited_count`
+15. `created_at`
+
+唯一约束：
+
+```text
+(run_id, checkpoint_at_utc)
+```
+
+UI 生命周期总览必须优先读取 `sim_run_quant_summary`。`sim_run_quant_states` 用于明细和 drill-down，不作为折线图的默认聚合来源。
+
+### 14.5 `sim_runs.metadata_json`
 
 实时量化历史演练必须在 run metadata 中保存：
 
@@ -487,6 +572,13 @@ run_type = historical_backtest
 10. `strategy_profile_snapshot`
 11. `disabled_candidate_sources`
 12. `data_warnings`
+13. `candidate_generation_frequency`
+14. `candidate_generation_checkpoint_interval`
+15. `candidate_event_dedup_days`
+16. `estimated_candidate_generation_runs`
+17. `enabled_candidate_sources`
+18. `estimated_strategy_invocations`
+19. `strategy_profile_version`
 
 ## 15. 数据准备和 local-first 规则
 
@@ -589,6 +681,8 @@ run_type = historical_backtest
    - `cooling`
    - `retired`
    - 每类数量随 checkpoint 的变化
+   - 数据来源必须优先使用 `sim_run_quant_summary`
+   - UI 可以对该序列做客户端缓存，但不能每次交互都从明细表重新聚合
 
 2. **入池事件**
    - 时间
@@ -657,7 +751,10 @@ POST /api/v1/quant/live-sim/actions/start-drill
   "executeTrades": true,
   "liquidateAtEnd": true,
   "seedCurrentQuantUniverse": true,
-  "generateHistoricalCandidateEvents": true
+  "generateHistoricalCandidateEvents": true,
+  "candidateGenerationFrequency": "daily_first_checkpoint",
+  "candidateGenerationCheckpointInterval": 8,
+  "confirmLongRunning": false
 }
 ```
 
@@ -719,6 +816,18 @@ GET /api/v1/quant/replay/{run_id}/candidate-events
 
 实时量化历史演练复用 replay worker。
 
+### 19.1 Worker 互斥关系
+
+`live_quant_drill` 与 `historical_backtest` 默认共用同一个 replay worker 池和同一套 active-run 互斥检查。
+
+规则：
+
+1. 任意 `historical_backtest` 正在 `queued/running` 时，不允许启动新的 `live_quant_drill`。
+2. 任意 `live_quant_drill` 正在 `queued/running` 时，不允许启动新的 `historical_backtest`。
+3. 启动接口必须复用或扩展现有 `_ensure_no_active_replay()`，检查范围覆盖所有 replay run type。
+4. 不设计并行执行，避免多个长任务同时竞争本地行情缓存、TDX/Akshare provider、SQLite 写锁和 CPU。
+5. 后续若需要并行执行，必须另写 worker 并发和资源隔离 spec，本 spec 不包含。
+
 新增执行模式：
 
 ```text
@@ -747,6 +856,30 @@ LiveQuantDrillMode
 2. drill 必须注入 checkpoint decision_time。
 3. drill 必须保持 run-local 状态隔离。
 
+### 19.2 Run-local 服务注入
+
+实时量化历史演练不能让 `QuantSimEngine`、`CandidatePoolService`、`PortfolioService` 或 `QuantUniverseManager` 读取 live 主库的当前状态。执行器必须显式构造 run-local 服务图。
+
+推荐实现：
+
+1. 在 replay worker 临时目录中创建 run-local `QuantSimDB`。
+2. 将任务启动时的股票池快照、生命周期状态、策略配置、账户配置写入 run-local DB。
+3. 使用该 run-local DB 构造：
+   - `QuantSimEngine(db_file=temp_db_file, ...)`
+   - `PortfolioService(db_file=temp_db_file, ...)`
+   - `CandidatePoolService(db_file=temp_db_file, ...)`
+   - `QuantUniverseManager(db=temp_db, profile_id=locked_profile_id, policy=locked_policy)`
+4. 如果当前服务构造函数只默认读取 live DB，必须先增加显式 DB 注入参数，不能在 drill 中复用全局 context。
+5. `QuantSimEngine.list_live_scan_candidates()` 在 drill 模式下读取 run-local `stock_universe / stock_universe_quant_state`，而不是 live 主库。
+6. 每个 checkpoint 新写入 run-local `trial` 的股票，下一次候选查询必须立即可见；同一 checkpoint 内步骤 5 后的主扫描也必须可见。
+7. replay 库只保存结果，不作为 engine 的运行状态库。
+
+禁止实现：
+
+1. 在 live 主库上临时改 `quant_status` 再回滚。
+2. 让 drill 期间的 `QuantUniverseManager` 直接持有 live `QuantSimDB`。
+3. 让 UI API 读取 live 状态后拼装 drill 结果。
+
 ## 20. 错误处理
 
 1. 没有股票来源：
@@ -756,20 +889,30 @@ LiveQuantDrillMode
 2. 开始日期晚于结束日期：
    - 返回 `400`
 
-3. 历史数据部分缺失：
+3. 已有 replay 长任务运行中：
+   - 返回 `409`
+   - 错误：`Another replay task is already running`
+   - 适用于 `historical_backtest` 与 `live_quant_drill`
+
+4. 预估策略调用次数过大但未确认：
+   - 当 `estimated_strategy_invocations > 3000` 且 `confirmLongRunning=false`
+   - 返回 `400`
+   - 错误：`Long running drill requires confirmation`
+
+5. 历史数据部分缺失：
    - 任务继续
    - 记录 warning
    - 对缺失股票/缺失 checkpoint 跳过
 
-4. 关键配置缺失：
+6. 关键配置缺失：
    - 使用当前实时量化默认配置
    - 若仍无法解析，任务失败
 
-5. 候选来源不能历史化：
+7. 候选来源不能历史化：
    - 不失败
    - 写入 `disabled_candidate_sources`
 
-6. Worker 异常退出：
+8. Worker 异常退出：
    - run 状态置为 `failed`
    - 保留已完成 checkpoint 的部分结果
 
@@ -789,6 +932,11 @@ LiveQuantDrillMode
 12. 收益结果、实现盈亏、清算后总盈亏口径清楚区分。
 13. 缺失数据会在结果页显示 warning。
 14. 普通历史回放行为不受影响。
+15. 默认候选生成频率为每日第一个 checkpoint，不会每个 30m checkpoint 全量执行发现策略。
+16. 当前 AI 分析和无历史时间戳的当前研究结果不会进入历史候选事件。
+17. drill 与普通历史回放互斥，任意一个运行中时另一个不能启动。
+18. `sim_run_quant_summary` 每个 checkpoint 写入一行状态聚合。
+19. 启动时锁定策略 profile 快照，运行期间 profile 修改不影响任务。
 
 ## 22. 测试要求
 
@@ -804,6 +952,12 @@ LiveQuantDrillMode
 8. cooling 低频复评测试。
 9. 期末清算收益口径测试。
 10. live 表不被写入测试。
+11. 候选生成频率测试。
+12. 候选来源历史可行性矩阵测试。
+13. run-local DB 注入测试。
+14. drill/backtest 互斥测试。
+15. 同 checkpoint 新入 `trial` 后立即参与扫描测试。
+16. strategy profile snapshot 锁定测试。
 
 前端测试：
 
@@ -814,14 +968,19 @@ LiveQuantDrillMode
 5. 结果页显示生命周期总览。
 6. 结果页显示入池和出池事件。
 7. 所有新增中文 UI 文案都走 i18n。
+8. 超长任务预估提示测试。
+9. 生命周期总览读取 `sim_run_quant_summary` 的接口测试。
 
 集成测试：
 
 1. 用当前量化股票从 `2026-01-01` 到指定结束日完成一次演练。
 2. 至少产生一条候选事件。
 3. 至少保存一条 `sim_run_quant_states`。
-4. 若存在下行股票，能产生 `exit_only / cooling / retired` 事件。
-5. 任务完成后 live-sim 当前账户和持仓未变化。
+4. 至少保存一条 `sim_run_quant_summary`。
+5. 若存在下行股票，能产生 `exit_only / cooling / retired` 事件。
+6. 任务完成后 live-sim 当前账户和持仓未变化。
+7. 普通历史回放运行中启动 drill 返回 `409`。
+8. drill 运行中启动普通历史回放返回 `409`。
 
 ## 23. 实施顺序
 
@@ -831,11 +990,12 @@ LiveQuantDrillMode
 4. 增加 `LiveQuantDrillMode` 执行器。
 5. 接入历史候选事件生成。
 6. 接入 run-local `QuantUniverseManager`。
-7. 保存 quant states/events/candidate events。
-8. 增加启动 API。
-9. 增加实时量化页入口。
-10. 增加历史回放页任务类型和结果展示。
-11. 补齐测试。
+7. 接入候选生成频率、跨 checkpoint 去重和历史可行性矩阵。
+8. 保存 quant states/events/candidate events/summary。
+9. 增加启动 API。
+10. 增加实时量化页入口。
+11. 增加历史回放页任务类型和结果展示。
+12. 补齐测试。
 
 实施约束：
 
