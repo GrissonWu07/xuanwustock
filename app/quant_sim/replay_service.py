@@ -1423,6 +1423,37 @@ class QuantSimReplayService:
             checkpoint_at_utc=checkpoint_at_utc,
             states=states,
         )
+        persisted_event_ids = context.setdefault("_persisted_quant_event_ids", set())
+        if not isinstance(persisted_event_ids, set):
+            persisted_event_ids = set(persisted_event_ids or [])
+            context["_persisted_quant_event_ids"] = persisted_event_ids
+        quant_events = sorted(temp_db.list_quant_universe_events(limit=1000), key=lambda item: int(item.get("id") or 0))
+        replay_events: list[dict[str, Any]] = []
+        for event in quant_events:
+            event_id = int(event.get("id") or 0)
+            if event_id in persisted_event_ids:
+                continue
+            persisted_event_ids.add(event_id)
+            replay_events.append(
+                {
+                    "checkpoint_at": checkpoint_at,
+                    "checkpoint_at_utc": checkpoint_at_utc,
+                    "stock_code": event.get("stock_code"),
+                    "stock_name": event.get("stock_name") or event.get("stock_code"),
+                    "event_type": event.get("event_type"),
+                    "from_status": event.get("from_status"),
+                    "to_status": event.get("to_status"),
+                    "reason_code": event.get("reason_code"),
+                    "reason_text": event.get("reason_text"),
+                    "health_score_before": event.get("health_score_before"),
+                    "health_score_after": event.get("health_score_after"),
+                    "candidate_score": event.get("candidate_score"),
+                    "reason_json": {"trigger_source": event.get("trigger_source")},
+                    "evidence_json": event.get("evidence_json") or {},
+                    "created_at": event.get("created_at"),
+                }
+            )
+        self.db.add_sim_run_quant_events(run_id, replay_events)
         data_warnings = context.get("data_warnings") if isinstance(context.get("data_warnings"), list) else []
         self.db.upsert_sim_run_quant_summary(
             run_id,

@@ -368,3 +368,73 @@ def test_live_quant_drill_auto_entry_disabled_keeps_candidate_out_of_scan(tmp_pa
     assert scanned_codes == []
     assert candidate_events["items"][0]["status"] == "active"
     assert {item["quant_status"] for item in states["items"]} == {"inactive"}
+
+
+def test_live_quant_drill_persists_quant_summary(tmp_path):
+    live_db_file = tmp_path / "live.db"
+    replay_db_file = tmp_path / "replay.db"
+    live_db = QuantSimDB(str(live_db_file))
+    live_db.add_watch(stock_code="600519", stock_name="贵州茅台", source="manual")
+    live_db.upsert_quant_universe_state(
+        "600519",
+        {
+            "stock_name": "贵州茅台",
+            "quant_status": "active",
+            "health_score": 85.0,
+            "quant_entry_source": "manual_seed",
+        },
+    )
+
+    service = QuantSimReplayService(db_file=str(live_db_file), replay_db_file=str(replay_db_file))
+    result = service.run_live_quant_drill(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        seed_current_quant_universe=True,
+        generate_historical_candidate_events=False,
+        execute_trades=False,
+    )
+
+    summary = service.db.list_sim_run_quant_summary(result["run_id"])
+    states = service.db.list_sim_run_quant_states(result["run_id"], stock="600519")
+    assert len(summary) >= 1
+    assert states["total"] >= 1
+    assert summary[0]["active_count"] >= 1
+
+
+def test_live_quant_drill_persists_lifecycle_events_from_run_local_db(tmp_path, monkeypatch):
+    service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
+
+    monkeypatch.setattr(
+        service,
+        "_generate_live_quant_drill_candidate_events",
+        lambda *args, **kwargs: [
+            {
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "source_type": "low_price",
+                "source_key": "low_price:2026-01-05",
+                "candidate_score": 0.95,
+                "confidence": 0.90,
+                "trend": "up",
+                "status": "active",
+                "reason_text": "historical low price candidate",
+            }
+        ],
+    )
+
+    result = service.run_live_quant_drill(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        seed_current_quant_universe=False,
+        generate_historical_candidate_events=True,
+        execute_trades=False,
+    )
+
+    events = service.db.list_sim_run_quant_events(result["run_id"], stock="600519")
+    assert events["total"] >= 1
+    assert events["items"][0]["event_type"] == "candidate_promoted_to_trial"
+    assert events["items"][0]["to_status"] == "trial"

@@ -1212,7 +1212,7 @@ git commit -m "feat: generate drill candidate events before scanning"
 - Modify: `app/quant_sim/replay_service.py`
 - Test: `tests/test_live_quant_drill_service.py`
 
-- [ ] **Step 1: Add failing test for quant summary persistence**
+- [x] **Step 1: Add failing test for quant summary persistence**
 
 Add:
 
@@ -1243,7 +1243,7 @@ def test_live_quant_drill_persists_quant_summary(tmp_path):
     assert summary[0]["active_count"] >= 1
 ```
 
-- [ ] **Step 2: Run test and confirm failure**
+- [x] **Step 2: Run test and confirm failure**
 
 ```powershell
 pytest tests/test_live_quant_drill_service.py::test_live_quant_drill_persists_quant_summary -q
@@ -1251,7 +1251,7 @@ pytest tests/test_live_quant_drill_service.py::test_live_quant_drill_persists_qu
 
 Expected: fails until persistence is implemented.
 
-- [ ] **Step 3: Persist checkpoint quant state**
+- [x] **Step 3: Persist checkpoint quant state**
 
 After lifecycle evaluation each checkpoint, collect all run-local quant states and write:
 
@@ -1273,7 +1273,7 @@ Summary counts must include:
 - `auto_promoted_count`
 - `auto_exited_count`
 
-- [ ] **Step 4: Run drill service tests**
+- [x] **Step 4: Run drill service tests**
 
 ```powershell
 pytest tests/test_live_quant_drill_service.py -q
@@ -1281,7 +1281,7 @@ pytest tests/test_live_quant_drill_service.py -q
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add app/quant_sim/replay_service.py tests/test_live_quant_drill_service.py
