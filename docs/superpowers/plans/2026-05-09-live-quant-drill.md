@@ -240,7 +240,7 @@ git commit -m "feat: add live quant drill replay storage"
 - Create: `app/quant_sim/live_quant_drill_candidates.py`
 - Test: `tests/test_live_quant_drill_candidates.py`
 
-- [ ] **Step 1: Write failing tests for source availability gates**
+- [x] **Step 1: Write failing tests for source availability gates**
 
 Create `tests/test_live_quant_drill_candidates.py`:
 
@@ -354,7 +354,7 @@ def test_candidate_event_dedup_skips_recent_unconsumed_same_source_event():
     assert should_skip is True
 ```
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 ```powershell
 pytest tests/test_live_quant_drill_candidates.py -q
@@ -362,7 +362,7 @@ pytest tests/test_live_quant_drill_candidates.py -q
 
 Expected: fails because module does not exist.
 
-- [ ] **Step 3: Implement availability and frequency helpers**
+- [x] **Step 3: Implement availability and frequency helpers**
 
 Create `app/quant_sim/live_quant_drill_candidates.py` with:
 
@@ -456,7 +456,7 @@ def should_skip_candidate_event_due_to_dedup(
     return False
 ```
 
-- [ ] **Step 4: Add runtime estimate helper**
+- [x] **Step 4: Add runtime estimate helper**
 
 Add:
 
@@ -476,7 +476,7 @@ def estimate_candidate_generation(
     }
 ```
 
-- [ ] **Step 5: Run candidate tests**
+- [x] **Step 5: Run candidate tests**
 
 ```powershell
 pytest tests/test_live_quant_drill_candidates.py -q
@@ -484,7 +484,7 @@ pytest tests/test_live_quant_drill_candidates.py -q
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add app/quant_sim/live_quant_drill_candidates.py tests/test_live_quant_drill_candidates.py
