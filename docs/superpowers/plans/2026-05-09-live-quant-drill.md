@@ -1298,7 +1298,7 @@ git commit -m "feat: persist live drill lifecycle results"
 - Modify: `app/gateway_api.py`
 - Test: `tests/test_live_quant_drill_gateway.py`
 
-- [ ] **Step 1: Write failing gateway tests**
+- [x] **Step 1: Write failing gateway tests**
 
 Create `tests/test_live_quant_drill_gateway.py`:
 
@@ -1389,7 +1389,7 @@ def test_drill_lifecycle_query_endpoints_are_registered():
     assert "/api/v1/quant/replay/{run_id}/candidate-events" in routes
 ```
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 ```powershell
 pytest tests/test_live_quant_drill_gateway.py -q
@@ -1397,7 +1397,7 @@ pytest tests/test_live_quant_drill_gateway.py -q
 
 Expected: fails because gateway action is missing.
 
-- [ ] **Step 3: Add live-sim action**
+- [x] **Step 3: Add live-sim action**
 
 In `app/gateway/live_sim.py`, add:
 
@@ -1429,7 +1429,7 @@ def _action_live_sim_start_drill(context: UIApiContext, payload: Any) -> dict[st
     }
 ```
 
-- [ ] **Step 4: Register API route**
+- [x] **Step 4: Register API route**
 
 In `app/gateway_api.py`, add action mapping:
 
@@ -1439,7 +1439,7 @@ In `app/gateway_api.py`, add action mapping:
 
 And map `("live-sim", "start-drill")` to `_action_live_sim_start_drill`.
 
-- [ ] **Step 5: Add replay result query endpoints**
+- [x] **Step 5: Add replay result query endpoints**
 
 Expose these as dedicated endpoints, not as optional page-snapshot-only data:
 
@@ -1456,7 +1456,7 @@ Each endpoint must:
 
 `_snapshot_his_replay()` may include compact summary data, but detailed lifecycle tables must call these dedicated endpoints.
 
-- [ ] **Step 6: Run gateway tests**
+- [x] **Step 6: Run gateway tests**
 
 ```powershell
 pytest tests/test_live_quant_drill_gateway.py -q
@@ -1464,7 +1464,7 @@ pytest tests/test_live_quant_drill_gateway.py -q
 
 Expected: pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add app/gateway/live_sim.py app/gateway/his_replay.py app/gateway_api.py tests/test_live_quant_drill_gateway.py

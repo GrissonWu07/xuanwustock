@@ -14,7 +14,7 @@ from app.gateway.context import UIApiContext
 from app.gateway.deps import _int, _now, _payload_dict, _txt, normalize_stock_code
 from app.gateway.his_replay import _action_his_replay_cancel, _action_his_replay_delete, _action_his_replay_start, _his_replay_database_busy, _snapshot_his_replay, _snapshot_his_replay_capital_pool, _snapshot_his_replay_progress
 from app.gateway.history import _action_history_rerun, _snapshot_history
-from app.gateway.live_sim import _action_live_sim_analyze_candidate, _action_live_sim_bulk_quant, _action_live_sim_delete_candidate, _action_live_sim_delete_position, _action_live_sim_reset, _action_live_sim_save, _action_live_sim_start, _action_live_sim_stop, _live_signal_table, _live_trade_table, _snapshot_live_sim
+from app.gateway.live_sim import _action_live_sim_analyze_candidate, _action_live_sim_bulk_quant, _action_live_sim_delete_candidate, _action_live_sim_delete_position, _action_live_sim_reset, _action_live_sim_save, _action_live_sim_start, _action_live_sim_start_drill, _action_live_sim_stop, _live_signal_table, _live_trade_table, _snapshot_live_sim
 from app.gateway.monitor import _action_ai_monitor_analyze, _action_ai_monitor_delete, _action_ai_monitor_start, _action_ai_monitor_stop, _action_real_monitor_delete_rule, _action_real_monitor_refresh, _action_real_monitor_start, _action_real_monitor_stop, _action_real_monitor_update_rule, _snapshot_ai_monitor, _snapshot_real_monitor
 from app.gateway.quant_universe import QuantUniverseDomainError, ignore_auto_entry as _quant_universe_ignore_auto_entry, promote_to_trial as _quant_universe_promote_to_trial, quant_universe_overview as _quant_universe_overview, quant_universe_settings as _quant_universe_settings, quant_universe_state as _quant_universe_state, restore_to_trial as _quant_universe_restore_to_trial, set_override as _quant_universe_set_override, update_quant_universe_settings as _quant_universe_update_settings
 import app.gateway.portfolio as _gateway_portfolio_module
@@ -130,6 +130,17 @@ def _action_noop(context: UIApiContext, page: str) -> dict[str, Any]:
     return SNAPSHOT_BUILDERS[page](context)
 
 
+def _live_quant_drill_replay_db(context: UIApiContext, run_id: int):
+    replay_db = context.replay_db()
+    run = replay_db.get_sim_run(int(run_id))
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Replay run not found: {run_id}")
+    metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
+    if run.get("mode") != "live_quant_drill" and metadata.get("run_type") != "live_quant_drill":
+        raise HTTPException(status_code=400, detail="Replay run is not a live quant drill")
+    return replay_db
+
+
 SNAPSHOT_BUILDERS = {
     "workbench": _snapshot_workbench,
     "discover": _snapshot_discover,
@@ -177,6 +188,7 @@ ACTION_BUILDERS = {
     ("live-sim", "delete-candidate"): _action_live_sim_delete_candidate,
     ("live-sim", "delete-position"): _action_live_sim_delete_position,
     ("live-sim", "bulk-quant"): _action_live_sim_bulk_quant,
+    ("live-sim", "start-drill"): _action_live_sim_start_drill,
     ("his-replay", "start"): _action_his_replay_start,
     ("his-replay", "cancel"): _action_his_replay_cancel,
     ("his-replay", "delete"): _action_his_replay_delete,
@@ -433,6 +445,65 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
                 raise _his_replay_database_busy(exc) from exc
             raise
 
+    @app.get("/api/v1/quant/replay/{run_id}/quant-states")
+    def get_live_drill_quant_states(
+        run_id: int,
+        checkpointAt: str | None = None,
+        status: str | None = None,
+        stock: str = "",
+        page: int = 1,
+        pageSize: int = 50,
+    ) -> dict[str, Any]:
+        replay_db = _live_quant_drill_replay_db(api_context, run_id)
+        return replay_db.list_sim_run_quant_states(
+            run_id,
+            checkpoint_at=checkpointAt,
+            status=status,
+            stock=stock,
+            page=page,
+            page_size=pageSize,
+        )
+
+    @app.get("/api/v1/quant/replay/{run_id}/quant-events")
+    def get_live_drill_quant_events(
+        run_id: int,
+        eventType: str = "",
+        fromStatus: str = "",
+        toStatus: str = "",
+        stock: str = "",
+        page: int = 1,
+        pageSize: int = 50,
+    ) -> dict[str, Any]:
+        replay_db = _live_quant_drill_replay_db(api_context, run_id)
+        return replay_db.list_sim_run_quant_events(
+            run_id,
+            event_type=eventType,
+            from_status=fromStatus,
+            to_status=toStatus,
+            stock=stock,
+            page=page,
+            page_size=pageSize,
+        )
+
+    @app.get("/api/v1/quant/replay/{run_id}/candidate-events")
+    def get_live_drill_candidate_events(
+        run_id: int,
+        sourceType: str = "",
+        status: str = "",
+        stock: str = "",
+        page: int = 1,
+        pageSize: int = 50,
+    ) -> dict[str, Any]:
+        replay_db = _live_quant_drill_replay_db(api_context, run_id)
+        return replay_db.list_sim_run_candidate_events(
+            run_id,
+            source_type=sourceType,
+            status=status,
+            stock=stock,
+            page=page,
+            page_size=pageSize,
+        )
+
     @app.get("/api/v1/history")
     def get_history_snapshot(request: Request) -> dict[str, Any]:
         return _snapshot_history(api_context, table_query=_replay_table_query_from_request(request))
@@ -522,6 +593,7 @@ ACTION_ROUTES = [
     ("/api/v1/quant/live-sim/actions/delete-candidate", "live-sim", "delete-candidate"),
     ("/api/v1/quant/live-sim/actions/delete-position", "live-sim", "delete-position"),
     ("/api/v1/quant/live-sim/actions/bulk-quant", "live-sim", "bulk-quant"),
+    ("/api/v1/quant/live-sim/actions/start-drill", "live-sim", "start-drill"),
     ("/api/v1/quant/his-replay/actions/start", "his-replay", "start"),
     ("/api/v1/quant/his-replay/actions/cancel", "his-replay", "cancel"),
     ("/api/v1/quant/his-replay/actions/delete", "his-replay", "delete"),
