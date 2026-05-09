@@ -24,6 +24,10 @@ from app.quant_sim.dynamic_strategy import (
     DEFAULT_AI_DYNAMIC_STRATEGY,
 )
 from app.quant_sim.engine import QuantSimEngine
+from app.quant_sim.live_quant_drill_candidates import (
+    CandidateGenerationConfig,
+    estimate_candidate_generation,
+)
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.replay_runner import get_quant_sim_replay_runner
 from app.quant_sim.scheduler import get_quant_sim_scheduler
@@ -253,6 +257,21 @@ class MainProjectHistoricalSnapshotProvider:
 class QuantSimReplayService:
     """Execute historical-range replay runs and persist their artifacts."""
 
+    LIVE_QUANT_DRILL_CANDIDATE_SOURCES = (
+        "low_price",
+        "small_cap",
+        "low_valuation",
+        "profit_growth",
+        "main_force",
+        "historical_research",
+    )
+    LIVE_QUANT_DRILL_DISABLED_CANDIDATE_SOURCES = (
+        "current_ai_analysis",
+        "current_discover_result",
+        "current_research_summary",
+    )
+    LIVE_QUANT_DRILL_LONG_RUNNING_INVOCATION_LIMIT = 3000
+
     def __init__(
         self,
         db_file: str | Path | None = None,
@@ -431,6 +450,88 @@ class QuantSimReplayService:
             raise RuntimeError("后台回放任务启动失败")
         return run_id
 
+    def enqueue_live_quant_drill(
+        self,
+        *,
+        start_datetime: datetime | str,
+        end_datetime: datetime | str | None,
+        timeframe: str,
+        market: str,
+        strategy_profile_id: str | None = None,
+        initial_cash: float | None = None,
+        ai_dynamic_strategy: str = DEFAULT_AI_DYNAMIC_STRATEGY,
+        ai_dynamic_strength: float = DEFAULT_AI_DYNAMIC_STRENGTH,
+        ai_dynamic_lookback: int = DEFAULT_AI_DYNAMIC_LOOKBACK,
+        auto_entry_enabled: bool = True,
+        auto_exit_enabled: bool = True,
+        execute_trades: bool = True,
+        liquidate_at_end: bool = True,
+        seed_current_quant_universe: bool = True,
+        generate_historical_candidate_events: bool = True,
+        candidate_generation_frequency: str = "daily_first_checkpoint",
+        candidate_generation_checkpoint_interval: int = 8,
+        confirm_long_running: bool = False,
+    ) -> int:
+        self._ensure_no_active_replay()
+        context = self._prepare_live_quant_drill_context(
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            timeframe=timeframe,
+            market=market,
+            strategy_profile_id=strategy_profile_id,
+            initial_cash=initial_cash,
+            ai_dynamic_strategy=ai_dynamic_strategy,
+            ai_dynamic_strength=ai_dynamic_strength,
+            ai_dynamic_lookback=ai_dynamic_lookback,
+            auto_entry_enabled=auto_entry_enabled,
+            auto_exit_enabled=auto_exit_enabled,
+            execute_trades=execute_trades,
+            liquidate_at_end=liquidate_at_end,
+            seed_current_quant_universe=seed_current_quant_universe,
+            generate_historical_candidate_events=generate_historical_candidate_events,
+            candidate_generation_frequency=candidate_generation_frequency,
+            candidate_generation_checkpoint_interval=candidate_generation_checkpoint_interval,
+        )
+        estimated_invocations = int((context.get("candidate_generation") or {}).get("estimated_strategy_invocations") or 0)
+        if estimated_invocations > self.LIVE_QUANT_DRILL_LONG_RUNNING_INVOCATION_LIMIT and not confirm_long_running:
+            raise ValueError("Long running drill requires confirmation")
+
+        run_id = self._create_replay_run(
+            mode="live_quant_drill",
+            handoff_to_live=False,
+            timeframe=timeframe,
+            market=market,
+            context=context,
+            status="queued",
+            status_message="等待后台实时量化演练任务启动",
+        )
+        if self.db_runtime is None:
+            runner = get_quant_sim_replay_runner(db_file=self.replay_db_file)
+        else:
+            runner = get_quant_sim_replay_runner(db_file=self.replay_db_file, db_runtime=self.db_runtime)
+        started = runner.start_run(
+            run_id,
+            execute_live_quant_drill_worker,
+            self.db_file,
+            self.replay_db_file,
+            run_id,
+            context,
+        )
+        if not started:
+            self.db.finalize_sim_run(
+                run_id,
+                status="failed",
+                final_equity=float(context["account_summary"]["initial_cash"]),
+                total_return_pct=0.0,
+                max_drawdown_pct=0.0,
+                win_rate=0.0,
+                trade_count=0,
+                status_message="后台实时量化演练任务启动失败",
+                metadata={"error": "background live quant drill start failed"},
+            )
+            raise RuntimeError("后台实时量化演练任务启动失败")
+        return run_id
+
     def enqueue_past_to_live(
         self,
         *,
@@ -466,6 +567,154 @@ class QuantSimReplayService:
             auto_start_scheduler,
         )
         raise ValueError("接续到实时模拟账户已停用，请使用历史回放查看独立回放结果。")
+
+    def _prepare_live_quant_drill_context(
+        self,
+        *,
+        start_datetime: datetime | str,
+        end_datetime: datetime | str | None,
+        timeframe: str,
+        market: str,
+        strategy_profile_id: str | None,
+        initial_cash: float | None,
+        ai_dynamic_strategy: str,
+        ai_dynamic_strength: float,
+        ai_dynamic_lookback: int,
+        auto_entry_enabled: bool,
+        auto_exit_enabled: bool,
+        execute_trades: bool,
+        liquidate_at_end: bool,
+        seed_current_quant_universe: bool,
+        generate_historical_candidate_events: bool,
+        candidate_generation_frequency: str,
+        candidate_generation_checkpoint_interval: int,
+    ) -> dict:
+        if not seed_current_quant_universe and not generate_historical_candidate_events:
+            raise ValueError("No quant universe source selected")
+
+        start_dt = self._to_datetime(start_datetime)
+        end_dt = self._resolve_end_datetime(end_datetime)
+        if start_dt >= end_dt:
+            raise ValueError("start_datetime must be before end_datetime")
+        checkpoints = self.timepoint_generator.generate(start_dt, end_dt, timeframe)
+        if not checkpoints:
+            raise ValueError("指定区间内没有可用的交易检查点")
+
+        account_summary = self.shared_db.get_account_summary()
+        try:
+            resolved_initial_cash = float(initial_cash) if initial_cash is not None else float(account_summary["initial_cash"])
+        except (TypeError, ValueError):
+            resolved_initial_cash = float(account_summary["initial_cash"])
+        if resolved_initial_cash <= 0:
+            resolved_initial_cash = float(account_summary["initial_cash"])
+        account_summary = {
+            **account_summary,
+            "initial_cash": resolved_initial_cash,
+            "available_cash": resolved_initial_cash,
+            "market_value": 0.0,
+            "total_equity": resolved_initial_cash,
+        }
+
+        scheduler_config = {
+            **self.shared_db.get_scheduler_config(),
+            "capital_slot_enabled": True,
+            "capital_pool_min_cash": float(DEFAULT_CAPITAL_SLOT_CONFIG["capital_pool_min_cash"]),
+            "capital_pool_max_cash": 1_000_000_000_000.0,
+            "capital_slot_min_cash": float(DEFAULT_CAPITAL_SLOT_CONFIG["capital_slot_min_cash"]),
+            "capital_sell_cash_reuse_policy": str(DEFAULT_CAPITAL_SLOT_CONFIG["capital_sell_cash_reuse_policy"]),
+        }
+        selected_profile_id = str(
+            strategy_profile_id
+            if strategy_profile_id not in (None, "")
+            else scheduler_config.get("strategy_profile_id")
+        ).strip() or None
+        strategy_profile_binding = self.shared_db.resolve_strategy_profile_binding(selected_profile_id)
+        dynamic_strategy_mode = str(
+            ai_dynamic_strategy if ai_dynamic_strategy not in (None, "") else scheduler_config.get("ai_dynamic_strategy")
+        ).strip().lower() or DEFAULT_AI_DYNAMIC_STRATEGY
+        try:
+            dynamic_strength = float(
+                ai_dynamic_strength
+                if ai_dynamic_strength is not None
+                else scheduler_config.get("ai_dynamic_strength", DEFAULT_AI_DYNAMIC_STRENGTH)
+            )
+        except (TypeError, ValueError):
+            dynamic_strength = DEFAULT_AI_DYNAMIC_STRENGTH
+        dynamic_strength = max(0.0, min(1.0, dynamic_strength))
+        try:
+            dynamic_lookback = int(
+                ai_dynamic_lookback
+                if ai_dynamic_lookback is not None
+                else scheduler_config.get("ai_dynamic_lookback", DEFAULT_AI_DYNAMIC_LOOKBACK)
+            )
+        except (TypeError, ValueError):
+            dynamic_lookback = DEFAULT_AI_DYNAMIC_LOOKBACK
+        dynamic_lookback = max(6, min(336, dynamic_lookback))
+
+        quant_state_response = self.shared_db.list_quant_universe_state(limit=100000) if seed_current_quant_universe else {"items": []}
+        initial_quant_universe_snapshot = list(quant_state_response.get("items") or [])
+        candidates = [
+            {
+                "stock_code": str(item.get("stock_code") or "").strip(),
+                "stock_name": str(item.get("stock_name") or item.get("stock_code") or "").strip(),
+                "source": str(item.get("quant_entry_source") or "quant_universe_seed"),
+                "latest_price": 0.0,
+                "notes": "live_quant_drill_seed",
+                "metadata": {
+                    "quant_status": item.get("quant_status"),
+                    "health_score": item.get("health_score"),
+                    "candidate_score": item.get("candidate_score"),
+                    "candidate_confidence": item.get("candidate_confidence"),
+                },
+            }
+            for item in initial_quant_universe_snapshot
+            if str(item.get("stock_code") or "").strip()
+        ]
+        stock_codes = [str(candidate["stock_code"]) for candidate in candidates]
+        enabled_candidate_sources = list(self.LIVE_QUANT_DRILL_CANDIDATE_SOURCES) if generate_historical_candidate_events else []
+        candidate_generation_config = CandidateGenerationConfig(
+            frequency=candidate_generation_frequency,
+            checkpoint_interval=candidate_generation_checkpoint_interval,
+        )
+        candidate_generation = estimate_candidate_generation(
+            checkpoints=checkpoints,
+            config=candidate_generation_config,
+            enabled_sources=enabled_candidate_sources,
+        )
+        lifecycle_settings_snapshot = self.shared_db.get_quant_universe_settings()
+
+        return {
+            "start_dt": start_dt,
+            "end_dt": end_dt,
+            "timeframe": timeframe,
+            "market": market,
+            "strategy_mode": "live_quant_drill",
+            "strategy_profile_binding": strategy_profile_binding,
+            "ai_dynamic_strategy": dynamic_strategy_mode,
+            "ai_dynamic_strength": dynamic_strength,
+            "ai_dynamic_lookback": dynamic_lookback,
+            "commission_rate": float(scheduler_config.get("commission_rate") or 0),
+            "sell_tax_rate": float(scheduler_config.get("sell_tax_rate") or 0),
+            "scheduler_config": scheduler_config,
+            "candidates": candidates,
+            "stock_codes": stock_codes,
+            "checkpoints": checkpoints,
+            "account_summary": account_summary,
+            "initial_quant_universe_snapshot": initial_quant_universe_snapshot,
+            "lifecycle_settings_snapshot": lifecycle_settings_snapshot,
+            "candidate_generation": candidate_generation,
+            "disabled_candidate_sources": list(self.LIVE_QUANT_DRILL_DISABLED_CANDIDATE_SOURCES),
+            "data_warnings": [],
+            "candidate_event_dedup_days": int(candidate_generation_config.candidate_event_dedup_days),
+            "auto_entry_enabled": bool(auto_entry_enabled),
+            "auto_exit_enabled": bool(auto_exit_enabled),
+            "execute_trades": bool(execute_trades),
+            "liquidate_at_end": bool(liquidate_at_end),
+            "seed_current_quant_universe": bool(seed_current_quant_universe),
+            "generate_historical_candidate_events": bool(generate_historical_candidate_events),
+            "candidate_generation_frequency": candidate_generation_frequency,
+            "candidate_generation_checkpoint_interval": int(candidate_generation_checkpoint_interval),
+        }
 
     def _prepare_replay_context(
         self,
@@ -585,6 +834,66 @@ class QuantSimReplayService:
             if str(code).strip()
         ]
         candidates = context.get("candidates") if isinstance(context.get("candidates"), list) else []
+        metadata = {
+            "candidate_count": len(context["candidates"]),
+            "stock_codes": stock_codes,
+            "candidate_scope": [
+                {
+                    "stock_code": str(candidate.get("stock_code") or "").strip(),
+                    "stock_name": str(candidate.get("stock_name") or candidate.get("stock_code") or "").strip(),
+                }
+                for candidate in candidates
+                if str(candidate.get("stock_code") or "").strip()
+            ],
+            "strategy_mode": context["strategy_mode"],
+            "checkpoint_market": market,
+            "checkpoint_timezone": market_timezone_name(market),
+            "strategy_profile_id": str(profile_binding.get("profile_id") or ""),
+            "strategy_profile_name": str(profile_binding.get("profile_name") or ""),
+            "strategy_profile_version_id": int(profile_binding["version_id"]) if profile_binding.get("version_id") is not None else None,
+            "strategy_profile_version": int(profile_binding["version"]) if profile_binding.get("version") is not None else None,
+            "ai_dynamic_strategy": context.get("ai_dynamic_strategy"),
+            "ai_dynamic_strength": context.get("ai_dynamic_strength"),
+            "ai_dynamic_lookback": context.get("ai_dynamic_lookback"),
+            "commission_rate": float(context.get("commission_rate") or 0),
+            "sell_tax_rate": float(context.get("sell_tax_rate") or 0),
+            "capital_slot_enabled": bool((context.get("scheduler_config") or {}).get("capital_slot_enabled", True)),
+            "capital_pool_min_cash": float((context.get("scheduler_config") or {}).get("capital_pool_min_cash") or 0),
+            "capital_pool_max_cash": float((context.get("scheduler_config") or {}).get("capital_pool_max_cash") or 0),
+            "capital_slot_min_cash": float((context.get("scheduler_config") or {}).get("capital_slot_min_cash") or 0),
+            "capital_max_slots": int((context.get("scheduler_config") or {}).get("capital_max_slots") or 0),
+            "capital_min_buy_slot_fraction": float((context.get("scheduler_config") or {}).get("capital_min_buy_slot_fraction") or 0),
+            "capital_full_buy_edge": float((context.get("scheduler_config") or {}).get("capital_full_buy_edge") or 0),
+            "capital_confidence_weight": float((context.get("scheduler_config") or {}).get("capital_confidence_weight") or 0),
+            "capital_high_price_threshold": float((context.get("scheduler_config") or {}).get("capital_high_price_threshold") or 0),
+            "capital_high_price_max_slot_units": float((context.get("scheduler_config") or {}).get("capital_high_price_max_slot_units") or 0),
+            "capital_sell_cash_reuse_policy": str((context.get("scheduler_config") or {}).get("capital_sell_cash_reuse_policy") or "next_batch"),
+        }
+        if mode == "live_quant_drill":
+            candidate_generation = context.get("candidate_generation") if isinstance(context.get("candidate_generation"), dict) else {}
+            metadata.update(
+                {
+                    "run_type": "live_quant_drill",
+                    "seed_current_quant_universe": bool(context.get("seed_current_quant_universe", True)),
+                    "generate_historical_candidate_events": bool(context.get("generate_historical_candidate_events", True)),
+                    "auto_entry_enabled": bool(context.get("auto_entry_enabled", True)),
+                    "auto_exit_enabled": bool(context.get("auto_exit_enabled", True)),
+                    "execute_trades": bool(context.get("execute_trades", True)),
+                    "liquidate_at_end": bool(context.get("liquidate_at_end", True)),
+                    "initial_quant_universe_snapshot": context.get("initial_quant_universe_snapshot") or [],
+                    "lifecycle_settings_snapshot": context.get("lifecycle_settings_snapshot") or {},
+                    "strategy_profile_snapshot": profile_binding.get("config") if isinstance(profile_binding.get("config"), dict) else {},
+                    "candidate_generation": context.get("candidate_generation") or {},
+                    "disabled_candidate_sources": context.get("disabled_candidate_sources") or [],
+                    "data_warnings": context.get("data_warnings") or [],
+                    "candidate_generation_frequency": context.get("candidate_generation_frequency"),
+                    "candidate_generation_checkpoint_interval": context.get("candidate_generation_checkpoint_interval"),
+                    "candidate_event_dedup_days": context.get("candidate_event_dedup_days"),
+                    "estimated_candidate_generation_runs": int(candidate_generation.get("estimated_candidate_generation_runs") or 0),
+                    "enabled_candidate_sources": candidate_generation.get("enabled_candidate_sources") or [],
+                    "estimated_strategy_invocations": int(candidate_generation.get("estimated_strategy_invocations") or 0),
+                }
+            )
         return self.db.create_sim_run(
             mode=mode,
             timeframe=timeframe,
@@ -602,47 +911,17 @@ class QuantSimReplayService:
             selected_strategy_profile_name=str(profile_binding.get("profile_name") or ""),
             selected_strategy_profile_version_id=int(profile_binding["version_id"]) if profile_binding.get("version_id") is not None else None,
             strategy_profile_snapshot=profile_binding.get("config") if isinstance(profile_binding.get("config"), dict) else None,
-            metadata={
-                "candidate_count": len(context["candidates"]),
-                "stock_codes": stock_codes,
-                "candidate_scope": [
-                    {
-                        "stock_code": str(candidate.get("stock_code") or "").strip(),
-                        "stock_name": str(candidate.get("stock_name") or candidate.get("stock_code") or "").strip(),
-                    }
-                    for candidate in candidates
-                    if str(candidate.get("stock_code") or "").strip()
-                ],
-                "strategy_mode": context["strategy_mode"],
-                "checkpoint_market": market,
-                "checkpoint_timezone": market_timezone_name(market),
-                "strategy_profile_id": str(profile_binding.get("profile_id") or ""),
-                "strategy_profile_name": str(profile_binding.get("profile_name") or ""),
-                "strategy_profile_version_id": int(profile_binding["version_id"]) if profile_binding.get("version_id") is not None else None,
-                "strategy_profile_version": int(profile_binding["version"]) if profile_binding.get("version") is not None else None,
-                "ai_dynamic_strategy": context.get("ai_dynamic_strategy"),
-                "ai_dynamic_strength": context.get("ai_dynamic_strength"),
-                "ai_dynamic_lookback": context.get("ai_dynamic_lookback"),
-                "commission_rate": float(context.get("commission_rate") or 0),
-                "sell_tax_rate": float(context.get("sell_tax_rate") or 0),
-                "capital_slot_enabled": bool((context.get("scheduler_config") or {}).get("capital_slot_enabled", True)),
-                "capital_pool_min_cash": float((context.get("scheduler_config") or {}).get("capital_pool_min_cash") or 0),
-                "capital_pool_max_cash": float((context.get("scheduler_config") or {}).get("capital_pool_max_cash") or 0),
-                "capital_slot_min_cash": float((context.get("scheduler_config") or {}).get("capital_slot_min_cash") or 0),
-                "capital_max_slots": int((context.get("scheduler_config") or {}).get("capital_max_slots") or 0),
-                "capital_min_buy_slot_fraction": float((context.get("scheduler_config") or {}).get("capital_min_buy_slot_fraction") or 0),
-                "capital_full_buy_edge": float((context.get("scheduler_config") or {}).get("capital_full_buy_edge") or 0),
-                "capital_confidence_weight": float((context.get("scheduler_config") or {}).get("capital_confidence_weight") or 0),
-                "capital_high_price_threshold": float((context.get("scheduler_config") or {}).get("capital_high_price_threshold") or 0),
-                "capital_high_price_max_slot_units": float((context.get("scheduler_config") or {}).get("capital_high_price_max_slot_units") or 0),
-                "capital_sell_cash_reuse_policy": str((context.get("scheduler_config") or {}).get("capital_sell_cash_reuse_policy") or "next_batch"),
-            },
+            metadata=metadata,
         )
 
     def _ensure_no_active_replay(self) -> None:
         active_run = self.db.get_active_sim_run()
         if active_run is not None:
             raise ValueError(f"已有回放任务运行中（#{active_run['id']}），请先等待完成或取消")
+
+    def _execute_live_quant_drill(self, *, run_id: int, context: dict) -> dict:
+        del run_id, context
+        raise NotImplementedError("live quant drill execution is implemented by the drill execution task")
 
     def _execute_prepared_replay(
         self,
@@ -1403,3 +1682,13 @@ def execute_prepared_replay_worker(
         context=context,
         auto_start_scheduler=auto_start_scheduler,
     )
+
+
+def execute_live_quant_drill_worker(
+    db_file: str,
+    replay_db_file: str,
+    run_id: int,
+    context: dict,
+) -> None:
+    service = QuantSimReplayService(db_file=db_file, replay_db_file=replay_db_file)
+    service._execute_live_quant_drill(run_id=run_id, context=context)

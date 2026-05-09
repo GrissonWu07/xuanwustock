@@ -577,7 +577,7 @@ git commit -m "fix: disable source-count candidate bonus in drill mode"
 - Modify: `app/quant_sim/replay_service.py`
 - Test: `tests/test_live_quant_drill_service.py`
 
-- [ ] **Step 1: Write failing service tests for drill run creation**
+- [x] **Step 1: Write failing service tests for drill run creation**
 
 Create `tests/test_live_quant_drill_service.py`:
 
@@ -707,7 +707,7 @@ def test_live_quant_drill_is_blocked_by_running_historical_backtest(tmp_path):
         )
 ```
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 ```powershell
 pytest tests/test_live_quant_drill_service.py -q
@@ -715,7 +715,7 @@ pytest tests/test_live_quant_drill_service.py -q
 
 Expected: fails because `enqueue_live_quant_drill()` does not exist.
 
-- [ ] **Step 3: Add public service method**
+- [x] **Step 3: Add public service method**
 
 In `QuantSimReplayService`, add:
 
@@ -756,7 +756,7 @@ It must:
 - Create `sim_runs` row with `mode="live_quant_drill"` and metadata `run_type="live_quant_drill"`.
 - Start replay worker with a new worker target, not historical `_execute_prepared_replay()` directly.
 
-- [ ] **Step 4: Add context builder**
+- [x] **Step 4: Add context builder**
 
 Add helper:
 
@@ -803,7 +803,7 @@ Context must contain:
 - `execute_trades`
 - `liquidate_at_end`
 
-- [ ] **Step 5: Run service tests**
+- [x] **Step 5: Run service tests**
 
 ```powershell
 pytest tests/test_live_quant_drill_service.py -q
@@ -811,7 +811,7 @@ pytest tests/test_live_quant_drill_service.py -q
 
 Expected: run creation tests pass. Worker execution can still fail in follow-up execution tests if the worker target is not implemented; this task should use a test-safe runner injection or synchronous mode only for metadata tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add app/quant_sim/replay_service.py tests/test_live_quant_drill_service.py
