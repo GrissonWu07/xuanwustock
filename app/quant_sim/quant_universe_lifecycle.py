@@ -358,6 +358,8 @@ def calculate_candidate_score(
     events: list[dict[str, Any]],
     stock_snapshot: dict[str, Any],
     policy: QuantUniverseLifecyclePolicy,
+    *,
+    drill_mode: bool = False,
 ) -> dict[str, Any]:
     if not events:
         return {"candidate_score": 0.0, "breakdown": {}}
@@ -365,7 +367,7 @@ def calculate_candidate_score(
     confidence_component = sum(_float(event.get("confidence"), 0.0) for event in events) / len(events)
     trend_component = max(_trend_score(event.get("trend")) for event in events)
     source_count = len({str(event.get("source_type") or "") for event in events if event.get("source_type")})
-    multi_source_bonus = 1.0 if source_count >= 2 else 0.0
+    multi_source_bonus = 0.0 if drill_mode or source_count < 2 else 1.0
     liquidity_penalty = 0.0 if stock_snapshot.get("is_liquid", True) else 0.10 * policy.liquidity_penalty_multiplier
     cooldown_penalty = 0.15 * policy.cooldown_penalty_multiplier if stock_snapshot.get("in_cooldown") else 0.0
     manual_priority_bonus = 0.08 * policy.manual_priority_bonus_multiplier if stock_snapshot.get("manual_priority") else 0.0

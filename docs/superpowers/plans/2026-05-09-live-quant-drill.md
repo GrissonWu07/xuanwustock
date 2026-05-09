@@ -499,7 +499,7 @@ git commit -m "feat: add live drill candidate generation gates"
 - Modify: `app/quant_sim/quant_universe_lifecycle.py`
 - Test: `tests/test_quant_universe_lifecycle_manager.py`
 
-- [ ] **Step 1: Add failing test that drill ignores source-count bonus**
+- [x] **Step 1: Add failing test that drill ignores source-count bonus**
 
 Append to lifecycle manager tests:
 
@@ -509,34 +509,27 @@ from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy,
 
 def test_live_quant_drill_candidate_score_does_not_use_source_count_bonus():
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
-    single_source = calculate_candidate_score(
-        {
-            "score": 0.62,
-            "confidence": 0.70,
-            "source_type": "low_price",
-            "sources": ["low_price"],
-            "historical_indicator_score": 0.62,
-        },
+    single_result = calculate_candidate_score(
+        [{"source_type": "low_price", "source_score": 0.8, "confidence": 0.7, "trend": "up"}],
+        {"is_liquid": True},
         policy,
         drill_mode=True,
     )
-    multi_source = calculate_candidate_score(
-        {
-            "score": 0.62,
-            "confidence": 0.70,
-            "source_type": "low_price",
-            "sources": ["low_price", "main_force", "research"],
-            "historical_indicator_score": 0.62,
-        },
+    multi_result = calculate_candidate_score(
+        [
+            {"source_type": "low_price", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
+            {"source_type": "main_force", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
+        ],
+        {"is_liquid": True},
         policy,
         drill_mode=True,
     )
 
-    assert multi_source["candidate_score"] == single_source["candidate_score"]
-    assert "multi_source_bonus" not in multi_source["breakdown"]
+    assert single_result["candidate_score"] == multi_result["candidate_score"]
+    assert multi_result["breakdown"]["multi_source_bonus"] == 0.0
 ```
 
-- [ ] **Step 2: Run targeted test and confirm failure**
+- [x] **Step 2: Run targeted test and confirm failure**
 
 ```powershell
 pytest tests/test_quant_universe_lifecycle_manager.py::test_live_quant_drill_candidate_score_does_not_use_source_count_bonus -q
@@ -544,7 +537,7 @@ pytest tests/test_quant_universe_lifecycle_manager.py::test_live_quant_drill_can
 
 Expected: fails because scoring lacks `drill_mode` or still applies source-count bonus.
 
-- [ ] **Step 3: Add drill-mode scoring behavior**
+- [x] **Step 3: Add drill-mode scoring behavior**
 
 Update `calculate_candidate_score()` or the equivalent scoring helper by threading a `drill_mode: bool = False` parameter through the existing call path and replacing only the source-count branch:
 
@@ -561,7 +554,7 @@ Rules:
 - Source count cannot directly increase `candidate_score` when `drill_mode=True`.
 - Historical indicator confluence may still score if represented as explicit metrics, not source count.
 
-- [ ] **Step 4: Run lifecycle tests**
+- [x] **Step 4: Run lifecycle tests**
 
 ```powershell
 pytest tests/test_quant_universe_lifecycle_manager.py -q
@@ -569,7 +562,7 @@ pytest tests/test_quant_universe_lifecycle_manager.py -q
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add app/quant_sim/quant_universe_lifecycle.py tests/test_quant_universe_lifecycle_manager.py

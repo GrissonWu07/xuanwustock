@@ -195,6 +195,24 @@ def test_candidate_score_uses_profile_weights_and_clamps_result():
     assert result["breakdown"]["multi_source_bonus"] == 1.0
 
 
+def test_live_quant_drill_candidate_score_does_not_use_source_count_bonus():
+    policy = QuantUniverseLifecyclePolicy.stable_defaults()
+    single_source = [
+        {"source_type": "discover", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
+    ]
+    multi_source = [
+        {"source_type": "discover", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
+        {"source_type": "research", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
+    ]
+
+    single_result = calculate_candidate_score(single_source, {"is_liquid": True}, policy, drill_mode=True)
+    multi_result = calculate_candidate_score(multi_source, {"is_liquid": True}, policy, drill_mode=True)
+
+    assert single_result["candidate_score"] == multi_result["candidate_score"]
+    assert single_result["breakdown"]["multi_source_bonus"] == 0.0
+    assert multi_result["breakdown"]["multi_source_bonus"] == 0.0
+
+
 def test_resolve_active_to_exit_only_when_holding_and_health_breaks_threshold():
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
 
@@ -314,6 +332,7 @@ def _manager(tmp_path, policy: QuantUniverseLifecyclePolicy | None = None) -> Qu
 
 def test_manager_confirm_first_marks_eligible_without_promoting(tmp_path):
     manager = _manager(tmp_path)
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "confirm_first"})
     manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
 
     result = manager.ingest_candidate_event(
