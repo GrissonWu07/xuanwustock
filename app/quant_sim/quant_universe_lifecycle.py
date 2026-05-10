@@ -483,8 +483,9 @@ class QuantUniverseManager:
         self.profile_id = profile_id
         self.policy = policy
         self.drill_mode = bool(drill_mode)
+        self._drill_auto_promotions_by_day: dict[str, int] = {}
 
-    def ingest_candidate_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def ingest_candidate_event(self, payload: dict[str, Any], *, capacity_at: Any | None = None) -> dict[str, Any]:
         event = self.db.add_candidate_event({**payload, "status": payload.get("status") or "active"})
         evaluation = self.evaluate_candidate(event["stock_code"])
         settings = self.db.get_quant_universe_settings()
@@ -502,8 +503,12 @@ class QuantUniverseManager:
         if not settings["quant_universe_lifecycle_enabled"]:
             return {**evaluation, "decision": "eligible", "skip_reason": "lifecycle_disabled"}
         if settings["auto_entry_mode"] != AutoEntryMode.AUTO_TRIAL.value or skip_reason == "basic_info_missing":
-            return {**evaluation, "decision": "eligible", "skip_reason": skip_reason or ""}
-        capacity_reason = self._auto_capacity_skip_reason(str(event.get("source_type") or ""))
+            return {
+                **evaluation,
+                "decision": "eligible",
+                "skip_reason": skip_reason or f"auto_entry_{settings['auto_entry_mode']}",
+            }
+        capacity_reason = self._auto_capacity_skip_reason(str(event.get("source_type") or ""), capacity_at=capacity_at)
         if capacity_reason:
             return {**evaluation, "decision": "eligible", "skip_reason": capacity_reason}
         promoted = self._promote_stock_to_trial(
@@ -514,6 +519,7 @@ class QuantUniverseManager:
             reason_text=event.get("reason_text") or "候选事件自动纳入量化",
             candidate_score=evaluation["candidate_score"],
         )
+        self._record_drill_auto_promotion(capacity_at)
         return {**evaluation, "decision": "promoted_to_trial", **promoted}
 
     def evaluate_candidate(self, stock_code: str) -> dict[str, Any]:
@@ -929,12 +935,15 @@ class QuantUniverseManager:
         payload["quant_auto_managed"] = bool(payload.get("quant_auto_managed"))
         return payload
 
-    def _auto_capacity_skip_reason(self, source_type: str) -> str:
-        if self._promotions_today_count() >= self.policy.max_auto_entries_per_day:
+    def _auto_capacity_skip_reason(self, source_type: str, *, capacity_at: Any | None = None) -> str:
+        if self._promotions_today_count(capacity_at=capacity_at) >= self.policy.max_auto_entries_per_day:
             return "daily_capacity_exceeded"
         return ""
 
-    def _promotions_today_count(self) -> int:
+    def _promotions_today_count(self, *, capacity_at: Any | None = None) -> int:
+        if self.drill_mode and capacity_at is not None:
+            day_key = self._capacity_day_key(capacity_at)
+            return int(self._drill_auto_promotions_by_day.get(day_key, 0)) if day_key else 0
         today = datetime.now(timezone.utc).date().isoformat()
         conn = self.db._connect()
         cursor = conn.cursor()
@@ -950,6 +959,22 @@ class QuantUniverseManager:
         row = cursor.fetchone()
         conn.close()
         return int(row["total"] or 0) if row else 0
+
+    def _record_drill_auto_promotion(self, capacity_at: Any | None) -> None:
+        if not self.drill_mode or capacity_at is None:
+            return
+        day_key = self._capacity_day_key(capacity_at)
+        if day_key:
+            self._drill_auto_promotions_by_day[day_key] = self._drill_auto_promotions_by_day.get(day_key, 0) + 1
+
+    @staticmethod
+    def _capacity_day_key(value: Any) -> str:
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        text = str(value or "").strip()
+        if len(text) >= 10:
+            return text[:10]
+        return ""
 
     def _theme_counts_today(self) -> tuple[dict[str, int], dict[str, int]]:
         today = datetime.now(timezone.utc).date().isoformat()

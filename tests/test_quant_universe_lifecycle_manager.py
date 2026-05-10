@@ -556,6 +556,41 @@ def test_manager_daily_capacity_keeps_candidate_eligible_without_auto_promoting(
     assert manager.db.get_quant_universe_state("600000")["quant_status"] == "inactive"
 
 
+def test_manager_drill_capacity_uses_checkpoint_day_without_changing_live_default(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.stable_defaults().with_overrides(max_auto_entries_per_day=1)
+    live_manager = _manager(tmp_path / "live", policy)
+    live_manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    for code in ("600000", "000001"):
+        live_manager.db.add_watch(stock_code=code, stock_name=code, source="discover")
+
+    first_live = live_manager.ingest_candidate_event(
+        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+    )
+    second_live = live_manager.ingest_candidate_event(
+        {"stock_code": "000001", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+    )
+
+    drill_manager = _manager(tmp_path / "drill", policy, drill_mode=True)
+    drill_manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    for code in ("600000", "000001"):
+        drill_manager.db.add_watch(stock_code=code, stock_name=code, source="discover")
+
+    first_drill = drill_manager.ingest_candidate_event(
+        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"},
+        capacity_at=datetime(2026, 1, 5, 10, 0),
+    )
+    second_drill = drill_manager.ingest_candidate_event(
+        {"stock_code": "000001", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"},
+        capacity_at=datetime(2026, 1, 6, 10, 0),
+    )
+
+    assert first_live["decision"] == "promoted_to_trial"
+    assert second_live["decision"] == "eligible"
+    assert second_live["skip_reason"] == "daily_capacity_exceeded"
+    assert first_drill["decision"] == "promoted_to_trial"
+    assert second_drill["decision"] == "promoted_to_trial"
+
+
 def test_manager_promote_to_trial_respects_batch_capacity(tmp_path):
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
     policy = policy.with_overrides(max_auto_entries_per_batch=1)

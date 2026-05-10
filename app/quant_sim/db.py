@@ -7727,6 +7727,60 @@ class QuantSimReplayDB(QuantSimDB):
         finally:
             conn.close()
 
+    def update_sim_run_candidate_event_evaluation(
+        self,
+        run_id: int,
+        *,
+        stock_code: str,
+        source_type: str,
+        checkpoint_at_utc: str,
+        evaluation: dict[str, Any],
+    ) -> int:
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, evidence_json
+                FROM sim_run_candidate_events
+                WHERE run_id = ?
+                  AND stock_code = ?
+                  AND source_type = ?
+                  AND checkpoint_at_utc = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (int(run_id), str(stock_code).strip(), str(source_type or "").strip(), checkpoint_at_utc),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return 0
+            evidence = self._loads_metadata(row["evidence_json"])
+            if not isinstance(evidence, dict):
+                evidence = {}
+            evidence["lifecycle_evaluation"] = {
+                "decision": evaluation.get("decision"),
+                "skip_reason": evaluation.get("skip_reason") or "",
+                "evaluated_candidate_score": float(evaluation.get("candidate_score") or 0),
+                "breakdown": evaluation.get("breakdown") if isinstance(evaluation.get("breakdown"), dict) else {},
+            }
+            cursor.execute(
+                """
+                UPDATE sim_run_candidate_events
+                SET evidence_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (self._dumps_metadata(evidence), self._now(), int(row["id"])),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def list_sim_run_candidate_events(
         self,
         run_id: int,

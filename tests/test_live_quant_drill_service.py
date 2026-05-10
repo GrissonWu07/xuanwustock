@@ -4,7 +4,11 @@ from datetime import datetime
 
 import pytest
 
+from app.quant_kernel.models import Decision
 from app.quant_sim.db import QuantSimDB
+from app.quant_sim.engine import QuantSimEngine
+from app.quant_sim.portfolio_service import PortfolioService
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
 from app.quant_sim.replay_service import QuantSimReplayService
 
 
@@ -15,6 +19,61 @@ class FakeReplayRunner:
     def start_run(self, run_id, target, *args):
         self.calls.append({"run_id": run_id, "target": target, "args": args})
         return True
+
+
+class DrillSnapshotProvider:
+    def prepare(self, stock_codes, start_datetime, end_datetime, timeframe):
+        del stock_codes, start_datetime, end_datetime, timeframe
+
+    def get_snapshot(self, stock_code, checkpoint, timeframe, stock_name=None):
+        del stock_code, checkpoint, timeframe, stock_name
+        return {
+            "current_price": 10.0,
+            "latest_price": 10.0,
+            "ma5": 10.2,
+            "ma10": 10.1,
+            "ma20": 10.0,
+            "ma60": 9.8,
+            "macd": 0.1,
+            "rsi12": 50.0,
+            "volume_ratio": 1.2,
+            "trend": "up",
+        }
+
+
+class PreparedOnlyDrillSnapshotProvider(DrillSnapshotProvider):
+    def __init__(self) -> None:
+        self.prepared: list[tuple[tuple[str, ...], datetime, datetime, str]] = []
+
+    def prepare(self, stock_codes, start_datetime, end_datetime, timeframe):
+        self.prepared.append((tuple(stock_codes), start_datetime, end_datetime, timeframe))
+
+    def get_snapshot(self, stock_code, checkpoint, timeframe, stock_name=None):
+        if not self.prepared:
+            return None
+        return super().get_snapshot(stock_code, checkpoint, timeframe, stock_name=stock_name)
+
+
+class DrillHoldAdapter:
+    def analyze_candidate(self, candidate, market_snapshot=None, analysis_timeframe="30m", strategy_mode="auto", current_time=None):
+        del analysis_timeframe, strategy_mode
+        price = float((market_snapshot or {}).get("current_price") or 0)
+        return Decision(
+            code=candidate["stock_code"],
+            action="HOLD",
+            confidence=0.7,
+            price=price,
+            timestamp=current_time,
+            reason="drill checkpoint signal",
+            tech_score=0.2,
+            context_score=0.1,
+            position_ratio=0.0,
+            decision_type="test",
+            strategy_profile={"market_snapshot": market_snapshot or {}},
+        )
+
+    def analyze_position(self, candidate, position, market_snapshot=None, analysis_timeframe="30m", strategy_mode="auto", current_time=None):
+        raise AssertionError("position analysis should not run without positions")
 
 
 def test_enqueue_live_quant_drill_creates_run_with_metadata(tmp_path, monkeypatch):
@@ -246,6 +305,88 @@ def test_live_quant_drill_execution_does_not_write_live_account(tmp_path):
     assert quant_states["items"][0]["quant_status"] == "active"
 
 
+def test_live_quant_drill_prepares_historical_snapshots_before_scan(tmp_path):
+    live_db_file = tmp_path / "live.db"
+    replay_db_file = tmp_path / "replay.db"
+    live_db = QuantSimDB(str(live_db_file))
+    live_db.configure_account(50000)
+    live_db.add_watch(stock_code="600519", stock_name="贵州茅台", source="manual")
+    live_db.upsert_quant_universe_state("600519", {"quant_status": "active", "health_score": 85.0})
+    snapshot_provider = PreparedOnlyDrillSnapshotProvider()
+
+    service = QuantSimReplayService(
+        db_file=str(live_db_file),
+        replay_db_file=str(replay_db_file),
+        snapshot_provider=snapshot_provider,
+        adapter=DrillHoldAdapter(),
+    )
+    result = service.run_live_quant_drill(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        initial_cash=50000,
+        seed_current_quant_universe=True,
+        generate_historical_candidate_events=False,
+        execute_trades=False,
+    )
+
+    replay_signals = service.db.get_sim_run_signals(result["run_id"], limit=10)
+    assert snapshot_provider.prepared == [(("600519",), datetime(2026, 1, 5, 10, 0), datetime(2026, 1, 5, 10, 30), "30m")]
+    assert len(replay_signals) >= 1
+    assert {signal["stock_code"] for signal in replay_signals} == {"600519"}
+
+
+def test_live_quant_drill_main_scan_creates_checkpoint_signal(tmp_path):
+    temp_db_file = tmp_path / "temp.db"
+    temp_db = QuantSimDB(str(temp_db_file))
+    temp_db.configure_account(50000)
+    temp_db.add_watch(stock_code="600519", stock_name="贵州茅台", source="manual")
+    temp_db.add_candidate(
+        {
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "source": "manual_seed",
+            "status": "active",
+            "latest_price": 10.0,
+        }
+    )
+    temp_db.upsert_quant_universe_state(
+        "600519",
+        {"stock_name": "贵州茅台", "quant_status": "active", "health_score": 90.0},
+    )
+
+    service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
+    service.snapshot_provider = DrillSnapshotProvider()
+    engine = QuantSimEngine(db_file=str(temp_db_file), adapter=DrillHoldAdapter(), stock_analysis_context_enabled=False)
+    portfolio = PortfolioService(db_file=str(temp_db_file))
+    manager = QuantUniverseManager(
+        db=temp_db,
+        profile_id="stable",
+        policy=engine._quant_lifecycle_policy_from_binding({"profile_id": "stable"}),
+        drill_mode=True,
+    )
+
+    result = service._run_live_quant_drill_main_scan(
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        context={
+            "timeframe": "30m",
+            "market": "CN",
+            "strategy_mode": "live_quant_drill",
+            "execute_trades": False,
+        },
+        temp_db=temp_db,
+        engine=engine,
+        portfolio=portfolio,
+        manager=manager,
+    )
+
+    assert result["candidates_scanned"] == 1
+    assert result["signals_created"] == 1
+    assert result["signals"][0]["stock_code"] == "600519"
+    assert result["signals"][0]["action"] == "HOLD"
+
+
 def test_live_quant_drill_runs_cooling_opportunistic_review_after_main_scan(tmp_path, monkeypatch):
     service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
     call_order: list[str] = []
@@ -283,8 +424,12 @@ def test_live_quant_drill_runs_cooling_opportunistic_review_after_main_scan(tmp_
 
 
 def test_live_quant_drill_new_trial_is_scanned_in_same_checkpoint(tmp_path, monkeypatch):
-    service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
-    scanned_codes: list[str] = []
+    service = QuantSimReplayService(
+        db_file=str(tmp_path / "live.db"),
+        replay_db_file=str(tmp_path / "replay.db"),
+        snapshot_provider=DrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
 
     def fake_generate(*args, **kwargs):
         return [
@@ -303,11 +448,6 @@ def test_live_quant_drill_new_trial_is_scanned_in_same_checkpoint(tmp_path, monk
         ]
 
     monkeypatch.setattr(service, "_generate_live_quant_drill_candidate_events", fake_generate)
-    monkeypatch.setattr(
-        service,
-        "_evaluate_drill_candidate",
-        lambda candidate, *args, **kwargs: scanned_codes.append(candidate["stock_code"]),
-    )
 
     result = service.run_live_quant_drill(
         start_datetime=datetime(2026, 1, 5, 10, 0),
@@ -319,7 +459,8 @@ def test_live_quant_drill_new_trial_is_scanned_in_same_checkpoint(tmp_path, monk
         execute_trades=False,
     )
 
-    assert "600519" in scanned_codes
+    replay_signals = service.db.get_sim_run_signals(result["run_id"], limit=10)
+    assert any(signal["stock_code"] == "600519" for signal in replay_signals)
     candidate_events = service.db.list_sim_run_candidate_events(result["run_id"], page_size=10)
     assert candidate_events["items"][0]["stock_code"] == "600519"
     assert candidate_events["items"][0]["status"] == "consumed"
@@ -327,7 +468,6 @@ def test_live_quant_drill_new_trial_is_scanned_in_same_checkpoint(tmp_path, monk
 
 def test_live_quant_drill_auto_entry_disabled_keeps_candidate_out_of_scan(tmp_path, monkeypatch):
     service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
-    scanned_codes: list[str] = []
 
     monkeypatch.setattr(
         service,
@@ -346,11 +486,6 @@ def test_live_quant_drill_auto_entry_disabled_keeps_candidate_out_of_scan(tmp_pa
             }
         ],
     )
-    monkeypatch.setattr(
-        service,
-        "_evaluate_drill_candidate",
-        lambda candidate, *args, **kwargs: scanned_codes.append(candidate["stock_code"]),
-    )
 
     result = service.run_live_quant_drill(
         start_datetime=datetime(2026, 1, 5, 10, 0),
@@ -365,9 +500,47 @@ def test_live_quant_drill_auto_entry_disabled_keeps_candidate_out_of_scan(tmp_pa
 
     candidate_events = service.db.list_sim_run_candidate_events(result["run_id"], page_size=10)
     states = service.db.list_sim_run_quant_states(result["run_id"], stock="600519")
-    assert scanned_codes == []
+    assert service.db.get_sim_run_signals(result["run_id"], stock_keyword="600519") == []
     assert candidate_events["items"][0]["status"] == "active"
+    lifecycle = candidate_events["items"][0]["evidence_json"]["lifecycle_evaluation"]
+    assert lifecycle["decision"] == "eligible"
+    assert lifecycle["skip_reason"] == "auto_entry_confirm_first"
+    assert lifecycle["evaluated_candidate_score"] >= 0.5
     assert {item["quant_status"] for item in states["items"]} == {"inactive"}
+
+
+def test_live_quant_drill_historical_candidate_events_promote_inactive_stock(tmp_path):
+    live_db_file = tmp_path / "live.db"
+    replay_db_file = tmp_path / "replay.db"
+    live_db = QuantSimDB(str(live_db_file))
+    live_db.add_watch(stock_code="600519", stock_name="贵州茅台", source="manual")
+    live_db.upsert_quant_universe_state("600519", {"quant_status": "inactive", "health_score": 100.0})
+
+    service = QuantSimReplayService(
+        db_file=str(live_db_file),
+        replay_db_file=str(replay_db_file),
+        snapshot_provider=PreparedOnlyDrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
+    result = service.run_live_quant_drill(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        seed_current_quant_universe=True,
+        generate_historical_candidate_events=True,
+        auto_entry_enabled=True,
+        execute_trades=False,
+    )
+
+    candidate_events = service.db.list_sim_run_candidate_events(result["run_id"], page_size=10)
+    quant_events = service.db.list_sim_run_quant_events(result["run_id"], stock="600519")
+    replay_signals = service.db.get_sim_run_signals(result["run_id"], stock_keyword="600519")
+    assert candidate_events["total"] >= 1
+    assert candidate_events["items"][0]["source_type"] == "low_price"
+    assert candidate_events["items"][0]["status"] == "consumed"
+    assert any(event["to_status"] == "trial" for event in quant_events["items"])
+    assert replay_signals
 
 
 def test_live_quant_drill_persists_quant_summary(tmp_path):

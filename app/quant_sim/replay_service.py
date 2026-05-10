@@ -26,8 +26,11 @@ from app.quant_sim.dynamic_strategy import (
 from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.live_quant_drill_candidates import (
     CandidateGenerationConfig,
+    CandidateSourceAvailability,
     estimate_candidate_generation,
     should_generate_candidates,
+    should_skip_candidate_event_due_to_dedup,
+    source_availability_for_checkpoint,
 )
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
@@ -267,6 +270,7 @@ class QuantSimReplayService:
         "main_force",
         "historical_research",
     )
+    LIVE_QUANT_DRILL_HISTORICAL_EXECUTABLE_CANDIDATE_SOURCES = ("low_price",)
     LIVE_QUANT_DRILL_DISABLED_CANDIDATE_SOURCES = (
         "current_ai_analysis",
         "current_discover_result",
@@ -723,7 +727,16 @@ class QuantSimReplayService:
             if str(item.get("stock_code") or "").strip()
         ]
         stock_codes = [str(candidate["stock_code"]) for candidate in candidates]
-        enabled_candidate_sources = list(self.LIVE_QUANT_DRILL_CANDIDATE_SOURCES) if generate_historical_candidate_events else []
+        configured_candidate_sources = list(self.LIVE_QUANT_DRILL_CANDIDATE_SOURCES) if generate_historical_candidate_events else []
+        enabled_candidate_sources = (
+            list(self.LIVE_QUANT_DRILL_HISTORICAL_EXECUTABLE_CANDIDATE_SOURCES)
+            if generate_historical_candidate_events
+            else []
+        )
+        disabled_candidate_sources = sorted(
+            set(self.LIVE_QUANT_DRILL_DISABLED_CANDIDATE_SOURCES)
+            | (set(configured_candidate_sources) - set(enabled_candidate_sources))
+        )
         candidate_generation_config = CandidateGenerationConfig(
             frequency=candidate_generation_frequency,
             checkpoint_interval=candidate_generation_checkpoint_interval,
@@ -755,7 +768,9 @@ class QuantSimReplayService:
             "initial_quant_universe_snapshot": initial_quant_universe_snapshot,
             "lifecycle_settings_snapshot": lifecycle_settings_snapshot,
             "candidate_generation": candidate_generation,
-            "disabled_candidate_sources": list(self.LIVE_QUANT_DRILL_DISABLED_CANDIDATE_SOURCES),
+            "configured_candidate_sources": configured_candidate_sources,
+            "historical_executable_candidate_sources": enabled_candidate_sources,
+            "disabled_candidate_sources": disabled_candidate_sources,
             "data_warnings": [],
             "candidate_event_dedup_days": int(candidate_generation_config.candidate_event_dedup_days),
             "auto_entry_enabled": bool(auto_entry_enabled),
@@ -1026,6 +1041,8 @@ class QuantSimReplayService:
                     "lifecycle_settings_snapshot": context.get("lifecycle_settings_snapshot") or {},
                     "strategy_profile_snapshot": profile_binding.get("config") if isinstance(profile_binding.get("config"), dict) else {},
                     "candidate_generation": context.get("candidate_generation") or {},
+                    "configured_candidate_sources": context.get("configured_candidate_sources") or [],
+                    "historical_executable_candidate_sources": context.get("historical_executable_candidate_sources") or [],
                     "disabled_candidate_sources": context.get("disabled_candidate_sources") or [],
                     "data_warnings": context.get("data_warnings") or [],
                     "candidate_generation_frequency": context.get("candidate_generation_frequency"),
@@ -1092,6 +1109,29 @@ class QuantSimReplayService:
                 status_message="实时量化演练任务已开始",
             )
             self.db.append_sim_run_event(run_id, "实时量化演练任务已开始。")
+            stock_codes = [
+                str(code).strip()
+                for code in (context.get("stock_codes") if isinstance(context.get("stock_codes"), list) else [])
+                if str(code).strip()
+            ]
+            self.snapshot_provider.prepare(
+                stock_codes,
+                context["start_dt"],
+                context["end_dt"],
+                str(context.get("timeframe") or "30m"),
+            )
+            prepare_report = getattr(self.snapshot_provider, "prepare_report", None)
+            if isinstance(prepare_report, dict):
+                self.db.append_sim_run_event(
+                    run_id,
+                    (
+                        "实时量化演练历史数据准备完成："
+                        f"股票批次 {len(prepare_report.get('stock_batches') or [])}，"
+                        f"时间分段 {int(prepare_report.get('segment_count') or 0)}，"
+                        f"成功 {int(prepare_report.get('prepared') or 0)}，"
+                        f"失败 {int(prepare_report.get('failed') or 0)}。"
+                    ),
+                )
 
             for checkpoint_index, checkpoint in enumerate(checkpoints, start=1):
                 last_checkpoint_index = checkpoint_index
@@ -1171,7 +1211,14 @@ class QuantSimReplayService:
                     win_rate=float(metrics["win_rate"]),
                     trade_count=len(trades),
                     status_message="实时量化演练任务已完成",
-                    metadata={"checkpoint_count": len(checkpoints), "final_slot_summary": self._collect_slot_summary(temp_db)},
+                    metadata={
+                        "checkpoint_count": len(checkpoints),
+                        "configured_candidate_sources": context.get("configured_candidate_sources") or [],
+                        "historical_executable_candidate_sources": context.get("historical_executable_candidate_sources") or [],
+                        "disabled_candidate_sources": context.get("disabled_candidate_sources") or [],
+                        "data_warnings": context.get("data_warnings") or [],
+                        "final_slot_summary": self._collect_slot_summary(temp_db),
+                    },
                 )
                 self.db.append_sim_run_event(run_id, "实时量化演练任务已完成。", level="success")
             return {
@@ -1316,6 +1363,28 @@ class QuantSimReplayService:
             for event in raw_events
             if str(event.get("stock_code") or "").strip()
         ]
+        previous_events = self.db.list_sim_run_candidate_events(run_id, page_size=100000).get("items") or []
+        deduped_events: list[dict[str, Any]] = []
+        seen_event_keys: set[tuple[str, str, str]] = set()
+        for event in normalized_events:
+            event_key = (
+                str(event.get("stock_code") or ""),
+                str(event.get("source_type") or ""),
+                str(event.get("checkpoint_at_utc") or event.get("checkpoint_at") or ""),
+            )
+            if event_key in seen_event_keys:
+                continue
+            seen_event_keys.add(event_key)
+            if should_skip_candidate_event_due_to_dedup(
+                config=config,
+                stock_code=event["stock_code"],
+                source_type=event["source_type"],
+                checkpoint=checkpoint,
+                previous_events=previous_events,
+            ):
+                continue
+            deduped_events.append(event)
+        normalized_events = deduped_events
         if not normalized_events:
             return {"candidate_event_count": 0, "auto_promoted_count": 0, "consumed_count": 0}
         self.db.add_sim_run_candidate_events(run_id, normalized_events)
@@ -1338,7 +1407,15 @@ class QuantSimReplayService:
                     "occurred_at": event.get("occurred_at") or event["checkpoint_at_utc"],
                     "payload_json": event.get("evidence_json") or {},
                     "status": "active",
-                }
+                },
+                capacity_at=checkpoint,
+            )
+            self.db.update_sim_run_candidate_event_evaluation(
+                run_id,
+                stock_code=event["stock_code"],
+                source_type=event["source_type"],
+                checkpoint_at_utc=event["checkpoint_at_utc"],
+                evaluation=manager_result,
             )
             if str(manager_result.get("decision") or "") == "promoted_to_trial":
                 promoted += 1
@@ -1361,12 +1438,128 @@ class QuantSimReplayService:
         context: dict,
         temp_db: QuantSimDB,
     ) -> list[dict]:
-        del checkpoint, temp_db
-        disabled = context.setdefault("disabled_candidate_sources", [])
         for source in self.LIVE_QUANT_DRILL_DISABLED_CANDIDATE_SOURCES:
-            if source not in disabled:
-                disabled.append(source)
-        return []
+            self._mark_live_quant_drill_candidate_source_disabled(context, source)
+        timeframe = str(context.get("timeframe") or "30m")
+        candidates = context.get("candidates") if isinstance(context.get("candidates"), list) else []
+        events: list[dict[str, Any]] = []
+        for candidate in candidates:
+            stock_code = str(candidate.get("stock_code") or "").strip().upper()
+            if not stock_code:
+                continue
+            state = temp_db.get_quant_universe_state(stock_code) or {}
+            quant_status = str(state.get("quant_status") or "inactive").strip()
+            if quant_status in {"trial", "active", "exit_only", "cooling", "manual_paused"}:
+                continue
+            snapshot = self.snapshot_provider.get_snapshot(
+                stock_code,
+                checkpoint,
+                timeframe,
+                stock_name=candidate.get("stock_name") or stock_code,
+            )
+            if not snapshot:
+                continue
+            source_event = self._build_live_quant_drill_low_price_event(
+                candidate=candidate,
+                checkpoint=checkpoint,
+                snapshot=snapshot,
+            )
+            if source_event is not None:
+                events.append(source_event)
+
+        for source in self.LIVE_QUANT_DRILL_CANDIDATE_SOURCES:
+            if source == "low_price":
+                continue
+            self._mark_live_quant_drill_candidate_source_disabled(context, source)
+        return events
+
+    def _build_live_quant_drill_low_price_event(
+        self,
+        *,
+        candidate: dict[str, Any],
+        checkpoint: datetime,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        available_fields = {
+            "ohlcv": True,
+            "price": self._snapshot_float(snapshot, "current_price", "latest_price", "close") > 0,
+            "volume": self._snapshot_float(snapshot, "volume", "成交量", "volume_ratio") > 0,
+        }
+        availability = source_availability_for_checkpoint(
+            source_type="low_price",
+            checkpoint=checkpoint,
+            available_fields=available_fields,
+        )
+        if availability != CandidateSourceAvailability.ENABLED:
+            return None
+        price = self._snapshot_float(snapshot, "current_price", "latest_price", "close")
+        if price <= 0 or price > 18:
+            return None
+        ma5 = self._snapshot_float(snapshot, "ma5", "MA5")
+        ma10 = self._snapshot_float(snapshot, "ma10", "MA10")
+        ma20 = self._snapshot_float(snapshot, "ma20", "MA20")
+        macd = self._snapshot_float(snapshot, "macd", "MACD")
+        rsi = self._snapshot_float(snapshot, "rsi12", "rsi", "RSI")
+        volume_ratio = self._snapshot_float(snapshot, "volume_ratio", "量比")
+        score = 0.48
+        if price <= 12:
+            score += 0.08
+        if price <= 8:
+            score += 0.06
+        if ma20 > 0 and price >= ma20:
+            score += 0.08
+        if ma5 > 0 and ma10 > 0 and ma20 > 0 and ma5 >= ma10 >= ma20:
+            score += 0.08
+        if macd > 0:
+            score += 0.05
+        if volume_ratio >= 1.2:
+            score += 0.07
+        if 45 <= rsi <= 78:
+            score += 0.05
+        source_score = max(0.0, min(score, 0.95))
+        if source_score < 0.50:
+            return None
+        stock_code = str(candidate.get("stock_code") or "").strip().upper()
+        stock_name = str(candidate.get("stock_name") or stock_code).strip() or stock_code
+        return {
+            "stock_code": stock_code,
+            "stock_name": stock_name,
+            "source_type": "low_price",
+            "source_key": f"low_price:{checkpoint.date().isoformat()}",
+            "candidate_score": round(source_score, 4),
+            "confidence": round(0.68 + min(max(volume_ratio, 0.0), 3.0) * 0.04, 4),
+            "trend": "up" if (ma20 > 0 and price >= ma20) or (ma5 > 0 and ma10 > 0 and ma5 >= ma10) else "neutral",
+            "reason_text": f"历史低价动量候选：价格 {price:.2f}，量比 {volume_ratio:.2f}",
+            "evidence_json": {
+                "price": price,
+                "ma5": ma5,
+                "ma10": ma10,
+                "ma20": ma20,
+                "macd": macd,
+                "rsi": rsi,
+                "volume_ratio": volume_ratio,
+                "score_basis": "as_of_price_volume_trend",
+            },
+        }
+
+    @staticmethod
+    def _snapshot_float(snapshot: dict[str, Any], *keys: str) -> float:
+        for key in keys:
+            value = snapshot.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
+    @staticmethod
+    def _mark_live_quant_drill_candidate_source_disabled(context: dict[str, Any], source: str) -> None:
+        disabled = context.setdefault("disabled_candidate_sources", [])
+        source_text = str(source or "").strip()
+        if source_text and source_text not in disabled:
+            disabled.append(source_text)
 
     def _normalize_live_quant_drill_candidate_event(
         self,
@@ -1485,27 +1678,76 @@ class QuantSimReplayService:
         portfolio: PortfolioService,
         manager: QuantUniverseManager,
     ) -> dict:
-        del temp_db, portfolio, manager
-        candidates = engine.list_live_scan_candidates() if hasattr(engine, "list_live_scan_candidates") else []
-        signals: list[dict] = []
-        for candidate in candidates:
-            result = self._evaluate_drill_candidate(candidate, checkpoint=checkpoint, context=context, engine=engine)
-            if isinstance(result, list):
-                signals.extend(item for item in result if isinstance(item, dict))
-            elif isinstance(result, dict):
-                signals.append(result)
-        return {"signals": signals, "candidates_scanned": len(candidates), "auto_executed": 0}
+        summary = self._run_checkpoint(
+            checkpoint=checkpoint,
+            timeframe=str(context.get("timeframe") or "30m"),
+            market=str(context.get("market") or "CN"),
+            strategy_mode=str(context.get("strategy_mode") or "live_quant_drill"),
+            strategy_profile_binding=context.get("strategy_profile_binding")
+            if isinstance(context.get("strategy_profile_binding"), dict)
+            else None,
+            ai_dynamic_strategy=str(context.get("ai_dynamic_strategy") or DEFAULT_AI_DYNAMIC_STRATEGY),
+            ai_dynamic_strength=float(context.get("ai_dynamic_strength") or DEFAULT_AI_DYNAMIC_STRENGTH),
+            ai_dynamic_lookback=int(context.get("ai_dynamic_lookback") or DEFAULT_AI_DYNAMIC_LOOKBACK),
+            engine=engine,
+            portfolio=portfolio,
+            signal_service=engine.signal_center,
+            candidate_quant_statuses=self.LIVE_QUANT_DRILL_SCAN_STATUSES,
+            auto_execute_signals=bool(context.get("execute_trades", True)),
+            auto_execute_note="实时量化演练自动执行",
+            account_snapshot_reason_prefix=None,
+        )
+        summary["auto_exited_count"] = self._apply_live_quant_drill_lifecycle_updates(
+            temp_db=temp_db,
+            engine=engine,
+            portfolio=portfolio,
+            manager=manager,
+            signals=list(summary.get("signals") or []),
+        )
+        return summary
 
-    def _evaluate_drill_candidate(
+    def _apply_live_quant_drill_lifecycle_updates(
         self,
-        candidate: dict[str, Any],
         *,
-        checkpoint: datetime,
-        context: dict,
+        temp_db: QuantSimDB,
         engine: QuantSimEngine,
-    ) -> dict | list[dict] | None:
-        del candidate, checkpoint, context, engine
-        return None
+        portfolio: PortfolioService,
+        manager: QuantUniverseManager,
+        signals: list[dict[str, Any]],
+    ) -> int:
+        if not signals:
+            return 0
+        positions_by_code = {
+            str(position.get("stock_code") or "").strip().upper(): position
+            for position in portfolio.list_positions()
+            if str(position.get("stock_code") or "").strip()
+        }
+        auto_exited_count = 0
+        lookback = max(1, int(manager.policy.health_score_lookback_checkpoints or 1))
+        for signal in signals:
+            code = str(signal.get("stock_code") or "").strip().upper()
+            if not code:
+                continue
+            previous_state = temp_db.get_quant_universe_state(code) or {}
+            previous_status = str(previous_state.get("quant_status") or "inactive")
+            signal_id = int(signal.get("id") or 0)
+            recent_signals = [
+                signal,
+                *[
+                    item
+                    for item in engine.signal_center.list_signals(stock_code=code, limit=lookback)
+                    if int(item.get("id") or 0) != signal_id
+                ],
+            ][:lookback]
+            update = manager.update_after_signal(code, signal, recent_signals, positions_by_code.get(code))
+            next_status = str(update.get("new_status") or previous_status)
+            if (
+                bool(update.get("status_changed"))
+                and next_status in {"exit_only", "cooling", "retired"}
+                and previous_status != next_status
+            ):
+                auto_exited_count += 1
+        return auto_exited_count
 
     def _run_live_quant_drill_cooling_review(
         self,
@@ -1871,6 +2113,10 @@ class QuantSimReplayService:
         engine: QuantSimEngine,
         portfolio: PortfolioService,
         signal_service: SignalCenterService,
+        candidate_quant_statuses: tuple[str, ...] | list[str] | None = None,
+        auto_execute_signals: bool = True,
+        auto_execute_note: str = "历史回放自动执行",
+        account_snapshot_reason_prefix: str | None = "historical_range",
     ) -> dict:
         positions = portfolio.list_positions()
         held_codes = {
@@ -1880,7 +2126,10 @@ class QuantSimReplayService:
         }
         candidates = [
             item
-            for item in engine.candidate_pool.list_candidates(status="active")
+            for item in engine.candidate_pool.list_candidates(
+                status="active",
+                quant_statuses=candidate_quant_statuses,
+            )
             if str(item.get("stock_code") or "").strip() not in held_codes
         ]
         signals_created = 0
@@ -2025,26 +2274,28 @@ class QuantSimReplayService:
             and str(signal.get("action") or "").upper() in {"BUY", "SELL"}
         ]
         auto_executed = 0
-        try:
-            auto_executed = portfolio.auto_execute_pending_signals(
-                pending_signals,
-                note="历史回放自动执行",
-                executed_at=checkpoint_utc,
-            )
-        except Exception as exc:
-            if run_id is not None:
-                self.db.append_sim_run_event(
-                    run_id,
-                    f"检查点 {self._format_datetime(checkpoint)} 自动执行批量信号失败：{exc}",
-                    level="error",
+        if auto_execute_signals:
+            try:
+                auto_executed = portfolio.auto_execute_pending_signals(
+                    pending_signals,
+                    note=auto_execute_note,
+                    executed_at=checkpoint_utc,
                 )
+            except Exception as exc:
+                if run_id is not None:
+                    self.db.append_sim_run_event(
+                        run_id,
+                        f"检查点 {self._format_datetime(checkpoint)} 自动执行批量信号失败：{exc}",
+                        level="error",
+                    )
 
         checkpoint_signals = self._finalize_checkpoint_signals(
             signal_service.db,
             checkpoint_signals,
             checkpoint_at=checkpoint_text,
         )
-        portfolio.db.add_account_snapshot(run_reason=f"historical_range@{self._format_datetime(checkpoint)}")
+        if account_snapshot_reason_prefix:
+            portfolio.db.add_account_snapshot(run_reason=f"{account_snapshot_reason_prefix}@{self._format_datetime(checkpoint)}")
         account_summary = portfolio.get_account_summary()
         positions = portfolio.list_positions()
         return {
