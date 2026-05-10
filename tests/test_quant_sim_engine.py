@@ -149,7 +149,9 @@ def test_engine_uses_embedded_stockpolicy_dual_track_decision(tmp_path, monkeypa
     assert signal["decision_type"] == "dual_track_resonance"
     assert signal["tech_score"] == 0.62
     assert signal["context_score"] == 0.31
-    assert signal["position_size_pct"] == 60.0
+    assert signal["position_size_pct"] == 7.0
+    assert signal["strategy_profile"]["execution_sizing_plan"]["kernel_quality_position_pct"] == 60.0
+    assert signal["strategy_profile"]["execution_sizing_plan"]["effective_position_pct"] == 7.0
     assert signal["strategy_profile"]["analysis_timeframe"]["key"] == "1d"
 
 
