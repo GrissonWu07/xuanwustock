@@ -190,6 +190,12 @@ def build_execution_sizing_plan(
 
     profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
     kernel_positioning = profile.get("kernel_positioning") if isinstance(profile.get("kernel_positioning"), dict) else {}
+    if not kernel_positioning:
+        explainability = profile.get("explainability") if isinstance(profile.get("explainability"), dict) else {}
+        resonance = explainability.get("resonance") if isinstance(explainability.get("resonance"), dict) else {}
+        quality_ratio = resonance.get("quality_adjusted_position_ratio")
+        if quality_ratio is not None:
+            kernel_positioning = {"quality_position_pct": _float(quality_ratio, 0.0) * 100.0}
     kernel_pct = _float(kernel_positioning.get("quality_position_pct"), _float(signal.get("position_size_pct"), 0.0))
     stop_loss_pct = max(_float(signal.get("stop_loss_pct"), 5.0), 0.0001)
     risk_budget_pct = _float(policy["single_trade_risk_budget_pct"][tier])

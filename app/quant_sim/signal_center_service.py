@@ -727,6 +727,7 @@ class SignalCenterService:
         strategy_profile = normalized.get("strategy_profile")
         if not isinstance(strategy_profile, dict):
             strategy_profile = {}
+        strategy_profile = self._ensure_kernel_positioning(strategy_profile)
         selected = (
             strategy_profile.get("selected_strategy_profile")
             if isinstance(strategy_profile.get("selected_strategy_profile"), dict)
@@ -762,7 +763,6 @@ class SignalCenterService:
             price=self._safe_float(candidate.get("latest_price"), None),
         )
 
-        strategy_profile = dict(strategy_profile)
         strategy_profile["execution_sizing_plan"] = plan
         normalized["strategy_profile"] = strategy_profile
         normalized["position_size_pct"] = float(plan["effective_position_pct"])
@@ -771,6 +771,29 @@ class SignalCenterService:
             normalized["position_size_pct"] = 0.0
             normalized["decision_type"] = "execution_sizing_blocked"
             normalized["reasoning"] = f"{normalized.get('reasoning') or ''} 执行仓位阻断：{plan['skip_reason']}。".strip()
+        return normalized
+
+    @staticmethod
+    def _ensure_kernel_positioning(strategy_profile: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(strategy_profile)
+        if isinstance(normalized.get("kernel_positioning"), dict):
+            return normalized
+        explainability = normalized.get("explainability") if isinstance(normalized.get("explainability"), dict) else {}
+        resonance = explainability.get("resonance") if isinstance(explainability.get("resonance"), dict) else {}
+        quality_ratio = resonance.get("quality_adjusted_position_ratio")
+        if quality_ratio is None:
+            return normalized
+        try:
+            quality_position_pct = round(float(quality_ratio) * 100.0, 6)
+        except (TypeError, ValueError):
+            return normalized
+        normalized["kernel_positioning"] = {
+            "quality_position_pct": quality_position_pct,
+            "rule_hit": resonance.get("rule_hit"),
+            "signal_quality_score": resonance.get("signal_quality_score"),
+            "quality_components": resonance.get("quality_components") if isinstance(resonance.get("quality_components"), dict) else {},
+            "quality_penalties": resonance.get("quality_penalties") if isinstance(resonance.get("quality_penalties"), dict) else {},
+        }
         return normalized
 
     def _portfolio_execution_guard_policy(self, strategy_profile: dict[str, Any]) -> dict[str, Any]:
