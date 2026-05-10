@@ -56,7 +56,7 @@ def test_quant_universe_state_settings_and_overview_endpoints(tmp_path):
     assert state["items"][0]["health_score"] == 66
 
     settings = client.get("/api/v1/quant/universe/settings").json()
-    assert settings["auto_entry_mode"] == "confirm_first"
+    assert settings["auto_entry_mode"] == "auto_trial"
     updated_settings = client.post(
         "/api/v1/quant/universe/settings",
         json={"auto_entry_mode": "auto_trial", "auto_exit_enabled": False},

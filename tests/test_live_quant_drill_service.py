@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from unittest.mock import Mock
 
 import pytest
 
 from app.quant_kernel.models import Decision
+from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.db import QuantSimDB
 from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.portfolio_service import PortfolioService
@@ -423,6 +425,142 @@ def test_live_quant_drill_runs_cooling_opportunistic_review_after_main_scan(tmp_
     assert call_order == ["main_scan", "cooling_review"]
 
 
+def test_live_quant_drill_cooling_review_uses_checkpoint_snapshot(tmp_path):
+    service = QuantSimReplayService(
+        db_file=str(tmp_path / "live.db"),
+        replay_db_file=str(tmp_path / "replay.db"),
+        snapshot_provider=DrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
+    temp_db_file = tmp_path / "temp.db"
+    temp_db = QuantSimDB(str(temp_db_file))
+    CandidatePoolService(db_file=str(temp_db_file)).add_manual_candidate("600519", "贵州茅台", "manual")
+    temp_db.upsert_quant_universe_state("600519", {"quant_status": "cooling", "health_score": 20})
+    engine = QuantSimEngine(
+        db_file=str(temp_db_file),
+        adapter=DrillHoldAdapter(),
+        stock_analysis_context_enabled=False,
+    )
+    portfolio = PortfolioService(db_file=str(temp_db_file))
+    manager = QuantUniverseManager(
+        db=temp_db,
+        profile_id="stable",
+        policy=engine._quant_lifecycle_policy_from_binding({"profile_id": "stable"}),
+        drill_mode=True,
+    )
+    captured: dict[str, object] = {}
+    original = engine.build_candidate_review_signal
+
+    def capture_snapshot(candidate, **kwargs):
+        captured["market_snapshot"] = kwargs.get("market_snapshot")
+        return original(candidate, **kwargs)
+
+    engine.build_candidate_review_signal = capture_snapshot
+
+    result = service._run_live_quant_drill_cooling_review(
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        context={"timeframe": "30m", "market": "CN", "strategy_mode": "live_quant_drill"},
+        temp_db=temp_db,
+        engine=engine,
+        portfolio=portfolio,
+        manager=manager,
+    )
+
+    assert result["reviewed"] == 1
+    assert captured["market_snapshot"]["current_price"] == 10.0
+    assert temp_db.get_quant_universe_state("600519")["last_health_evaluated_at"] == "2026-01-05T10:00:00Z"
+
+
+def test_live_quant_drill_cooling_review_respects_cooling_until(tmp_path):
+    service = QuantSimReplayService(
+        db_file=str(tmp_path / "live.db"),
+        replay_db_file=str(tmp_path / "replay.db"),
+        snapshot_provider=DrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
+    temp_db_file = tmp_path / "temp.db"
+    temp_db = QuantSimDB(str(temp_db_file))
+    CandidatePoolService(db_file=str(temp_db_file)).add_manual_candidate("600519", "贵州茅台", "manual")
+    temp_db.upsert_quant_universe_state(
+        "600519",
+        {
+            "quant_status": "cooling",
+            "health_score": 20,
+            "cooling_until": "2026-01-06T10:00:00Z",
+        },
+    )
+    engine = QuantSimEngine(
+        db_file=str(temp_db_file),
+        adapter=DrillHoldAdapter(),
+        stock_analysis_context_enabled=False,
+    )
+    portfolio = PortfolioService(db_file=str(temp_db_file))
+    manager = QuantUniverseManager(
+        db=temp_db,
+        profile_id="stable",
+        policy=engine._quant_lifecycle_policy_from_binding({"profile_id": "stable"}),
+        drill_mode=True,
+    )
+    engine.build_candidate_review_signal = Mock(side_effect=AssertionError("cooling review should be skipped"))
+
+    result = service._run_live_quant_drill_cooling_review(
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        context={"timeframe": "30m", "market": "CN", "strategy_mode": "live_quant_drill"},
+        temp_db=temp_db,
+        engine=engine,
+        portfolio=portfolio,
+        manager=manager,
+    )
+
+    assert result["reviewed"] == 0
+
+
+def test_live_quant_drill_daily_first_cooling_review_covers_all_due_cooling(tmp_path):
+    service = QuantSimReplayService(
+        db_file=str(tmp_path / "live.db"),
+        replay_db_file=str(tmp_path / "replay.db"),
+        snapshot_provider=DrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
+    temp_db_file = tmp_path / "temp.db"
+    temp_db = QuantSimDB(str(temp_db_file))
+    candidate_pool = CandidatePoolService(db_file=str(temp_db_file))
+    for index in range(12):
+        code = f"6001{index:02d}"
+        candidate_pool.add_manual_candidate(code, code, "manual")
+        temp_db.upsert_quant_universe_state(
+            code,
+            {
+                "quant_status": "cooling",
+                "health_score": 20 + index,
+                "last_health_evaluated_at": f"2026-01-04T0{index % 10}:00:00Z",
+            },
+        )
+    engine = QuantSimEngine(
+        db_file=str(temp_db_file),
+        adapter=DrillHoldAdapter(),
+        stock_analysis_context_enabled=False,
+    )
+    portfolio = PortfolioService(db_file=str(temp_db_file))
+    manager = QuantUniverseManager(
+        db=temp_db,
+        profile_id="conservative",
+        policy=engine._quant_lifecycle_policy_from_binding({"profile_id": "conservative"}),
+        drill_mode=True,
+    )
+
+    result = service._run_live_quant_drill_cooling_review(
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        context={"timeframe": "30m", "market": "CN", "strategy_mode": "live_quant_drill"},
+        temp_db=temp_db,
+        engine=engine,
+        portfolio=portfolio,
+        manager=manager,
+    )
+
+    assert result["reviewed"] == 12
+
+
 def test_live_quant_drill_new_trial_is_scanned_in_same_checkpoint(tmp_path, monkeypatch):
     service = QuantSimReplayService(
         db_file=str(tmp_path / "live.db"),
@@ -540,6 +678,61 @@ def test_live_quant_drill_historical_candidate_events_promote_inactive_stock(tmp
     assert candidate_events["items"][0]["source_type"] == "low_price"
     assert candidate_events["items"][0]["status"] == "consumed"
     assert any(event["to_status"] == "trial" for event in quant_events["items"])
+    assert replay_signals
+
+
+def test_live_quant_drill_historical_candidate_events_can_wake_expired_cooling_stock(tmp_path, monkeypatch):
+    live_db_file = tmp_path / "live.db"
+    replay_db_file = tmp_path / "replay.db"
+    live_db = QuantSimDB(str(live_db_file))
+    live_db.add_watch(stock_code="600519", stock_name="贵州茅台", source="manual")
+    live_db.upsert_quant_universe_state(
+        "600519",
+        {
+            "quant_status": "cooling",
+            "health_score": 35.0,
+            "cooling_until": "2026-01-04T02:00:00Z",
+        },
+    )
+    service = QuantSimReplayService(
+        db_file=str(live_db_file),
+        replay_db_file=str(replay_db_file),
+        snapshot_provider=DrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_generate_live_quant_drill_candidate_events",
+        lambda *args, **kwargs: [
+            {
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "source_type": "low_price",
+                "source_key": "low_price:2026-01-05",
+                "candidate_score": 0.95,
+                "confidence": 0.90,
+                "trend": "up",
+                "status": "active",
+                "reason_text": "expired cooling stock is rediscovered",
+            }
+        ],
+    )
+
+    result = service.run_live_quant_drill(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        seed_current_quant_universe=True,
+        generate_historical_candidate_events=True,
+        auto_entry_enabled=True,
+        execute_trades=False,
+    )
+
+    quant_events = service.db.list_sim_run_quant_events(result["run_id"], stock="600519")
+    replay_signals = service.db.get_sim_run_signals(result["run_id"], stock_keyword="600519")
+    assert any(event["from_status"] == "cooling" and event["to_status"] == "trial" for event in quant_events["items"])
     assert replay_signals
 
 

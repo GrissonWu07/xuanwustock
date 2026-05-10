@@ -1,5 +1,7 @@
 import pandas as pd
 
+from app.local_market_data_clients import TdxLocalClient
+from app.local_market_data_store import LocalMarketDataStore
 from app.smart_monitor_tdx_data import SmartMonitorTDXDataFetcher
 
 
@@ -41,6 +43,7 @@ def test_get_realtime_quote_normalizes_pytdx_fields(monkeypatch):
 
 def test_get_kline_data_sorts_and_limits_pytdx_bars(monkeypatch):
     fetcher = SmartMonitorTDXDataFetcher(host="127.0.0.1", port=7709, fallback_hosts=[])
+    fetcher.local_client = TdxLocalClient(store=LocalMarketDataStore(enabled=False))
 
     monkeypatch.setattr(
         fetcher,

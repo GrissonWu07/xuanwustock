@@ -1569,8 +1569,8 @@ def test_discover_run_strategy_executes_real_selector_runners_and_persists_resul
     persisted_rows = {row["code"]: row for row in persisted.json()["candidateTable"]["rows"]}
     persisted_codes = set(persisted_rows)
     assert {"688111", "000001", "300750", "600519", "600036"}.issubset(persisted_codes)
-    assert persisted_rows["688111"]["eligible_status"] == "eligible"
-    assert context.quant_db().list_candidate_events(stock_code="688111", status="eligible")
+    assert persisted_rows["688111"]["eligible_status"] == "already_in_quant"
+    assert context.quant_db().get_quant_universe_state("688111")["quant_status"] == "trial"
 
 
 def test_discover_run_strategy_auto_trial_promotes_discovered_stocks(tmp_path, monkeypatch):

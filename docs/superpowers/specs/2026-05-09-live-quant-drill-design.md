@@ -294,6 +294,8 @@ run_type = historical_backtest
 3. 若需要体现多策略共振，必须把共振拆成可解释的历史指标，例如“价格趋势确认 + 成交量放大 + 估值分位低”，而不是“来源数量越多分越高”。
 4. drill 模式不得直接复用 live `calculate_candidate_score()` 中基于来源数量的 `multi_source_bonus`。
 5. 若 live 评分函数无法关闭 `multi_source_bonus`，drill 必须提供显式参数或替代函数，使来源数量不直接影响 `candidate_score`。
+6. `candidate_score` 只用于入池推荐、容量排序和初始 `trial` 仓位约束，不得参与 `health_score` 加分。
+7. `health_score` 必须由 checkpoint 当时的行情、技术信号、交易执行反馈和组合状态计算。
 
 实时量化历史演练中，`auto_entry_enabled=false` 时：
 
@@ -410,6 +412,15 @@ run_type = historical_backtest
 3. `cooling` 复评必须在主扫描后执行，避免冷却股挤占主扫描容量。
 4. 步骤 5 中新进入 `trial` 的股票，必须在步骤 6 到 8 的主扫描范围内立即可见。
 5. 若当前 checkpoint 不生成候选事件，步骤 5 仍需处理此前未 consumed 的 eligible 事件，例如从 `confirm_first` 切换到 `auto_trial` 的 run-local 设置不在本任务中发生，因此通常不会产生新入池。
+6. `cooling` 复评必须使用当前 checkpoint 的 run-local 历史快照，不得退回当前实时行情或远程即时 K 线。
+7. `cooling` 复评产生的 BUY 只能用于恢复 `cooling -> trial`，不得作为待执行交易信号直接成交。
+8. 生命周期流转必须执行最短停留期：`trial` 未满足 `trial_min_dwell_checkpoints` 前不得进入 `cooling`；`cooling_until` 未到期前不得恢复或退休；`retired_at + retired_min_dwell_days` 未到期前不得通过候选事件复活，返回 `reason_code = retired_dwell_blocked`。
+9. 持仓股票进入 `exit_only` 必须有连续下行确认；不能只因为一次 checkpoint 的健康分低于阈值就立刻切成只出场管理。
+10. 若持仓来自同一交易日刚执行的 BUY，生命周期处于 T+1 保护期；该日内即使出现弱化信号，也不得立即切成 `exit_only`。
+11. `trial -> active` 必须在演练状态机中实际执行，且必须基于连续趋势确认 checkpoint，不得只因为单次候选事件或单次 BUY 直接升级。
+12. `trial` 冷启动样本不足时必须使用 profile 配置的健康分下限保护，避免演练首日把大部分股票打入 `cooling`。
+13. `cooling` 股票若被新的历史候选事件重新命中，允许该事件触发 `cooling -> trial` 恢复评估；恢复成功的股票在同一 checkpoint 的主扫描中必须可见。
+14. 实时量化演练中，每个交易日第一个 checkpoint 必须全量复评已到期 `cooling` 股票；其他 checkpoint 可按 `cooling_review_batch_size` 轮转复评。
 
 ## 12. 交易与风控规则
 

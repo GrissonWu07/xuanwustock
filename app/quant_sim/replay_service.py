@@ -1449,7 +1449,7 @@ class QuantSimReplayService:
                 continue
             state = temp_db.get_quant_universe_state(stock_code) or {}
             quant_status = str(state.get("quant_status") or "inactive").strip()
-            if quant_status in {"trial", "active", "exit_only", "cooling", "manual_paused"}:
+            if quant_status in {"trial", "active", "exit_only", "manual_paused"}:
                 continue
             snapshot = self.snapshot_provider.get_snapshot(
                 stock_code,
@@ -1759,9 +1759,120 @@ class QuantSimReplayService:
         portfolio: PortfolioService,
         manager: QuantUniverseManager,
     ) -> dict:
-        del checkpoint, context, engine, portfolio, manager
-        cooling = temp_db.list_quant_universe_state(statuses=["cooling"], limit=5).get("items") or []
-        return {"reviewed": len(cooling), "restored": 0}
+        cooling = temp_db.list_quant_universe_state(statuses=["cooling"], limit=1000).get("items") or []
+        interval_minutes = max(1, int(manager.policy.cooling_review_interval_minutes or 1))
+        cooling = [
+            item
+            for item in cooling
+            if self._is_live_quant_drill_cooling_review_due(item, checkpoint=checkpoint, interval_minutes=interval_minutes)
+        ]
+        cooling.sort(
+            key=lambda item: (
+                str(item.get("last_health_evaluated_at") or ""),
+                -float(item.get("health_score") or 0),
+                str(item.get("stock_code") or ""),
+            )
+        )
+        if self._should_full_review_live_quant_drill_cooling(context, checkpoint):
+            selected = cooling
+        else:
+            batch_size = max(1, int(manager.policy.cooling_review_batch_size or 1))
+            selected = cooling[: min(batch_size, len(cooling))]
+        if not selected:
+            return {"reviewed": 0, "restored": 0, "retired": 0}
+        positions_by_code = {
+            str(position.get("stock_code") or "").strip().upper(): position
+            for position in portfolio.list_positions()
+            if str(position.get("stock_code") or "").strip()
+        }
+        lookback = max(1, int(manager.policy.health_score_lookback_checkpoints or 1))
+        restored = 0
+        retired = 0
+        reviewed = 0
+        timeframe = str(context.get("timeframe") or "30m")
+        for item in selected:
+            code = str(item.get("stock_code") or "").strip().upper()
+            if not code:
+                continue
+            candidate = engine.candidate_pool.db.get_candidate(code) or {
+                "stock_code": code,
+                "stock_name": item.get("stock_name") or code,
+                "source": "cooling_review",
+                "sources": ["cooling_review"],
+            }
+            snapshot = self.snapshot_provider.get_snapshot(
+                code,
+                checkpoint,
+                timeframe,
+                stock_name=candidate.get("stock_name") or code,
+            )
+            if not snapshot:
+                continue
+            reviewed += 1
+            review_signal = engine.build_candidate_review_signal(
+                candidate,
+                analysis_timeframe=timeframe,
+                strategy_mode=str(context.get("strategy_mode") or "live_quant_drill"),
+                strategy_profile_binding=context.get("strategy_profile_binding")
+                if isinstance(context.get("strategy_profile_binding"), dict)
+                else None,
+                ai_dynamic_strategy=str(context.get("ai_dynamic_strategy") or DEFAULT_AI_DYNAMIC_STRATEGY),
+                ai_dynamic_strength=float(context.get("ai_dynamic_strength") or DEFAULT_AI_DYNAMIC_STRENGTH),
+                ai_dynamic_lookback=int(context.get("ai_dynamic_lookback") or DEFAULT_AI_DYNAMIC_LOOKBACK),
+                current_time=checkpoint,
+                market_snapshot=snapshot,
+            )
+            recent_signals = [
+                review_signal,
+                *[
+                    signal
+                    for signal in engine.signal_center.list_signals(stock_code=code, limit=max(0, lookback - 1))
+                    if int(signal.get("id") or 0) != int(review_signal.get("id") or 0)
+                ],
+            ][:lookback]
+            previous_status = str((temp_db.get_quant_universe_state(code) or {}).get("quant_status") or "cooling")
+            update = manager.update_after_signal(code, review_signal, recent_signals, positions_by_code.get(code))
+            next_status = str(update.get("new_status") or previous_status)
+            if previous_status == "cooling" and next_status == "trial":
+                restored += 1
+            elif previous_status == "cooling" and next_status == "retired":
+                retired += 1
+        return {"reviewed": reviewed, "restored": restored, "retired": retired}
+
+    @staticmethod
+    def _should_full_review_live_quant_drill_cooling(context: dict, checkpoint: datetime) -> bool:
+        reviewed_dates = context.setdefault("_live_quant_drill_full_cooling_review_dates", set())
+        if not isinstance(reviewed_dates, set):
+            reviewed_dates = set(reviewed_dates or [])
+            context["_live_quant_drill_full_cooling_review_dates"] = reviewed_dates
+        day_key = checkpoint.date().isoformat()
+        if day_key in reviewed_dates:
+            return False
+        reviewed_dates.add(day_key)
+        return True
+
+    def _is_live_quant_drill_cooling_review_due(
+        self,
+        item: dict[str, Any],
+        *,
+        checkpoint: datetime,
+        interval_minutes: int,
+    ) -> bool:
+        current = self._to_naive_utc(checkpoint)
+        cooling_until = item.get("cooling_until")
+        if cooling_until:
+            cooling_dt = self._parse_optional_naive_utc(cooling_until)
+            if cooling_dt is not None and cooling_dt > current:
+                return False
+        last_eval = item.get("last_health_evaluated_at")
+        if not last_eval:
+            return True
+        last_dt = self._parse_optional_naive_utc(last_eval)
+        if last_dt is None:
+            return True
+        if last_dt > current:
+            return True
+        return (current - last_dt).total_seconds() >= interval_minutes * 60
 
     def _execute_prepared_replay(
         self,
@@ -2466,6 +2577,26 @@ class QuantSimReplayService:
         if isinstance(value, datetime):
             return value.replace(microsecond=0)
         return datetime.fromisoformat(str(value).replace("T", " ")).replace(microsecond=0)
+
+    @classmethod
+    def _parse_optional_naive_utc(cls, value: Any) -> datetime | None:
+        try:
+            return cls._to_naive_utc(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _to_naive_utc(value: Any) -> datetime:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            text = str(value or "").strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed.replace(microsecond=0)
 
     def _resolve_end_datetime(self, value: datetime | str | None) -> datetime:
         if value is None:

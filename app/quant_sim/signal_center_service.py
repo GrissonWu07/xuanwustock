@@ -52,17 +52,8 @@ class SignalCenterService:
     ) -> dict[str, Any]:
         if mirror_to_ai is None:
             mirror_to_ai = notify
-        payload = self._normalize_decision_payload(decision)
-        payload = self._apply_position_constraints(candidate, payload)
-        payload = self._apply_position_add_gate(candidate, payload)
-        payload = self._apply_reentry_constraints(candidate, payload)
-        payload = self._apply_stock_execution_feedback(candidate, payload)
-        payload = self._apply_portfolio_execution_guard(candidate, payload)
-        payload = self._apply_transaction_cost_constraints(candidate, payload)
-        payload = self._apply_lifecycle_exit_only_guard(candidate, payload)
+        payload = self.build_signal_payload(candidate, decision)
         action = str(payload.get("action", "HOLD")).upper()
-        if action == "HOLD":
-            payload["position_size_pct"] = 0
         status = "pending" if action in {"BUY", "SELL"} else "observed"
         existing_pending_ids = {
             int(item.get("id"))
@@ -101,6 +92,20 @@ class SignalCenterService:
         ):
             self._dispatch_live_signal_notification(candidate, signal, payload)
         return signal
+
+    def build_signal_payload(self, candidate: dict[str, Any], decision: dict[str, Any] | Decision) -> dict[str, Any]:
+        payload = self._normalize_decision_payload(decision)
+        payload = self._apply_position_constraints(candidate, payload)
+        payload = self._apply_position_add_gate(candidate, payload)
+        payload = self._apply_reentry_constraints(candidate, payload)
+        payload = self._apply_stock_execution_feedback(candidate, payload)
+        payload = self._apply_portfolio_execution_guard(candidate, payload)
+        payload = self._apply_transaction_cost_constraints(candidate, payload)
+        payload = self._apply_lifecycle_exit_only_guard(candidate, payload)
+        action = str(payload.get("action", "HOLD")).upper()
+        if action == "HOLD":
+            payload["position_size_pct"] = 0
+        return payload
 
     @staticmethod
     def _is_default_db_file(db_file: str | Path) -> bool:

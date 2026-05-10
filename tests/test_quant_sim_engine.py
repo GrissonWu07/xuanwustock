@@ -289,12 +289,13 @@ def test_engine_scans_only_lifecycle_main_scan_statuses(tmp_path, monkeypatch):
     assert scanned == ["600003", "600002", "600001"]
 
 
-def test_engine_updates_lifecycle_health_after_candidate_signal(tmp_path, monkeypatch):
+def test_engine_does_not_update_lifecycle_health_after_candidate_signal(tmp_path, monkeypatch):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
     candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
     candidate_service.db.upsert_quant_universe_state("600000", {"quant_status": "active", "health_score": 100})
     candidate = candidate_service.list_candidates()[0]
+    before = candidate_service.db.get_quant_universe_state("600000")
     engine = QuantSimEngine(db_file=db_file)
 
     def fake_analyze_candidate(payload, **kwargs):
@@ -316,8 +317,60 @@ def test_engine_updates_lifecycle_health_after_candidate_signal(tmp_path, monkey
     engine.analyze_candidate(candidate)
 
     state = candidate_service.db.get_quant_universe_state("600000")
-    assert state["health_score"] < 100
-    assert state["last_health_evaluated_at"]
+    assert state["health_score"] == before["health_score"]
+    assert state["downtrend_streak"] == before["downtrend_streak"]
+    assert state["last_health_evaluated_at"] == before["last_health_evaluated_at"]
+
+
+def test_engine_does_not_update_lifecycle_health_after_position_signal(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+    candidate_service.add_manual_candidate("300750", "宁德时代", "main_force")
+    candidate_service.db.upsert_quant_universe_state("300750", {"quant_status": "active", "health_score": 100})
+    candidate = candidate_service.list_candidates()[0]
+    buy_signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "BUY",
+            "confidence": 82,
+            "reasoning": "建仓",
+            "position_size_pct": 20,
+        },
+    )
+    portfolio_service.confirm_buy(
+        buy_signal["id"],
+        price=201.5,
+        quantity=100,
+        note="已买入",
+        executed_at="2026-04-07 10:00:00",
+    )
+    before = candidate_service.db.get_quant_universe_state("300750")
+    engine = QuantSimEngine(db_file=db_file)
+
+    monkeypatch.setattr(
+        engine.adapter,
+        "analyze_position",
+        lambda candidate, position, **kwargs: {  # noqa: ARG001, ARG005 - test seam
+            "action": "SELL",
+            "confidence": 55,
+            "reasoning": "跌破趋势结构",
+            "position_size_pct": 0,
+            "tech_score": -0.8,
+            "context_score": -0.6,
+            "fusion_score": 0.1,
+            "fusion_score_delta": -0.2,
+            "buy_strength_score": 0.1,
+        },
+    )
+
+    engine.analyze_positions()
+
+    state = candidate_service.db.get_quant_universe_state("300750")
+    assert state["health_score"] == before["health_score"]
+    assert state["downtrend_streak"] == before["downtrend_streak"]
+    assert state["last_health_evaluated_at"] == before["last_health_evaluated_at"]
 
 
 def test_engine_resolves_dynamic_binding_per_position(tmp_path, monkeypatch):

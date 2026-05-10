@@ -128,7 +128,7 @@ def test_quant_universe_events_settings_and_overview(tmp_path):
     settings = db.get_quant_universe_settings()
     assert settings["quant_universe_lifecycle_enabled"] is True
     assert settings["auto_exit_enabled"] is True
-    assert settings["auto_entry_mode"] == "confirm_first"
+    assert settings["auto_entry_mode"] == "auto_trial"
 
     updated = db.update_quant_universe_settings(
         {

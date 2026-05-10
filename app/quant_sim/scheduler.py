@@ -119,8 +119,12 @@ class QuantSimScheduler:
         if strategy_profile_id:
             position_kwargs["strategy_profile_id"] = strategy_profile_id
         position_signals = self.engine.analyze_positions(**position_kwargs)
-        cooling_reviewed = self._opportunistic_cooling_review(lifecycle_profile_id)
         auto_executed = self._auto_execute_pending_signals()
+        lifecycle_auto_exited = self._apply_lifecycle_updates_after_execution(
+            [*candidate_signals, *position_signals],
+            lifecycle_profile_id,
+        )
+        cooling_reviewed = self._opportunistic_cooling_review(lifecycle_profile_id)
         snapshot_id = self.db.add_account_snapshot(run_reason)
         self._dispatch_lifecycle_notifications(
             self.db.list_quant_universe_events(created_at_gte=lifecycle_event_since, limit=500)
@@ -132,6 +136,7 @@ class QuantSimScheduler:
             "signals_created": len(candidate_signals) + len(position_signals),
             "positions_checked": len(positions),
             "cooling_reviewed": cooling_reviewed,
+            "lifecycle_auto_exited": lifecycle_auto_exited,
             "auto_executed": auto_executed,
             "snapshot_id": snapshot_id,
             "total_equity": account_summary["total_equity"],
@@ -291,26 +296,132 @@ class QuantSimScheduler:
 
         return self.portfolio.auto_execute_pending_signals(self.engine.signal_center.list_pending_signals())
 
+    def _apply_lifecycle_updates_after_execution(self, signals: list[dict], strategy_profile_id: str | None = None) -> int:
+        if not signals:
+            return 0
+        policy = self.engine._quant_lifecycle_policy_from_binding({"profile_id": strategy_profile_id or ""})
+        manager = QuantUniverseManager(db=self.db, profile_id=policy.profile_id, policy=policy)
+        positions_by_code = {
+            str(position.get("stock_code") or "").strip(): position
+            for position in self.portfolio.list_positions()
+            if str(position.get("stock_code") or "").strip()
+        }
+        changed = 0
+        lookback = max(1, int(policy.health_score_lookback_checkpoints or 1))
+        for signal in signals:
+            code = str(signal.get("stock_code") or "").strip()
+            if not code:
+                continue
+            previous_state = self.db.get_quant_universe_state(code) or {}
+            previous_status = str(previous_state.get("quant_status") or "inactive")
+            signal_id = int(signal.get("id") or 0)
+            recent_signals = [
+                signal,
+                *[
+                    item
+                    for item in self.engine.signal_center.list_signals(stock_code=code, limit=lookback)
+                    if int(item.get("id") or 0) != signal_id
+                ],
+            ][:lookback]
+            update = manager.update_after_signal(code, signal, recent_signals, positions_by_code.get(code))
+            next_status = str(update.get("new_status") or previous_status)
+            if bool(update.get("status_changed")) and next_status != previous_status:
+                changed += 1
+        return changed
+
     def _opportunistic_cooling_review(self, strategy_profile_id: str | None = None) -> int:
         settings = self.db.get_quant_universe_settings()
         if not settings["quant_universe_lifecycle_enabled"] or not settings["auto_exit_enabled"]:
             return 0
+        config = self.db.get_scheduler_config()
         policy = self.engine._quant_lifecycle_policy_from_binding({"profile_id": strategy_profile_id or ""})
         rows = self.db.list_quant_universe_state(statuses=["cooling"], limit=1000)["items"]
+        decision_time = self._decision_time()
+        interval_minutes = max(1, int(policy.cooling_review_interval_minutes or 1))
+        rows = [
+            item
+            for item in rows
+            if self._is_cooling_review_due(item, now=decision_time, interval_minutes=interval_minutes)
+        ]
         rows.sort(
             key=lambda item: (
-                float(item.get("health_score") or 0),
                 str(item.get("last_health_evaluated_at") or ""),
+                -float(item.get("health_score") or 0),
                 str(item.get("stock_code") or ""),
             )
         )
-        selected = rows[: min(5, len(rows))]
+        batch_size = max(1, int(policy.cooling_review_batch_size or 1))
+        selected = rows[: min(batch_size, len(rows))]
         if not selected:
             return 0
         manager = QuantUniverseManager(db=self.db, profile_id=policy.profile_id, policy=policy)
+        positions_by_code = {
+            str(position.get("stock_code") or "").strip(): position
+            for position in self.portfolio.list_positions()
+            if str(position.get("stock_code") or "").strip()
+        }
+        lookback = max(1, int(policy.health_score_lookback_checkpoints or 1))
         for item in selected:
-            manager.evaluate_candidate(str(item.get("stock_code") or ""))
+            code = str(item.get("stock_code") or "").strip()
+            if not code:
+                continue
+            candidate = self.engine.candidate_pool.db.get_candidate(code) or {
+                "stock_code": code,
+                "stock_name": item.get("stock_name") or code,
+                "source": "cooling_review",
+                "sources": ["cooling_review"],
+            }
+            review_signal = self.engine.build_candidate_review_signal(
+                candidate,
+                analysis_timeframe=str(config.get("analysis_timeframe") or "30m"),
+                strategy_mode=str(config.get("strategy_mode") or "auto"),
+                strategy_profile_id=strategy_profile_id,
+                ai_dynamic_strategy=str(config.get("ai_dynamic_strategy") or DEFAULT_AI_DYNAMIC_STRATEGY),
+                ai_dynamic_strength=float(config.get("ai_dynamic_strength") or DEFAULT_AI_DYNAMIC_STRENGTH),
+                ai_dynamic_lookback=int(config.get("ai_dynamic_lookback") or DEFAULT_AI_DYNAMIC_LOOKBACK),
+                current_time=decision_time,
+            )
+            recent_signals = [
+                review_signal,
+                *self.engine.signal_center.list_signals(stock_code=code, limit=max(0, lookback - 1)),
+            ][:lookback]
+            manager.update_after_signal(code, review_signal, recent_signals, positions_by_code.get(code))
         return len(selected)
+
+    @classmethod
+    def _is_cooling_review_due(cls, item: dict, *, now: datetime, interval_minutes: int) -> bool:
+        cooling_until = item.get("cooling_until")
+        if cooling_until:
+            cooling_dt = cls._parse_state_datetime(cooling_until)
+            if cooling_dt is not None and cooling_dt > cls._normalize_datetime(now):
+                return False
+        last_eval = item.get("last_health_evaluated_at")
+        if not last_eval:
+            return True
+        last_dt = cls._parse_state_datetime(last_eval)
+        if last_dt is None:
+            return True
+        return (cls._normalize_datetime(now) - last_dt).total_seconds() >= interval_minutes * 60
+
+    @staticmethod
+    def _parse_state_datetime(value: object) -> datetime | None:
+        try:
+            if isinstance(value, datetime):
+                return QuantSimScheduler._normalize_datetime(value)
+            text = str(value or "").strip()
+            if not text:
+                return None
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            return QuantSimScheduler._normalize_datetime(datetime.fromisoformat(text))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_datetime(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     def _dispatch_lifecycle_notifications(self, events: list[dict]) -> int:
         sent = 0

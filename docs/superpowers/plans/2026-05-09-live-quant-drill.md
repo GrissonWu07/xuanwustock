@@ -16,6 +16,30 @@
 
 Implementation must follow the spec as the source of truth. Drill runs must not write live-sim positions, trades, account snapshots, live signals, or live stock-universe lifecycle state.
 
+## Follow-up Task: Lifecycle Collapse Regression Fix
+
+This task is required before final verification because drill runs showed the quant universe collapsing from dozens of `trial` stocks to only a few scanned stocks in one trading day.
+
+- [x] **Step 1: Update lifecycle policy defaults**
+  - aggressive: `trial_min_dwell_checkpoints=16`, `trial_cold_start_min_checkpoints=8`, `trial_cold_start_health_floor=45`, `cooling_min_dwell_days=1`, `cooling_review_batch_size=20`
+  - stable: `trial_min_dwell_checkpoints=24`, `trial_cold_start_min_checkpoints=10`, `trial_cold_start_health_floor=50`, `cooling_min_dwell_days=2`, `cooling_review_batch_size=12`
+  - conservative: `trial_min_dwell_checkpoints=40`, `trial_cold_start_min_checkpoints=12`, `trial_cold_start_health_floor=55`, `cooling_min_dwell_days=3`, `cooling_review_batch_size=8`
+- [x] **Step 2: Implement missing `trial -> active`**
+  - Upgrade only when health reaches `active_upgrade_threshold` and recent consecutive trend-confirmed checkpoints reach `active_upgrade_confirm_checkpoints`.
+  - Do not use a single candidate event as the confirmation window.
+- [x] **Step 3: Add cold-start health floor**
+  - Apply only to flat `trial` stocks with fewer than `trial_cold_start_min_checkpoints` signals.
+  - Record floor evidence in `snapshot_json.health`.
+- [x] **Step 4: Fix cooling review**
+  - Live scheduler reviews cooling stocks by oldest review first and profile batch size.
+  - Drill reviews all due cooling stocks once per trading day, then uses profile batch size for the rest of the day.
+- [x] **Step 5: Allow candidate events to wake expired cooling stocks**
+  - Cooling stocks may receive new historical candidate events.
+  - A successful evaluation restores `cooling -> trial`; it must not directly trade from the cooling review event.
+- [x] **Step 6: Verification**
+  - Add/adjust unit tests for policy defaults, `trial -> active`, cold-start floor, cooling review coverage, and cooling candidate wake-up.
+  - Re-run the 2026-01-01 to current 400k drill and compare against the previous drill and historical replay.
+
 ## File Structure
 
 ### Backend

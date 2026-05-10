@@ -3,7 +3,6 @@ import sqlite3
 from unittest.mock import Mock
 
 from app.quant_sim.candidate_pool_service import CandidatePoolService
-from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.scheduler import QuantSimScheduler
@@ -347,7 +346,7 @@ def test_scheduler_run_once_sets_adapter_market_before_analysis(tmp_path, monkey
     assert captured["market"] == "US"
 
 
-def test_scheduler_opportunistic_review_processes_at_most_five_cooling_stocks(tmp_path, monkeypatch):
+def test_scheduler_opportunistic_review_rotates_cooling_stocks_by_oldest_review(tmp_path, monkeypatch):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
     for index in range(7):
@@ -368,38 +367,114 @@ def test_scheduler_opportunistic_review_processes_at_most_five_cooling_stocks(tm
     scheduler.portfolio.list_positions = Mock(return_value=[])
     reviewed: list[str] = []
 
-    def fake_evaluate_candidate(self, stock_code):
-        del self
-        reviewed.append(stock_code)
-        return {"stock_code": stock_code, "candidate_score": 0}
+    def fake_build_review_signal(candidate, **kwargs):
+        del kwargs
+        reviewed.append(candidate["stock_code"])
+        return {
+            "id": 0,
+            "stock_code": candidate["stock_code"],
+            "stock_name": candidate.get("stock_name"),
+            "action": "HOLD",
+            "tech_score": -0.5,
+            "context_score": 0.0,
+            "strategy_profile": {},
+            "status": "review",
+        }
 
-    monkeypatch.setattr(QuantUniverseManager, "evaluate_candidate", fake_evaluate_candidate)
+    monkeypatch.setattr(scheduler.engine, "build_candidate_review_signal", fake_build_review_signal)
 
     result = scheduler.run_once("manual_scan")
 
-    assert result["cooling_reviewed"] == 5
-    assert reviewed == ["600100", "600101", "600102", "600103", "600104"]
+    assert result["cooling_reviewed"] == 7
+    assert reviewed == ["600100", "600101", "600102", "600103", "600104", "600105", "600106"]
 
 
-def test_scheduler_opportunistic_review_does_not_call_signal_provider(tmp_path, monkeypatch):
+def test_scheduler_opportunistic_review_restores_cooling_from_checkpoint_signal(tmp_path, monkeypatch):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
     candidate_service.add_manual_candidate("600000", "浦发银行", "manual")
     candidate_service.db.upsert_quant_universe_state("600000", {"quant_status": "cooling", "health_score": 20})
     scheduler = QuantSimScheduler(db_file=db_file)
     monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
+    scheduler.engine.analyze_active_candidates = Mock(return_value=[])
     scheduler.engine.analyze_positions = Mock(return_value=[])
     scheduler.portfolio.list_positions = Mock(return_value=[])
 
-    def fail_if_provider_called(*args, **kwargs):
-        raise AssertionError("cooling review must not call signal provider")
+    def fake_build_review_signal(candidate, **kwargs):
+        del kwargs
+        return {
+            "id": 0,
+            "stock_code": candidate["stock_code"],
+            "stock_name": candidate.get("stock_name"),
+            "action": "BUY",
+            "tech_score": 0.7,
+            "context_score": 0.1,
+            "price": 12.0,
+            "ma20": 11.5,
+            "ma20_slope": 0.05,
+            "strategy_profile": {
+                "explainability": {"fusion_breakdown": {"fusion_score": 0.75, "fusion_score_delta": 0.2}},
+                "portfolio_execution_guard": {"status": "strong_buy", "buy_strength_score": 0.7},
+            },
+            "status": "review",
+        }
 
-    monkeypatch.setattr(scheduler.engine.adapter, "analyze_candidate", fail_if_provider_called)
+    monkeypatch.setattr(scheduler.engine, "build_candidate_review_signal", fake_build_review_signal)
 
     result = scheduler.run_once("manual_scan")
 
     assert result["candidates_scanned"] == 0
     assert result["cooling_reviewed"] == 1
+    assert candidate_service.db.get_quant_universe_state("600000")["quant_status"] == "trial"
+
+
+def test_scheduler_opportunistic_review_skips_cooling_until_and_recent_reviews(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    rows = {
+        "600001": {"cooling_until": "2026-05-08T00:30:00Z", "last_health_evaluated_at": "2026-05-07T20:00:00Z"},
+        "600002": {"last_health_evaluated_at": "2026-05-08T00:05:00Z"},
+        "600003": {"last_health_evaluated_at": "2026-05-07T20:00:00Z"},
+    }
+    for code, state in rows.items():
+        candidate_service.add_manual_candidate(code, code, "manual")
+        candidate_service.db.upsert_quant_universe_state(
+            code,
+            {
+                "quant_status": "cooling",
+                "health_score": 20,
+                **state,
+            },
+        )
+    scheduler = QuantSimScheduler(db_file=db_file)
+    monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
+    monkeypatch.setattr(scheduler, "_decision_time", lambda: datetime(2026, 5, 8, 0, 10))
+    scheduler.engine.analyze_active_candidates = Mock(return_value=[])
+    scheduler.engine.analyze_positions = Mock(return_value=[])
+    scheduler.portfolio.list_positions = Mock(return_value=[])
+    reviewed: list[str] = []
+
+    def fake_build_review_signal(candidate, **kwargs):
+        del kwargs
+        reviewed.append(candidate["stock_code"])
+        return {
+            "id": 0,
+            "stock_code": candidate["stock_code"],
+            "stock_name": candidate.get("stock_name"),
+            "action": "HOLD",
+            "decision_time": "2026-05-08T00:10:00Z",
+            "tech_score": -0.5,
+            "context_score": 0.0,
+            "strategy_profile": {},
+            "status": "review",
+        }
+
+    monkeypatch.setattr(scheduler.engine, "build_candidate_review_signal", fake_build_review_signal)
+
+    result = scheduler.run_once("manual_scan")
+
+    assert result["cooling_reviewed"] == 1
+    assert reviewed == ["600003"]
 
 
 def test_scheduler_restores_background_job_from_persisted_config(tmp_path, monkeypatch):
