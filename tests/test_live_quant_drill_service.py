@@ -138,6 +138,51 @@ def test_enqueue_live_quant_drill_creates_run_with_metadata(tmp_path, monkeypatc
     assert runner.calls[0]["target"].__name__ == "execute_live_quant_drill_worker"
 
 
+def test_run_live_quant_drill_accepts_ai_dynamic_settings(tmp_path, monkeypatch):
+    live_db_file = tmp_path / "live.db"
+    replay_db_file = tmp_path / "replay.db"
+    live_db = QuantSimDB(str(live_db_file))
+    live_db.add_watch(stock_code="600519", stock_name="贵州茅台", source="manual")
+    live_db.upsert_quant_universe_state(
+        "600519",
+        {
+            "stock_name": "贵州茅台",
+            "quant_status": "active",
+            "health_score": 91.0,
+            "quant_entry_source": "manual_seed",
+        },
+    )
+
+    captured: dict = {}
+
+    def fake_execute(*, run_id, context):
+        captured["run_id"] = run_id
+        captured["context"] = context
+        return {"run_id": run_id, "summary": {}}
+
+    service = QuantSimReplayService(db_file=str(live_db_file), replay_db_file=str(replay_db_file))
+    monkeypatch.setattr(service, "_execute_live_quant_drill", fake_execute)
+
+    result = service.run_live_quant_drill(
+        start_datetime=datetime(2026, 1, 5, 9, 30),
+        end_datetime=datetime(2026, 1, 6, 15, 0),
+        timeframe="30m",
+        market="CN",
+        strategy_profile_id="aggressive",
+        initial_cash=100000,
+        ai_dynamic_strategy="hybrid",
+        ai_dynamic_strength=0.6,
+        ai_dynamic_lookback=36,
+        seed_current_quant_universe=True,
+        generate_historical_candidate_events=False,
+    )
+
+    assert result["run_id"] == captured["run_id"]
+    assert captured["context"]["ai_dynamic_strategy"] == "hybrid"
+    assert captured["context"]["ai_dynamic_strength"] == 0.6
+    assert captured["context"]["ai_dynamic_lookback"] == 36
+
+
 def test_live_quant_drill_requires_at_least_one_stock_source(tmp_path):
     service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
 
