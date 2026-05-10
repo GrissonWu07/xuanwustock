@@ -219,6 +219,55 @@ class PortfolioService:
         scheduler_config = self.db.get_scheduler_config()
         commission_rate = max(float(scheduler_config.get("commission_rate") or 0), 0.0)
         capital_config = normalize_capital_slot_config(scheduler_config)
+        strategy_profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+        execution_plan = (
+            strategy_profile.get("execution_sizing_plan")
+            if isinstance(strategy_profile.get("execution_sizing_plan"), dict)
+            else {}
+        )
+        final_budget = float(execution_plan.get("final_budget") or 0.0)
+        if final_budget > 0:
+            if settle_slots:
+                self.db.settle_capital_slots()
+            slots = self.db.get_capital_slots() if capital_config["capital_slot_enabled"] else []
+            slot_available_cash = (
+                sum(float(slot.get("available_cash") or 0.0) for slot in slots)
+                if slots
+                else float(summary["available_cash"] or 0.0)
+            )
+            slot_plan = calculate_slot_plan(float(summary["total_equity"] or 0), capital_config)
+            buy_budget = min(final_budget, float(summary["available_cash"] or 0.0), slot_available_cash)
+            lot_cost_with_fee = price * self.A_SHARE_LOT_SIZE * (1 + commission_rate)
+            sizing = {**execution_plan, "slot_units_source": "execution_sizing_plan"}
+            if buy_budget < lot_cost_with_fee:
+                return 0, build_sizing_explainability(
+                    config=capital_config,
+                    slot_plan=slot_plan,
+                    sizing=sizing,
+                    available_cash=float(summary["available_cash"] or 0),
+                    slot_available_cash=slot_available_cash,
+                    buy_budget=buy_budget,
+                    quantity=0,
+                    skip_reason=str(execution_plan.get("skip_reason") or "execution_sizing_budget不足买入一手"),
+                    target_position_pct=float(execution_plan.get("effective_position_pct") or 0.0),
+                    target_position_budget=final_budget,
+                    slot_capacity_capped=slot_available_cash + 1e-6 < final_budget,
+                )
+            lots = floor(buy_budget / lot_cost_with_fee)
+            quantity = int(lots * self.A_SHARE_LOT_SIZE)
+            return quantity, build_sizing_explainability(
+                config=capital_config,
+                slot_plan=slot_plan,
+                sizing=sizing,
+                available_cash=float(summary["available_cash"] or 0),
+                slot_available_cash=slot_available_cash,
+                buy_budget=buy_budget,
+                quantity=quantity,
+                skip_reason=None,
+                target_position_pct=float(execution_plan.get("effective_position_pct") or 0.0),
+                target_position_budget=final_budget,
+                slot_capacity_capped=slot_available_cash + 1e-6 < final_budget,
+            )
         if not capital_config["capital_slot_enabled"]:
             quantity = self._estimate_legacy_buy_quantity(signal, price, summary, commission_rate)
             return quantity, {"mode": "legacy_position_pct", "quantity": quantity}

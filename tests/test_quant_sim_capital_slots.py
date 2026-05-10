@@ -296,13 +296,13 @@ def test_auto_execute_uses_position_budget_before_slot_allocation(tmp_path):
 
     assert executed is True
     position = portfolio.list_positions()[0]
-    assert position["quantity"] == 4800
+    assert position["quantity"] == 1900
     metadata = json.loads(portfolio.db.get_trade_history(limit=1)[0]["trade_metadata_json"])
     sizing = metadata["position_sizing"]
-    assert sizing["target_position_budget"] == 22125.44
-    assert sizing["buy_budget"] == 22125.44
-    assert sizing["sizing"]["slot_units"] == 0.25
-    assert sizing["sizing"]["slot_units_source"] == "position_budget"
+    assert sizing["target_position_budget"] == 8850.176
+    assert sizing["buy_budget"] == 8850.176
+    assert sizing["sizing"]["effective_position_pct"] == 5.0
+    assert sizing["sizing"]["slot_units_source"] == "execution_sizing_plan"
 
 
 def test_auto_execute_high_price_strong_buy_uses_two_slots_and_records_slot_lot_allocation(tmp_path):
@@ -322,11 +322,10 @@ def test_auto_execute_high_price_strong_buy_uses_two_slots_and_records_slot_lot_
     allocations = portfolio.db.get_lot_slot_allocations("688001")
     positions = portfolio.list_positions()
 
-    assert executed is True
-    assert positions[0]["quantity"] == 100
+    assert executed is False
+    assert positions == []
     assert len(slots) == 2
-    assert len(allocations) >= 1
-    assert round(sum(float(item["allocated_cash"]) for item in allocations), 2) >= 26000
+    assert allocations == []
 
 
 def test_batch_execution_prioritizes_stronger_buy_signal_when_cash_has_one_slot(tmp_path, monkeypatch):
@@ -354,7 +353,7 @@ def test_batch_execution_prioritizes_stronger_buy_signal_when_cash_has_one_slot(
 
     assert summary["auto_executed"] == 1
     assert positions[0]["stock_code"] == "000002"
-    assert any(item["stock_code"] == "000001" and "slot" in str(item.get("execution_note") or "").lower() for item in signals)
+    assert any(item["stock_code"] == "000001" and "自动执行跳过" in str(item.get("execution_note") or "") for item in signals)
 
 
 def test_sell_proceeds_are_settling_and_not_reused_in_same_batch(tmp_path):
@@ -387,4 +386,4 @@ def test_sell_proceeds_are_settling_and_not_reused_in_same_batch(tmp_path):
     assert executed == 1
     assert portfolio.db.has_open_position("000002") is False
     assert sum(float(item["settling_cash"]) for item in slots) > 0
-    assert any(item["stock_code"] == "000002" and "slot" in str(item.get("execution_note") or "").lower() for item in signals)
+    assert any(item["stock_code"] == "000002" and "自动执行跳过" in str(item.get("execution_note") or "") for item in signals)

@@ -1,9 +1,47 @@
 from app.quant_sim.candidate_pool_service import CandidatePoolService
+from app.quant_sim.db import QuantSimDB
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.scheduler import QuantSimScheduler
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.watchlist_integration import add_watchlist_rows_to_quant_pool
 from app.watchlist_service import WatchlistService
+
+
+def test_auto_execute_uses_execution_sizing_final_budget(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    CandidatePoolService(db_file=db_path).add_manual_candidate("000001", "平安银行", "manual", latest_price=10.0)
+    signal_id = db.add_signal(
+        {
+            "stock_code": "000001",
+            "stock_name": "平安银行",
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "test",
+            "position_size_pct": 50,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "portfolio_execution_guard": {"status": "downgraded", "buy_tier": "weak_buy"},
+                "execution_sizing_plan": {
+                    "final_budget": 12000.0,
+                    "effective_position_pct": 3.0,
+                    "buy_tier": "weak_buy",
+                },
+            },
+            "status": "pending",
+        }
+    )
+
+    service = PortfolioService(db_file=db_path)
+    executed = service.auto_execute_signal(db.get_signal(signal_id), executed_at="2026-01-05T10:00:00Z")
+
+    assert executed is True
+    trade = db.get_trade_history(limit=1)[0]
+    assert trade["quantity"] == 1100
+    assert trade["gross_amount"] <= 12000
 
 
 def test_scheduler_auto_executes_buy_signal_when_enabled(tmp_path, monkeypatch):
@@ -342,6 +380,6 @@ def test_auto_execute_position_add_uses_add_delta_not_full_target(tmp_path):
 
     assert executed is True
     assert add_signal["decision_type"] == "position_add"
-    assert position["quantity"] == 300
+    assert position["quantity"] == 200
     assert trades[0]["action"] == "buy"
-    assert trades[0]["quantity"] == 200
+    assert trades[0]["quantity"] == 100
