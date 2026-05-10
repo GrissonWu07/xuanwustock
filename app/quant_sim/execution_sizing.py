@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+BUY_TIER_ORDER = {"strong_buy": 0, "normal_buy": 1, "weak_buy": 2}
+
 
 def _float(value: Any, default: float = 0.0) -> float:
     try:
@@ -104,6 +106,72 @@ def _buy_tier(signal: dict[str, Any]) -> str:
     return tier if tier in {"weak_buy", "normal_buy", "strong_buy"} else "normal_buy"
 
 
+def _signal_plan(signal: dict[str, Any]) -> dict[str, Any]:
+    profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+    plan = profile.get("execution_sizing_plan") if isinstance(profile.get("execution_sizing_plan"), dict) else {}
+    return plan
+
+
+def _signal_quant_status(signal: dict[str, Any]) -> str:
+    profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+    return str(profile.get("quant_status") or signal.get("quant_status") or "active").strip().lower()
+
+
+def _priority(signal: dict[str, Any]) -> tuple[int, float, float, int]:
+    plan = _signal_plan(signal)
+    tier = str(plan.get("buy_tier") or _buy_tier(signal)).strip().lower()
+    profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+    gate = profile.get("portfolio_execution_guard") if isinstance(profile.get("portfolio_execution_guard"), dict) else {}
+    strength = _float(gate.get("buy_strength_score"), 0.0)
+    confidence = _float(signal.get("confidence"), 0.0)
+    signal_id = int(_float(signal.get("id"), 0.0))
+    return (BUY_TIER_ORDER.get(tier, 9), -strength, -confidence, signal_id)
+
+
+def apply_batch_execution_caps(
+    *,
+    signals: list[dict[str, Any]],
+    total_equity: float,
+    existing_trial_market_value: float,
+    existing_weak_buy_market_value: float,
+    day_trial_risk_used_pct: float,
+    policy: dict[str, Any],
+) -> list[dict[str, Any]]:
+    checkpoint_trial_risk = 0.0
+    day_trial_risk = float(day_trial_risk_used_pct or 0.0)
+    trial_exposure = float(existing_trial_market_value or 0.0)
+    weak_exposure = float(existing_weak_buy_market_value or 0.0)
+    trial_exposure_cap = float(total_equity) * float(policy["trial_total_exposure_cap_pct"]) / 100.0
+    weak_exposure_cap = float(total_equity) * float(policy["weak_buy_total_exposure_cap_pct"]) / 100.0
+    rows: list[dict[str, Any]] = []
+    for signal in sorted(signals, key=_priority):
+        plan = _signal_plan(signal)
+        tier = str(plan.get("buy_tier") or _buy_tier(signal)).strip().lower()
+        status = _signal_quant_status(signal)
+        final_budget = _float(plan.get("final_budget"), 0.0)
+        risk_budget_pct = _float(plan.get("risk_budget_pct"), 0.0)
+        reason_code = ""
+        if status == "trial":
+            if checkpoint_trial_risk + risk_budget_pct > float(policy["checkpoint_trial_risk_budget_pct"]) + 1e-9:
+                reason_code = "portfolio_trial_risk_budget_exhausted"
+            elif day_trial_risk + risk_budget_pct > float(policy["daily_trial_risk_budget_pct"]) + 1e-9:
+                reason_code = "daily_trial_risk_budget_exhausted"
+            elif trial_exposure + final_budget > trial_exposure_cap + 1e-9:
+                reason_code = "trial_exposure_cap_hit"
+        if not reason_code and tier == "weak_buy" and weak_exposure + final_budget > weak_exposure_cap + 1e-9:
+            reason_code = "weak_buy_exposure_cap_hit"
+        allowed = not reason_code
+        if allowed:
+            if status == "trial":
+                checkpoint_trial_risk += risk_budget_pct
+                day_trial_risk += risk_budget_pct
+                trial_exposure += final_budget
+            if tier == "weak_buy":
+                weak_exposure += final_budget
+        rows.append({"signal_id": signal.get("id"), "allowed": allowed, "reason_code": reason_code, "signal": signal})
+    return rows
+
+
 def build_execution_sizing_plan(
     *,
     signal: dict[str, Any],
@@ -173,4 +241,3 @@ def _cap_reason_codes(cap_reasons: list[str], *, status: str, tier: str) -> list
         else:
             codes.append(reason)
     return codes
-

@@ -44,6 +44,55 @@ def test_auto_execute_uses_execution_sizing_final_budget(tmp_path):
     assert trade["gross_amount"] <= 12000
 
 
+def test_auto_execute_pending_signals_applies_checkpoint_trial_risk_budget(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=100000)
+    candidate_service = CandidatePoolService(db_file=db_path)
+    for code in ("000001", "000002", "000003"):
+        candidate_service.add_manual_candidate(code, code, "manual", latest_price=10.0)
+        db.upsert_quant_universe_state(code, {"quant_status": "trial", "health_score": 100})
+
+    signal_ids = []
+    for index, code in enumerate(("000001", "000002", "000003"), start=1):
+        signal_ids.append(
+            db.add_signal(
+                {
+                    "stock_code": code,
+                    "stock_name": code,
+                    "action": "BUY",
+                    "confidence": 90 - index,
+                    "reasoning": "trial weak",
+                    "position_size_pct": 3.0,
+                    "stop_loss_pct": 5,
+                    "take_profit_pct": 12,
+                    "decision_type": "dual_track_weighted_buy",
+                    "strategy_profile": {
+                        "selected_strategy_profile": {"id": "aggressive"},
+                        "portfolio_execution_guard": {"status": "downgraded", "buy_tier": "weak_buy"},
+                        "execution_sizing_plan": {
+                            "buy_tier": "weak_buy",
+                            "final_budget": 6000.0,
+                            "risk_budget_pct": 0.30,
+                            "effective_position_pct": 3.0,
+                        },
+                        "quant_status": "trial",
+                    },
+                    "status": "pending",
+                }
+            )
+        )
+
+    portfolio = PortfolioService(db_file=db_path)
+    pending = [db.get_signal(signal_id) for signal_id in signal_ids]
+    executed = portfolio.auto_execute_pending_signals(pending, executed_at="2026-01-05T10:00:00Z")
+
+    assert executed == 2
+    signals = {item["stock_code"]: item for item in db.get_signals(limit=10)}
+    skipped = [item for item in signals.values() if "portfolio_trial_risk_budget_exhausted" in str(item.get("execution_note") or "")]
+    assert len(skipped) == 1
+
+
 def test_scheduler_auto_executes_buy_signal_when_enabled(tmp_path, monkeypatch):
     candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
     candidate_service.add_manual_candidate("300390", "天华新能", "main_force", latest_price=62.0)

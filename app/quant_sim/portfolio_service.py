@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from math import floor
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from app.quant_sim.capital_slots import (
 )
 from app.quant_sim.db import DEFAULT_DB_FILE, QuantSimDB
 from app.quant_sim.execution_constraints import trade_block_reason
+from app.quant_sim.execution_sizing import apply_batch_execution_caps, default_execution_position_cap_policy
 
 
 class PortfolioService:
@@ -177,11 +179,31 @@ class PortfolioService:
     ) -> int:
         self.db.settle_capital_slots()
         ordered = sorted(signals, key=self._execution_sort_key)
+        sells = [signal for signal in ordered if str(signal.get("action") or "").upper() == "SELL"]
+        buys = [signal for signal in ordered if str(signal.get("action") or "").upper() == "BUY"]
+        others = [signal for signal in ordered if str(signal.get("action") or "").upper() not in {"BUY", "SELL"}]
         executed = 0
         buy_phase_started = False
         config = self.db.get_scheduler_config()
         sell_reuse_policy = str(config.get("capital_sell_cash_reuse_policy") or "next_batch").strip().lower()
-        for signal in ordered:
+        profile_id = (str(config.get("strategy_profile_id") or "").strip() or self._profile_id_from_signal(buys[0])) if buys else ""
+        batch_rows: list[dict] = []
+        if buys:
+            summary = self.db.get_account_summary()
+            existing_trial_market_value, existing_weak_buy_market_value = self._current_trial_and_weak_buy_exposure()
+            batch_rows = apply_batch_execution_caps(
+                signals=buys,
+                total_equity=float(summary.get("total_equity") or 0.0),
+                existing_trial_market_value=existing_trial_market_value,
+                existing_weak_buy_market_value=existing_weak_buy_market_value,
+                day_trial_risk_used_pct=self._day_trial_risk_used_pct(executed_at),
+                policy=default_execution_position_cap_policy(profile_id),
+            )
+            for row in batch_rows:
+                if not row["allowed"]:
+                    self._record_auto_execute_skip(row["signal"], f"自动执行跳过：{row['reason_code']}")
+        executable = sells + [row["signal"] for row in batch_rows if row["allowed"]] + others
+        for signal in executable:
             action = str(signal.get("action") or "").upper()
             if action == "BUY" and not buy_phase_started:
                 buy_phase_started = True
@@ -196,6 +218,48 @@ class PortfolioService:
             if did_execute:
                 executed += 1
         return executed
+
+    @staticmethod
+    def _profile_id_from_signal(signal: dict | None) -> str:
+        if not isinstance(signal, dict):
+            return ""
+        profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+        selected = profile.get("selected_strategy_profile") if isinstance(profile.get("selected_strategy_profile"), dict) else {}
+        return str(selected.get("id") or selected.get("profile_id") or profile.get("profile_id") or "").strip()
+
+    def _current_trial_and_weak_buy_exposure(self) -> tuple[float, float]:
+        trial_total = 0.0
+        weak_total = 0.0
+        for position in self.db.get_positions():
+            stock_code = str(position.get("stock_code") or "").strip()
+            market_value = float(position.get("market_value") or 0.0)
+            state = self.db.get_quant_universe_state(stock_code) if stock_code else None
+            if str((state or {}).get("quant_status") or "").strip().lower() == "trial":
+                trial_total += market_value
+            if self.db.get_stock_execution_feedback_summary(stock_code).get("last_buy_was_weak"):
+                weak_total += market_value
+        return trial_total, weak_total
+
+    def _day_trial_risk_used_pct(self, executed_at: str | datetime | None) -> float:
+        day = executed_at.date().isoformat() if isinstance(executed_at, datetime) else str(executed_at or datetime.now().isoformat())[:10]
+        total = 0.0
+        for trade in self.db.get_trade_history(limit=1000):
+            if str(trade.get("action") or "").upper() != "BUY":
+                continue
+            if str(trade.get("executed_at") or "")[:10] != day:
+                continue
+            metadata = trade.get("trade_metadata") if isinstance(trade.get("trade_metadata"), dict) else {}
+            if not metadata:
+                try:
+                    metadata = json.loads(str(trade.get("trade_metadata_json") or "{}"))
+                except json.JSONDecodeError:
+                    metadata = {}
+            plan = metadata.get("execution_sizing_plan") if isinstance(metadata.get("execution_sizing_plan"), dict) else {}
+            if not plan:
+                position_sizing = metadata.get("position_sizing") if isinstance(metadata.get("position_sizing"), dict) else {}
+                plan = position_sizing.get("sizing") if isinstance(position_sizing.get("sizing"), dict) else {}
+            total += float(plan.get("risk_budget_pct") or 0.0)
+        return total
 
     def preview_signal_sizing(
         self,

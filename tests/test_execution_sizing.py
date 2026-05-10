@@ -1,4 +1,8 @@
-from app.quant_sim.execution_sizing import build_execution_sizing_plan, default_execution_position_cap_policy
+from app.quant_sim.execution_sizing import (
+    apply_batch_execution_caps,
+    build_execution_sizing_plan,
+    default_execution_position_cap_policy,
+)
 from app.quant_sim.db import QuantSimDB
 from app.quant_sim.signal_center_service import SignalCenterService
 
@@ -121,3 +125,67 @@ def test_create_signal_attaches_execution_sizing_plan(tmp_path):
     assert profile["execution_sizing_plan"]["buy_tier"] == "weak_buy"
     assert profile["execution_sizing_plan"]["effective_position_pct"] == 3.0
     assert signal["position_size_pct"] == profile["execution_sizing_plan"]["effective_position_pct"]
+
+
+def _buy_signal(signal_id: int, tier: str, final_budget: float, risk_pct: float = 0.30, status: str = "trial") -> dict:
+    return {
+        "id": signal_id,
+        "stock_code": f"000{signal_id:03d}",
+        "stock_name": f"股票{signal_id}",
+        "action": "BUY",
+        "confidence": 80 - signal_id,
+        "position_size_pct": 3.0,
+        "strategy_profile": {
+            "portfolio_execution_guard": {
+                "buy_tier": tier,
+                "buy_strength_score": 0.6 - signal_id * 0.01,
+            },
+            "execution_sizing_plan": {
+                "buy_tier": tier,
+                "final_budget": final_budget,
+                "risk_budget_pct": risk_pct,
+                "effective_position_pct": 3.0,
+            },
+            "quant_status": status,
+        },
+    }
+
+
+def test_batch_caps_skip_trial_buys_after_checkpoint_risk_budget():
+    policy = default_execution_position_cap_policy("aggressive")
+    signals = [
+        _buy_signal(1, "weak_buy", 6000, 0.30),
+        _buy_signal(2, "weak_buy", 6000, 0.30),
+        _buy_signal(3, "weak_buy", 6000, 0.30),
+    ]
+
+    result = apply_batch_execution_caps(
+        signals=signals,
+        total_equity=100000,
+        existing_trial_market_value=0,
+        existing_weak_buy_market_value=0,
+        day_trial_risk_used_pct=0,
+        policy=policy,
+    )
+
+    allowed = [item for item in result if item["allowed"]]
+    skipped = [item for item in result if not item["allowed"]]
+    assert len(allowed) == 2
+    assert skipped[0]["reason_code"] == "portfolio_trial_risk_budget_exhausted"
+
+
+def test_batch_caps_skip_when_weak_buy_exposure_already_full():
+    policy = default_execution_position_cap_policy("stable")
+    signals = [_buy_signal(1, "weak_buy", 8000, 0.20)]
+
+    result = apply_batch_execution_caps(
+        signals=signals,
+        total_equity=200000,
+        existing_trial_market_value=0,
+        existing_weak_buy_market_value=200000 * 0.08,
+        day_trial_risk_used_pct=0,
+        policy=policy,
+    )
+
+    assert result[0]["allowed"] is False
+    assert result[0]["reason_code"] == "weak_buy_exposure_cap_hit"
