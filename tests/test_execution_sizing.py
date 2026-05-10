@@ -1,4 +1,6 @@
 from app.quant_sim.execution_sizing import build_execution_sizing_plan, default_execution_position_cap_policy
+from app.quant_sim.db import QuantSimDB
+from app.quant_sim.signal_center_service import SignalCenterService
 
 
 def test_trial_weak_buy_uses_lifecycle_cap_and_final_budget():
@@ -86,3 +88,36 @@ def test_weak_buy_skips_when_one_lot_cost_exceeds_budget():
 
     assert plan["final_budget"] < plan["one_lot_cost"]
     assert plan["skip_reason"] == "weak_buy_one_lot_exceeds_risk_budget"
+
+
+def test_create_signal_attaches_execution_sizing_plan(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "trial", "health_score": 100})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {"stock_code": "000001", "stock_name": "平安银行", "latest_price": 10.0},
+        {
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "test",
+            "position_size_pct": 28.26,
+            "stop_loss_pct": 5,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "kernel_positioning": {"quality_position_pct": 28.26, "rule_hit": "resonance_standard"},
+                "portfolio_execution_guard_policy": {"enabled": False},
+                "portfolio_execution_guard": {"status": "downgraded", "buy_tier": "weak_buy", "buy_tier_label": "弱买"},
+            },
+        },
+        notify=False,
+    )
+
+    profile = signal["strategy_profile"]
+    assert profile["kernel_positioning"]["quality_position_pct"] == 28.26
+    assert profile["execution_sizing_plan"]["buy_tier"] == "weak_buy"
+    assert profile["execution_sizing_plan"]["effective_position_pct"] == 3.0
+    assert signal["position_size_pct"] == profile["execution_sizing_plan"]["effective_position_pct"]

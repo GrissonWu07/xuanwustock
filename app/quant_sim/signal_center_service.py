@@ -18,6 +18,7 @@ from app.quant_sim.portfolio_execution_guard import (
     evaluate_portfolio_execution_guard,
     normalize_portfolio_execution_guard_policy,
 )
+from app.quant_sim.execution_sizing import build_execution_sizing_plan, default_execution_position_cap_policy
 from app.smart_monitor_db import SmartMonitorDB, DEFAULT_DB_FILE as SMART_MONITOR_DB_FILE
 
 
@@ -100,6 +101,7 @@ class SignalCenterService:
         payload = self._apply_reentry_constraints(candidate, payload)
         payload = self._apply_stock_execution_feedback(candidate, payload)
         payload = self._apply_portfolio_execution_guard(candidate, payload)
+        payload = self._apply_execution_sizing_plan(candidate, payload)
         payload = self._apply_transaction_cost_constraints(candidate, payload)
         payload = self._apply_lifecycle_exit_only_guard(candidate, payload)
         action = str(payload.get("action", "HOLD")).upper()
@@ -715,6 +717,60 @@ class SignalCenterService:
                 f"{base_reasoning} 组合执行防守分层：{gate.get('buy_tier_label')}，"
                 f"资金槽执行时将按 {multiplier:.2f} 倍缩放。"
             ).strip()
+        return normalized
+
+    def _apply_execution_sizing_plan(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        if str(normalized.get("action") or "HOLD").upper() != "BUY":
+            return normalized
+
+        strategy_profile = normalized.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            strategy_profile = {}
+        selected = (
+            strategy_profile.get("selected_strategy_profile")
+            if isinstance(strategy_profile.get("selected_strategy_profile"), dict)
+            else {}
+        )
+        profile_id = str(
+            selected.get("id")
+            or selected.get("profile_id")
+            or strategy_profile.get("profile_id")
+            or strategy_profile.get("strategy_profile_id")
+            or ""
+        ).strip()
+        policy = default_execution_position_cap_policy(profile_id)
+        summary = self.db.get_account_summary()
+        stock_code = str(candidate.get("stock_code") or normalized.get("stock_code") or normalized.get("code") or "").strip()
+        quant_state = self.db.get_quant_universe_state(stock_code) if stock_code else None
+        quant_status = str((quant_state or {}).get("quant_status") or candidate.get("quant_status") or "active")
+        total_equity = self._safe_float(summary.get("total_equity"), self._safe_float(summary.get("initial_capital"), 0.0)) or 0.0
+        available_cash = self._safe_float(summary.get("available_cash"), self._safe_float(summary.get("cash"), 0.0)) or 0.0
+        slot_available_cash = available_cash
+        try:
+            slots = self.db.get_capital_slots()
+            slot_available_cash = sum(self._safe_float(slot.get("available_cash"), 0.0) or 0.0 for slot in slots) or available_cash
+        except Exception:
+            slot_available_cash = available_cash
+        plan = build_execution_sizing_plan(
+            signal=normalized,
+            total_equity=total_equity,
+            available_cash=available_cash,
+            slot_available_cash=slot_available_cash,
+            quant_status=quant_status,
+            policy=policy,
+            price=self._safe_float(candidate.get("latest_price"), None),
+        )
+
+        strategy_profile = dict(strategy_profile)
+        strategy_profile["execution_sizing_plan"] = plan
+        normalized["strategy_profile"] = strategy_profile
+        normalized["position_size_pct"] = float(plan["effective_position_pct"])
+        if plan.get("skip_reason"):
+            normalized["action"] = "HOLD"
+            normalized["position_size_pct"] = 0.0
+            normalized["decision_type"] = "execution_sizing_blocked"
+            normalized["reasoning"] = f"{normalized.get('reasoning') or ''} 执行仓位阻断：{plan['skip_reason']}。".strip()
         return normalized
 
     def _portfolio_execution_guard_policy(self, strategy_profile: dict[str, Any]) -> dict[str, Any]:
