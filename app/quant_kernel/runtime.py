@@ -1749,7 +1749,7 @@ class KernelStrategyRuntime:
         elif pnl_pct >= cfg.strong_profit_threshold:
             votes.append(self._vote("盈亏保护", "SELL", -cfg.strong_profit_penalty, f"浮盈亏 {pnl_pct:.2f}% 触发高位止盈保护"))
         elif pnl_pct >= cfg.guarded_profit_threshold and macd > 0:
-            votes.append(self._vote("盈亏保护", "BUY", cfg.guarded_profit_bonus, f"浮盈亏 {pnl_pct:.2f}% 且趋势未破坏"))
+            votes.append(self._vote("盈亏保护", "HOLD", 0.0, f"浮盈亏 {pnl_pct:.2f}% 且趋势未破坏，停止加仓"))
         else:
             votes.append(self._vote("盈亏保护", "HOLD", 0.0, f"浮盈亏 {pnl_pct:.2f}% 中性"))
         if rsi12 >= cfg.overbought_rsi_threshold:

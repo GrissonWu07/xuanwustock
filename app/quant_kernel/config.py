@@ -941,7 +941,7 @@ class QuantKernelConfig:
                 strong_profit_threshold=10.0,
                 strong_profit_penalty=0.15,
                 guarded_profit_threshold=2.0,
-                guarded_profit_bonus=0.08,
+                guarded_profit_bonus=0.0,
                 overbought_rsi_threshold=75.0,
                 overbought_rsi_penalty=0.12,
             ),

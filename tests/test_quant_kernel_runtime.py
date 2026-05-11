@@ -220,6 +220,24 @@ def test_candidate_sell_is_downgraded_to_non_tradable_reject_in_explainability()
     assert fusion["matched_branch"] == "candidate_sell_rejected"
 
 
+def test_position_guarded_profit_does_not_emit_buy_vote():
+    runtime = KernelStrategyRuntime()
+
+    score, votes = runtime._calculate_position_tech_votes(
+        current_price=10.5,
+        ma20=10.0,
+        macd=0.18,
+        rsi12=58.0,
+        pnl_pct=5.0,
+    )
+
+    profit_vote = next(vote for vote in votes if vote["factor"] == "盈亏保护")
+    assert profit_vote["signal"] == "HOLD"
+    assert profit_vote["score"] == 0.0
+    assert "停止加仓" in profit_vote["reason"]
+    assert score == 0.0
+
+
 def test_position_stop_loss_is_audited_as_risk_veto():
     runtime = KernelStrategyRuntime()
 
