@@ -491,6 +491,7 @@ def resolve_next_status(
     trend_confirmed: bool = False,
     active_trend_confirm_checkpoints: int = 0,
     cooling_min_dwell_active: bool = False,
+    cooling_recovery_buy: bool = False,
     post_buy_grace_active: bool = False,
     requested_status: QuantStatus | str | None = None,
     manual_override: ManualOverride | str | None = None,
@@ -537,6 +538,8 @@ def resolve_next_status(
     if current == QuantStatus.COOLING:
         if cooling_min_dwell_active:
             return _blocked(current, "cooling_min_dwell_active", "冷却最短停留期未结束")
+        if cooling_recovery_buy:
+            return _transition(current, QuantStatus.TRIAL, "cooling_recovered_by_executable_buy", "冷却复评出现可执行买入信号，回到 trial")
         if (
             health_score >= policy.active_upgrade_threshold
             and trend_confirmed
@@ -909,6 +912,7 @@ class QuantUniverseManager:
         if settings["quant_universe_lifecycle_enabled"] and settings["auto_exit_enabled"]:
             trend_confirmed = _signal_trend_confirmed(latest_signal, self.policy)
             trend_confirmed_streak = _trailing_trend_confirmed_count(recent_signals, self.policy)
+            cooling_recovery_buy = current == QuantStatus.COOLING and _signal_cooling_recovery_buy(latest_signal)
             health = _apply_cold_start_health_floor(
                 health,
                 policy=self.policy,
@@ -933,6 +937,7 @@ class QuantUniverseManager:
                 trend_confirmed=trend_confirmed,
                 active_trend_confirm_checkpoints=trend_confirmed_streak,
                 cooling_min_dwell_active=cooling_min_dwell_active,
+                cooling_recovery_buy=cooling_recovery_buy,
                 post_buy_grace_active=has_position and _has_same_day_buy_signal(recent_signals, evaluation_time),
                 policy=self.policy,
             )
@@ -1291,6 +1296,26 @@ def _signal_portfolio_guard(signal: dict[str, Any]) -> dict[str, Any]:
     profile = _signal_profile(signal)
     gate = profile.get("portfolio_execution_guard") if isinstance(profile.get("portfolio_execution_guard"), dict) else {}
     return gate if isinstance(gate, dict) else {}
+
+
+def _signal_execution_sizing_plan(signal: dict[str, Any]) -> dict[str, Any]:
+    profile = _signal_profile(signal)
+    plan = profile.get("execution_sizing_plan") if isinstance(profile.get("execution_sizing_plan"), dict) else {}
+    return plan if isinstance(plan, dict) else {}
+
+
+def _signal_cooling_recovery_buy(signal: dict[str, Any]) -> bool:
+    if _action(signal) != "BUY":
+        return False
+    guard = _signal_portfolio_guard(signal)
+    buy_tier = str(guard.get("buy_tier") or guard.get("status") or "").strip().lower()
+    if buy_tier not in {"normal_buy", "strong_buy"}:
+        return False
+    plan = _signal_execution_sizing_plan(signal)
+    skip_reason = str(plan.get("skip_reason") or "").strip()
+    if skip_reason:
+        return False
+    return _float(plan.get("effective_position_pct"), 0.0) > 0 or _float(plan.get("final_budget"), 0.0) > 0
 
 
 def _signal_buy_strength_score(signal: dict[str, Any], default: float) -> float:

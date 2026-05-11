@@ -793,13 +793,14 @@ Owner: Codex
 满足：
 
 1. 冷却期已结束
-2. 补充扫描或复评 checkpoint 中，趋势结构重新满足 active 级恢复条件
-3. `health_score >= active_upgrade_threshold`
-4. 连续趋势确认数量 `active_trend_confirm_checkpoints >= active_upgrade_confirm_checkpoints`
-5. `health_score >= cooling_threshold` 只作为排序和解释条件，不足以单独恢复
-6. 若同时出现新候选事件，可用于排序和 UI 解释，但不是恢复的必要条件
-7. 若 cooling 股票被新的历史候选事件或实时发现事件重新命中，只能提高补充扫描优先级；不能仅凭候选来源直接恢复到 `trial`
-8. 恢复成功后只能进入 `trial`，不能直接进入 `active`
+2. 补充扫描或复评 checkpoint 中，出现可执行恢复买入，或趋势结构重新满足 active 级恢复条件
+3. 可执行恢复买入定义为：`final_action/action = BUY`、`buy_tier in {normal_buy, strong_buy}`、`execution_sizing_plan.skip_reason` 为空，且 `effective_position_pct > 0` 或 `final_budget > 0`
+4. 若未出现可执行恢复买入，则必须满足 `health_score >= active_upgrade_threshold`
+5. 若未出现可执行恢复买入，则必须满足连续趋势确认数量 `active_trend_confirm_checkpoints >= active_upgrade_confirm_checkpoints`
+6. `health_score >= cooling_threshold` 只作为排序和解释条件，不足以单独恢复
+7. 若同时出现新候选事件，可用于排序和 UI 解释，但不是恢复的必要条件
+8. 若 cooling 股票被新的历史候选事件或实时发现事件重新命中，只能提高补充扫描优先级；不能仅凭候选来源直接恢复到 `trial`
+9. 恢复成功后只能进入 `trial`，不能直接进入 `active`
 
 补充扫描与复评要求：
 
@@ -818,8 +819,8 @@ Owner: Codex
    - `ma20_reclaim_score * 0.20`
    - `recent_candidate_support_score * 0.10`
 6. 补充扫描股票可以产生 BUY 信号，但必须应用更严格的 `cooling_supplemental_gate`。
-7. `cooling_supplemental_gate` 下的 BUY 必须同时满足 `buy_tier = strong_buy`、`buy_strength_score >= 0.45 + buy_threshold_delta`、趋势确认成立；`weak_buy` 或“背离试探”即使站上均线也必须转为 HOLD。
-8. 只有补充扫描产生强恢复信号，并满足 active 级健康分与连续趋势确认时，状态才恢复为 `trial` 并写入 `cooling_recovered_to_trial` 事件；恢复事件必须包含行情确认理由，而不能只写候选来源。
+7. `cooling_supplemental_gate` 下的 BUY 必须同时满足 `buy_tier in {normal_buy, strong_buy}`、`buy_strength_score >= 0.45 + buy_threshold_delta`、趋势确认成立；`weak_buy` 或“背离试探”即使站上均线也必须转为 HOLD。
+8. 只有补充扫描产生可执行恢复买入或 active 级恢复信号时，状态才恢复为 `trial`；可执行恢复买入写入 `cooling_recovered_by_executable_buy` 事件，active 级恢复写入 `cooling_recovered_to_trial` 事件。恢复事件必须包含行情确认和 sizing 证据，不能只写候选来源。
 
 ### 12.2 `retired -> trial`
 

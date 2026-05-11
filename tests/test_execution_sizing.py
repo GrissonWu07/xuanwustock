@@ -353,6 +353,19 @@ def test_cooling_supplemental_strong_confirmation_rejects_weak_tier():
     ) is False
 
 
+def test_cooling_supplemental_strong_confirmation_accepts_normal_tier():
+    assert SignalCenterService._lifecycle_gate_has_strong_confirmation(
+        {
+            "portfolio_execution_guard": {
+                "buy_tier": "normal_buy",
+                "buy_strength_score": 0.71,
+                "trend_confirmation": {"ma_stack": True},
+            }
+        },
+        {"mode": "cooling_supplemental", "buy_threshold_delta": 0.12},
+    ) is True
+
+
 def test_create_signal_backfills_kernel_positioning_from_resonance(tmp_path):
     db_path = tmp_path / "quant.db"
     db = QuantSimDB(db_path)

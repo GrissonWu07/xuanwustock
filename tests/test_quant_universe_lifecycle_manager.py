@@ -454,6 +454,25 @@ def test_resolve_cooling_to_trial_requires_checkpoint_health_and_trend_confirmat
     assert restored.reason_code == "cooling_recovered_to_trial"
 
 
+def test_resolve_cooling_to_trial_allows_executable_normal_or_strong_buy():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    result = resolve_next_status(
+        current_status=QuantStatus.COOLING,
+        health_score=policy.cooling_threshold - 5,
+        downtrend_streak=0,
+        trend_confirmed=False,
+        active_trend_confirm_checkpoints=0,
+        cooling_min_dwell_active=False,
+        cooling_recovery_buy=True,
+        policy=policy,
+    )
+
+    assert result.allowed is True
+    assert result.to_status == QuantStatus.TRIAL
+    assert result.reason_code == "cooling_recovered_by_executable_buy"
+
+
 def test_restore_to_trial_rejects_active_with_invalid_restore_state():
     result = resolve_restore_to_trial(QuantStatus.ACTIVE)
 
@@ -1052,6 +1071,92 @@ def test_manager_update_after_signal_restores_cooling_from_checkpoint_trend(tmp_
     assert result["old_status"] == "cooling"
     assert result["new_status"] == "trial"
     assert result["health_score"] >= policy.cooling_threshold
+
+
+def test_manager_update_after_signal_restores_cooling_from_executable_normal_buy(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "cooling",
+            "health_score": policy.cooling_threshold - 5,
+            "cooling_until": "2026-01-01T00:00:00Z",
+        },
+    )
+
+    signal = {
+        "action": "BUY",
+        "decision_time": "2026-01-05T10:00:00Z",
+        "tech_score": 0.3,
+        "context_score": 0.1,
+        "price": 12.8,
+        "ma20": 12.0,
+        "ma20_slope": 0.02,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.39, "fusion_score_delta": 0.04}},
+            "portfolio_execution_guard": {
+                "status": "normal_buy",
+                "buy_tier": "normal_buy",
+                "buy_strength_score": 0.71,
+            },
+            "execution_sizing_plan": {
+                "effective_position_pct": 6.0,
+                "final_budget": 24000.0,
+                "skip_reason": None,
+            },
+        },
+    }
+
+    result = manager.update_after_signal("600000", latest_signal=signal, recent_signals=[signal], position=None)
+
+    assert result["status_changed"] is True
+    assert result["old_status"] == "cooling"
+    assert result["new_status"] == "trial"
+    assert manager.db.get_latest_quant_universe_event("600000")["reason_code"] == "cooling_recovered_by_executable_buy"
+
+
+def test_manager_update_after_signal_keeps_cooling_for_executable_weak_buy(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "cooling",
+            "health_score": policy.cooling_threshold - 5,
+            "cooling_until": "2026-01-01T00:00:00Z",
+        },
+    )
+
+    signal = {
+        "action": "BUY",
+        "decision_time": "2026-01-05T10:00:00Z",
+        "tech_score": 0.3,
+        "context_score": 0.1,
+        "price": 12.8,
+        "ma20": 12.0,
+        "ma20_slope": 0.02,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.36, "fusion_score_delta": 0.02}},
+            "portfolio_execution_guard": {
+                "status": "weak_buy",
+                "buy_tier": "weak_buy",
+                "buy_strength_score": 0.57,
+            },
+            "execution_sizing_plan": {
+                "effective_position_pct": 3.0,
+                "final_budget": 12000.0,
+                "skip_reason": None,
+            },
+        },
+    }
+
+    result = manager.update_after_signal("600000", latest_signal=signal, recent_signals=[signal], position=None)
+
+    assert result["status_changed"] is False
+    assert result["new_status"] == "cooling"
 
 
 def test_manager_trial_cold_start_health_floor_prevents_early_cooling(tmp_path):
