@@ -347,6 +347,10 @@ def test_builtin_strategy_profiles_tier_profit_protection_by_risk_style(tmp_path
     assert aggressive["hard_trailing_drawdown_pct"] == 4.0
     assert aggressive["hard_trailing_min_price_gain_pct"] == 4.0
     assert aggressive["hard_trailing_min_profit_amount_pct"] == 4.0
+    assert aggressive["hard_trailing_position_tiers"][0]["max_position_cost"] == 10000.0
+    assert aggressive["hard_trailing_position_tiers"][0]["peak_pct"] == 12.0
+    assert aggressive["hard_trailing_position_tiers"][1]["peak_pct"] == 8.0
+    assert aggressive["hard_trailing_position_tiers"][3]["drawdown_pct"] == 2.5
 
     assert stable["tech_sell_peak_pct"] == 30.0
     assert stable["tech_sell_drawdown_pct"] == 10.0
@@ -354,6 +358,7 @@ def test_builtin_strategy_profiles_tier_profit_protection_by_risk_style(tmp_path
     assert stable["hard_trailing_drawdown_pct"] == 4.0
     assert stable["hard_trailing_min_price_gain_pct"] == 4.0
     assert stable["hard_trailing_min_profit_amount_pct"] == 4.0
+    assert stable["hard_trailing_position_tiers"] == aggressive["hard_trailing_position_tiers"]
 
     assert conservative["tech_sell_peak_pct"] == 20.0
     assert conservative["tech_sell_drawdown_pct"] == 6.0
@@ -361,6 +366,7 @@ def test_builtin_strategy_profiles_tier_profit_protection_by_risk_style(tmp_path
     assert conservative["hard_trailing_drawdown_pct"] == 4.0
     assert conservative["hard_trailing_min_price_gain_pct"] == 4.0
     assert conservative["hard_trailing_min_profit_amount_pct"] == 4.0
+    assert conservative["hard_trailing_position_tiers"] == aggressive["hard_trailing_position_tiers"]
 
 
 def test_builtin_strategy_profiles_tier_stock_execution_feedback_policy(tmp_path):

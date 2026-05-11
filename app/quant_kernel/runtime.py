@@ -1420,15 +1420,20 @@ class KernelStrategyRuntime:
     ) -> bool:
         if not bool(cfg.get(enabled_key, default_enabled)):
             return False
-        peak_threshold = self._to_float(cfg.get(f"{prefix}_peak_pct"), 0.0)
-        drawdown_threshold = self._to_float(cfg.get(f"{prefix}_drawdown_pct"), 0.0)
+        tier = self._select_profit_protection_position_tier(
+            cfg=cfg,
+            prefix=prefix,
+            position_cost=position_cost,
+        )
+        peak_threshold = self._profit_protection_param(cfg, tier, prefix, "peak_pct")
+        drawdown_threshold = self._profit_protection_param(cfg, tier, prefix, "drawdown_pct")
         min_price_gain = max(
-            self._to_float(cfg.get(f"{prefix}_min_price_gain"), 0.0),
-            avg_price * self._to_float(cfg.get(f"{prefix}_min_price_gain_pct"), 0.0) / 100.0,
+            self._profit_protection_param(cfg, tier, prefix, "min_price_gain"),
+            avg_price * self._profit_protection_param(cfg, tier, prefix, "min_price_gain_pct") / 100.0,
         )
         min_profit_amount = max(
-            self._to_float(cfg.get(f"{prefix}_min_profit_amount"), 0.0),
-            position_cost * self._to_float(cfg.get(f"{prefix}_min_profit_amount_pct"), 0.0) / 100.0,
+            self._profit_protection_param(cfg, tier, prefix, "min_profit_amount"),
+            position_cost * self._profit_protection_param(cfg, tier, prefix, "min_profit_amount_pct") / 100.0,
         )
         return (
             peak_pnl_pct >= peak_threshold
@@ -1436,6 +1441,38 @@ class KernelStrategyRuntime:
             and price_gain >= min_price_gain
             and peak_pnl_amount >= min_profit_amount
         )
+
+    def _profit_protection_param(
+        self,
+        cfg: dict[str, Any],
+        tier: dict[str, Any] | None,
+        prefix: str,
+        suffix: str,
+    ) -> float:
+        if isinstance(tier, dict) and suffix in tier:
+            return self._to_float(tier.get(suffix), 0.0)
+        return self._to_float(cfg.get(f"{prefix}_{suffix}"), 0.0)
+
+    def _select_profit_protection_position_tier(
+        self,
+        *,
+        cfg: dict[str, Any],
+        prefix: str,
+        position_cost: float,
+    ) -> dict[str, Any] | None:
+        raw_tiers = cfg.get(f"{prefix}_position_tiers")
+        if not isinstance(raw_tiers, list):
+            return None
+
+        tiers = [tier for tier in raw_tiers if isinstance(tier, dict)]
+        tiers.sort(key=lambda tier: self._to_float(tier.get("min_position_cost"), 0.0))
+        for tier in tiers:
+            min_cost = self._to_float(tier.get("min_position_cost"), 0.0)
+            max_cost_raw = tier.get("max_position_cost")
+            max_cost = self._to_float(max_cost_raw, 0.0) if max_cost_raw not in (None, "") else None
+            if position_cost >= min_cost and (max_cost is None or position_cost < max_cost):
+                return tier
+        return None
 
     @staticmethod
     def _has_forced_risk_sell(position: dict[str, Any], snapshot: dict[str, Any]) -> bool:

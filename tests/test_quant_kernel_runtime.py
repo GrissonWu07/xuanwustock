@@ -500,6 +500,92 @@ def test_default_hard_profit_trailing_triggers_after_modest_gain_drawdown():
     assert vetoes[0]["id"] == "hard_profit_trailing_stop"
 
 
+def test_small_position_hard_profit_trailing_uses_wider_drawdown_band():
+    runtime = KernelStrategyRuntime()
+
+    decision = runtime.evaluate_position(
+        candidate={"stock_code": "600000", "stock_name": "浦发银行", "source": "manual", "sources": ["manual"]},
+        position={
+            "stock_code": "600000",
+            "stock_name": "浦发银行",
+            "quantity": 250,
+            "avg_price": 20.0,
+            "latest_price": 21.0,
+            "peak_price": 22.0,
+            "peak_unrealized_pnl_pct": 10.0,
+            "peak_unrealized_pnl": 500.0,
+        },
+        market_snapshot={
+            "current_price": 21.0,
+            "ma5": 20.8,
+            "ma10": 20.5,
+            "ma20": 20.0,
+            "ma60": 19.0,
+            "macd": 0.2,
+            "dif": 0.2,
+            "dea": 0.1,
+            "hist": 0.1,
+            "hist_prev": 0.08,
+            "rsi14": 58.0,
+            "rsi12": 58.0,
+            "volume_ratio": 1.0,
+            "trend": "up",
+        },
+        current_time=datetime(2026, 2, 10, 10, 0),
+        analysis_timeframe="30m",
+        strategy_mode="stable",
+    )
+
+    explainability = (decision.strategy_profile or {}).get("explainability") or {}
+    vetoes = explainability.get("vetoes") or []
+
+    assert decision.action == "HOLD"
+    assert not any(veto["id"] == "hard_profit_trailing_stop" for veto in vetoes)
+
+
+def test_large_position_hard_profit_trailing_uses_tighter_drawdown_band():
+    runtime = KernelStrategyRuntime()
+
+    decision = runtime.evaluate_position(
+        candidate={"stock_code": "600000", "stock_name": "浦发银行", "source": "manual", "sources": ["manual"]},
+        position={
+            "stock_code": "600000",
+            "stock_name": "浦发银行",
+            "quantity": 5000,
+            "avg_price": 20.0,
+            "latest_price": 20.6,
+            "peak_price": 21.2,
+            "peak_unrealized_pnl_pct": 6.0,
+            "peak_unrealized_pnl": 6000.0,
+        },
+        market_snapshot={
+            "current_price": 20.6,
+            "ma5": 20.8,
+            "ma10": 20.5,
+            "ma20": 20.0,
+            "ma60": 19.0,
+            "macd": 0.2,
+            "dif": 0.2,
+            "dea": 0.1,
+            "hist": 0.1,
+            "hist_prev": 0.08,
+            "rsi14": 58.0,
+            "rsi12": 58.0,
+            "volume_ratio": 1.0,
+            "trend": "up",
+        },
+        current_time=datetime(2026, 2, 10, 10, 0),
+        analysis_timeframe="30m",
+        strategy_mode="stable",
+    )
+
+    explainability = (decision.strategy_profile or {}).get("explainability") or {}
+    vetoes = explainability.get("vetoes") or []
+
+    assert decision.action == "SELL"
+    assert vetoes[0]["id"] == "hard_profit_trailing_stop"
+
+
 def test_profit_protection_ignores_large_pct_when_absolute_gain_is_too_small():
     runtime = KernelStrategyRuntime()
     binding = _strategy_binding_with_profit_protection(

@@ -6334,6 +6334,51 @@ class QuantSimDB:
             "stable": self._quant_lifecycle_policy_payload(QuantUniverseLifecyclePolicy.stable_defaults()),
             "conservative": self._quant_lifecycle_policy_payload(QuantUniverseLifecyclePolicy.conservative_defaults()),
         }
+        hard_trailing_position_tiers = [
+            {
+                "name": "small",
+                "min_position_cost": 0.0,
+                "max_position_cost": 10000.0,
+                "peak_pct": 12.0,
+                "drawdown_pct": 6.0,
+                "min_price_gain": 1.0,
+                "min_price_gain_pct": 4.0,
+                "min_profit_amount": 300.0,
+                "min_profit_amount_pct": 4.0,
+            },
+            {
+                "name": "regular",
+                "min_position_cost": 10000.0,
+                "max_position_cost": 30000.0,
+                "peak_pct": 8.0,
+                "drawdown_pct": 4.0,
+                "min_price_gain": 0.8,
+                "min_price_gain_pct": 4.0,
+                "min_profit_amount": 300.0,
+                "min_profit_amount_pct": 4.0,
+            },
+            {
+                "name": "medium",
+                "min_position_cost": 30000.0,
+                "max_position_cost": 80000.0,
+                "peak_pct": 6.0,
+                "drawdown_pct": 3.0,
+                "min_price_gain": 0.6,
+                "min_price_gain_pct": 3.0,
+                "min_profit_amount": 500.0,
+                "min_profit_amount_pct": 3.0,
+            },
+            {
+                "name": "large",
+                "min_position_cost": 80000.0,
+                "peak_pct": 5.0,
+                "drawdown_pct": 2.5,
+                "min_price_gain": 0.5,
+                "min_price_gain_pct": 2.5,
+                "min_profit_amount": 800.0,
+                "min_profit_amount_pct": 2.5,
+            },
+        ]
         aggressive_profit_protection = {
             "tech_sell_enabled": True,
             "tech_sell_peak_pct": 50.0,
@@ -6349,6 +6394,7 @@ class QuantSimDB:
             "hard_trailing_min_price_gain_pct": 4.0,
             "hard_trailing_min_profit_amount": 300.0,
             "hard_trailing_min_profit_amount_pct": 4.0,
+            "hard_trailing_position_tiers": self._deep_copy_json(hard_trailing_position_tiers),
         }
         stable_profit_protection = {
             "tech_sell_enabled": True,
@@ -6365,6 +6411,7 @@ class QuantSimDB:
             "hard_trailing_min_price_gain_pct": 4.0,
             "hard_trailing_min_profit_amount": 300.0,
             "hard_trailing_min_profit_amount_pct": 4.0,
+            "hard_trailing_position_tiers": self._deep_copy_json(hard_trailing_position_tiers),
         }
         conservative_profit_protection = {
             "tech_sell_enabled": True,
@@ -6381,6 +6428,7 @@ class QuantSimDB:
             "hard_trailing_min_price_gain_pct": 4.0,
             "hard_trailing_min_profit_amount": 300.0,
             "hard_trailing_min_profit_amount_pct": 4.0,
+            "hard_trailing_position_tiers": self._deep_copy_json(hard_trailing_position_tiers),
         }
         aggressive_boll_position_scorer = {
             "algorithm": "piecewise",
