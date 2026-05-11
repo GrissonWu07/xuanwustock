@@ -1,5 +1,7 @@
 import pandas as pd
 
+from app.local_market_data_clients import TdxLocalClient
+from app.local_market_data_store import LocalMarketDataStore
 from app.smart_monitor_tdx_data import SmartMonitorTDXDataFetcher
 
 
@@ -41,6 +43,7 @@ def test_get_realtime_quote_normalizes_pytdx_fields(monkeypatch):
 
 def test_get_kline_data_sorts_and_limits_pytdx_bars(monkeypatch):
     fetcher = SmartMonitorTDXDataFetcher(host="127.0.0.1", port=7709, fallback_hosts=[])
+    fetcher.local_client = TdxLocalClient(store=LocalMarketDataStore(enabled=False))
 
     monkeypatch.setattr(
         fetcher,
@@ -163,6 +166,12 @@ def test_build_snapshot_from_history_computes_historical_replay_snapshot(monkeyp
     assert snapshot["current_price"] == history_df.iloc[-1]["收盘"]
     assert "ma5" in snapshot
     assert "macd" in snapshot
+    assert len(snapshot["recent_checkpoints"]) == 20
+    latest_checkpoint = snapshot["recent_checkpoints"][-1]
+    assert latest_checkpoint["datetime"] == history_df.iloc[-1]["日期"].strftime("%Y-%m-%d %H:%M:%S")
+    assert latest_checkpoint["close"] == history_df.iloc[-1]["收盘"]
+    assert latest_checkpoint["ma20"] > 0
+    assert "ma20_slope" in latest_checkpoint
 
 
 def test_build_snapshot_from_history_reuses_precomputed_indicator_frame(monkeypatch):
@@ -193,6 +202,7 @@ def test_build_snapshot_from_history_reuses_precomputed_indicator_frame(monkeypa
     assert snapshot["current_price"] == history_df.iloc[-1]["收盘"]
     assert "ma5" in snapshot
     assert "macd" in snapshot
+    assert snapshot["recent_checkpoints"][-1]["close"] == history_df.iloc[-1]["收盘"]
 
 
 def test_build_snapshot_from_intraday_history_uses_previous_trading_day_close_for_limit_base(monkeypatch):

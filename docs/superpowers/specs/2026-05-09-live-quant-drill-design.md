@@ -189,15 +189,15 @@ run_type = historical_backtest
 
 实时量化历史演练必须支持历史时间线上的候选事件，候选事件用于验证自动入池。
 
-### 8.1 允许的候选来源
+### 8.1 候选来源历史可用性门控
 
-1. 历史发现策略，但必须通过历史可行性检查。
+1. 历史发现策略，但必须通过历史可用性检查。
 2. 历史研究输出，但必须有明确历史时间戳。
 3. 手工种子股票，来自任务启动时的当前实时量化股票快照。
 
-候选来源历史可行性矩阵：
+候选来源历史可用性矩阵只用于判断“该来源在某个历史 checkpoint 是否允许生成候选事件”，不用于给股票价值、交易信号或 `candidate_score` 加分。
 
-| 来源 | 默认是否启用 | 历史可行性要求 | 不满足时行为 |
+| 来源 | 默认是否启用 | 历史可用性要求 | 不满足时行为 |
 |---|---:|---|---|
 | 低价擒牛 | 是 | 有 checkpoint 之前的历史行情、价格、成交量和策略所需过滤字段 | 写入 `disabled_candidate_sources`，跳过 |
 | 小市值 | 条件启用 | 有 as-of 市值数据；若只能拿到当前市值则不可用 | 写入 `disabled_candidate_sources`，跳过 |
@@ -214,6 +214,9 @@ run_type = historical_backtest
 1. `其他已有发现策略` 只有在能证明它使用 checkpoint 当时可见数据时才允许接入。
 2. 任何依赖当前实时 provider、当前 AI 输出、当前研究总结的候选来源，默认视为不可历史化。
 3. 不可历史化来源必须显式记录，不能静默降级成当前结果。
+4. `source_type` 是审计和去重字段，不是评分因子。
+5. `candidate_score` 必须来自该候选事件自身的历史 as-of 指标，例如价格结构、成交量、估值、财务增长、资金流等；不能因为来源是“主力资金”“AI”“研究”而额外加权。
+6. 多来源同时命中同一股票时，只能作为“候选支持证据”记录在 `evidence_json` 中；是否提升 `candidate_score` 必须由明确的历史指标共振规则决定，不能按来源名称加分。
 
 ### 8.2 禁止的数据来源
 
@@ -268,12 +271,14 @@ run_type = historical_backtest
    - stable：`5`
    - conservative：`7`
 8. 候选事件被成功纳入 `trial`、被用户忽略、过期或进入 retired block 后，视为 consumed 或 closed。
+9. drill 表可以通过 `status` 表示 consumed 状态，不要求复制 live `stock_universe_candidate_events.consumed_by_quant_manager_at` 字段。
+10. 当候选事件被自动纳入 `trial` 时，`sim_run_candidate_events.status` 必须从 `eligible/active` 更新为 `consumed` 或等价终态，供跨 checkpoint 去重判断使用。
 
 ## 9. 自动入池
 
 候选事件进入 run-local `QuantUniverseManager` 后，按现有生命周期规则处理：
 
-1. 计算 `candidate_score`。
+1. 基于候选事件自身的历史 as-of 指标计算 `candidate_score`。
 2. 检查基础信息是否缺失。
 3. 检查停牌、涨跌停、冷却期、retired 复活门槛。
 4. 检查容量限制、行业集中度、概念集中度。
@@ -281,6 +286,16 @@ run_type = historical_backtest
    - `manual_only`：只记录候选事件，不自动入池。
    - `confirm_first`：记录 eligible，不自动纳入。
    - `auto_trial`：满足阈值自动进入 `trial`。
+
+评分约束：
+
+1. `source_type` 不得直接参与 `candidate_score`。
+2. 来源可用性门控只决定候选事件能不能在该 checkpoint 生成。
+3. 若需要体现多策略共振，必须把共振拆成可解释的历史指标，例如“价格趋势确认 + 成交量放大 + 估值分位低”，而不是“来源数量越多分越高”。
+4. drill 模式不得直接复用 live `calculate_candidate_score()` 中基于来源数量的 `multi_source_bonus`。
+5. 若 live 评分函数无法关闭 `multi_source_bonus`，drill 必须提供显式参数或替代函数，使来源数量不直接影响 `candidate_score`。
+6. `candidate_score` 只用于入池推荐、容量排序和初始 `trial` 仓位约束，不得参与 `health_score` 加分。
+7. `health_score` 必须由 checkpoint 当时的行情、技术信号、交易执行反馈和组合状态计算。
 
 实时量化历史演练中，`auto_entry_enabled=false` 时：
 
@@ -397,6 +412,15 @@ run_type = historical_backtest
 3. `cooling` 复评必须在主扫描后执行，避免冷却股挤占主扫描容量。
 4. 步骤 5 中新进入 `trial` 的股票，必须在步骤 6 到 8 的主扫描范围内立即可见。
 5. 若当前 checkpoint 不生成候选事件，步骤 5 仍需处理此前未 consumed 的 eligible 事件，例如从 `confirm_first` 切换到 `auto_trial` 的 run-local 设置不在本任务中发生，因此通常不会产生新入池。
+6. `cooling` 复评必须使用当前 checkpoint 的 run-local 历史快照，不得退回当前实时行情或远程即时 K 线。
+7. `cooling` 复评产生的 BUY 只能用于恢复 `cooling -> trial`，不得作为待执行交易信号直接成交。
+8. 生命周期流转必须执行最短停留期：`trial` 未满足 `trial_min_dwell_checkpoints` 前不得进入 `cooling`；`cooling_until` 未到期前不得恢复或退休；`retired_at + retired_min_dwell_days` 未到期前不得通过候选事件复活，返回 `reason_code = retired_dwell_blocked`。
+9. 持仓股票进入 `exit_only` 必须有连续下行确认；不能只因为一次 checkpoint 的健康分低于阈值就立刻切成只出场管理。
+10. 若持仓来自同一交易日刚执行的 BUY，生命周期处于 T+1 保护期；该日内即使出现弱化信号，也不得立即切成 `exit_only`。
+11. `trial -> active` 必须在演练状态机中实际执行，且必须基于连续趋势确认 checkpoint，不得只因为单次候选事件或单次 BUY 直接升级。
+12. `trial` 冷启动样本不足时必须使用 profile 配置的健康分下限保护，避免演练首日把大部分股票打入 `cooling`。
+13. `cooling` 股票若被新的历史候选事件重新命中，允许该事件触发 `cooling -> trial` 恢复评估；恢复成功的股票在同一 checkpoint 的主扫描中必须可见。
+14. 实时量化演练中，每个交易日第一个 checkpoint 必须全量复评已到期 `cooling` 股票；其他 checkpoint 可按 `cooling_review_batch_size` 轮转复评。
 
 ## 12. 交易与风控规则
 
@@ -669,6 +693,16 @@ UI 生命周期总览必须优先读取 `sim_run_quant_summary`。`sim_run_quant
 6. 进入 `cooling` 数
 7. 进入 `retired` 数
 8. 数据 warning 数
+
+统计来源：
+
+1. 初始量化股票数：读取 `sim_runs.metadata_json.initial_quant_universe_snapshot`。
+2. 历史候选事件数：读取 `sim_run_candidate_events` 的 `COUNT(*)`。
+3. 自动入池数：优先读取 `sim_run_quant_summary.auto_promoted_count` 的 `SUM`；若 summary 缺失，则从 `sim_run_quant_events` 按 `to_status='trial'` 且 `event_type` 为自动纳入类统计。
+4. 自动出池数：优先读取 `sim_run_quant_summary.auto_exited_count` 的 `SUM`；若 summary 缺失，则从 `sim_run_quant_events` 按 `to_status IN ('cooling', 'retired')` 统计。
+5. `exit_only / cooling / retired` 数：从 `sim_run_quant_events` 按 `to_status` 统计去重股票数。
+6. 数据 warning 数：读取 `sim_runs.metadata_json.data_warnings` 的数量。
+7. `sim_runs.metadata_json.estimated_*` 只能用于启动前预估，不得作为完成后实际统计。
 
 ### 17.3 结果区新增模块
 
@@ -953,7 +987,7 @@ LiveQuantDrillMode
 9. 期末清算收益口径测试。
 10. live 表不被写入测试。
 11. 候选生成频率测试。
-12. 候选来源历史可行性矩阵测试。
+12. 候选来源历史可用性门控测试。
 13. run-local DB 注入测试。
 14. drill/backtest 互斥测试。
 15. 同 checkpoint 新入 `trial` 后立即参与扫描测试。
@@ -990,7 +1024,7 @@ LiveQuantDrillMode
 4. 增加 `LiveQuantDrillMode` 执行器。
 5. 接入历史候选事件生成。
 6. 接入 run-local `QuantUniverseManager`。
-7. 接入候选生成频率、跨 checkpoint 去重和历史可行性矩阵。
+7. 接入候选生成频率、跨 checkpoint 去重和历史可用性门控。
 8. 保存 quant states/events/candidate events/summary。
 9. 增加启动 API。
 10. 增加实时量化页入口。

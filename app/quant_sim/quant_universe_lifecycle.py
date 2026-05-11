@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import json
 from typing import Any
@@ -57,9 +57,12 @@ class QuantUniverseLifecyclePolicy:
     health_score_lookback_checkpoints: int
     candidate_support_lookback_days: int
     trial_min_dwell_checkpoints: int
+    trial_cold_start_min_checkpoints: int
+    trial_cold_start_health_floor: float
     cooling_min_dwell_days: int
     retired_min_dwell_days: int
     cooling_review_interval_minutes: int
+    cooling_review_batch_size: int
     retired_reactivation_check_enabled: bool
     trial_position_multiplier: float
     trial_max_position_pct: float
@@ -104,10 +107,13 @@ class QuantUniverseLifecyclePolicy:
             warning_to_downtrend_threshold=4,
             health_score_lookback_checkpoints=8,
             candidate_support_lookback_days=5,
-            trial_min_dwell_checkpoints=3,
-            cooling_min_dwell_days=2,
+            trial_min_dwell_checkpoints=16,
+            trial_cold_start_min_checkpoints=8,
+            trial_cold_start_health_floor=45,
+            cooling_min_dwell_days=1,
             retired_min_dwell_days=7,
             cooling_review_interval_minutes=30,
+            cooling_review_batch_size=20,
             retired_reactivation_check_enabled=True,
             trial_position_multiplier=0.50,
             trial_max_position_pct=12.5,
@@ -153,10 +159,13 @@ class QuantUniverseLifecyclePolicy:
             warning_to_downtrend_threshold=3,
             health_score_lookback_checkpoints=10,
             candidate_support_lookback_days=7,
-            trial_min_dwell_checkpoints=4,
-            cooling_min_dwell_days=3,
+            trial_min_dwell_checkpoints=24,
+            trial_cold_start_min_checkpoints=10,
+            trial_cold_start_health_floor=50,
+            cooling_min_dwell_days=2,
             retired_min_dwell_days=10,
             cooling_review_interval_minutes=60,
+            cooling_review_batch_size=12,
             retired_reactivation_check_enabled=True,
             trial_position_multiplier=0.35,
             trial_max_position_pct=10.0,
@@ -202,10 +211,13 @@ class QuantUniverseLifecyclePolicy:
             warning_to_downtrend_threshold=2,
             health_score_lookback_checkpoints=12,
             candidate_support_lookback_days=10,
-            trial_min_dwell_checkpoints=5,
-            cooling_min_dwell_days=4,
+            trial_min_dwell_checkpoints=40,
+            trial_cold_start_min_checkpoints=12,
+            trial_cold_start_health_floor=55,
+            cooling_min_dwell_days=3,
             retired_min_dwell_days=14,
             cooling_review_interval_minutes=90,
+            cooling_review_batch_size=8,
             retired_reactivation_check_enabled=True,
             trial_position_multiplier=0.25,
             trial_max_position_pct=7.5,
@@ -277,16 +289,10 @@ def calculate_health_score(inputs: HealthInputs, policy: QuantUniverseLifecycleP
     execution_penalty = execution_penalty_base * policy.execution_penalty_multiplier
     inactivity_penalty_base = min(max(int(inputs.no_buy_days), 0), policy.trial_no_buy_days_threshold) * 2.0
     inactivity_penalty = inactivity_penalty_base * policy.inactivity_penalty_multiplier
-    if inputs.valid_candidate_event_count > 0:
-        candidate_support_bonus_base = min(float(inputs.valid_candidate_event_count) * 3.0, 15.0)
-    else:
-        candidate_support_bonus_base = float(inputs.candidate_support_bonus)
-    candidate_support_bonus = candidate_support_bonus_base * policy.candidate_support_bonus_multiplier
     reentry_watch_penalty_base = 12.0 if _is_future(inputs.reentry_watch_until, inputs.now) else 0.0
     reentry_watch_penalty = reentry_watch_penalty_base * policy.reentry_watch_penalty_multiplier
     health_score = _clamp(
         kernel_health_base
-        + candidate_support_bonus
         - execution_penalty
         - inactivity_penalty
         - reentry_watch_penalty,
@@ -305,8 +311,6 @@ def calculate_health_score(inputs: HealthInputs, policy: QuantUniverseLifecycleP
             "execution_penalty": round(execution_penalty, 4),
             "inactivity_penalty_base": round(inactivity_penalty_base, 4),
             "inactivity_penalty": round(inactivity_penalty, 4),
-            "candidate_support_bonus_base": round(candidate_support_bonus_base, 4),
-            "candidate_support_bonus": round(candidate_support_bonus, 4),
             "reentry_watch_penalty_base": round(reentry_watch_penalty_base, 4),
             "reentry_watch_penalty": round(reentry_watch_penalty, 4),
         },
@@ -316,12 +320,12 @@ def calculate_health_score(inputs: HealthInputs, policy: QuantUniverseLifecycleP
 def detect_weakening_warning(signal: dict[str, Any], policy: QuantUniverseLifecyclePolicy) -> bool:
     action = _action(signal)
     tech_score = _float(signal.get("tech_score"), 0.0)
-    fusion_score = _float(signal.get("fusion_score"), 1.0)
+    fusion_score = _signal_fusion_score(signal, 1.0)
     buy_threshold = _float(signal.get("buy_threshold"), policy.trial_threshold)
-    buy_strength_score = _float(signal.get("buy_strength_score"), 1.0)
+    buy_strength_score = _signal_buy_strength_score(signal, 1.0)
     price = _float(signal.get("price"), 0.0)
     ma20 = _float(signal.get("ma20"), 0.0)
-    portfolio_gate = str(signal.get("portfolio_execution_guard_status") or "")
+    portfolio_gate = _signal_portfolio_guard_status(signal)
     return (
         (action == "HOLD" and tech_score < policy.weak_warning_tech_threshold)
         or (fusion_score < buy_threshold and fusion_score > 0)
@@ -339,8 +343,8 @@ def detect_downtrend_hit(
     if action == "SELL":
         return True
     tech_score = _float(signal.get("tech_score"), 0.0)
-    fusion_score = _float(signal.get("fusion_score"), 1.0)
-    fusion_delta = _float(signal.get("fusion_score_delta"), 0.0)
+    fusion_score = _signal_fusion_score(signal, 1.0)
+    fusion_delta = _signal_fusion_delta(signal, 0.0)
     price = _float(signal.get("price"), 0.0)
     ma20 = _float(signal.get("ma20"), 0.0)
     ma20_slope = _float(signal.get("ma20_slope"), 0.0)
@@ -358,6 +362,8 @@ def calculate_candidate_score(
     events: list[dict[str, Any]],
     stock_snapshot: dict[str, Any],
     policy: QuantUniverseLifecyclePolicy,
+    *,
+    drill_mode: bool = False,
 ) -> dict[str, Any]:
     if not events:
         return {"candidate_score": 0.0, "breakdown": {}}
@@ -365,7 +371,7 @@ def calculate_candidate_score(
     confidence_component = sum(_float(event.get("confidence"), 0.0) for event in events) / len(events)
     trend_component = max(_trend_score(event.get("trend")) for event in events)
     source_count = len({str(event.get("source_type") or "") for event in events if event.get("source_type")})
-    multi_source_bonus = 1.0 if source_count >= 2 else 0.0
+    multi_source_bonus = 0.0 if drill_mode or source_count < 2 else 1.0
     liquidity_penalty = 0.0 if stock_snapshot.get("is_liquid", True) else 0.10 * policy.liquidity_penalty_multiplier
     cooldown_penalty = 0.15 * policy.cooldown_penalty_multiplier if stock_snapshot.get("in_cooldown") else 0.0
     manual_priority_bonus = 0.08 * policy.manual_priority_bonus_multiplier if stock_snapshot.get("manual_priority") else 0.0
@@ -400,6 +406,8 @@ def resolve_next_status(
     candidate_support: bool = False,
     trend_confirmed: bool = False,
     active_trend_confirm_checkpoints: int = 0,
+    cooling_min_dwell_active: bool = False,
+    post_buy_grace_active: bool = False,
     requested_status: QuantStatus | str | None = None,
     manual_override: ManualOverride | str | None = None,
 ) -> TransitionResult:
@@ -415,12 +423,35 @@ def resolve_next_status(
     if requested == QuantStatus.RETIRED and current in {QuantStatus.TRIAL, QuantStatus.ACTIVE}:
         return _blocked(current, "forbidden_direct_retire", "trial/active 禁止直接进入 retired")
     if current in {QuantStatus.ACTIVE, QuantStatus.TRIAL}:
-        if has_position and (health_score < policy.exit_only_threshold or downtrend_streak >= policy.exit_only_downtrend_streak):
+        if (
+            current == QuantStatus.TRIAL
+            and health_score >= policy.active_upgrade_threshold
+            and trend_confirmed
+            and active_trend_confirm_checkpoints >= policy.active_upgrade_confirm_checkpoints
+        ):
+            return _transition(current, QuantStatus.ACTIVE, "trial_upgraded_to_active", "trial 趋势确认，升级 active")
+        if (
+            has_position
+            and post_buy_grace_active
+            and (health_score < policy.exit_only_threshold or downtrend_streak >= policy.exit_only_downtrend_streak)
+        ):
+            return _blocked(current, "post_buy_grace_active", "买入当日处于 T+1 保护期，暂不切入只出场管理")
+        if has_position and health_score < policy.exit_only_threshold:
+            if downtrend_streak < policy.exit_only_downtrend_streak:
+                return _blocked(current, "holding_downtrend_not_confirmed", "持仓健康分偏弱，但连续下行确认不足")
+            return _transition(current, QuantStatus.EXIT_ONLY, "holding_downtrend_exit_only", "持仓下行，进入只出场管理")
+        if has_position and downtrend_streak >= policy.exit_only_downtrend_streak:
             return _transition(current, QuantStatus.EXIT_ONLY, "holding_downtrend_exit_only", "持仓下行，进入只出场管理")
         if (
             not has_position
             and health_score < policy.cooling_threshold
-            and downtrend_streak >= policy.downtrend_cooling_streak
+            and downtrend_streak < policy.trial_min_dwell_checkpoints
+        ):
+            return _blocked(current, "trial_min_dwell_not_met", "trial 最短观察检查点不足，暂不进入冷却")
+        if (
+            not has_position
+            and health_score < policy.cooling_threshold
+            and downtrend_streak >= max(policy.downtrend_cooling_streak, policy.trial_min_dwell_checkpoints)
         ):
             return _transition(current, QuantStatus.COOLING, "flat_downtrend_cooling", "空仓且持续下行，进入冷却")
     if current == QuantStatus.EXIT_ONLY:
@@ -435,6 +466,14 @@ def resolve_next_status(
         if health_score >= policy.cooling_threshold and candidate_support:
             return _transition(current, QuantStatus.TRIAL, "exit_only_recovered_to_trial", "清仓后有新候选支持，恢复 trial")
         return _transition(current, QuantStatus.COOLING, "exit_only_flat_to_cooling", "清仓但恢复条件不足，进入冷却")
+    if current == QuantStatus.COOLING:
+        if cooling_min_dwell_active:
+            return _blocked(current, "cooling_min_dwell_active", "冷却最短停留期未结束")
+        if health_score >= policy.cooling_threshold and trend_confirmed:
+            return _transition(current, QuantStatus.TRIAL, "cooling_recovered_to_trial", "冷却复评趋势恢复，回到 trial")
+        if health_score < policy.retire_threshold and downtrend_streak >= policy.downtrend_cooling_streak:
+            return _transition(current, QuantStatus.RETIRED, "cooling_persisted_to_retired", "冷却后仍持续下行，退出自动量化")
+        return _blocked(current, "cooling_recovery_not_confirmed", "冷却复评未满足趋势恢复")
     return _blocked(current, "no_transition", "未满足状态流转条件")
 
 
@@ -469,21 +508,31 @@ class QuantUniverseDomainError(Exception):
 
 
 class QuantUniverseManager:
-    def __init__(self, *, db: Any, profile_id: str, policy: QuantUniverseLifecyclePolicy) -> None:
+    def __init__(
+        self,
+        *,
+        db: Any,
+        profile_id: str,
+        policy: QuantUniverseLifecyclePolicy,
+        drill_mode: bool = False,
+    ) -> None:
         self.db = db
         self.profile_id = profile_id
         self.policy = policy
+        self.drill_mode = bool(drill_mode)
+        self._drill_auto_promotions_by_day: dict[str, int] = {}
 
-    def ingest_candidate_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def ingest_candidate_event(self, payload: dict[str, Any], *, capacity_at: Any | None = None) -> dict[str, Any]:
         event = self.db.add_candidate_event({**payload, "status": payload.get("status") or "active"})
         evaluation = self.evaluate_candidate(event["stock_code"])
         settings = self.db.get_quant_universe_settings()
         stock = self._load_stock(event["stock_code"])
         state = self.db.get_quant_universe_state(event["stock_code"])
         current_status = _status(stock.get("quant_status") if stock else None)
-        skip_reason = self._entry_skip_reason(stock, state, evaluation)
+        evaluation_time = capacity_at or event.get("occurred_at") or event.get("created_at")
+        skip_reason = self._entry_skip_reason(stock, state, evaluation, evaluation_time=evaluation_time)
         if skip_reason and skip_reason not in {"basic_info_missing"}:
-            return {**evaluation, "decision": "skipped", "skip_reason": skip_reason}
+            return {**evaluation, "decision": "skipped", "skip_reason": skip_reason, "reason_code": skip_reason}
         if evaluation["candidate_score"] < self.policy.trial_threshold:
             return {**evaluation, "decision": "skipped", "skip_reason": "below_trial_threshold"}
         if current_status == QuantStatus.RETIRED and evaluation["candidate_score"] < self.policy.high_reentry_threshold:
@@ -492,8 +541,12 @@ class QuantUniverseManager:
         if not settings["quant_universe_lifecycle_enabled"]:
             return {**evaluation, "decision": "eligible", "skip_reason": "lifecycle_disabled"}
         if settings["auto_entry_mode"] != AutoEntryMode.AUTO_TRIAL.value or skip_reason == "basic_info_missing":
-            return {**evaluation, "decision": "eligible", "skip_reason": skip_reason or ""}
-        capacity_reason = self._auto_capacity_skip_reason(str(event.get("source_type") or ""))
+            return {
+                **evaluation,
+                "decision": "eligible",
+                "skip_reason": skip_reason or f"auto_entry_{settings['auto_entry_mode']}",
+            }
+        capacity_reason = self._auto_capacity_skip_reason(str(event.get("source_type") or ""), capacity_at=capacity_at)
         if capacity_reason:
             return {**evaluation, "decision": "eligible", "skip_reason": capacity_reason}
         promoted = self._promote_stock_to_trial(
@@ -504,6 +557,7 @@ class QuantUniverseManager:
             reason_text=event.get("reason_text") or "候选事件自动纳入量化",
             candidate_score=evaluation["candidate_score"],
         )
+        self._record_drill_auto_promotion(capacity_at)
         return {**evaluation, "decision": "promoted_to_trial", **promoted}
 
     def evaluate_candidate(self, stock_code: str) -> dict[str, Any]:
@@ -517,7 +571,7 @@ class QuantUniverseManager:
             "in_cooldown": _is_future((state or {}).get("cooling_until"), None),
             "manual_priority": any(str(event.get("source_type")) == "manual" for event in events),
         }
-        score = calculate_candidate_score(events, snapshot, self.policy)
+        score = calculate_candidate_score(events, snapshot, self.policy, drill_mode=self.drill_mode)
         if state is not None:
             self.db.upsert_quant_universe_state(
                 code,
@@ -526,7 +580,16 @@ class QuantUniverseManager:
                     "candidate_score": score["candidate_score"],
                     "candidate_confidence": max((_float(event.get("confidence"), 0.0) for event in events), default=0.0),
                     "health_score": state.get("health_score", 100),
+                    "downtrend_streak": state.get("downtrend_streak", 0),
+                    "weakening_warning_streak": state.get("weakening_warning_streak", 0),
+                    "blocked_streak": state.get("blocked_streak", 0),
+                    "no_buy_days": state.get("no_buy_days", 0),
                     "cooling_until": state.get("cooling_until"),
+                    "retired_at": state.get("retired_at"),
+                    "retire_reason": state.get("retire_reason"),
+                    "reentry_watch_until": state.get("reentry_watch_until"),
+                    "last_status_changed_at": state.get("last_status_changed_at"),
+                    "last_health_evaluated_at": state.get("last_health_evaluated_at"),
                     "snapshot_json": {"candidate_score_breakdown": score["breakdown"]},
                 },
             )
@@ -760,19 +823,61 @@ class QuantUniverseManager:
         next_warning_streak = int(previous_state.get("weakening_warning_streak") or 0) + 1 if warning_hit else 0
         settings = self.db.get_quant_universe_settings()
         has_position = int((position or {}).get("quantity") or 0) > 0
+        evaluation_time = _signal_datetime(latest_signal)
+        cooling_min_dwell_active = current == QuantStatus.COOLING and _is_future(
+            previous_state.get("cooling_until"),
+            evaluation_time,
+        )
         status_changed = False
         next_status = current
+        cooling_until = previous_state.get("cooling_until")
+        retired_at = previous_state.get("retired_at")
+        retire_reason = previous_state.get("retire_reason")
+        last_status_changed_at = previous_state.get("last_status_changed_at")
         if settings["quant_universe_lifecycle_enabled"] and settings["auto_exit_enabled"]:
+            trend_confirmed = _signal_trend_confirmed(latest_signal, self.policy)
+            trend_confirmed_streak = _trailing_trend_confirmed_count(recent_signals, self.policy)
+            health = _apply_cold_start_health_floor(
+                health,
+                policy=self.policy,
+                current_status=current,
+                signal_count=len(recent_signals),
+                has_position=has_position,
+            )
+            health = _apply_active_upgrade_health_floor(
+                health,
+                policy=self.policy,
+                current_status=current,
+                latest_signal=latest_signal,
+                trend_confirmed=trend_confirmed,
+                trend_confirmed_streak=trend_confirmed_streak,
+                has_position=has_position,
+            )
             transition = resolve_next_status(
                 current_status=current,
                 health_score=health.health_score,
                 downtrend_streak=next_downtrend_streak,
                 has_position=has_position,
+                trend_confirmed=trend_confirmed,
+                active_trend_confirm_checkpoints=trend_confirmed_streak,
+                cooling_min_dwell_active=cooling_min_dwell_active,
+                post_buy_grace_active=has_position and _has_same_day_buy_signal(recent_signals, evaluation_time),
                 policy=self.policy,
             )
             if transition.allowed and transition.to_status != current:
                 next_status = transition.to_status
                 status_changed = True
+                last_status_changed_at = _format_utc_iso_z(evaluation_time)
+                if next_status == QuantStatus.COOLING:
+                    cooling_until = _format_utc_iso_z(evaluation_time + timedelta(days=self.policy.cooling_min_dwell_days))
+                elif current == QuantStatus.COOLING:
+                    cooling_until = None
+                if next_status == QuantStatus.RETIRED:
+                    retired_at = _format_utc_iso_z(evaluation_time)
+                    retire_reason = transition.reason_code
+                elif current == QuantStatus.RETIRED:
+                    retired_at = None
+                    retire_reason = None
                 self.db.record_quant_universe_event(
                     {
                         "stock_code": code,
@@ -797,7 +902,11 @@ class QuantUniverseManager:
                 "weakening_warning_streak": next_warning_streak,
                 "blocked_streak": previous_state.get("blocked_streak", 0),
                 "no_buy_days": previous_state.get("no_buy_days", 0),
-                "cooling_until": previous_state.get("cooling_until"),
+                "cooling_until": cooling_until,
+                "retired_at": retired_at,
+                "retire_reason": retire_reason,
+                "last_status_changed_at": last_status_changed_at,
+                "last_health_evaluated_at": _format_utc_iso_z(evaluation_time),
                 "snapshot_json": {"latest_signal": latest_signal, "health": health.breakdown},
             },
         )
@@ -819,10 +928,10 @@ class QuantUniverseManager:
         return HealthInputs(
             avg_tech_score=sum(_float(signal.get("tech_score"), 0.0) for signal in signals) / count,
             avg_context_score=sum(_float(signal.get("context_score"), 0.0) for signal in signals) / count,
-            avg_fusion_score=sum(_float(signal.get("fusion_score"), 0.0) for signal in signals) / count,
-            avg_buy_strength_score=sum(_float(signal.get("buy_strength_score"), 0.0) for signal in signals) / count,
+            avg_fusion_score=sum(_signal_fusion_score(signal, 0.0) for signal in signals) / count,
+            avg_buy_strength_score=sum(_signal_buy_strength_score(signal, 0.0) for signal in signals) / count,
             recent_stoploss_count=sum(1 for signal in signals if str(signal.get("decision_type") or "").lower() == "hard_stop_loss"),
-            blocked_streak=sum(1 for signal in signals if str(signal.get("stock_execution_feedback_status") or "") == "blocked"),
+            blocked_streak=sum(1 for signal in signals if _signal_stock_feedback_status(signal) == "blocked"),
         )
 
     def _entry_skip_reason(
@@ -830,6 +939,8 @@ class QuantUniverseManager:
         stock: dict[str, Any] | None,
         state: dict[str, Any] | None,
         evaluation: dict[str, Any],
+        *,
+        evaluation_time: Any | None = None,
     ) -> str:
         if not stock:
             return "stock_not_found"
@@ -839,9 +950,18 @@ class QuantUniverseManager:
             return "non_tradable"
         if _is_future((state or {}).get("cooling_until"), None):
             return "cooling_blocked"
-        current_status = _status(stock.get("quant_status"))
+        state_status = _status((state or {}).get("quant_status"))
+        current_status = state_status if state else _status(stock.get("quant_status"))
+        if current_status == QuantStatus.COOLING:
+            return "cooling_review_required"
+        if current_status in {QuantStatus.TRIAL, QuantStatus.ACTIVE, QuantStatus.EXIT_ONLY}:
+            return "already_quant_managed"
+        if current_status == QuantStatus.MANUAL_PAUSED:
+            return "manual_paused"
         if current_status == QuantStatus.RETIRED and not self.policy.retired_reactivation_check_enabled:
             return "retired_reactivation_disabled"
+        if current_status == QuantStatus.RETIRED and _retired_min_dwell_active(state, self.policy, evaluation_time):
+            return "retired_dwell_blocked"
         if current_status == QuantStatus.RETIRED and evaluation["candidate_score"] < self.policy.high_reentry_threshold:
             return "retired_reentry_below_threshold"
         if bool(stock.get("basic_info_missing")):
@@ -869,6 +989,8 @@ class QuantUniverseManager:
                 "candidate_score": candidate_score,
                 "candidate_confidence": 0,
                 "health_score": (self.db.get_quant_universe_state(code) or {}).get("health_score", 100),
+                "retired_at": None,
+                "retire_reason": None,
                 "snapshot_json": {"source_type": source_type, "source_key": source_key},
             },
         )
@@ -919,12 +1041,15 @@ class QuantUniverseManager:
         payload["quant_auto_managed"] = bool(payload.get("quant_auto_managed"))
         return payload
 
-    def _auto_capacity_skip_reason(self, source_type: str) -> str:
-        if self._promotions_today_count() >= self.policy.max_auto_entries_per_day:
+    def _auto_capacity_skip_reason(self, source_type: str, *, capacity_at: Any | None = None) -> str:
+        if self._promotions_today_count(capacity_at=capacity_at) >= self.policy.max_auto_entries_per_day:
             return "daily_capacity_exceeded"
         return ""
 
-    def _promotions_today_count(self) -> int:
+    def _promotions_today_count(self, *, capacity_at: Any | None = None) -> int:
+        if self.drill_mode and capacity_at is not None:
+            day_key = self._capacity_day_key(capacity_at)
+            return int(self._drill_auto_promotions_by_day.get(day_key, 0)) if day_key else 0
         today = datetime.now(timezone.utc).date().isoformat()
         conn = self.db._connect()
         cursor = conn.cursor()
@@ -940,6 +1065,22 @@ class QuantUniverseManager:
         row = cursor.fetchone()
         conn.close()
         return int(row["total"] or 0) if row else 0
+
+    def _record_drill_auto_promotion(self, capacity_at: Any | None) -> None:
+        if not self.drill_mode or capacity_at is None:
+            return
+        day_key = self._capacity_day_key(capacity_at)
+        if day_key:
+            self._drill_auto_promotions_by_day[day_key] = self._drill_auto_promotions_by_day.get(day_key, 0) + 1
+
+    @staticmethod
+    def _capacity_day_key(value: Any) -> str:
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        text = str(value or "").strip()
+        if len(text) >= 10:
+            return text[:10]
+        return ""
 
     def _theme_counts_today(self) -> tuple[dict[str, int], dict[str, int]]:
         today = datetime.now(timezone.utc).date().isoformat()
@@ -1046,6 +1187,188 @@ def _action(signal: dict[str, Any]) -> str:
     return str(signal.get("final_action") or signal.get("action") or "").strip().upper()
 
 
+def _signal_profile(signal: dict[str, Any]) -> dict[str, Any]:
+    profile = signal.get("strategy_profile")
+    if isinstance(profile, dict):
+        return profile
+    return _loads_json_object(profile)
+
+
+def _signal_fusion_breakdown(signal: dict[str, Any]) -> dict[str, Any]:
+    profile = _signal_profile(signal)
+    explainability = profile.get("explainability") if isinstance(profile.get("explainability"), dict) else {}
+    breakdown = explainability.get("fusion_breakdown") if isinstance(explainability.get("fusion_breakdown"), dict) else {}
+    return breakdown if isinstance(breakdown, dict) else {}
+
+
+def _signal_fusion_score(signal: dict[str, Any], default: float) -> float:
+    if signal.get("fusion_score") not in (None, ""):
+        return _clamp(_float(signal.get("fusion_score"), default), 0.0, 1.0)
+    breakdown = _signal_fusion_breakdown(signal)
+    return _clamp(_float(breakdown.get("fusion_score"), default), 0.0, 1.0)
+
+
+def _signal_fusion_delta(signal: dict[str, Any], default: float) -> float:
+    if signal.get("fusion_score_delta") not in (None, ""):
+        return _float(signal.get("fusion_score_delta"), default)
+    breakdown = _signal_fusion_breakdown(signal)
+    return _float(breakdown.get("fusion_score_delta"), default)
+
+
+def _signal_portfolio_guard(signal: dict[str, Any]) -> dict[str, Any]:
+    profile = _signal_profile(signal)
+    gate = profile.get("portfolio_execution_guard") if isinstance(profile.get("portfolio_execution_guard"), dict) else {}
+    return gate if isinstance(gate, dict) else {}
+
+
+def _signal_buy_strength_score(signal: dict[str, Any], default: float) -> float:
+    if signal.get("buy_strength_score") not in (None, ""):
+        return _clamp(_float(signal.get("buy_strength_score"), default), 0.0, 1.0)
+    gate = _signal_portfolio_guard(signal)
+    return _clamp(_float(gate.get("buy_strength_score"), default), 0.0, 1.0)
+
+
+def _signal_portfolio_guard_status(signal: dict[str, Any]) -> str:
+    top_level = str(signal.get("portfolio_execution_guard_status") or "").strip()
+    if top_level:
+        return top_level
+    return str(_signal_portfolio_guard(signal).get("status") or "").strip()
+
+
+def _signal_stock_feedback_status(signal: dict[str, Any]) -> str:
+    top_level = str(signal.get("stock_execution_feedback_status") or "").strip()
+    if top_level:
+        return top_level
+    profile = _signal_profile(signal)
+    gate = profile.get("stock_execution_feedback_gate") if isinstance(profile.get("stock_execution_feedback_gate"), dict) else {}
+    return str((gate or {}).get("status") or "").strip()
+
+
+def _signal_trend_confirmed(signal: dict[str, Any], policy: QuantUniverseLifecyclePolicy) -> bool:
+    if _action(signal) != "BUY":
+        return False
+    guard_confirmation = _guard_trend_confirmed(signal, policy)
+    if guard_confirmation is not None:
+        return guard_confirmation
+    tech_score = _float(signal.get("tech_score"), 0.0)
+    fusion_score = _signal_fusion_score(signal, 0.0)
+    buy_strength = _signal_buy_strength_score(signal, 0.0)
+    price = _float(signal.get("price"), 0.0)
+    ma20 = _float(signal.get("ma20"), 0.0)
+    ma20_slope = _float(signal.get("ma20_slope"), 0.0)
+    return (
+        fusion_score >= policy.trial_threshold
+        and buy_strength >= 0.45
+        and tech_score >= policy.weak_warning_tech_threshold
+        and (ma20 <= 0 or price <= 0 or price >= ma20)
+        and ma20_slope >= 0
+    )
+
+
+def _guard_trend_confirmed(signal: dict[str, Any], policy: QuantUniverseLifecyclePolicy) -> bool | None:
+    gate = _signal_portfolio_guard(signal)
+    trend = gate.get("trend_confirmation") if isinstance(gate.get("trend_confirmation"), dict) else {}
+    if not trend:
+        return None
+    components = gate.get("score_components") if isinstance(gate.get("score_components"), dict) else {}
+    buy_strength = _signal_buy_strength_score(signal, 0.0)
+    confirmation_score = _clamp(_float(components.get("confirmation_score"), 0.0), 0.0, 1.0)
+    above_ma20 = int(_float(trend.get("above_ma20_checkpoints"), 0.0))
+    return bool(
+        buy_strength >= 0.45
+        and (
+            bool(trend.get("ma_stack"))
+            or bool(trend.get("retest_confirmed"))
+            or (bool(trend.get("ma20_rising")) and above_ma20 >= policy.active_upgrade_confirm_checkpoints)
+            or confirmation_score >= 0.75
+        )
+    )
+
+
+def _trailing_trend_confirmed_count(signals: list[dict[str, Any]], policy: QuantUniverseLifecyclePolicy) -> int:
+    count = 0
+    for signal in signals:
+        if not _signal_trend_confirmed(signal, policy):
+            break
+        count += 1
+    return count
+
+
+def _apply_cold_start_health_floor(
+    health: HealthResult,
+    *,
+    policy: QuantUniverseLifecyclePolicy,
+    current_status: QuantStatus,
+    signal_count: int,
+    has_position: bool,
+) -> HealthResult:
+    min_samples = max(0, int(policy.trial_cold_start_min_checkpoints or 0))
+    if current_status != QuantStatus.TRIAL or has_position or min_samples <= 0 or signal_count >= min_samples:
+        return health
+    floor = float(policy.trial_cold_start_health_floor or 0)
+    if health.health_score >= floor:
+        return health
+    breakdown = dict(health.breakdown)
+    breakdown["cold_start_signal_count"] = int(signal_count)
+    breakdown["cold_start_min_checkpoints"] = min_samples
+    breakdown["cold_start_health_floor"] = round(floor, 4)
+    return HealthResult(health_score=round(floor, 4), breakdown=breakdown)
+
+
+def _apply_active_upgrade_health_floor(
+    health: HealthResult,
+    *,
+    policy: QuantUniverseLifecyclePolicy,
+    current_status: QuantStatus,
+    latest_signal: dict[str, Any],
+    trend_confirmed: bool,
+    trend_confirmed_streak: int,
+    has_position: bool,
+) -> HealthResult:
+    if current_status != QuantStatus.TRIAL or has_position:
+        return health
+    if not trend_confirmed or trend_confirmed_streak < policy.active_upgrade_confirm_checkpoints:
+        return health
+    strength_threshold = min(0.80, float(policy.trial_threshold) + 0.15)
+    if _signal_buy_strength_score(latest_signal, 0.0) < strength_threshold:
+        return health
+    floor = float(policy.active_upgrade_threshold)
+    if health.health_score >= floor:
+        return health
+    breakdown = dict(health.breakdown)
+    breakdown["active_upgrade_floor"] = round(floor, 4)
+    breakdown["active_upgrade_strength_threshold"] = round(strength_threshold, 4)
+    breakdown["active_upgrade_confirmed_streak"] = int(trend_confirmed_streak)
+    return HealthResult(health_score=round(floor, 4), breakdown=breakdown)
+
+
+def _signal_datetime(signal: dict[str, Any]) -> datetime:
+    for key in ("decision_time", "signal_time", "checkpoint_at", "updated_at", "created_at", "timestamp"):
+        value = signal.get(key)
+        if value not in (None, ""):
+            return _to_datetime(value)
+    return datetime.now(timezone.utc)
+
+
+def _has_same_day_buy_signal(signals: list[dict[str, Any]], evaluation_time: datetime) -> bool:
+    evaluation_day = evaluation_time.astimezone(timezone.utc).date()
+    for signal in signals:
+        if _action(signal) != "BUY":
+            continue
+        try:
+            signal_day = _signal_datetime(signal).astimezone(timezone.utc).date()
+        except (TypeError, ValueError):
+            continue
+        if signal_day == evaluation_day:
+            return True
+    return False
+
+
+def _format_utc_iso_z(value: datetime) -> str:
+    dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def _trend_score(value: Any) -> float:
     text = str(value or "").strip().lower()
     if text in {"up", "bullish", "strong_up"}:
@@ -1061,6 +1384,23 @@ def _is_future(value: datetime | str | None, now: datetime | str | None) -> bool
     target = _to_datetime(value)
     current = _to_datetime(now) if now is not None else datetime.now(timezone.utc)
     return target > current
+
+
+def _retired_min_dwell_active(
+    state: dict[str, Any] | None,
+    policy: QuantUniverseLifecyclePolicy,
+    now: datetime | str | None,
+) -> bool:
+    days = int(policy.retired_min_dwell_days or 0)
+    retired_at = (state or {}).get("retired_at")
+    if days <= 0 or not retired_at:
+        return False
+    try:
+        target = _to_datetime(retired_at) + timedelta(days=days)
+        current = _to_datetime(now) if now is not None else datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    return current < target
 
 
 def _to_datetime(value: datetime | str) -> datetime:

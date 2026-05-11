@@ -543,4 +543,44 @@ describe("SignalDetailPage", () => {
     expect(screen.getByText("300股")).toBeInTheDocument();
     expect(screen.getByText(/冷启动：盈利样本 0\/1 · 当前按冷启动规则限仓 · 倍率 0\.25x/)).toBeInTheDocument();
   });
+
+  it("shows kernel and final execution sizing for buy signals", async () => {
+    const sizingPayload = JSON.parse(JSON.stringify(mockPayload));
+    sizingPayload.decision.action = "BUY";
+    sizingPayload.decision.finalAction = "BUY";
+    sizingPayload.decision.positionSizePct = "3.00";
+    sizingPayload.strategyProfile.kernel_positioning = {
+      quality_position_pct: 28.26,
+      rule_hit: "resonance_standard",
+      signal_quality_score: 0.38,
+      quality_penalties: ["rsi_hot", "weak_ma20_slope"],
+    };
+    sizingPayload.strategyProfile.execution_sizing_plan = {
+      buy_tier: "weak_buy",
+      kernel_quality_position_pct: 28.26,
+      buy_tier_cap_pct: 5,
+      lifecycle_cap_pct: 3,
+      risk_budget_pct: 0.3,
+      expected_stop_loss_pct: 5,
+      effective_position_pct: 3,
+      final_budget: 12000,
+      cap_reasons: ["trial_weak_buy_cap", "buy_tier_cap"],
+    };
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: async () => sizingPayload,
+    } as Response);
+
+    renderSignalDetailPage();
+
+    expect(await screen.findByText(/Kernel 建议仓位|Kernel suggested position/)).toBeInTheDocument();
+    expect(screen.getByText("28.26%")).toBeInTheDocument();
+    expect(screen.getByText(/最终执行仓位|Final execution position/)).toBeInTheDocument();
+    expect(screen.getByText("3.00%")).toBeInTheDocument();
+    expect(screen.getByText(/最终预算|Final budget/)).toBeInTheDocument();
+    expect(screen.getByText("12,000.00")).toBeInTheDocument();
+    expect(screen.getByText(/风险预算|Risk budget/)).toBeInTheDocument();
+    expect(screen.getByText("0.30%")).toBeInTheDocument();
+  });
 });

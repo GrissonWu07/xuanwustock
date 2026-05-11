@@ -446,6 +446,13 @@ export type ReplayCapitalPoolSnapshot = {
   capitalPool: ReplayCapitalPool;
 };
 
+export type ReplayDrillTable = {
+  items: Array<Record<string, unknown>>;
+  total: number;
+  page?: number;
+  pageSize?: number;
+};
+
 export type ReplaySnapshot = {
   updatedAt: string;
   config: {
@@ -473,6 +480,9 @@ export type ReplaySnapshot = {
   tasks: {
     id: string;
     runId?: string;
+    runType?: string;
+    typeLabel?: string;
+    title?: string;
     status: string;
     stage?: string;
     progress?: number;
@@ -522,6 +532,28 @@ export type ReplaySnapshot = {
     capitalPool?: ReplayCapitalPool;
     terminalLiquidation?: Record<string, string | number | null | undefined>;
     stockScope?: TableRow[];
+    lifecycleSummary?: {
+      initialQuantCount: number;
+      candidateEventCount: number;
+      autoPromotedCount: number;
+      autoExitedCount: number;
+      exitOnlyCount: number;
+      coolingCount: number;
+      retiredCount: number;
+      dataWarningCount: number;
+    };
+    lifecycleSeries?: {
+      checkpointAt: string;
+      trialCount: number;
+      activeCount: number;
+      exitOnlyCount: number;
+      coolingCount: number;
+      retiredCount: number;
+    }[];
+    candidateEventsTable?: ReplayDrillTable;
+    exitEventsTable?: ReplayDrillTable;
+    finalStatesTable?: ReplayDrillTable;
+    dataRisksTable?: ReplayDrillTable;
   }[];
   tradingAnalysis: {
     title: string;

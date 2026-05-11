@@ -59,6 +59,7 @@ def test_policy_defaults_are_profile_specific_and_weights_normalize():
     conservative = default_portfolio_execution_guard_policy("conservative")
 
     assert aggressive["confirm_checkpoints"] == 2
+    assert aggressive["full_edge"] == 0.10
     assert stable["confirm_checkpoints"] == 3
     assert conservative["weak_multiplier"] < stable["weak_multiplier"]
     assert aggressive["weight_edge"] > conservative["weight_edge"]
@@ -70,6 +71,34 @@ def test_policy_defaults_are_profile_specific_and_weights_normalize():
         + aggressive["weight_track_alignment"],
         6,
     ) == 1.0
+
+
+def test_trend_structure_has_middle_score_for_sustained_ma20_confirmation():
+    signal = _signal()
+    signal["strategy_profile"]["market_snapshot"].update(
+        {
+            "current_price": 12.0,
+            "ma5": 11.7,
+            "ma10": 11.8,
+            "ma20": 11.3,
+            "ma20_slope": 0.0,
+            "recent_checkpoints": [
+                {"close": 11.5, "ma20": 11.2, "ma20_slope": 0.0},
+                {"close": 11.8, "ma20": 11.25, "ma20_slope": 0.0},
+                {"close": 12.0, "ma20": 11.3, "ma20_slope": 0.0},
+            ],
+        }
+    )
+
+    gate = evaluate_portfolio_execution_guard(
+        signal=signal,
+        policy=default_portfolio_execution_guard_policy("stable"),
+        portfolio_summary={},
+    )
+
+    assert gate["trend_confirmation"]["ma_stack"] is False
+    assert gate["trend_confirmation"]["above_ma20_checkpoints"] == 3
+    assert gate["score_components"]["trend_structure_score"] == 0.5
 
 
 def test_strong_buy_requires_score_ma_stack_and_volume_confirmation():
@@ -160,6 +189,38 @@ def test_t1_unconfirmed_a_share_buy_downgrades_to_weak_buy():
     assert gate["buy_tier"] == "weak_buy"
     assert gate["t1_risk"]["active"] is True
     assert "t1_new_buy_unconfirmed" in gate["reasons"]
+
+
+def test_retest_confirmation_can_remain_normal_buy_without_full_checkpoint_count():
+    signal = _signal()
+    signal["market"] = "A"
+    signal["timeframe"] = "30m"
+    signal["strategy_profile"]["market_snapshot"].update(
+        {
+            "current_price": 12.0,
+            "ma5": 11.4,
+            "ma10": 11.5,
+            "ma20": 11.2,
+            "ma20_slope": 0.02,
+            "volume_ratio": 1.7,
+            "recent_checkpoints": [
+                {"close": 10.9, "low": 10.8, "ma20": 11.0, "ma20_slope": 0.01},
+                {"close": 11.4, "low": 11.05, "ma20": 11.1, "ma20_slope": 0.01},
+                {"close": 12.0, "low": 11.15, "ma20": 11.2, "ma20_slope": 0.02},
+            ],
+        }
+    )
+    policy = default_portfolio_execution_guard_policy("stable")
+    policy["strong_buy_min_score"] = 0.99
+
+    gate = evaluate_portfolio_execution_guard(signal=signal, policy=policy, portfolio_summary={})
+
+    assert gate["trend_confirmation"]["retest_confirmed"] is True
+    assert gate["trend_confirmation"]["above_ma20_checkpoints"] == 2
+    assert gate["score_components"]["confirmation_score"] == 0.75
+    assert gate["t1_risk"]["active"] is False
+    assert gate["is_late_rebound"] is False
+    assert gate["buy_tier"] == "normal_buy"
 
 
 def test_portfolio_loss_budget_blocks_new_buy_and_exposes_portfolio_reasons():

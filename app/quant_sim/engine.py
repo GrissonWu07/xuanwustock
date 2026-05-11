@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -20,7 +20,7 @@ from app.quant_sim.dynamic_strategy import (
     DynamicStrategyController,
 )
 from app.quant_sim.portfolio_service import PortfolioService
-from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, QuantUniverseManager
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.stockpolicy_adapter import StockPolicyAdapter
 from app.watchlist_service import WatchlistService
@@ -96,13 +96,72 @@ class QuantSimEngine:
         if decision_price > 0:
             self.candidate_pool.db.update_candidate_latest_price(candidate["stock_code"], decision_price)
         signal = self.signal_center.create_signal(candidate, decision)
-        self._update_lifecycle_after_signal(
-            stock_code=str(candidate.get("stock_code") or ""),
-            signal=signal,
-            strategy_profile_binding=profile_binding,
-        )
         self._sync_watchlist_snapshot(candidate["stock_code"], signal, decision_price)
         return signal
+
+    def build_candidate_review_signal(
+        self,
+        candidate: dict,
+        analysis_timeframe: str = "1d",
+        strategy_mode: str = "auto",
+        strategy_profile_id: str | None = None,
+        strategy_profile_binding: dict | None = None,
+        ai_dynamic_strategy: str | None = None,
+        ai_dynamic_strength: float | None = None,
+        ai_dynamic_lookback: int | None = None,
+        current_time: datetime | None = None,
+        market_snapshot: dict | None = None,
+    ) -> dict[str, Any]:
+        resolve_kwargs = {
+            "strategy_profile_id": strategy_profile_id,
+            "ai_dynamic_strategy": ai_dynamic_strategy,
+            "ai_dynamic_strength": ai_dynamic_strength,
+            "ai_dynamic_lookback": ai_dynamic_lookback,
+            "stock_code": str(candidate.get("stock_code") or ""),
+            "stock_name": str(candidate.get("stock_name") or ""),
+        }
+        if current_time is not None:
+            resolve_kwargs["as_of"] = current_time
+        profile_binding = (
+            dict(strategy_profile_binding)
+            if isinstance(strategy_profile_binding, dict)
+            else self._resolve_strategy_binding(**resolve_kwargs)
+        )
+        decision = self._evaluate_candidate_decision(
+            candidate,
+            market_snapshot=market_snapshot,
+            analysis_timeframe=analysis_timeframe,
+            strategy_mode=strategy_mode,
+            strategy_profile_binding=profile_binding,
+            current_time=current_time,
+        )
+        payload = self.signal_center.build_signal_payload(candidate, decision)
+        action = str(payload.get("action") or "HOLD").upper()
+        return {
+            "id": 0,
+            "candidate_id": candidate.get("id"),
+            "stock_code": candidate["stock_code"],
+            "stock_name": candidate.get("stock_name"),
+            "action": action,
+            "confidence": int(payload.get("confidence", 0)),
+            "reasoning": payload.get("reasoning", ""),
+            "position_size_pct": float(payload.get("position_size_pct", 0)),
+            "stop_loss_pct": float(payload.get("stop_loss_pct", 5)),
+            "take_profit_pct": float(payload.get("take_profit_pct", 12)),
+            "decision_type": payload.get("decision_type"),
+            "tech_score": float(payload.get("tech_score", 0)),
+            "context_score": float(payload.get("context_score", 0)),
+            "strategy_profile": payload.get("strategy_profile"),
+            "decision_time": self._format_review_decision_time(payload.get("decision_time") or current_time),
+            "status": "review",
+        }
+
+    @staticmethod
+    def _format_review_decision_time(value: Any) -> Any:
+        if not isinstance(value, datetime):
+            return value
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     def analyze_active_candidates(
         self,
@@ -211,12 +270,6 @@ class QuantSimEngine:
                 self.portfolio.db.update_position_market_price(position["stock_code"], decision_price)
                 self.candidate_pool.db.update_candidate_latest_price(position["stock_code"], decision_price)
             signal = self.signal_center.create_signal(candidate, decision)
-            self._update_lifecycle_after_signal(
-                stock_code=str(position.get("stock_code") or ""),
-                signal=signal,
-                strategy_profile_binding=effective_binding,
-                position=position,
-            )
             self._sync_watchlist_snapshot(position["stock_code"], signal, decision_price)
             signals.append(signal)
         return signals
@@ -234,37 +287,6 @@ class QuantSimEngine:
             for candidate in candidates
             if str(candidate.get("stock_code") or "").strip() not in blocked
         ]
-
-    def _update_lifecycle_after_signal(
-        self,
-        *,
-        stock_code: str,
-        signal: dict[str, Any],
-        strategy_profile_binding: dict | None = None,
-        position: dict[str, Any] | None = None,
-    ) -> None:
-        code = str(stock_code or "").strip()
-        if not code:
-            return
-        policy = self._quant_lifecycle_policy_from_binding(strategy_profile_binding)
-        recent_signals = [
-            signal,
-            *[
-                item
-                for item in self.signal_center.list_signals(stock_code=code, limit=policy.health_score_lookback_checkpoints)
-                if int(item.get("id") or 0) != int(signal.get("id") or 0)
-            ],
-        ][: policy.health_score_lookback_checkpoints]
-        effective_position = position if position is not None else self._position_for_code(code)
-        manager = QuantUniverseManager(db=self.candidate_pool.db, profile_id=policy.profile_id, policy=policy)
-        manager.update_after_signal(code, signal, recent_signals, effective_position)
-
-    def _position_for_code(self, stock_code: str) -> dict[str, Any] | None:
-        code = str(stock_code or "").strip()
-        for position in self.portfolio.list_positions():
-            if str(position.get("stock_code") or "").strip() == code:
-                return position
-        return None
 
     @staticmethod
     def _quant_lifecycle_policy_from_binding(strategy_profile_binding: dict | None) -> QuantUniverseLifecyclePolicy:

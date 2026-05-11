@@ -187,7 +187,7 @@ Owner: Codex
 
 补充恢复约束：
 
-1. `exit_only -> trial` 仅允许在“持仓已清空 + 出现新候选事件支持 + health_score 恢复到 cooling_threshold 以上”时发生
+1. `exit_only -> trial` 仅允许在“持仓已清空 + checkpoint 行情重新满足最低趋势确认 + health_score 恢复到 cooling_threshold 以上”时发生
 2. `exit_only -> active` 仅允许在“持仓已清空 + health_score >= active_upgrade_threshold + 满足 active_upgrade_confirm_checkpoints 趋势确认”时发生
 3. 若 `exit_only` 持仓已清空但恢复条件不足，则允许继续降级到 `cooling`
 
@@ -403,7 +403,7 @@ Owner: Codex
 3. `auto_trial`
    - 达到条件后自动进入 `trial`
 
-默认值：`confirm_first`
+默认值：`auto_trial`
 
 ### 8.4 纳入阈值
 
@@ -490,7 +490,8 @@ Owner: Codex
 
 1. 默认套用冷启动限仓
 2. 默认不直接给满仓
-3. 若 health_score 过低，可直接退回 `cooling`
+3. `trial` 是观察态，不是淘汰态；未满足最短观察期前不得因为少量弱信号退回 `cooling`
+4. 若 health_score 过低，且连续下行确认和最短观察期都满足，才允许退回 `cooling`
 
 `trial` 仓位规则必须明确：
 
@@ -532,6 +533,12 @@ Owner: Codex
 3. 突破后回踩 `MA20` 不破
 4. 多来源候选事件重新共振，且最近无连续失败
 
+实现要求：
+
+1. `trial -> active` 必须在状态机中显式实现，不能只写在 UI 或文档中。
+2. `active_upgrade_confirm_checkpoints` 必须来自最近 checkpoint 的连续趋势确认计数，不得把单个 BUY 信号直接当作完整确认窗口。
+3. `trial -> active` 只解除 `trial` 的轻仓限制，不绕过 BUY 分层、组合防守、个股执行反馈和资金槽 sizing。
+
 ## 10. `health_score` 设计
 
 ### 10.1 目标
@@ -553,7 +560,7 @@ Owner: Codex
 5. 最近 `health_score_lookback_checkpoints` 个 checkpoint 的 `portfolio_execution_guard.status`
 6. 最近 `health_score_lookback_checkpoints` 个 checkpoint 的 `stock_execution_feedback_gate.status`
 7. 最近 `health_score_lookback_checkpoints` 个 checkpoint 的成交与止损结果
-8. 最近 `candidate_support_lookback_days` 天的候选事件支持新鲜度
+8. 候选事件的新鲜度不参与 `health_score`。候选事件只能用于入池推荐、恢复候选排序和初始建仓约束。
 
 建议公式：
 
@@ -565,13 +572,12 @@ Owner: Codex
    - `normalized_buy_strength_health`
 3. 按当前 profile 的 `kernel_health_weights` 计算 `kernel_health_base`
 4. 再叠加：
-   - `candidate_support_bonus`
    - `execution_penalty`
    - `inactivity_penalty`
    - `reentry_watch_penalty`
 5. 最终：
 
-`health_score = clamp(kernel_health_base + candidate_support_bonus - execution_penalty - inactivity_penalty - reentry_watch_penalty, 0, 100)`
+`health_score = clamp(kernel_health_base - execution_penalty - inactivity_penalty - reentry_watch_penalty, 0, 100)`
 
 归一化公式必须统一，禁止各实现自行选择 min-max、z-score 或分档映射：
 
@@ -588,7 +594,7 @@ Owner: Codex
 7. `inactivity_penalty = inactivity_penalty_base * inactivity_penalty_multiplier`
 8. `execution_penalty_base = (recent_stoploss_count * 5.0) + (blocked_streak * 3.0)`
 9. `execution_penalty = execution_penalty_base * execution_penalty_multiplier`
-10. `candidate_support_bonus` 由最近 `candidate_support_lookback_days` 内有效候选事件按新鲜度衰减后求和，再乘 `candidate_support_bonus_multiplier`
+10. 候选来源、候选事件数量、`candidate_score` 不得给 `health_score` 加分。它们最多影响入池推荐、初始 `trial` 仓位和恢复候选排序。
 
 说明：
 
@@ -603,6 +609,14 @@ Owner: Codex
 1. `health_score` 的主输入必须来源于现有 kernel 和执行反馈，不得再平行定义一套独立的“趋势健康、信号健康、执行健康、时间健康”主评分体系
 2. 各 profile 的归一化阈值和 penalty 参数可以配置，但必须挂靠现有策略 profile
 3. `inactivity_penalty` 对 `trial` 和无持仓股票必须更敏感；当“连续无有效 BUY 天数”达到 `trial_no_buy_days_threshold` 时，应进入满额惩罚区间，而不是继续线性宽松递增
+4. 冷启动样本不足时必须启用健康分下限保护，避免 1-3 个 checkpoint 的弱 HOLD 把新入池股票直接打入 `cooling`。
+
+冷启动样本保护：
+
+1. 仅适用于 `trial` 且无持仓股票。
+2. 当有效信号数量 `< trial_cold_start_min_checkpoints` 时，最终 `health_score = max(raw_health_score, trial_cold_start_health_floor)`。
+3. 保护只影响生命周期状态判断，不修改原始信号分，不给 BUY 加分。
+4. 保护证据必须写入 `snapshot_json.health`，至少包含 `cold_start_signal_count / cold_start_min_checkpoints / cold_start_health_floor`。
 
 默认 profile 权重建议：
 
@@ -612,7 +626,7 @@ Owner: Codex
 2. `buy_strength_health_weight = 0.30`
 3. `tech_health_weight = 0.20`
 4. `context_health_weight = 0.15`
-5. `candidate_support_bonus_multiplier = 1.10`
+5. 候选支持不参与健康分加分
 6. `execution_penalty_multiplier = 0.90`
 7. `inactivity_penalty_multiplier = 0.80`
 8. `reentry_watch_penalty_multiplier = 1.00`
@@ -623,7 +637,7 @@ Owner: Codex
 2. `buy_strength_health_weight = 0.25`
 3. `tech_health_weight = 0.25`
 4. `context_health_weight = 0.20`
-5. `candidate_support_bonus_multiplier = 1.00`
+5. 候选支持不参与健康分加分
 6. `execution_penalty_multiplier = 1.00`
 7. `inactivity_penalty_multiplier = 1.00`
 8. `reentry_watch_penalty_multiplier = 1.10`
@@ -634,7 +648,7 @@ Owner: Codex
 2. `buy_strength_health_weight = 0.15`
 3. `tech_health_weight = 0.30`
 4. `context_health_weight = 0.30`
-5. `candidate_support_bonus_multiplier = 0.90`
+5. 候选支持不参与健康分加分
 6. `execution_penalty_multiplier = 1.20`
 7. `inactivity_penalty_multiplier = 1.20`
 8. `reentry_watch_penalty_multiplier = 1.25`
@@ -695,7 +709,7 @@ Owner: Codex
 
 1. 成功买入后未快速止损
 2. 买入后若干 checkpoint 仍保持趋势结构
-3. 最近出现新的高质量候选事件支持
+3. 最近出现新的高质量候选事件只能作为“是否重新纳入量化”的推荐证据，不能直接抬高健康分
 4. 从 `cooling` 低频重评估中恢复出趋势确认
 5. `exit_only` 状态下成功完成减仓或清仓后，没有再次出现弱警告
 
@@ -706,8 +720,9 @@ Owner: Codex
 触发条件：
 
 1. 当前存在 live-sim 持仓
-2. `health_score < exit_only_threshold`
-3. 或连续 `downtrend_hit >= exit_only_downtrend_streak`
+2. 连续 `downtrend_hit >= exit_only_downtrend_streak`
+3. `health_score < exit_only_threshold` 只能提高风险解释和排序优先级，不能单独触发 `exit_only`
+4. 若最近 BUY 发生在同一交易日，处于 T+1 生命周期保护期，不允许当天立刻切入 `exit_only`
 
 效果：
 
@@ -721,7 +736,8 @@ Owner: Codex
 
 1. 当前无 live-sim 持仓
 2. `health_score < cooling_threshold`
-3. 且连续 `downtrend_hit >= downtrend_cooling_streak`
+3. 且连续 `downtrend_hit >= max(downtrend_cooling_streak, trial_min_dwell_checkpoints)`
+4. `trial` 股票必须先满足 `trial_min_dwell_checkpoints`，不得在入池当日凭少量 checkpoint 进入 `cooling`
 
 效果：
 
@@ -750,9 +766,17 @@ Owner: Codex
 满足：
 
 1. 冷却期已结束
-2. 出现新候选事件支持
-3. `candidate_score >= trial_threshold`
-4. 趋势结构重新满足最低入场条件
+2. 低频复评 checkpoint 中，趋势结构重新满足最低入场条件
+3. `health_score >= cooling_threshold`
+4. 若同时出现新候选事件，可用于排序和 UI 解释，但不是恢复的必要条件
+5. 若 cooling 股票被新的历史候选事件或实时发现事件重新命中，允许用该候选事件触发恢复评估；恢复成功只能进入 `trial`，不能直接成交或直接进入 `active`
+
+低频复评要求：
+
+1. 实时量化中，`cooling` 复评按 `cooling_review_batch_size` 分批轮转，不得长期只复评健康分最低的股票。
+2. 轮转排序优先使用最久未复评，其次使用较高健康分和恢复迹象，最后按股票代码稳定排序。
+3. 实时量化演练中，每个交易日第一个 checkpoint 必须全量复评已到期的 `cooling` 股票；其他 checkpoint 可按 `cooling_review_batch_size` 分批复评。
+4. `cooling` 复评产生的 BUY 只用于恢复 `cooling -> trial`，不得在同一复评信号中直接成交。
 
 ### 12.2 `retired -> trial`
 
@@ -761,7 +785,8 @@ Owner: Codex
 1. `retired_reactivation_check_enabled = true`
 2. 新 discover / research / manual 事件重新支持
 3. `candidate_score >= high_reentry_threshold`
-4. 不处于 `manual_ban`
+4. 已满足 `retired_min_dwell_days`
+5. 不处于 `manual_ban`
 
 效果：
 
@@ -782,9 +807,11 @@ Owner: Codex
 
 规则：
 
-1. `trial` 在最短停留期内，不允许直接进入 `retired`
-2. `cooling` 在最短停留期内，不允许自动恢复
-3. `retired` 在最短停留期内，不允许被低质量候选事件反复激活
+1. `trial` 在最短停留期内，不允许进入 `cooling` 或 `retired`
+2. 进入 `cooling` 时必须设置 `cooling_until = checkpoint_time + cooling_min_dwell_days`
+3. `cooling` 在最短停留期内，不允许自动恢复，也不允许自动退休
+4. `retired` 在最短停留期内，即使 `candidate_score >= high_reentry_threshold` 也不得重新激活；候选事件返回 `reason_code = retired_dwell_blocked`
+5. `retired` 进入时必须记录 `retired_at`，用于后续最短停留期判断
 
 ## 14. 手工覆盖
 
@@ -842,13 +869,15 @@ Owner: Codex
 
 补充规则：
 
-1. 若某次主扫描结束后，本地行情技术缓存已经是 fresh，系统可以顺手对一小批 `cooling` 股票做 opportunistic review
-2. 每次 opportunistic review 最多处理 `min(5, 当前 cooling 股票数)` 只
-3. opportunistic review 的优先级按：
-   - `health_score ASC`
-   - `last_health_evaluated_at ASC`
-4. opportunistic review 只读取已有 local cache，不额外触发远程拉取
-5. 即使启用 opportunistic review，仍需保留固定低频重评估兜底
+1. 若某次主扫描结束后，本地行情技术缓存已经是 fresh，系统可以顺手对一批 `cooling` 股票做 opportunistic review
+2. 实时量化每次 opportunistic review 最多处理 `cooling_review_batch_size` 只，不得固定写死为 5 只
+3. 实时量化演练在每个交易日第一个 checkpoint 必须全量复评已到期 `cooling` 股票，其他 checkpoint 再按 `cooling_review_batch_size` 轮转
+4. opportunistic review 的优先级按：
+   - `last_health_evaluated_at` 最早优先
+   - 其次 `health_score` 较高者优先
+   - 再其次按股票代码稳定排序
+5. opportunistic review 只读取已有 local cache，不额外触发远程拉取
+6. 即使启用 opportunistic review，仍需保留固定低频重评估兜底
 
 ### 15.3 不改变已有执行算法
 
@@ -1279,7 +1308,7 @@ Phase 2 可新增高级选项：
 
 1. `quant_universe_lifecycle_enabled = true`
 2. `auto_exit_enabled = true`
-3. `auto_entry_mode = confirm_first`
+3. `auto_entry_mode = auto_trial`
 
 #### aggressive
 
@@ -1294,15 +1323,18 @@ Phase 2 可新增高级选项：
 9. `reentry_watch_hours = 72`
 10. `health_score_lookback_checkpoints = 8`
 11. `candidate_support_lookback_days = 5`
-12. `trial_min_dwell_checkpoints = 3`
-13. `cooling_min_dwell_days = 2`
-14. `retired_min_dwell_days = 7`
-15. `cooling_review_interval_minutes = 30`
-16. `max_auto_entries_per_batch = 6`
-17. `max_auto_entries_per_day = 20`
-18. `max_auto_entries_per_strategy_batch = 3`
-19. `max_same_industry_auto_entries_per_day = 3`
-20. `max_same_concept_auto_entries_per_day = 3`
+12. `trial_min_dwell_checkpoints = 16`
+13. `trial_cold_start_min_checkpoints = 8`
+14. `trial_cold_start_health_floor = 45`
+15. `cooling_min_dwell_days = 1`
+16. `retired_min_dwell_days = 7`
+17. `cooling_review_interval_minutes = 30`
+18. `cooling_review_batch_size = 20`
+19. `max_auto_entries_per_batch = 6`
+20. `max_auto_entries_per_day = 20`
+21. `max_auto_entries_per_strategy_batch = 3`
+22. `max_same_industry_auto_entries_per_day = 3`
+23. `max_same_concept_auto_entries_per_day = 3`
 
 #### stable
 
@@ -1317,15 +1349,18 @@ Phase 2 可新增高级选项：
 9. `reentry_watch_hours = 96`
 10. `health_score_lookback_checkpoints = 10`
 11. `candidate_support_lookback_days = 7`
-12. `trial_min_dwell_checkpoints = 4`
-13. `cooling_min_dwell_days = 3`
-14. `retired_min_dwell_days = 10`
-15. `cooling_review_interval_minutes = 60`
-16. `max_auto_entries_per_batch = 4`
-17. `max_auto_entries_per_day = 12`
-18. `max_auto_entries_per_strategy_batch = 2`
-19. `max_same_industry_auto_entries_per_day = 2`
-20. `max_same_concept_auto_entries_per_day = 2`
+12. `trial_min_dwell_checkpoints = 24`
+13. `trial_cold_start_min_checkpoints = 10`
+14. `trial_cold_start_health_floor = 50`
+15. `cooling_min_dwell_days = 2`
+16. `retired_min_dwell_days = 10`
+17. `cooling_review_interval_minutes = 60`
+18. `cooling_review_batch_size = 12`
+19. `max_auto_entries_per_batch = 4`
+20. `max_auto_entries_per_day = 12`
+21. `max_auto_entries_per_strategy_batch = 2`
+22. `max_same_industry_auto_entries_per_day = 2`
+23. `max_same_concept_auto_entries_per_day = 2`
 
 #### conservative
 
@@ -1340,15 +1375,18 @@ Phase 2 可新增高级选项：
 9. `reentry_watch_hours = 120`
 10. `health_score_lookback_checkpoints = 12`
 11. `candidate_support_lookback_days = 10`
-12. `trial_min_dwell_checkpoints = 5`
-13. `cooling_min_dwell_days = 4`
-14. `retired_min_dwell_days = 14`
-15. `cooling_review_interval_minutes = 90`
-16. `max_auto_entries_per_batch = 2`
-17. `max_auto_entries_per_day = 6`
-18. `max_auto_entries_per_strategy_batch = 1`
-19. `max_same_industry_auto_entries_per_day = 1`
-20. `max_same_concept_auto_entries_per_day = 1`
+12. `trial_min_dwell_checkpoints = 40`
+13. `trial_cold_start_min_checkpoints = 12`
+14. `trial_cold_start_health_floor = 55`
+15. `cooling_min_dwell_days = 3`
+16. `retired_min_dwell_days = 14`
+17. `cooling_review_interval_minutes = 90`
+18. `cooling_review_batch_size = 8`
+19. `max_auto_entries_per_batch = 2`
+20. `max_auto_entries_per_day = 6`
+21. `max_auto_entries_per_strategy_batch = 1`
+22. `max_same_industry_auto_entries_per_day = 1`
+23. `max_same_concept_auto_entries_per_day = 1`
 
 约束：
 

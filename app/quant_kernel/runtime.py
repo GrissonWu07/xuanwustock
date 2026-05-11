@@ -374,6 +374,12 @@ class KernelStrategyRuntime:
             context_score=contextual_score,
             stock_code=stock_code,
             current_time=current_time,
+            market_snapshot=market_snapshot,
+            strategy_profile_id=(
+                str(strategy_profile_binding.get("profile_id") or "")
+                if isinstance(strategy_profile_binding, dict)
+                else str(strategy_profile.get("id") or strategy_profile.get("profile_id") or strategy_profile.get("strategy_profile_id") or "")
+            ),
         )
         scoring_profile = self._resolve_scoring_profile(profile_kind=profile_kind, strategy_profile_binding=strategy_profile_binding)
         raw_dimensions = self._build_dimension_payload(
@@ -1605,6 +1611,15 @@ class KernelStrategyRuntime:
             "vetoes": vetoes,
             "decision_path": action_resolution.get("decision_path") or [],
         }
+        resonance_details = (
+            resolved.dual_track_details.get("resonance_quality")
+            if isinstance(resolved.dual_track_details, dict)
+            else None
+        )
+        if isinstance(resonance_details, dict):
+            profile["explainability"]["resonance"] = json.loads(
+                json.dumps(resonance_details, ensure_ascii=False, default=str)
+            )
         if stock_analysis_context is not None:
             profile["explainability"]["stock_analysis_context"] = json.loads(
                 json.dumps(stock_analysis_context, ensure_ascii=False, default=str)

@@ -32,7 +32,7 @@ def test_dual_track_resolver_full_resonance_returns_full_buy_position():
     )
 
     assert final.action == "BUY"
-    assert final.position_ratio == 1.0
+    assert final.position_ratio == 0.416
     assert final.decision_type == "dual_track_resonance"
 
 

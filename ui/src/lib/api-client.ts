@@ -60,6 +60,7 @@ export const PAGE_ACTION_ENDPOINTS: Record<PageKey, Record<string, string>> = {
     start: "/api/v1/quant/live-sim/actions/start",
     stop: "/api/v1/quant/live-sim/actions/stop",
     reset: "/api/v1/quant/live-sim/actions/reset",
+    "start-drill": "/api/v1/quant/live-sim/actions/start-drill",
     "analyze-candidate": "/api/v1/quant/live-sim/actions/analyze-candidate",
     "delete-candidate": "/api/v1/quant/live-sim/actions/delete-candidate",
     "delete-position": "/api/v1/quant/live-sim/actions/delete-position",

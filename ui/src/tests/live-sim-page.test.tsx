@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../lib/api-client";
+import { setI18nLocale } from "../lib/i18n";
 import { LiveSimPage } from "../features/quant/live-sim-page";
 
 const snapshot = {
@@ -214,6 +215,7 @@ const lifecycleSnapshot = {
 };
 
 beforeAll(() => {
+  setI18nLocale("zh-CN");
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     value: vi.fn().mockImplementation(() => ({
@@ -238,6 +240,7 @@ function renderLiveSimPage(client: ApiClient) {
   const router = createMemoryRouter(
     [
       { path: "/live-sim", element: <LiveSimPage client={client} /> },
+      { path: "/his-replay", element: <div data-testid="his-replay-page" /> },
       { path: "/portfolio/position/:symbol", element: <div data-testid="stock-detail-page" /> },
     ],
     { initialEntries: ["/live-sim"] },
@@ -259,6 +262,58 @@ const emptyTradeTable = () => ({
 });
 
 describe("LiveSimPage", () => {
+  it("starts live quant drill from live sim page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (String(url).includes("/api/v1/quant/universe/settings")) {
+          return Promise.resolve({
+            ok: true,
+            headers: new Headers({ "content-type": "application/json" }),
+            json: async () => ({
+              quant_universe_lifecycle_enabled: true,
+              auto_entry_mode: "auto_trial",
+              auto_exit_enabled: true,
+            }),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => ({ table: String(url).includes("/trades") ? emptyTradeTable() : emptySignalTable() }),
+        });
+      }),
+    );
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(snapshot),
+      runPageAction: vi.fn().mockResolvedValue({
+        runId: 42,
+        runType: "live_quant_drill",
+        status: "queued",
+        redirect: "/his-replay?runId=42",
+      }),
+    } as unknown as ApiClient;
+
+    renderLiveSimPage(client);
+
+    fireEvent.click(await screen.findByRole("button", { name: /历史演练|Historical drill/ }));
+    expect(screen.getByText(/实时量化历史演练|Live quant historical drill/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /开始演练|Start drill/ }));
+
+    await waitFor(() => {
+      expect(client.runPageAction).toHaveBeenCalledWith(
+        "live-sim",
+        "start-drill",
+        expect.objectContaining({
+          startDate: "2026-01-01",
+          candidateGenerationFrequency: "daily_first_checkpoint",
+          seedCurrentQuantUniverse: true,
+          generateHistoricalCandidateEvents: true,
+        }),
+      );
+    });
+  });
+
   it("renders lifecycle summary, status chips, health fields, and scoped restore actions", async () => {
     const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
       if (String(url).includes("/api/v1/quant/universe/settings")) {
@@ -310,7 +365,7 @@ describe("LiveSimPage", () => {
     expect(screen.queryByRole("checkbox", { name: "自动出池" })).not.toBeInTheDocument();
 
     const statusFilter = screen.getByLabelText("生命周期状态筛选");
-    const statusNames = [/量化|Quant/, /正常扫描/, /只出场/, /冷却/, /已退出/, /手工暂停/];
+    const statusNames = [/量化|Quant/, /正常扫描/, /只出场/, /冷却|Cooling/, /已退出|Retired/, /手工暂停/];
     statusNames.forEach((status) => expect(within(statusFilter).getByRole("button", { name: status })).toBeInTheDocument());
     expect(within(statusFilter).getByRole("button", { name: /量化|Quant/ })).toHaveAttribute("aria-pressed", "true");
     expect(within(statusFilter).getByRole("button", { name: /正常扫描/ })).toHaveAttribute("aria-pressed", "true");
@@ -325,9 +380,9 @@ describe("LiveSimPage", () => {
     expect(screen.queryByRole("button", { name: "暂停自动管理 600001" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "删除候选股" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /冷却/ }));
+    fireEvent.click(screen.getByRole("button", { name: /冷却|Cooling/ }));
     fireEvent.click(screen.getByRole("button", { name: /手工暂停/ }));
-    fireEvent.click(screen.getByRole("button", { name: /已退出/ }));
+    fireEvent.click(screen.getByRole("button", { name: /已退出|Retired/ }));
     expect(screen.queryByRole("button", { name: "恢复到量化 600004" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "600004" })).toBeInTheDocument();
   });

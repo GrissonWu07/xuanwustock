@@ -230,7 +230,7 @@ def test_continuous_replay_preserves_snapshot_order_and_allows_open_ended_end_da
     run = db.get_sim_runs(limit=1)[0]
     replay_snapshots = db.get_sim_run_snapshots(run["id"])
 
-    assert summary["final_equity"] == 112000.0
+    assert summary["final_equity"] == 101400.0
     assert snapshot_provider.prepared[0][2] == datetime(2026, 1, 6, 23, 59)
     assert replay_snapshots[0]["run_reason"].endswith("2026-01-05 14:50:00")
     assert replay_snapshots[1]["run_reason"].endswith("2026-01-06 14:50:00")

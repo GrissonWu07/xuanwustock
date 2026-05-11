@@ -86,6 +86,86 @@ def _deep_merge_dict(base: Mapping[str, Any], override: Mapping[str, Any]) -> di
     return merged
 
 
+def _default_resonance_quality_policy() -> dict[str, dict[str, Any]]:
+    return {
+        "aggressive": {
+            "weights": {
+                "tech_edge": 0.22,
+                "context_edge": 0.18,
+                "trend_structure": 0.28,
+                "confirmation": 0.16,
+                "volume": 0.16,
+            },
+            "position_ranges": {
+                "resonance_full": {"min": 0.45, "max": 0.60},
+                "resonance_heavy": {"min": 0.38, "max": 0.55},
+                "resonance_moderate": {"min": 0.28, "max": 0.50},
+                "resonance_standard": {"min": 0.12, "max": 0.45},
+                "divergence_light": {"min": 0.03, "max": 0.18},
+                "divergence_none": {"min": 0.0, "max": 0.0},
+            },
+            "volatility": {
+                "ma20_deviation_penalty_threshold": 0.10,
+                "ma20_deviation_penalty": 0.10,
+                "recent_return_penalty_threshold": 0.07,
+                "recent_return_penalty": 0.06,
+                "max_volatility_penalty": 0.22,
+                "hot_rsi_trend_relief_multiplier": 0.60,
+            },
+        },
+        "stable": {
+            "weights": {
+                "tech_edge": 0.20,
+                "context_edge": 0.20,
+                "trend_structure": 0.25,
+                "confirmation": 0.18,
+                "volume": 0.17,
+            },
+            "position_ranges": {
+                "resonance_full": {"min": 0.36, "max": 0.50},
+                "resonance_heavy": {"min": 0.30, "max": 0.44},
+                "resonance_moderate": {"min": 0.22, "max": 0.38},
+                "resonance_standard": {"min": 0.08, "max": 0.32},
+                "divergence_light": {"min": 0.02, "max": 0.12},
+                "divergence_none": {"min": 0.0, "max": 0.0},
+            },
+            "volatility": {
+                "ma20_deviation_penalty_threshold": 0.08,
+                "ma20_deviation_penalty": 0.12,
+                "recent_return_penalty_threshold": 0.05,
+                "recent_return_penalty": 0.08,
+                "max_volatility_penalty": 0.25,
+                "hot_rsi_trend_relief_multiplier": 0.60,
+            },
+        },
+        "conservative": {
+            "weights": {
+                "tech_edge": 0.18,
+                "context_edge": 0.22,
+                "trend_structure": 0.25,
+                "confirmation": 0.20,
+                "volume": 0.15,
+            },
+            "position_ranges": {
+                "resonance_full": {"min": 0.28, "max": 0.40},
+                "resonance_heavy": {"min": 0.22, "max": 0.35},
+                "resonance_moderate": {"min": 0.16, "max": 0.30},
+                "resonance_standard": {"min": 0.05, "max": 0.24},
+                "divergence_light": {"min": 0.0, "max": 0.08},
+                "divergence_none": {"min": 0.0, "max": 0.0},
+            },
+            "volatility": {
+                "ma20_deviation_penalty_threshold": 0.06,
+                "ma20_deviation_penalty": 0.15,
+                "recent_return_penalty_threshold": 0.04,
+                "recent_return_penalty": 0.10,
+                "max_volatility_penalty": 0.28,
+                "hot_rsi_trend_relief_multiplier": 0.60,
+            },
+        },
+    }
+
+
 def _default_scorers() -> dict[str, dict[str, Any]]:
     return {
         "trend_direction": {
@@ -635,7 +715,12 @@ class DualTrackPositionRule:
     tech_score_min: float
     context_score_min: float | None = None
     context_score_max: float | None = None
-    position_ratio: float = 0.0
+    position_ratio_min: float = 0.0
+    position_ratio_max: float = 0.0
+
+    @property
+    def position_ratio(self) -> float:
+        return self.position_ratio_max
 
 
 @dataclass(frozen=True)
@@ -648,6 +733,7 @@ class DualTrackConfig:
     resonance_standard: DualTrackPositionRule
     divergence_light: DualTrackPositionRule
     divergence_none: DualTrackPositionRule
+    resonance_quality_policy: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -771,17 +857,44 @@ class QuantKernelConfig:
             dual_track=DualTrackConfig(
                 veto_threshold=-0.5,
                 extreme_bullish_threshold=0.8,
-                resonance_full=DualTrackPositionRule(tech_score_min=0.75, context_score_min=0.6, position_ratio=1.0),
-                resonance_heavy=DualTrackPositionRule(tech_score_min=0.6, context_score_min=0.6, position_ratio=0.8),
-                resonance_moderate=DualTrackPositionRule(tech_score_min=0.75, context_score_min=0.3, position_ratio=0.6),
-                resonance_standard=DualTrackPositionRule(tech_score_min=0.6, context_score_min=0.3, position_ratio=0.5),
+                resonance_full=DualTrackPositionRule(
+                    tech_score_min=0.75,
+                    context_score_min=0.6,
+                    position_ratio_min=0.45,
+                    position_ratio_max=0.60,
+                ),
+                resonance_heavy=DualTrackPositionRule(
+                    tech_score_min=0.6,
+                    context_score_min=0.6,
+                    position_ratio_min=0.38,
+                    position_ratio_max=0.55,
+                ),
+                resonance_moderate=DualTrackPositionRule(
+                    tech_score_min=0.75,
+                    context_score_min=0.3,
+                    position_ratio_min=0.28,
+                    position_ratio_max=0.50,
+                ),
+                resonance_standard=DualTrackPositionRule(
+                    tech_score_min=0.6,
+                    context_score_min=0.3,
+                    position_ratio_min=0.12,
+                    position_ratio_max=0.45,
+                ),
                 divergence_light=DualTrackPositionRule(
                     tech_score_min=0.75,
                     context_score_min=0.0,
                     context_score_max=0.3,
-                    position_ratio=0.3,
+                    position_ratio_min=0.03,
+                    position_ratio_max=0.18,
                 ),
-                divergence_none=DualTrackPositionRule(tech_score_min=-1.0, context_score_max=0.0, position_ratio=0.0),
+                divergence_none=DualTrackPositionRule(
+                    tech_score_min=-1.0,
+                    context_score_max=0.0,
+                    position_ratio_min=0.0,
+                    position_ratio_max=0.0,
+                ),
+                resonance_quality_policy=_default_resonance_quality_policy(),
             ),
             source_context=SourceContextConfig(
                 default_weight=0.0,

@@ -64,7 +64,7 @@ PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "weight_volume": 0.15,
         "weak_buy_max_score": 0.45,
         "strong_buy_min_score": 0.78,
-        "full_edge": 0.18,
+        "full_edge": 0.10,
         "weak_edge_abs": 0.03,
         "normal_edge_abs": 0.08,
         "strong_edge_abs": 0.14,
@@ -527,9 +527,9 @@ def _late_rebound(metrics: dict[str, Any], trend: dict[str, Any], policy: dict[s
     reasons: list[str] = []
     if not trend.get("ma20_rising") and metrics.get("price", 0.0) > (metrics.get("ma20") or float("inf")):
         reasons.append("MA20 still falling")
-    if int(trend.get("above_ma20_checkpoints") or 0) < int(policy["confirm_checkpoints"]):
-        reasons.append("only one checkpoint above MA20")
-    if not trend.get("ma_stack"):
+    if int(trend.get("above_ma20_checkpoints") or 0) < int(policy["confirm_checkpoints"]) and not trend.get("retest_confirmed"):
+        reasons.append("insufficient checkpoints above MA20")
+    if not trend.get("ma_stack") and not trend.get("retest_confirmed"):
         reasons.append("MA stack not confirmed")
     return bool(reasons), reasons
 
@@ -539,7 +539,9 @@ def _t1_risk(signal: dict[str, Any], trend: dict[str, Any], policy: dict[str, An
     timeframe = str(signal.get("timeframe") or signal.get("analysis_timeframe") or "30m").strip().lower()
     if market not in {"A", "ASHARE", "CN", "CHINA"} or timeframe not in {"30m", "15m", "5m", "1m"}:
         return False
-    return int(trend.get("above_ma20_checkpoints") or 0) < int(policy["t1_confirm_checkpoints"]) and not bool(trend.get("ma20_rising") is False and trend.get("ma_stack"))
+    if trend.get("retest_confirmed"):
+        return False
+    return int(trend.get("above_ma20_checkpoints") or 0) < int(policy["t1_confirm_checkpoints"])
 
 
 def _stock_failure_penalty(profile: dict[str, Any], policy: dict[str, Any]) -> float:
@@ -562,12 +564,15 @@ def _cold_start_state(profile: dict[str, Any], policy: dict[str, Any]) -> dict[s
 
 
 def _trend_structure_score(trend: dict[str, Any], metrics: dict[str, Any]) -> float:
+    above_ma20 = int(trend.get("above_ma20_checkpoints") or 0)
     if trend.get("ma_stack") and trend.get("ma20_rising"):
         return 1.0
-    if trend.get("ma20_rising") and int(trend.get("above_ma20_checkpoints") or 0) > 0:
-        return 0.75
     if trend.get("retest_confirmed"):
         return 0.65
+    if trend.get("ma20_rising") and above_ma20 >= 2:
+        return 0.75
+    if above_ma20 >= 3 and float(metrics.get("ma20_slope") or 0.0) >= 0:
+        return 0.5
     if metrics.get("price") and metrics.get("ma20") and metrics["price"] > metrics["ma20"]:
         return 0.25
     return 0.0

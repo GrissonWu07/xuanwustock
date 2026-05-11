@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../lib/api-client";
+import { setI18nLocale } from "../lib/i18n";
 import { HisReplayPage } from "../features/quant/his-replay-page";
 
 const emptyTable = {
@@ -315,6 +316,7 @@ const completedReplayProgress = {
 };
 
 beforeAll(() => {
+  setI18nLocale("zh-CN");
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     value: vi.fn().mockImplementation(() => ({
@@ -347,6 +349,85 @@ function renderHisReplayPage(client: ApiClient) {
 }
 
 describe("HisReplayPage", () => {
+  it("shows live quant drill lifecycle results", async () => {
+    const drillSnapshot = {
+      ...initialSnapshot,
+      tasks: [
+        {
+          ...initialSnapshot.tasks[0],
+          id: "drill-1",
+          runId: "drill-1",
+          mode: "live_quant_drill",
+          runType: "live_quant_drill",
+          title: "实时量化演练",
+          lifecycleSummary: {
+            initialQuantCount: 20,
+            candidateEventCount: 15,
+            autoPromotedCount: 4,
+            autoExitedCount: 3,
+            exitOnlyCount: 2,
+            coolingCount: 1,
+            retiredCount: 1,
+            dataWarningCount: 0,
+          },
+          lifecycleSeries: [
+            {
+              checkpointAt: "2026-01-05 09:30:00",
+              trialCount: 3,
+              activeCount: 17,
+              exitOnlyCount: 0,
+              coolingCount: 0,
+              retiredCount: 0,
+            },
+            {
+              checkpointAt: "2026-01-05 10:00:00",
+              trialCount: 4,
+              activeCount: 16,
+              exitOnlyCount: 1,
+              coolingCount: 0,
+              retiredCount: 0,
+            },
+          ],
+          candidateEventsTable: {
+            items: [{ stockCode: "600519", stockName: "贵州茅台", sourceType: "low_price", candidateScore: 0.76, reason: "历史低价候选" }],
+            total: 1,
+          },
+          exitEventsTable: {
+            items: [{ stockCode: "600519", fromStatus: "active", toStatus: "exit_only", healthScore: 34, reason: "downtrend_hit" }],
+            total: 1,
+          },
+          finalStatesTable: {
+            items: [{ stockCode: "600519", finalStatus: "exit_only", realizedPnl: 120.5, liquidationPnl: 90.2, stateChangeCount: 2, latestReason: "downtrend_hit" }],
+            total: 1,
+          },
+          dataRisksTable: {
+            items: [{ stockCode: "000001", domain: "candidate_source", provider: "main_force", reason: "source_not_historical" }],
+            total: 1,
+          },
+        },
+      ],
+    };
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(drillSnapshot),
+      runPageAction: vi.fn(),
+    } as unknown as ApiClient;
+
+    renderHisReplayPage(client);
+
+    expect(await screen.findByText("实时量化演练")).toBeInTheDocument();
+    expect(screen.getByText("历史候选事件")).toBeInTheDocument();
+    expect(screen.getByText("15")).toBeInTheDocument();
+    expect(screen.getByText("自动入池")).toBeInTheDocument();
+    const autoPromotedMetric = screen.getByText("自动入池").closest(".mini-metric");
+    expect(autoPromotedMetric).not.toBeNull();
+    expect(within(autoPromotedMetric as HTMLElement).getByText("4")).toBeInTheDocument();
+    expect(screen.getByText("生命周期趋势")).toBeInTheDocument();
+    expect(screen.getByText("入池事件")).toBeInTheDocument();
+    expect(screen.getByText("出池与降级事件")).toBeInTheDocument();
+    expect(screen.getByText("股票最终状态")).toBeInTheDocument();
+    expect(screen.getAllByText("数据风险").length).toBeGreaterThan(0);
+  });
+
   it("loads the initial signal table as BUY/SELL with a ten-row page size", async () => {
     const client = {
       getPageSnapshot: vi.fn().mockResolvedValue(initialSnapshot),

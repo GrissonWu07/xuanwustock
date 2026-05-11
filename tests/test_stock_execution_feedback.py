@@ -527,7 +527,9 @@ def test_signal_center_records_downgrade_without_pre_scaling_position_size(tmp_p
     )
 
     assert downgraded["action"] == "BUY"
-    assert downgraded["position_size_pct"] == 50
+    sizing_plan = downgraded["strategy_profile"]["execution_sizing_plan"]
+    assert sizing_plan["kernel_quality_position_pct"] == 50
+    assert downgraded["position_size_pct"] == sizing_plan["effective_position_pct"]
     gate = downgraded["strategy_profile"]["stock_execution_feedback_gate"]
     assert gate["status"] == "downgraded"
     assert gate["size_multiplier"] == 0.5

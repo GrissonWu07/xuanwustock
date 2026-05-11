@@ -173,10 +173,35 @@ type ExplainabilityPayload = {
   fusion_breakdown?: FusionBreakdown;
   vetoes?: Array<Record<string, unknown>>;
   decision_path?: Array<{ step?: string; matched?: string; detail?: string }>;
+  resonance?: {
+    rule_hit?: string;
+    quality_adjusted_position_ratio?: number | string;
+    signal_quality_score?: number | string;
+    quality_components?: Record<string, unknown>;
+    quality_penalties?: Record<string, unknown>;
+  };
 };
 
 type StrategyProfileSnapshot = {
   explainability?: ExplainabilityPayload;
+  kernel_positioning?: {
+    quality_position_pct?: number | string;
+    rule_hit?: string;
+    signal_quality_score?: number | string;
+    quality_penalties?: unknown;
+  };
+  execution_sizing_plan?: {
+    buy_tier?: string;
+    kernel_quality_position_pct?: number | string;
+    buy_tier_cap_pct?: number | string;
+    lifecycle_cap_pct?: number | string;
+    risk_budget_pct?: number | string;
+    expected_stop_loss_pct?: number | string;
+    effective_position_pct?: number | string;
+    final_budget?: number | string;
+    cap_reasons?: string[];
+    skip_reason?: string;
+  };
   position_sizing?: {
     slot_plan?: {
       slot_count?: number | string;
@@ -856,6 +881,23 @@ function _formatPlainNumber(value: number | null, digits = 2): string {
   return value.toFixed(digits);
 }
 
+function _formatPercentNumber(value: number | null, digits = 2): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "--";
+  }
+  return `${value.toFixed(digits)}%`;
+}
+
+function _formatCurrencyNumber(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "--";
+  }
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 function _formatShareQuantity(value: number | null): string {
   if (value === null || !Number.isFinite(value) || value <= 0) {
     return "--";
@@ -1338,6 +1380,9 @@ export function SignalDetailPage() {
       : t("仓位建议");
   const positionMetricValue = String(decision.action || "").toUpperCase() === "HOLD" ? t("不变") : decision.positionSizePct;
   const strategyExplainability = detail.strategyProfile?.explainability ?? {};
+  const kernelPositioning = detail.strategyProfile?.kernel_positioning;
+  const resonancePositioning = strategyExplainability.resonance;
+  const executionSizingPlan = detail.strategyProfile?.execution_sizing_plan;
   const positionAddGate = detail.strategyProfile?.position_add_gate;
   const positionSizing = detail.strategyProfile?.position_sizing;
   const portfolioExecutionGuard = detail.strategyProfile?.portfolio_execution_guard;
@@ -1426,6 +1471,16 @@ export function SignalDetailPage() {
   const fusionConfidenceGateReasons = weightedGateFailReasons.filter((item) => item.includes("fusion_confidence"));
   const portfolioGuardScore = _parseNumberish(portfolioExecutionGuard?.buy_strength_score);
   const portfolioGuardMultiplier = _parseNumberish(portfolioExecutionGuard?.size_multiplier);
+  const kernelSuggestedPct =
+    _parseNumberish(kernelPositioning?.quality_position_pct)
+    ?? _parseNumberish(executionSizingPlan?.kernel_quality_position_pct)
+    ?? (() => {
+      const ratio = _parseNumberish(resonancePositioning?.quality_adjusted_position_ratio);
+      return ratio === null ? null : ratio * 100;
+    })();
+  const executionEffectivePct = _parseNumberish(executionSizingPlan?.effective_position_pct);
+  const executionFinalBudget = _parseNumberish(executionSizingPlan?.final_budget);
+  const executionRiskBudgetPct = _parseNumberish(executionSizingPlan?.risk_budget_pct);
   const coldStartState = portfolioExecutionGuard?.cold_start;
   const coldStartActive = Boolean(coldStartState?.active);
   const coldStartSampleCount = _parseNumberish(coldStartState?.sample_count);
@@ -1771,6 +1826,28 @@ export function SignalDetailPage() {
                     <span className="signal-detail-summary-stat__label">{positionMetricLabel}</span>
                     <strong className="signal-detail-summary-stat__value">{positionMetricValue}</strong>
                   </div>
+                  {executionSizingPlan || kernelSuggestedPct !== null ? (
+                    <div className="signal-detail-summary-stat">
+                      <span className="signal-detail-summary-stat__label">{t("Kernel 建议仓位")}</span>
+                      <strong className="signal-detail-summary-stat__value">{_formatPercentNumber(kernelSuggestedPct)}</strong>
+                    </div>
+                  ) : null}
+                  {executionSizingPlan ? (
+                    <>
+                      <div className="signal-detail-summary-stat">
+                        <span className="signal-detail-summary-stat__label">{t("最终执行仓位")}</span>
+                        <strong className="signal-detail-summary-stat__value">{_formatPercentNumber(executionEffectivePct)}</strong>
+                      </div>
+                      <div className="signal-detail-summary-stat">
+                        <span className="signal-detail-summary-stat__label">{t("最终预算")}</span>
+                        <strong className="signal-detail-summary-stat__value">{_formatCurrencyNumber(executionFinalBudget)}</strong>
+                      </div>
+                      <div className="signal-detail-summary-stat">
+                        <span className="signal-detail-summary-stat__label">{t("风险预算")}</span>
+                        <strong className="signal-detail-summary-stat__value">{_formatPercentNumber(executionRiskBudgetPct)}</strong>
+                      </div>
+                    </>
+                  ) : null}
                   <div className="signal-detail-summary-stat">
                     <span className="signal-detail-summary-stat__label">{t("执行倍率")}</span>
                     <strong className="signal-detail-summary-stat__value">{_formatMultiplier(positionSizingMultiplier)}</strong>

@@ -338,6 +338,55 @@ def _configure_live_initial_cash_if_present(context: UIApiContext, payload: Any)
     context.portfolio().configure_account(initial_cash=float(initial_cash))
 
 
+def _payload_bool(body: dict[str, Any], camel_key: str, snake_key: str, default: bool) -> bool:
+    value = body.get(camel_key, body.get(snake_key, default))
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"0", "false", "no", "off", "关闭"}:
+        return False
+    if text in {"1", "true", "yes", "on", "开启"}:
+        return True
+    return bool(default)
+
+
+def _action_live_sim_start_drill(context: UIApiContext, payload: Any) -> dict[str, Any]:
+    body = _payload_dict(payload)
+    try:
+        run_id = context.replay_service().enqueue_live_quant_drill(
+            start_datetime=body.get("startDate") or body.get("start_datetime"),
+            end_datetime=body.get("endDate") or body.get("end_datetime"),
+            timeframe=body.get("timeframe", "30m"),
+            market=body.get("market", "CN"),
+            strategy_profile_id=body.get("strategyProfileId") or body.get("strategy_profile_id"),
+            initial_cash=body.get("initialCash") or body.get("initial_cash"),
+            auto_entry_enabled=_payload_bool(body, "autoEntryEnabled", "auto_entry_enabled", True),
+            auto_exit_enabled=_payload_bool(body, "autoExitEnabled", "auto_exit_enabled", True),
+            execute_trades=_payload_bool(body, "executeTrades", "execute_trades", True),
+            liquidate_at_end=_payload_bool(body, "liquidateAtEnd", "liquidate_at_end", True),
+            seed_current_quant_universe=_payload_bool(body, "seedCurrentQuantUniverse", "seed_current_quant_universe", True),
+            generate_historical_candidate_events=_payload_bool(
+                body,
+                "generateHistoricalCandidateEvents",
+                "generate_historical_candidate_events",
+                True,
+            ),
+            candidate_generation_frequency=body.get("candidateGenerationFrequency") or body.get("candidate_generation_frequency", "daily_first_checkpoint"),
+            candidate_generation_checkpoint_interval=int(body.get("candidateGenerationCheckpointInterval", body.get("candidate_generation_checkpoint_interval", 8))),
+            confirm_long_running=_payload_bool(body, "confirmLongRunning", "confirm_long_running", False),
+        )
+    except ValueError as exc:
+        return {"statusCode": 400, "error": str(exc)}
+    return {
+        "runId": run_id,
+        "runType": "live_quant_drill",
+        "status": "queued",
+        "redirect": f"/his-replay?runId={run_id}",
+    }
+
+
 def _action_live_sim_save(context: UIApiContext, payload: Any) -> dict[str, Any]:
     _configure_live_initial_cash_if_present(context, payload)
     updates = _scheduler_update_kwargs(payload)

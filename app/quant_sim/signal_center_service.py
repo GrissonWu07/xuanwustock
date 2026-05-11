@@ -18,6 +18,7 @@ from app.quant_sim.portfolio_execution_guard import (
     evaluate_portfolio_execution_guard,
     normalize_portfolio_execution_guard_policy,
 )
+from app.quant_sim.execution_sizing import build_execution_sizing_plan, default_execution_position_cap_policy
 from app.smart_monitor_db import SmartMonitorDB, DEFAULT_DB_FILE as SMART_MONITOR_DB_FILE
 
 
@@ -52,17 +53,8 @@ class SignalCenterService:
     ) -> dict[str, Any]:
         if mirror_to_ai is None:
             mirror_to_ai = notify
-        payload = self._normalize_decision_payload(decision)
-        payload = self._apply_position_constraints(candidate, payload)
-        payload = self._apply_position_add_gate(candidate, payload)
-        payload = self._apply_reentry_constraints(candidate, payload)
-        payload = self._apply_stock_execution_feedback(candidate, payload)
-        payload = self._apply_portfolio_execution_guard(candidate, payload)
-        payload = self._apply_transaction_cost_constraints(candidate, payload)
-        payload = self._apply_lifecycle_exit_only_guard(candidate, payload)
+        payload = self.build_signal_payload(candidate, decision)
         action = str(payload.get("action", "HOLD")).upper()
-        if action == "HOLD":
-            payload["position_size_pct"] = 0
         status = "pending" if action in {"BUY", "SELL"} else "observed"
         existing_pending_ids = {
             int(item.get("id"))
@@ -101,6 +93,21 @@ class SignalCenterService:
         ):
             self._dispatch_live_signal_notification(candidate, signal, payload)
         return signal
+
+    def build_signal_payload(self, candidate: dict[str, Any], decision: dict[str, Any] | Decision) -> dict[str, Any]:
+        payload = self._normalize_decision_payload(decision)
+        payload = self._apply_position_constraints(candidate, payload)
+        payload = self._apply_position_add_gate(candidate, payload)
+        payload = self._apply_reentry_constraints(candidate, payload)
+        payload = self._apply_stock_execution_feedback(candidate, payload)
+        payload = self._apply_portfolio_execution_guard(candidate, payload)
+        payload = self._apply_execution_sizing_plan(candidate, payload)
+        payload = self._apply_transaction_cost_constraints(candidate, payload)
+        payload = self._apply_lifecycle_exit_only_guard(candidate, payload)
+        action = str(payload.get("action", "HOLD")).upper()
+        if action == "HOLD":
+            payload["position_size_pct"] = 0
+        return payload
 
     @staticmethod
     def _is_default_db_file(db_file: str | Path) -> bool:
@@ -173,7 +180,7 @@ class SignalCenterService:
 
         confidence = SignalCenterService._safe_float(fusion_breakdown.get("fusion_confidence"), None)
         if confidence is not None:
-            normalized["confidence"] = round(confidence * 100 if confidence <= 1 else confidence)
+            normalized["confidence"] = int(confidence * 100 if confidence <= 1 else confidence)
         return normalized
 
     def _apply_position_constraints(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -710,6 +717,122 @@ class SignalCenterService:
                 f"{base_reasoning} 组合执行防守分层：{gate.get('buy_tier_label')}，"
                 f"资金槽执行时将按 {multiplier:.2f} 倍缩放。"
             ).strip()
+        return normalized
+
+    def _apply_execution_sizing_plan(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        if str(normalized.get("action") or "HOLD").upper() != "BUY":
+            return normalized
+
+        strategy_profile = normalized.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            strategy_profile = {}
+        strategy_profile = self._ensure_kernel_positioning(
+            strategy_profile,
+            fallback_position_pct=self._safe_float(normalized.get("position_size_pct"), 0.0) or 0.0,
+        )
+        normalized["strategy_profile"] = strategy_profile
+        selected = (
+            strategy_profile.get("selected_strategy_profile")
+            if isinstance(strategy_profile.get("selected_strategy_profile"), dict)
+            else {}
+        )
+        profile_id = str(
+            selected.get("id")
+            or selected.get("profile_id")
+            or strategy_profile.get("profile_id")
+            or strategy_profile.get("strategy_profile_id")
+            or ""
+        ).strip()
+        policy = default_execution_position_cap_policy(profile_id)
+        summary = self.db.get_account_summary()
+        stock_code = str(candidate.get("stock_code") or normalized.get("stock_code") or normalized.get("code") or "").strip()
+        quant_state = self.db.get_quant_universe_state(stock_code) if stock_code else None
+        quant_status = str((quant_state or {}).get("quant_status") or candidate.get("quant_status") or "active")
+        total_equity = self._safe_float(summary.get("total_equity"), self._safe_float(summary.get("initial_capital"), 0.0)) or 0.0
+        available_cash = self._safe_float(summary.get("available_cash"), self._safe_float(summary.get("cash"), 0.0)) or 0.0
+        slot_available_cash = available_cash
+        try:
+            slots = self.db.get_capital_slots()
+            slot_available_cash = sum(self._safe_float(slot.get("available_cash"), 0.0) or 0.0 for slot in slots) or available_cash
+        except Exception:
+            slot_available_cash = available_cash
+        plan = build_execution_sizing_plan(
+            signal=normalized,
+            total_equity=total_equity,
+            available_cash=available_cash,
+            slot_available_cash=slot_available_cash,
+            quant_status=quant_status,
+            policy=policy,
+            price=self._safe_float(candidate.get("latest_price"), None),
+        )
+
+        strategy_profile["execution_sizing_plan"] = plan
+        normalized["strategy_profile"] = strategy_profile
+        normalized["position_size_pct"] = float(plan["effective_position_pct"])
+        if plan.get("skip_reason"):
+            normalized["action"] = "HOLD"
+            normalized["position_size_pct"] = 0.0
+            normalized["decision_type"] = "execution_sizing_blocked"
+            normalized["reasoning"] = f"{normalized.get('reasoning') or ''} 执行仓位阻断：{plan['skip_reason']}。".strip()
+        return normalized
+
+    @staticmethod
+    def _ensure_kernel_positioning(
+        strategy_profile: dict[str, Any],
+        *,
+        fallback_position_pct: float = 0.0,
+    ) -> dict[str, Any]:
+        normalized = dict(strategy_profile)
+        if isinstance(normalized.get("kernel_positioning"), dict):
+            return normalized
+        explainability = normalized.get("explainability") if isinstance(normalized.get("explainability"), dict) else {}
+        resonance = explainability.get("resonance") if isinstance(explainability.get("resonance"), dict) else {}
+        quality_ratio = resonance.get("quality_adjusted_position_ratio")
+        if quality_ratio is not None:
+            try:
+                quality_position_pct = round(float(quality_ratio) * 100.0, 6)
+            except (TypeError, ValueError):
+                quality_position_pct = None
+            if quality_position_pct is not None:
+                normalized["kernel_positioning"] = {
+                    "quality_position_pct": quality_position_pct,
+                    "rule_hit": resonance.get("rule_hit"),
+                    "signal_quality_score": resonance.get("signal_quality_score"),
+                    "quality_components": resonance.get("quality_components") if isinstance(resonance.get("quality_components"), dict) else {},
+                    "quality_penalties": resonance.get("quality_penalties") if isinstance(resonance.get("quality_penalties"), dict) else {},
+                }
+                return normalized
+
+        guard = (
+            normalized.get("portfolio_execution_guard")
+            if isinstance(normalized.get("portfolio_execution_guard"), dict)
+            else {}
+        )
+        has_structured_strategy_context = bool(
+            normalized.get("selected_strategy_profile")
+            or normalized.get("explainability")
+        )
+        if not has_structured_strategy_context:
+            return normalized
+        buy_strength = SignalCenterService._safe_float(guard.get("buy_strength_score"), None)
+        if buy_strength is None:
+            return normalized
+        buy_tier = str(guard.get("buy_tier") or "").strip().lower()
+        if buy_tier not in {"weak_buy", "normal_buy", "strong_buy"} and buy_strength <= 0:
+            return normalized
+        strength = SignalCenterService._clamp(buy_strength, 0.0, 1.0)
+        quality_position_pct = round(max(0.0, fallback_position_pct) * strength, 6)
+        normalized["kernel_positioning"] = {
+            "quality_position_pct": quality_position_pct,
+            "rule_hit": "non_resonance_guard_quality",
+            "signal_quality_score": round(strength, 6),
+            "quality_components": {
+                "buy_strength_score": round(strength, 6),
+                "raw_position_pct": round(max(0.0, fallback_position_pct), 6),
+            },
+            "quality_penalties": {},
+        }
         return normalized
 
     def _portfolio_execution_guard_policy(self, strategy_profile: dict[str, Any]) -> dict[str, Any]:

@@ -80,6 +80,15 @@ def _seed_research_result(base_dir: Path) -> None:
                     "name": "贵州茅台",
                     "source": "智策板块",
                     "latestPrice": "1453.96",
+                },
+                {
+                    "id": "000001",
+                    "cells": ["000001", "平安银行", "新闻流量", "高关注"],
+                    "actions": [{"label": "加入我的关注", "icon": "⭐", "tone": "accent"}],
+                    "code": "000001",
+                    "name": "平安银行",
+                    "source": "新闻流量",
+                    "latestPrice": "10.12",
                 }
             ],
             "emptyLabel": "暂无股票输出",
@@ -676,7 +685,7 @@ def test_discover_snapshot_aggregates_multiple_selector_results(tmp_path, monkey
     assert {"600519", "000001"}.issubset(candidate_codes)
 
     replay = client.get("/api/v1/quant/his-replay").json()
-    assert replay["candidatePool"]["columns"] == ["股票代码", "股票名称", "最新价格"]
+    assert replay["candidatePool"]["columns"] == ["股票代码", "股票名称"]
     for row in replay["candidatePool"]["rows"]:
         assert "actions" not in row or not row["actions"]
 

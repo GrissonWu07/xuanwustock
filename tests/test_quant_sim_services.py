@@ -506,7 +506,9 @@ def test_signal_center_marks_position_buy_as_add_and_uses_target_delta(tmp_path)
     assert gate["intent"] == "position_add"
     assert gate["status"] == "passed"
     assert gate["target_position_pct"] == 20.0
-    assert gate["add_position_delta_pct"] == add_signal["position_size_pct"]
+    assert gate["add_position_delta_pct"] == 14.81
+    assert add_signal["strategy_profile"]["execution_sizing_plan"]["kernel_quality_position_pct"] == 14.81
+    assert add_signal["strategy_profile"]["execution_sizing_plan"]["effective_position_pct"] == add_signal["position_size_pct"]
 
 
 def test_signal_center_blocks_position_add_when_gate_fails(tmp_path):
@@ -607,6 +609,7 @@ def test_signal_center_downgrades_short_profit_sell_reentry_size(tmp_path):
     candidate_service = CandidatePoolService(db_file=db_file)
     signal_service = SignalCenterService(db_file=db_file)
     portfolio_service = PortfolioService(db_file=db_file)
+    signal_service.db.reset_runtime_state(initial_cash=600000)
 
     candidate_service.add_manual_candidate("300857", "协创数据", "main_force", latest_price=180.59)
     candidate = candidate_service.list_candidates()[0]
@@ -653,16 +656,18 @@ def test_signal_center_downgrades_short_profit_sell_reentry_size(tmp_path):
 
     gate = reentry["strategy_profile"]["reentry_gate"]
     assert reentry["action"] == "BUY"
-    assert reentry["position_size_pct"] == 50
+    assert reentry["position_size_pct"] < 50
     assert gate["status"] == "downgraded"
     assert gate["last_sell_trigger"] == "profit_tech_sell"
     assert gate["size_multiplier"] == 0.5
+    assert reentry["strategy_profile"]["execution_sizing_plan"]["effective_position_pct"] == reentry["position_size_pct"]
 
 
 def test_signal_center_blocks_extreme_overheat_buy_even_without_profit_reentry(tmp_path):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
     signal_service = SignalCenterService(db_file=db_file)
+    signal_service.db.reset_runtime_state(initial_cash=600000)
 
     candidate_service.add_manual_candidate("300857", "协创数据", "main_force", latest_price=147.35)
     candidate = candidate_service.list_candidates()[0]
@@ -702,6 +707,7 @@ def test_signal_center_allows_hot_buy_with_reduced_size_when_trend_confirmed(tmp
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
     signal_service = SignalCenterService(db_file=db_file)
+    signal_service.db.reset_runtime_state(initial_cash=600000)
 
     candidate_service.add_manual_candidate("300857", "协创数据", "main_force", latest_price=140.61)
     candidate = candidate_service.list_candidates()[0]
@@ -728,6 +734,7 @@ def test_signal_center_allows_hot_buy_with_reduced_size_when_trend_confirmed(tmp
 
     gate = hot["strategy_profile"]["reentry_gate"]
     assert hot["action"] == "BUY"
-    assert hot["position_size_pct"] == 50
+    assert hot["position_size_pct"] < 50
     assert gate["status"] == "downgraded"
     assert gate["size_multiplier"] == 0.5
+    assert hot["strategy_profile"]["execution_sizing_plan"]["effective_position_pct"] == hot["position_size_pct"]
