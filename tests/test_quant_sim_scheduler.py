@@ -426,11 +426,11 @@ def test_live_scan_supplements_cooling_when_below_min_coverage(tmp_path):
     assert [item["stock_code"] for item in supplemental] == ["600005", "600003", "600004", "600007"]
 
 
-def test_scheduler_opportunistic_review_restores_cooling_from_checkpoint_signal(tmp_path, monkeypatch):
+def test_scheduler_opportunistic_review_keeps_cooling_without_consecutive_confirmation(tmp_path, monkeypatch):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
     candidate_service.add_manual_candidate("600000", "浦发银行", "manual")
-    candidate_service.db.upsert_quant_universe_state("600000", {"quant_status": "cooling", "health_score": 20})
+    candidate_service.db.upsert_quant_universe_state("600000", {"quant_status": "cooling", "health_score": 100})
     scheduler = QuantSimScheduler(db_file=db_file)
     monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
     scheduler.engine.analyze_active_candidates = Mock(return_value=[])
@@ -462,7 +462,7 @@ def test_scheduler_opportunistic_review_restores_cooling_from_checkpoint_signal(
 
     assert result["candidates_scanned"] == 1
     assert result["cooling_reviewed"] == 1
-    assert candidate_service.db.get_quant_universe_state("600000")["quant_status"] == "trial"
+    assert candidate_service.db.get_quant_universe_state("600000")["quant_status"] == "cooling"
 
 
 def test_scheduler_opportunistic_review_skips_cooling_until_and_recent_reviews(tmp_path, monkeypatch):

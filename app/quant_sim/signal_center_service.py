@@ -769,6 +769,8 @@ class SignalCenterService:
             or (trend.get("ma20_rising") and above_ma20 >= 3)
             or confirmation_score >= 0.75
         )
+        if str(gate.get("mode") or "").strip().lower() == "cooling_supplemental":
+            return buy_tier == "strong_buy" and buy_strength >= threshold and trend_confirmed
         return buy_strength >= threshold and (buy_tier == "strong_buy" or trend_confirmed)
 
     def _apply_execution_sizing_plan(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:

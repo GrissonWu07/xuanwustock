@@ -537,10 +537,14 @@ def resolve_next_status(
     if current == QuantStatus.COOLING:
         if cooling_min_dwell_active:
             return _blocked(current, "cooling_min_dwell_active", "冷却最短停留期未结束")
-        if health_score >= policy.cooling_threshold and trend_confirmed:
+        if (
+            health_score >= policy.active_upgrade_threshold
+            and trend_confirmed
+            and active_trend_confirm_checkpoints >= policy.active_upgrade_confirm_checkpoints
+        ):
             return _transition(current, QuantStatus.TRIAL, "cooling_recovered_to_trial", "冷却复评趋势恢复，回到 trial")
         if downtrend_streak >= policy.downtrend_cooling_streak:
-            return _transition(current, QuantStatus.RETIRED, "cooling_persisted_to_retired", "冷却后仍持续下行，退出自动量化")
+            return _blocked(current, "cooling_downtrend_soft_gate", "冷却后仍持续下行，保持冷却并使用补充扫描 gate")
         return _blocked(current, "cooling_recovery_not_confirmed", "冷却复评未满足趋势恢复")
     return _blocked(current, "no_transition", "未满足状态流转条件")
 

@@ -429,10 +429,17 @@ def test_resolve_cooling_to_trial_requires_checkpoint_health_and_trend_confirmat
         trend_confirmed=False,
         policy=policy,
     )
-    restored = resolve_next_status(
+    weak_recovery = resolve_next_status(
         current_status=QuantStatus.COOLING,
         health_score=policy.cooling_threshold + 10,
         trend_confirmed=True,
+        policy=policy,
+    )
+    restored = resolve_next_status(
+        current_status=QuantStatus.COOLING,
+        health_score=policy.active_upgrade_threshold,
+        trend_confirmed=True,
+        active_trend_confirm_checkpoints=policy.active_upgrade_confirm_checkpoints,
         policy=policy,
     )
 
@@ -440,6 +447,8 @@ def test_resolve_cooling_to_trial_requires_checkpoint_health_and_trend_confirmat
     assert dwell_blocked.reason_code == "cooling_min_dwell_active"
     assert blocked.allowed is False
     assert blocked.reason_code == "cooling_recovery_not_confirmed"
+    assert weak_recovery.allowed is False
+    assert weak_recovery.reason_code == "cooling_recovery_not_confirmed"
     assert restored.allowed is True
     assert restored.to_status == QuantStatus.TRIAL
     assert restored.reason_code == "cooling_recovered_to_trial"
@@ -1017,7 +1026,7 @@ def test_manager_update_after_signal_restores_cooling_from_checkpoint_trend(tmp_
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
     manager = _manager(tmp_path, policy)
     manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
-    manager.db.upsert_quant_universe_state("600000", {"quant_status": "cooling", "health_score": 20})
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "cooling", "health_score": policy.active_upgrade_threshold})
 
     signal = {
         "action": "BUY",
@@ -1032,7 +1041,12 @@ def test_manager_update_after_signal_restores_cooling_from_checkpoint_trend(tmp_
         },
     }
 
-    result = manager.update_after_signal("600000", latest_signal=signal, recent_signals=[signal], position=None)
+    result = manager.update_after_signal(
+        "600000",
+        latest_signal=signal,
+        recent_signals=[signal] * policy.active_upgrade_confirm_checkpoints,
+        position=None,
+    )
 
     assert result["status_changed"] is True
     assert result["old_status"] == "cooling"
@@ -1289,7 +1303,7 @@ def test_manager_update_after_signal_sets_cooling_until_when_entering_cooling(tm
     assert state["cooling_until"] == "2026-01-08T02:00:00Z"
 
 
-def test_manager_update_after_signal_sets_retired_at_when_entering_retired(tmp_path):
+def test_manager_update_after_signal_keeps_cooling_soft_gated_on_persistent_downtrend(tmp_path):
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
     manager = _manager(tmp_path, policy)
     manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
@@ -1319,10 +1333,11 @@ def test_manager_update_after_signal_sets_retired_at_when_entering_retired(tmp_p
     result = manager.update_after_signal("600000", latest_signal=signal, recent_signals=[signal], position=None)
     state = manager.db.get_quant_universe_state("600000")
 
-    assert result["status_changed"] is True
-    assert result["new_status"] == "retired"
-    assert state["retired_at"] == "2026-01-05T02:00:00Z"
-    assert state["retire_reason"] == "cooling_persisted_to_retired"
+    assert result["status_changed"] is False
+    assert result["new_status"] == "cooling"
+    assert state["retired_at"] is None
+    assert state["retire_reason"] is None
+    assert state["quant_status"] == "cooling"
 
 
 def test_manager_update_after_signal_blocks_exit_only_on_same_day_as_buy(tmp_path):

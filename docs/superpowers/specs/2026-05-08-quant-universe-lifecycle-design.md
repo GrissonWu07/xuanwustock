@@ -167,7 +167,7 @@ Owner: Codex
 3. `retired` 不参与常规扫描，只响应新的高质量候选事件或用户手工恢复
 4. 有 live-sim 持仓的股票，禁止直接从 `trial / active` 跳到 `cooling / retired`
 5. 有 live-sim 持仓且进入下行防守时，必须先进入 `exit_only`
-6. `health_score` 只影响 gate、排序和解释，不得单独触发 `trial/active -> cooling/retired`
+6. `health_score` 只影响 gate、排序和解释，不得单独触发 `trial/active -> cooling`，也不得触发 `cooling -> retired`
 
 ### 6.3 合法流转
 
@@ -183,17 +183,17 @@ Owner: Codex
 8. `exit_only -> trial`
 9. `exit_only -> active`
 10. `cooling -> trial`
-11. `cooling -> retired`
-12. `retired -> trial`
-13. `any managed state -> manual_paused`
-14. `manual_paused -> trial | active | cooling`（仅用户手工触发）
+11. `retired -> trial`
+12. `any managed state -> manual_paused`
+13. `manual_paused -> trial | active | cooling`（仅用户手工触发）
 
 禁止：
 
 1. `active -> retired` 直接一步跳转
 2. `trial -> retired` 直接一步跳转
-3. `cooling -> active` 直接跳转，必须先回 `trial`
-4. `manual_paused` 被系统自动恢复
+3. `cooling -> retired` 自动跳转；`cooling` 是 soft gate，不得因为持续下行被系统批量退休
+4. `cooling -> active` 直接跳转，必须先回 `trial`
+5. `manual_paused` 被系统自动恢复
 
 补充恢复约束：
 
@@ -308,7 +308,7 @@ Owner: Codex
 2. `trial_upgraded_to_active`
 3. `active_downgraded_to_exit_only`
 4. `trial_downgraded_to_cooling`
-5. `cooling_to_retired`
+5. `manual_force_exit_to_retired`
 6. `retired_reactivated_to_trial`
 7. `manual_pause`
 8. `manual_resume`
@@ -566,7 +566,8 @@ Owner: Codex
    - `max_position_pct` 下调
    - 补充扫描排序靠后
    - UI 风险解释增强
-3. `trial / active -> cooling / retired` 必须由行情确认的连续 `downtrend_hit` 或用户手工操作触发。
+3. `trial / active -> cooling` 必须由行情确认的连续 `downtrend_hit` 触发。
+4. `retired` 只能由用户强制出池或显式管理操作触发，不能由 `cooling` 自动批量触发。
 
 ### 10.2 构成
 
@@ -706,7 +707,7 @@ Owner: Codex
 规则：
 
 1. `weakening_warning` 增加预警计数，不直接把股票移出量化
-2. `downtrend_hit` 才参与 `exit_only / cooling / retired` 的状态判断
+2. `downtrend_hit` 只参与 `exit_only / cooling` 的状态判断，不得自动推动 `cooling -> retired`
 
 默认 profile 建议：
 
@@ -774,11 +775,10 @@ Owner: Codex
 
 触发条件：
 
-1. 已处于 `cooling`
-2. 已满足 `cooling_min_dwell_days`
-3. 在冷却期后仍连续出现 `downtrend_hit`
-4. 一段时间内无新的有效候选事件支持
-5. 进入 `retired` 后不会破坏最小扫描覆盖；若会破坏，则继续保持 `cooling` 并带更严格 gate
+1. 用户手工强制出池，且当前无 live-sim 持仓
+2. 用户手工强制出池时仍有持仓，则先进入 `exit_only`；持仓清空后再进入 `retired`
+3. 系统自动流程不得因为 `cooling` 持续下行批量进入 `retired`
+4. `cooling` 冷却期后仍持续下行时，继续保持 `cooling`，并通过 `cooling_supplemental_gate` 提高 BUY 门槛、压缩仓位上限和降低扫描优先级
 
 效果：
 
@@ -793,11 +793,13 @@ Owner: Codex
 满足：
 
 1. 冷却期已结束
-2. 补充扫描或复评 checkpoint 中，趋势结构重新满足最低入场条件
-3. `health_score >= cooling_threshold` 可作为排序和解释条件，但不是唯一恢复条件
-4. 若同时出现新候选事件，可用于排序和 UI 解释，但不是恢复的必要条件
-5. 若 cooling 股票被新的历史候选事件或实时发现事件重新命中，只能提高补充扫描优先级；不能仅凭候选来源直接恢复到 `trial`
-6. 恢复成功后只能进入 `trial`，不能直接进入 `active`
+2. 补充扫描或复评 checkpoint 中，趋势结构重新满足 active 级恢复条件
+3. `health_score >= active_upgrade_threshold`
+4. 连续趋势确认数量 `active_trend_confirm_checkpoints >= active_upgrade_confirm_checkpoints`
+5. `health_score >= cooling_threshold` 只作为排序和解释条件，不足以单独恢复
+6. 若同时出现新候选事件，可用于排序和 UI 解释，但不是恢复的必要条件
+7. 若 cooling 股票被新的历史候选事件或实时发现事件重新命中，只能提高补充扫描优先级；不能仅凭候选来源直接恢复到 `trial`
+8. 恢复成功后只能进入 `trial`，不能直接进入 `active`
 
 补充扫描与复评要求：
 
@@ -816,7 +818,8 @@ Owner: Codex
    - `ma20_reclaim_score * 0.20`
    - `recent_candidate_support_score * 0.10`
 6. 补充扫描股票可以产生 BUY 信号，但必须应用更严格的 `cooling_supplemental_gate`。
-7. 若补充扫描产生可执行 BUY 或强恢复信号，状态应恢复为 `trial` 并写入 `cooling_recovered_to_trial` 事件；恢复事件必须包含行情确认理由，而不能只写候选来源。
+7. `cooling_supplemental_gate` 下的 BUY 必须同时满足 `buy_tier = strong_buy`、`buy_strength_score >= 0.45 + buy_threshold_delta`、趋势确认成立；`weak_buy` 或“背离试探”即使站上均线也必须转为 HOLD。
+8. 只有补充扫描产生强恢复信号，并满足 active 级健康分与连续趋势确认时，状态才恢复为 `trial` 并写入 `cooling_recovered_to_trial` 事件；恢复事件必须包含行情确认理由，而不能只写候选来源。
 
 ### 12.2 `retired -> trial`
 
@@ -1163,7 +1166,7 @@ Phase 2 可新增高级选项：
    - 不影响信号 / 成交 / 持仓 Tab
 2. 系统级 `生命周期管理 / 自动入池模式 / 自动出池` 只在 `/settings` 修改；`/live-sim` 不提供这些编辑控件
 3. `/settings` 修改后只影响后续新产生的候选事件和生命周期推进，不回溯改写已存在股票状态
-4. `自动出池` 关闭后仍计算 `health_score` 并展示 weakening/downtrend，但不自动执行 `trial/active/exit_only -> cooling/retired`
+4. `自动出池` 关闭后仍计算 `health_score` 并展示 weakening/downtrend，但不自动执行 `trial/active/exit_only -> cooling`；`retired` 仅由手工强制出池产生
 5. `quant_auto_managed` 开关
    - 放在每行操作列，不做全局总开关
    - 关闭自动管理时弹二次确认
@@ -1642,13 +1645,13 @@ python scripts/reset_stock_universe_deployment.py --yes --recreate
 2. `trial -> active`
 3. `active -> exit_only`
 4. `active -> cooling`
-5. `cooling -> retired`
+5. 用户强制出池进入 `retired`
 6. `retired -> trial` 高门槛复活
 7. 有持仓股票不会直接跳过 `exit_only`
 8. `manual_pause / manual_ban / manual_pin` 覆盖行为
 9. 历史回放仍只记录 `quant_enabled=1` 的任务股票范围快照
 10. `cooling` 股票在默认主扫描覆盖不足时进入补充扫描，并应用 `cooling_supplemental_gate`
-11. `health_score` 低但没有连续 `downtrend_hit` 时，不得触发 `trial/active -> cooling/retired`
+11. `health_score` 低但没有连续 `downtrend_hit` 时，不得触发 `trial/active -> cooling`；任何自动流程都不得触发 `cooling -> retired`
 12. `min_scan_coverage` 生效：aggressive 演练中默认主扫描 + 补充扫描 + exit_only 覆盖不得长期低于 6
 
 ## 23. 推荐落地顺序
@@ -1661,7 +1664,7 @@ python scripts/reset_stock_universe_deployment.py --yes --recreate
 2. `health_score`、`weakening_warning`、`downtrend_hit`
 3. `lifecycle_gate` 与执行层 BUY 门槛/仓位裁剪
 4. `min_scan_coverage` 与 `cooling` 补充扫描
-5. `exit_only / cooling / retired` 慢速降级机制
+5. `exit_only / cooling` 慢速降级机制，`retired` 仅保留为手工强制出池状态
 6. 工作台与 `/live-sim` 的状态展示
 7. 候选事件写入与候选分计算
 8. `trial` 自动纳入

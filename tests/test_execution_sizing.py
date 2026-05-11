@@ -297,6 +297,62 @@ def test_create_signal_blocks_cooling_buy_without_strong_lifecycle_confirmation(
     assert signal["decision_type"] == "lifecycle_gate_blocked"
 
 
+def test_create_signal_blocks_cooling_weak_buy_even_with_trend_confirmation(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    db.upsert_quant_universe_state("600000", {"stock_name": "浦发银行", "quant_status": "cooling", "health_score": 35})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {
+            "stock_code": "600000",
+            "stock_name": "浦发银行",
+            "latest_price": 10.0,
+            "lifecycle_gate": {
+                "mode": "cooling_supplemental",
+                "requires_strong_confirmation": True,
+                "buy_threshold_delta": 0.12,
+                "size_multiplier": 0.2,
+                "max_position_pct": 3.0,
+            },
+        },
+        {
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "test",
+            "position_size_pct": 50.0,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "kernel_positioning": {"quality_position_pct": 50.0},
+                "portfolio_execution_guard": {
+                    "buy_tier": "weak_buy",
+                    "buy_strength_score": 0.7,
+                    "trend_confirmation": {"ma_stack": True},
+                },
+            },
+        },
+        notify=False,
+    )
+
+    assert signal["action"] == "HOLD"
+    assert signal["decision_type"] == "lifecycle_gate_blocked"
+
+
+def test_cooling_supplemental_strong_confirmation_rejects_weak_tier():
+    assert SignalCenterService._lifecycle_gate_has_strong_confirmation(
+        {
+            "portfolio_execution_guard": {
+                "buy_tier": "weak_buy",
+                "buy_strength_score": 0.9,
+                "trend_confirmation": {"ma_stack": True},
+            }
+        },
+        {"mode": "cooling_supplemental", "buy_threshold_delta": 0.12},
+    ) is False
+
+
 def test_create_signal_backfills_kernel_positioning_from_resonance(tmp_path):
     db_path = tmp_path / "quant.db"
     db = QuantSimDB(db_path)
