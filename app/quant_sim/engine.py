@@ -20,7 +20,7 @@ from app.quant_sim.dynamic_strategy import (
     DynamicStrategyController,
 )
 from app.quant_sim.portfolio_service import PortfolioService
-from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, build_lifecycle_gate
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.stockpolicy_adapter import StockPolicyAdapter
 from app.watchlist_service import WatchlistService
@@ -172,6 +172,7 @@ class QuantSimEngine:
         ai_dynamic_strength: float | None = None,
         ai_dynamic_lookback: int | None = None,
         exclude_codes: set[str] | None = None,
+        candidates_override: list[dict[str, Any]] | None = None,
         current_time: datetime | None = None,
     ) -> list[dict]:
         dynamic_mode = (
@@ -192,7 +193,14 @@ class QuantSimEngine:
             profile_binding = self._resolve_strategy_binding(**resolve_kwargs)
         signals = []
         blocked = {str(code).strip() for code in (exclude_codes or set()) if str(code).strip()}
-        for candidate in self.list_live_scan_candidates(exclude_codes=blocked):
+        scan_policy = self._quant_lifecycle_policy_from_binding(
+            profile_binding if isinstance(profile_binding, dict) else {"profile_id": strategy_profile_id or ""}
+        )
+        selected_candidates = candidates_override if candidates_override is not None else self.list_live_scan_candidates(
+            exclude_codes=blocked,
+            policy=scan_policy,
+        )
+        for candidate in selected_candidates:
             code = str(candidate.get("stock_code") or "").strip()
             candidate_kwargs = {
                 "analysis_timeframe": analysis_timeframe,
@@ -274,19 +282,81 @@ class QuantSimEngine:
             signals.append(signal)
         return signals
 
-    def list_live_scan_candidates(self, *, exclude_codes: set[str] | None = None) -> list[dict[str, Any]]:
+    def list_live_scan_candidates(
+        self,
+        *,
+        exclude_codes: set[str] | None = None,
+        policy: QuantUniverseLifecyclePolicy | None = None,
+    ) -> list[dict[str, Any]]:
+        lifecycle_policy = policy or QuantUniverseLifecyclePolicy.stable_defaults()
         blocked = {str(code).strip() for code in (exclude_codes or set()) if str(code).strip()}
-        candidates = self.candidate_pool.list_candidates(
+        normal_candidates = self.candidate_pool.list_candidates(
             status="active",
             quant_statuses=LIVE_SCAN_QUANT_STATUSES,
         )
-        if not blocked:
-            return candidates
-        return [
-            candidate
-            for candidate in candidates
+        normal_candidates = [
+            self._with_lifecycle_gate(candidate, lifecycle_policy)
+            for candidate in normal_candidates
             if str(candidate.get("stock_code") or "").strip() not in blocked
         ]
+        normal_candidates.sort(key=self._normal_scan_sort_key)
+        needed = max(0, int(lifecycle_policy.min_scan_coverage or 0) - len(normal_candidates))
+        if needed <= 0:
+            return normal_candidates
+
+        cooling_candidates = self.candidate_pool.list_candidates(status="active", quant_statuses=("cooling",))
+        cooling_candidates = [
+            self._with_lifecycle_gate(candidate, lifecycle_policy, supplemental=True)
+            for candidate in cooling_candidates
+            if str(candidate.get("stock_code") or "").strip() not in blocked
+        ]
+        cooling_candidates.sort(key=self._cooling_supplemental_sort_key)
+        return [*normal_candidates, *cooling_candidates[:needed]]
+
+    def _with_lifecycle_gate(
+        self,
+        candidate: dict[str, Any],
+        policy: QuantUniverseLifecyclePolicy,
+        *,
+        supplemental: bool = False,
+    ) -> dict[str, Any]:
+        row = dict(candidate)
+        code = str(row.get("stock_code") or "").strip()
+        state = self.candidate_pool.db.get_quant_universe_state(code) if code else None
+        if isinstance(state, dict):
+            for key in (
+                "quant_status",
+                "health_score",
+                "candidate_score",
+                "last_health_evaluated_at",
+                "candidate_confidence",
+                "downtrend_streak",
+                "weakening_warning_streak",
+                "cooling_until",
+            ):
+                if state.get(key) not in (None, ""):
+                    row[key] = state.get(key)
+        row["lifecycle_gate"] = build_lifecycle_gate(
+            row.get("quant_status") or "active",
+            policy,
+            supplemental=supplemental,
+        )
+        return row
+
+    @staticmethod
+    def _normal_scan_sort_key(candidate: dict[str, Any]) -> tuple[int, float, str]:
+        status_order = {"active": 0, "trial": 1, "exit_only": 2}
+        status = str(candidate.get("quant_status") or "").strip().lower()
+        health = float(candidate.get("health_score") or 0)
+        return (status_order.get(status, 9), -health, str(candidate.get("stock_code") or ""))
+
+    @staticmethod
+    def _cooling_supplemental_sort_key(candidate: dict[str, Any]) -> tuple[int, float, float, str, str]:
+        score = float(candidate.get("candidate_score") or 0)
+        support = 1 if score > 0 else 0
+        health = float(candidate.get("health_score") or 0)
+        last_eval = str(candidate.get("last_health_evaluated_at") or "")
+        return (-support, -score, -health, last_eval, str(candidate.get("stock_code") or ""))
 
     @staticmethod
     def _quant_lifecycle_policy_from_binding(strategy_profile_binding: dict | None) -> QuantUniverseLifecyclePolicy:

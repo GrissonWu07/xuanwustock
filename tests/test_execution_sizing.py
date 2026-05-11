@@ -121,6 +121,65 @@ def test_weak_buy_skips_when_one_lot_cost_exceeds_budget():
     assert plan["skip_reason"] == "weak_buy_one_lot_exceeds_risk_budget"
 
 
+def test_cooling_supplemental_lifecycle_gate_caps_position():
+    policy = default_execution_position_cap_policy("aggressive")
+    plan = build_execution_sizing_plan(
+        signal={
+            "position_size_pct": 50.0,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "portfolio_execution_guard": {"buy_tier": "strong_buy", "buy_strength_score": 0.8},
+                "kernel_positioning": {"quality_position_pct": 50.0},
+                "lifecycle_gate": {
+                    "mode": "cooling_supplemental",
+                    "size_multiplier": 0.2,
+                    "max_position_pct": 3.0,
+                    "buy_blocked": False,
+                    "requires_strong_confirmation": True,
+                },
+            },
+        },
+        total_equity=400000,
+        available_cash=300000,
+        slot_available_cash=300000,
+        quant_status="cooling",
+        policy=policy,
+        price=10.0,
+    )
+
+    assert plan["lifecycle_gate_mode"] == "cooling_supplemental"
+    assert plan["lifecycle_gate_adjusted_position_pct"] == 10.0
+    assert plan["lifecycle_gate_max_position_pct"] == 3.0
+    assert plan["effective_position_pct"] == 3.0
+    assert plan["final_budget"] == 12000.0
+    assert "lifecycle_gate_max_position_pct" in plan["cap_reasons"]
+
+
+def test_exit_only_lifecycle_gate_blocks_buy():
+    policy = default_execution_position_cap_policy("aggressive")
+    plan = build_execution_sizing_plan(
+        signal={
+            "position_size_pct": 20.0,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "portfolio_execution_guard": {"buy_tier": "strong_buy"},
+                "kernel_positioning": {"quality_position_pct": 20.0},
+                "lifecycle_gate": {"mode": "exit_only", "buy_blocked": True, "size_multiplier": 0.0, "max_position_pct": 0.0},
+            },
+        },
+        total_equity=400000,
+        available_cash=300000,
+        slot_available_cash=300000,
+        quant_status="exit_only",
+        policy=policy,
+        price=10.0,
+    )
+
+    assert plan["effective_position_pct"] == 0.0
+    assert plan["final_budget"] == 0.0
+    assert plan["skip_reason"] == "exit_only_buy_blocked"
+
+
 def test_create_signal_attaches_execution_sizing_plan(tmp_path):
     db_path = tmp_path / "quant.db"
     db = QuantSimDB(db_path)
@@ -152,6 +211,90 @@ def test_create_signal_attaches_execution_sizing_plan(tmp_path):
     assert profile["execution_sizing_plan"]["buy_tier"] == "weak_buy"
     assert profile["execution_sizing_plan"]["effective_position_pct"] == 3.0
     assert signal["position_size_pct"] == profile["execution_sizing_plan"]["effective_position_pct"]
+
+
+def test_create_signal_copies_candidate_lifecycle_gate_into_profile(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "cooling", "health_score": 35})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {
+            "stock_code": "000001",
+            "stock_name": "平安银行",
+            "latest_price": 10.0,
+            "lifecycle_gate": {
+                "mode": "cooling_supplemental",
+                "size_multiplier": 0.2,
+                "max_position_pct": 3.0,
+                "buy_blocked": False,
+            },
+        },
+        {
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "test",
+            "position_size_pct": 50,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "kernel_positioning": {"quality_position_pct": 50.0},
+                "portfolio_execution_guard": {"buy_tier": "strong_buy", "buy_strength_score": 0.8},
+            },
+        },
+        notify=False,
+    )
+
+    profile = signal["strategy_profile"]
+    assert profile["lifecycle_gate"]["mode"] == "cooling_supplemental"
+    assert profile["execution_sizing_plan"]["effective_position_pct"] == 3.0
+
+
+def test_create_signal_blocks_cooling_buy_without_strong_lifecycle_confirmation(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "cooling", "health_score": 35})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {
+            "stock_code": "000001",
+            "stock_name": "平安银行",
+            "latest_price": 10.0,
+            "lifecycle_gate": {
+                "mode": "cooling_supplemental",
+                "size_multiplier": 0.2,
+                "max_position_pct": 3.0,
+                "buy_threshold_delta": 0.12,
+                "requires_strong_confirmation": True,
+                "buy_blocked": False,
+            },
+        },
+        {
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "test",
+            "position_size_pct": 50,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "kernel_positioning": {"quality_position_pct": 50.0},
+                "portfolio_execution_guard": {
+                    "buy_tier": "normal_buy",
+                    "buy_strength_score": 0.50,
+                    "trend_confirmation": {"ma_stack": False, "retest_confirmed": False, "ma20_rising": True, "above_ma20_checkpoints": 1},
+                    "score_components": {"confirmation_score": 0.3},
+                },
+            },
+        },
+        notify=False,
+    )
+
+    assert signal["action"] == "HOLD"
+    assert signal["decision_type"] == "lifecycle_gate_blocked"
 
 
 def test_create_signal_backfills_kernel_positioning_from_resonance(tmp_path):

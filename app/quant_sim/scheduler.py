@@ -85,13 +85,14 @@ class QuantSimScheduler:
         default_profile_id = self.db.get_default_strategy_profile_id()
         strategy_profile_id = configured_profile_id if configured_profile_id and configured_profile_id != default_profile_id else None
         lifecycle_profile_id = configured_profile_id or default_profile_id
+        lifecycle_policy = self.engine._quant_lifecycle_policy_from_binding({"profile_id": lifecycle_profile_id})
         ai_dynamic_strategy = str(config.get("ai_dynamic_strategy") or DEFAULT_AI_DYNAMIC_STRATEGY).strip().lower()
         ai_dynamic_strength = float(config.get("ai_dynamic_strength") or DEFAULT_AI_DYNAMIC_STRENGTH)
         ai_dynamic_lookback = int(config.get("ai_dynamic_lookback") or DEFAULT_AI_DYNAMIC_LOOKBACK)
         positions = self.portfolio.list_positions()
         held_codes = {str(item.get("stock_code") or "").strip() for item in positions if str(item.get("stock_code") or "").strip()}
         candidates = [
-            item for item in self.engine.list_live_scan_candidates(exclude_codes=held_codes)
+            item for item in self.engine.list_live_scan_candidates(exclude_codes=held_codes, policy=lifecycle_policy)
         ]
         candidate_kwargs = {
             "analysis_timeframe": analysis_timeframe,
@@ -107,6 +108,7 @@ class QuantSimScheduler:
             candidate_kwargs["exclude_codes"] = held_codes
         candidate_signals = self.engine.analyze_active_candidates(
             **candidate_kwargs,
+            candidates_override=candidates,
         )
         position_kwargs = {
             "analysis_timeframe": analysis_timeframe,

@@ -64,6 +64,14 @@ class QuantUniverseLifecyclePolicy:
     cooling_review_interval_minutes: int
     cooling_review_batch_size: int
     retired_reactivation_check_enabled: bool
+    min_scan_coverage: int
+    trial_buy_threshold_delta: float
+    guarded_buy_threshold_delta: float
+    guarded_size_multiplier: float
+    guarded_max_position_pct: float
+    cooling_supplemental_buy_threshold_delta: float
+    cooling_supplemental_size_multiplier: float
+    cooling_supplemental_max_position_pct: float
     trial_position_multiplier: float
     trial_max_position_pct: float
     source_score_weight: float
@@ -110,11 +118,19 @@ class QuantUniverseLifecyclePolicy:
             trial_min_dwell_checkpoints=16,
             trial_cold_start_min_checkpoints=8,
             trial_cold_start_health_floor=45,
-            cooling_min_dwell_days=1,
-            retired_min_dwell_days=7,
+            cooling_min_dwell_days=3,
+            retired_min_dwell_days=14,
             cooling_review_interval_minutes=30,
             cooling_review_batch_size=20,
             retired_reactivation_check_enabled=True,
+            min_scan_coverage=6,
+            trial_buy_threshold_delta=0.03,
+            guarded_buy_threshold_delta=0.08,
+            guarded_size_multiplier=0.35,
+            guarded_max_position_pct=4.0,
+            cooling_supplemental_buy_threshold_delta=0.12,
+            cooling_supplemental_size_multiplier=0.20,
+            cooling_supplemental_max_position_pct=3.0,
             trial_position_multiplier=0.50,
             trial_max_position_pct=12.5,
             source_score_weight=0.40,
@@ -162,11 +178,19 @@ class QuantUniverseLifecyclePolicy:
             trial_min_dwell_checkpoints=24,
             trial_cold_start_min_checkpoints=10,
             trial_cold_start_health_floor=50,
-            cooling_min_dwell_days=2,
-            retired_min_dwell_days=10,
+            cooling_min_dwell_days=5,
+            retired_min_dwell_days=21,
             cooling_review_interval_minutes=60,
             cooling_review_batch_size=12,
             retired_reactivation_check_enabled=True,
+            min_scan_coverage=4,
+            trial_buy_threshold_delta=0.03,
+            guarded_buy_threshold_delta=0.10,
+            guarded_size_multiplier=0.30,
+            guarded_max_position_pct=3.5,
+            cooling_supplemental_buy_threshold_delta=0.15,
+            cooling_supplemental_size_multiplier=0.15,
+            cooling_supplemental_max_position_pct=2.0,
             trial_position_multiplier=0.35,
             trial_max_position_pct=10.0,
             source_score_weight=0.35,
@@ -214,11 +238,19 @@ class QuantUniverseLifecyclePolicy:
             trial_min_dwell_checkpoints=40,
             trial_cold_start_min_checkpoints=12,
             trial_cold_start_health_floor=55,
-            cooling_min_dwell_days=3,
-            retired_min_dwell_days=14,
+            cooling_min_dwell_days=7,
+            retired_min_dwell_days=30,
             cooling_review_interval_minutes=90,
             cooling_review_batch_size=8,
             retired_reactivation_check_enabled=True,
+            min_scan_coverage=2,
+            trial_buy_threshold_delta=0.03,
+            guarded_buy_threshold_delta=0.12,
+            guarded_size_multiplier=0.25,
+            guarded_max_position_pct=3.0,
+            cooling_supplemental_buy_threshold_delta=0.18,
+            cooling_supplemental_size_multiplier=0.10,
+            cooling_supplemental_max_position_pct=1.5,
             trial_position_multiplier=0.25,
             trial_max_position_pct=7.5,
             source_score_weight=0.30,
@@ -396,6 +428,58 @@ def calculate_candidate_score(
     }
 
 
+def build_lifecycle_gate(
+    quant_status: QuantStatus | str,
+    policy: QuantUniverseLifecyclePolicy,
+    *,
+    supplemental: bool = False,
+) -> dict[str, Any]:
+    status = _status(quant_status)
+    if status == QuantStatus.EXIT_ONLY:
+        return {
+            "mode": "exit_only",
+            "buy_threshold_delta": 1.0,
+            "size_multiplier": 0.0,
+            "max_position_pct": 0.0,
+            "requires_strong_confirmation": True,
+            "buy_blocked": True,
+            "reason_code": "exit_only_buy_blocked",
+            "reason_text": "只出场管理禁止新 BUY 和加仓",
+        }
+    if status == QuantStatus.COOLING or supplemental:
+        return {
+            "mode": "cooling_supplemental",
+            "buy_threshold_delta": float(policy.cooling_supplemental_buy_threshold_delta),
+            "size_multiplier": float(policy.cooling_supplemental_size_multiplier),
+            "max_position_pct": float(policy.cooling_supplemental_max_position_pct),
+            "requires_strong_confirmation": True,
+            "buy_blocked": False,
+            "reason_code": "cooling_supplemental_soft_gate",
+            "reason_text": "冷却标的仅作为补充扫描，需更强确认并轻仓",
+        }
+    if status == QuantStatus.TRIAL:
+        return {
+            "mode": "trial_light",
+            "buy_threshold_delta": float(policy.trial_buy_threshold_delta),
+            "size_multiplier": float(policy.trial_position_multiplier),
+            "max_position_pct": float(policy.trial_max_position_pct),
+            "requires_strong_confirmation": False,
+            "buy_blocked": False,
+            "reason_code": "trial_light_soft_gate",
+            "reason_text": "量化初期按轻仓规则试错",
+        }
+    return {
+        "mode": "normal_scan",
+        "buy_threshold_delta": 0.0,
+        "size_multiplier": 1.0,
+        "max_position_pct": None,
+        "requires_strong_confirmation": False,
+        "buy_blocked": False,
+        "reason_code": "normal_scan",
+        "reason_text": "正常扫描",
+    }
+
+
 def resolve_next_status(
     *,
     current_status: QuantStatus | str,
@@ -430,29 +514,13 @@ def resolve_next_status(
             and active_trend_confirm_checkpoints >= policy.active_upgrade_confirm_checkpoints
         ):
             return _transition(current, QuantStatus.ACTIVE, "trial_upgraded_to_active", "trial 趋势确认，升级 active")
-        if (
-            has_position
-            and post_buy_grace_active
-            and (health_score < policy.exit_only_threshold or downtrend_streak >= policy.exit_only_downtrend_streak)
-        ):
+        if has_position and post_buy_grace_active and downtrend_streak >= policy.exit_only_downtrend_streak:
             return _blocked(current, "post_buy_grace_active", "买入当日处于 T+1 保护期，暂不切入只出场管理")
-        if has_position and health_score < policy.exit_only_threshold:
-            if downtrend_streak < policy.exit_only_downtrend_streak:
-                return _blocked(current, "holding_downtrend_not_confirmed", "持仓健康分偏弱，但连续下行确认不足")
-            return _transition(current, QuantStatus.EXIT_ONLY, "holding_downtrend_exit_only", "持仓下行，进入只出场管理")
+        if has_position and health_score < policy.exit_only_threshold and downtrend_streak < policy.exit_only_downtrend_streak:
+            return _blocked(current, "holding_downtrend_not_confirmed", "持仓健康分偏弱，但连续下行确认不足")
         if has_position and downtrend_streak >= policy.exit_only_downtrend_streak:
             return _transition(current, QuantStatus.EXIT_ONLY, "holding_downtrend_exit_only", "持仓下行，进入只出场管理")
-        if (
-            not has_position
-            and health_score < policy.cooling_threshold
-            and downtrend_streak < policy.trial_min_dwell_checkpoints
-        ):
-            return _blocked(current, "trial_min_dwell_not_met", "trial 最短观察检查点不足，暂不进入冷却")
-        if (
-            not has_position
-            and health_score < policy.cooling_threshold
-            and downtrend_streak >= max(policy.downtrend_cooling_streak, policy.trial_min_dwell_checkpoints)
-        ):
+        if not has_position and downtrend_streak >= max(policy.downtrend_cooling_streak, policy.trial_min_dwell_checkpoints):
             return _transition(current, QuantStatus.COOLING, "flat_downtrend_cooling", "空仓且持续下行，进入冷却")
     if current == QuantStatus.EXIT_ONLY:
         if has_position:
@@ -471,7 +539,7 @@ def resolve_next_status(
             return _blocked(current, "cooling_min_dwell_active", "冷却最短停留期未结束")
         if health_score >= policy.cooling_threshold and trend_confirmed:
             return _transition(current, QuantStatus.TRIAL, "cooling_recovered_to_trial", "冷却复评趋势恢复，回到 trial")
-        if health_score < policy.retire_threshold and downtrend_streak >= policy.downtrend_cooling_streak:
+        if downtrend_streak >= policy.downtrend_cooling_streak:
             return _transition(current, QuantStatus.RETIRED, "cooling_persisted_to_retired", "冷却后仍持续下行，退出自动量化")
         return _blocked(current, "cooling_recovery_not_confirmed", "冷却复评未满足趋势恢复")
     return _blocked(current, "no_transition", "未满足状态流转条件")

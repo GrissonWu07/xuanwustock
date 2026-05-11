@@ -288,7 +288,7 @@ def test_engine_scans_only_lifecycle_main_scan_statuses(tmp_path, monkeypatch):
 
     engine.analyze_active_candidates()
 
-    assert scanned == ["600003", "600002", "600001"]
+    assert scanned == ["600002", "600001", "600003", "600004"]
 
 
 def test_engine_does_not_update_lifecycle_health_after_candidate_signal(tmp_path, monkeypatch):

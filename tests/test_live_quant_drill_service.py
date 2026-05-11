@@ -606,6 +606,69 @@ def test_live_quant_drill_daily_first_cooling_review_covers_all_due_cooling(tmp_
     assert result["reviewed"] == 12
 
 
+def test_live_quant_drill_main_scan_supplements_cooling_to_min_coverage(tmp_path):
+    service = QuantSimReplayService(
+        db_file=str(tmp_path / "live.db"),
+        replay_db_file=str(tmp_path / "replay.db"),
+        snapshot_provider=DrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
+    temp_db_file = tmp_path / "temp.db"
+    temp_db = QuantSimDB(str(temp_db_file))
+    candidate_pool = CandidatePoolService(db_file=str(temp_db_file))
+    for code, status, health, score in [
+        ("600001", "trial", 70, 0.0),
+        ("600002", "active", 80, 0.0),
+        ("600003", "cooling", 55, 0.80),
+        ("600004", "cooling", 85, 0.70),
+        ("600005", "cooling", 40, 0.90),
+        ("600006", "cooling", 95, 0.10),
+        ("600007", "cooling", 45, 0.60),
+    ]:
+        candidate_pool.add_manual_candidate(code, code, "manual")
+        temp_db.upsert_quant_universe_state(
+            code,
+            {
+                "quant_status": status,
+                "health_score": health,
+                "candidate_score": score,
+                "last_health_evaluated_at": f"2026-01-04T00:0{int(code[-1])}:00Z",
+            },
+        )
+    engine = QuantSimEngine(
+        db_file=str(temp_db_file),
+        adapter=DrillHoldAdapter(),
+        stock_analysis_context_enabled=False,
+    )
+    portfolio = PortfolioService(db_file=str(temp_db_file))
+    manager = QuantUniverseManager(
+        db=temp_db,
+        profile_id="aggressive",
+        policy=engine._quant_lifecycle_policy_from_binding({"profile_id": "aggressive"}),
+        drill_mode=True,
+    )
+
+    result = service._run_live_quant_drill_main_scan(
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        context={"timeframe": "30m", "market": "CN", "strategy_mode": "live_quant_drill", "execute_trades": False},
+        temp_db=temp_db,
+        engine=engine,
+        portfolio=portfolio,
+        manager=manager,
+    )
+
+    assert result["candidates_scanned"] == manager.policy.min_scan_coverage
+    cooling_signals = [
+        signal for signal in result["signals"]
+        if signal["stock_code"] in {"600003", "600004", "600005", "600007"}
+    ]
+    assert len(cooling_signals) == 4
+    assert all(
+        signal["strategy_profile"]["lifecycle_gate"]["mode"] == "cooling_supplemental"
+        for signal in cooling_signals
+    )
+
+
 def test_live_quant_drill_new_trial_is_scanned_in_same_checkpoint(tmp_path, monkeypatch):
     service = QuantSimReplayService(
         db_file=str(tmp_path / "live.db"),

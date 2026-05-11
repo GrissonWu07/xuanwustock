@@ -185,10 +185,11 @@ def build_execution_sizing_plan(
 ) -> dict[str, Any]:
     tier = _buy_tier(signal)
     status = str(quant_status or "active").strip().lower()
-    if status not in {"trial", "active", "exit_only"}:
+    if status not in {"trial", "active", "exit_only", "cooling", "guarded"}:
         status = "trial"
 
     profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+    lifecycle_gate = profile.get("lifecycle_gate") if isinstance(profile.get("lifecycle_gate"), dict) else {}
     kernel_positioning = profile.get("kernel_positioning") if isinstance(profile.get("kernel_positioning"), dict) else {}
     if not kernel_positioning:
         explainability = profile.get("explainability") if isinstance(profile.get("explainability"), dict) else {}
@@ -201,7 +202,13 @@ def build_execution_sizing_plan(
     risk_budget_pct = _float(policy["single_trade_risk_budget_pct"][tier])
     risk_budget_position_pct = (risk_budget_pct / stop_loss_pct) * 100.0
     buy_tier_cap = _float(policy["buy_tier_cap_pct"][tier])
-    lifecycle_cap = _float(policy["lifecycle_cap_pct"].get(status, policy["lifecycle_cap_pct"]["trial"])[tier])
+    lifecycle_cap_status = status if status in policy["lifecycle_cap_pct"] else "trial"
+    lifecycle_cap = _float(policy["lifecycle_cap_pct"].get(lifecycle_cap_status, policy["lifecycle_cap_pct"]["trial"])[tier])
+    lifecycle_gate_mode = str(lifecycle_gate.get("mode") or "").strip()
+    lifecycle_gate_multiplier = _float(lifecycle_gate.get("size_multiplier"), 1.0)
+    lifecycle_gate_max_pct = lifecycle_gate.get("max_position_pct")
+    lifecycle_gate_adjusted_pct = kernel_pct * lifecycle_gate_multiplier
+    lifecycle_buy_blocked = bool(lifecycle_gate.get("buy_blocked"))
     account_tier = _account_tier(policy, float(total_equity))
     cap_values = {
         "kernel_quality_position_pct": kernel_pct,
@@ -210,6 +217,12 @@ def build_execution_sizing_plan(
         "risk_budget_position_pct": risk_budget_position_pct,
         "account_equity_tier_cap_pct": account_tier["cap_pct"],
     }
+    if lifecycle_gate:
+        cap_values["lifecycle_gate_adjusted_position_pct"] = lifecycle_gate_adjusted_pct
+        if lifecycle_gate_max_pct not in (None, ""):
+            cap_values["lifecycle_gate_max_position_pct"] = max(_float(lifecycle_gate_max_pct), 0.0)
+        if lifecycle_buy_blocked:
+            cap_values["lifecycle_gate_block_pct"] = 0.0
     effective_pct = min(cap_values.values())
     final_budget = min(
         float(total_equity) * effective_pct / 100.0,
@@ -219,6 +232,8 @@ def build_execution_sizing_plan(
     )
     one_lot_cost = max(_float(price), 0.0) * int(lot_size or 100)
     skip_reason = None
+    if lifecycle_buy_blocked:
+        skip_reason = str(lifecycle_gate.get("reason_code") or "exit_only_buy_blocked")
     if tier == "weak_buy" and one_lot_cost > 0 and final_budget < one_lot_cost:
         skip_reason = "weak_buy_one_lot_exceeds_risk_budget"
 
@@ -236,6 +251,12 @@ def build_execution_sizing_plan(
         "skip_reason": skip_reason,
         "cap_reasons": cap_reasons,
         "cap_reason_codes": cap_reason_codes,
+        "lifecycle_gate_mode": lifecycle_gate_mode,
+        "lifecycle_gate_size_multiplier": round(lifecycle_gate_multiplier, 6) if lifecycle_gate else None,
+        "lifecycle_gate_adjusted_position_pct": round(lifecycle_gate_adjusted_pct, 6) if lifecycle_gate else None,
+        "lifecycle_gate_max_position_pct": round(_float(lifecycle_gate_max_pct), 6)
+        if lifecycle_gate and lifecycle_gate_max_pct not in (None, "")
+        else None,
     }
 
 

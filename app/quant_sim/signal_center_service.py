@@ -101,6 +101,7 @@ class SignalCenterService:
         payload = self._apply_reentry_constraints(candidate, payload)
         payload = self._apply_stock_execution_feedback(candidate, payload)
         payload = self._apply_portfolio_execution_guard(candidate, payload)
+        payload = self._apply_lifecycle_gate_profile(candidate, payload)
         payload = self._apply_execution_sizing_plan(candidate, payload)
         payload = self._apply_transaction_cost_constraints(candidate, payload)
         payload = self._apply_lifecycle_exit_only_guard(candidate, payload)
@@ -719,6 +720,57 @@ class SignalCenterService:
             ).strip()
         return normalized
 
+    def _apply_lifecycle_gate_profile(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        gate = candidate.get("lifecycle_gate")
+        if not isinstance(gate, dict):
+            return normalized
+        strategy_profile = normalized.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            strategy_profile = {}
+        strategy_profile = dict(strategy_profile)
+        strategy_profile.setdefault("lifecycle_gate", dict(gate))
+        normalized["strategy_profile"] = strategy_profile
+        action = str(normalized.get("action") or "HOLD").upper()
+        if action not in {"BUY", "ADD"}:
+            return normalized
+        if bool(gate.get("buy_blocked")):
+            normalized["action"] = "HOLD"
+            normalized["position_size_pct"] = 0.0
+            normalized["decision_type"] = "lifecycle_gate_blocked"
+            normalized["reasoning"] = f"{normalized.get('reasoning') or ''} 生命周期门控：{gate.get('reason_text') or gate.get('reason_code') or '禁止新买入'}。".strip()
+            return normalized
+        if bool(gate.get("requires_strong_confirmation")) and not self._lifecycle_gate_has_strong_confirmation(
+            strategy_profile,
+            gate,
+        ):
+            normalized["action"] = "HOLD"
+            normalized["position_size_pct"] = 0.0
+            normalized["decision_type"] = "lifecycle_gate_blocked"
+            normalized["reasoning"] = (
+                f"{normalized.get('reasoning') or ''} 生命周期门控：{gate.get('mode') or 'soft_gate'} "
+                "需要更强趋势确认，转为HOLD。"
+            ).strip()
+        return normalized
+
+    @classmethod
+    def _lifecycle_gate_has_strong_confirmation(cls, strategy_profile: dict[str, Any], gate: dict[str, Any]) -> bool:
+        guard = strategy_profile.get("portfolio_execution_guard") if isinstance(strategy_profile.get("portfolio_execution_guard"), dict) else {}
+        buy_tier = str(guard.get("buy_tier") or "").strip().lower()
+        buy_strength = cls._safe_float(guard.get("buy_strength_score"), 0.0) or 0.0
+        threshold = 0.45 + max(cls._safe_float(gate.get("buy_threshold_delta"), 0.0) or 0.0, 0.0)
+        trend = guard.get("trend_confirmation") if isinstance(guard.get("trend_confirmation"), dict) else {}
+        components = guard.get("score_components") if isinstance(guard.get("score_components"), dict) else {}
+        confirmation_score = cls._safe_float(components.get("confirmation_score"), 0.0) or 0.0
+        above_ma20 = int(cls._safe_float(trend.get("above_ma20_checkpoints"), 0.0) or 0)
+        trend_confirmed = bool(
+            trend.get("ma_stack")
+            or trend.get("retest_confirmed")
+            or (trend.get("ma20_rising") and above_ma20 >= 3)
+            or confirmation_score >= 0.75
+        )
+        return buy_strength >= threshold and (buy_tier == "strong_buy" or trend_confirmed)
+
     def _apply_execution_sizing_plan(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
         if str(normalized.get("action") or "HOLD").upper() != "BUY":
@@ -749,6 +801,7 @@ class SignalCenterService:
         stock_code = str(candidate.get("stock_code") or normalized.get("stock_code") or normalized.get("code") or "").strip()
         quant_state = self.db.get_quant_universe_state(stock_code) if stock_code else None
         quant_status = str((quant_state or {}).get("quant_status") or candidate.get("quant_status") or "active")
+        strategy_profile["quant_status"] = quant_status
         total_equity = self._safe_float(summary.get("total_equity"), self._safe_float(summary.get("initial_capital"), 0.0)) or 0.0
         available_cash = self._safe_float(summary.get("available_cash"), self._safe_float(summary.get("cash"), 0.0)) or 0.0
         slot_available_cash = available_cash

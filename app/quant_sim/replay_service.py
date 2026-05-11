@@ -1681,6 +1681,12 @@ class QuantSimReplayService:
         portfolio: PortfolioService,
         manager: QuantUniverseManager,
     ) -> dict:
+        held_codes = {
+            str(item.get("stock_code") or "").strip()
+            for item in portfolio.list_positions()
+            if str(item.get("stock_code") or "").strip()
+        }
+        scan_candidates = engine.list_live_scan_candidates(exclude_codes=held_codes, policy=manager.policy)
         summary = self._run_checkpoint(
             checkpoint=checkpoint,
             timeframe=str(context.get("timeframe") or "30m"),
@@ -1696,6 +1702,7 @@ class QuantSimReplayService:
             portfolio=portfolio,
             signal_service=engine.signal_center,
             candidate_quant_statuses=self.LIVE_QUANT_DRILL_SCAN_STATUSES,
+            candidates_override=scan_candidates,
             auto_execute_signals=bool(context.get("execute_trades", True)),
             auto_execute_note="实时量化演练自动执行",
             account_snapshot_reason_prefix=None,
@@ -2228,6 +2235,7 @@ class QuantSimReplayService:
         portfolio: PortfolioService,
         signal_service: SignalCenterService,
         candidate_quant_statuses: tuple[str, ...] | list[str] | None = None,
+        candidates_override: list[dict[str, Any]] | None = None,
         auto_execute_signals: bool = True,
         auto_execute_note: str = "历史回放自动执行",
         account_snapshot_reason_prefix: str | None = "historical_range",
@@ -2238,12 +2246,13 @@ class QuantSimReplayService:
             for item in positions
             if str(item.get("stock_code") or "").strip()
         }
+        raw_candidates = candidates_override if candidates_override is not None else engine.candidate_pool.list_candidates(
+            status="active",
+            quant_statuses=candidate_quant_statuses,
+        )
         candidates = [
             item
-            for item in engine.candidate_pool.list_candidates(
-                status="active",
-                quant_statuses=candidate_quant_statuses,
-            )
+            for item in raw_candidates
             if str(item.get("stock_code") or "").strip() not in held_codes
         ]
         signals_created = 0

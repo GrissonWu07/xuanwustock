@@ -6,6 +6,7 @@ from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.scheduler import QuantSimScheduler
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy
 
 
 def test_scheduler_trading_time_uses_market_timezone_for_cn_hk_and_us():
@@ -316,6 +317,7 @@ def test_scheduler_run_once_passes_strategy_mode_to_engine(tmp_path, monkeypatch
         ai_dynamic_strength=0.5,
         ai_dynamic_lookback=48,
         current_time=current_time,
+        candidates_override=[],
     )
     scheduler.engine.analyze_positions.assert_called_once_with(
         analysis_timeframe="30m",
@@ -389,6 +391,41 @@ def test_scheduler_opportunistic_review_rotates_cooling_stocks_by_oldest_review(
     assert reviewed == ["600100", "600101", "600102", "600103", "600104", "600105", "600106"]
 
 
+def test_live_scan_supplements_cooling_when_below_min_coverage(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    for code, status, health, score in [
+        ("600001", "trial", 70, 0.0),
+        ("600002", "active", 80, 0.0),
+        ("600003", "cooling", 55, 0.80),
+        ("600004", "cooling", 85, 0.70),
+        ("600005", "cooling", 40, 0.90),
+        ("600006", "cooling", 95, 0.10),
+        ("600007", "cooling", 45, 0.60),
+    ]:
+        candidate_service.add_manual_candidate(code, code, "manual")
+        candidate_service.db.upsert_quant_universe_state(
+            code,
+            {
+                "quant_status": status,
+                "health_score": health,
+                "candidate_score": score,
+                "last_health_evaluated_at": f"2026-05-08T00:0{int(code[-1])}:00Z",
+            },
+        )
+    scheduler = QuantSimScheduler(db_file=db_file)
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    candidates = scheduler.engine.list_live_scan_candidates(policy=policy)
+
+    assert len(candidates) == policy.min_scan_coverage
+    assert [item["stock_code"] for item in candidates[:2]] == ["600002", "600001"]
+    supplemental = candidates[2:]
+    assert {item["quant_status"] for item in supplemental} == {"cooling"}
+    assert all(item["lifecycle_gate"]["mode"] == "cooling_supplemental" for item in supplemental)
+    assert [item["stock_code"] for item in supplemental] == ["600005", "600003", "600004", "600007"]
+
+
 def test_scheduler_opportunistic_review_restores_cooling_from_checkpoint_signal(tmp_path, monkeypatch):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
@@ -423,7 +460,7 @@ def test_scheduler_opportunistic_review_restores_cooling_from_checkpoint_signal(
 
     result = scheduler.run_once("manual_scan")
 
-    assert result["candidates_scanned"] == 0
+    assert result["candidates_scanned"] == 1
     assert result["cooling_reviewed"] == 1
     assert candidate_service.db.get_quant_universe_state("600000")["quant_status"] == "trial"
 

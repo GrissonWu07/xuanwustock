@@ -8,6 +8,7 @@ from app.quant_sim.quant_universe_lifecycle import (
     QuantUniverseManager,
     QuantStatus,
     QuantUniverseLifecyclePolicy,
+    build_lifecycle_gate,
     calculate_candidate_score,
     calculate_health_score,
     detect_downtrend_hit,
@@ -108,10 +109,17 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "trial_min_dwell_checkpoints": 16,
             "trial_cold_start_min_checkpoints": 8,
             "trial_cold_start_health_floor": 45,
-            "cooling_min_dwell_days": 1,
-            "retired_min_dwell_days": 7,
+            "cooling_min_dwell_days": 3,
+            "retired_min_dwell_days": 14,
             "cooling_review_interval_minutes": 30,
             "cooling_review_batch_size": 20,
+            "min_scan_coverage": 6,
+            "guarded_buy_threshold_delta": 0.08,
+            "guarded_size_multiplier": 0.35,
+            "guarded_max_position_pct": 4.0,
+            "cooling_supplemental_buy_threshold_delta": 0.12,
+            "cooling_supplemental_size_multiplier": 0.20,
+            "cooling_supplemental_max_position_pct": 3.0,
             "max_auto_entries_per_batch": 6,
             "max_auto_entries_per_day": 20,
             "max_auto_entries_per_strategy_batch": 3,
@@ -133,10 +141,17 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "trial_min_dwell_checkpoints": 24,
             "trial_cold_start_min_checkpoints": 10,
             "trial_cold_start_health_floor": 50,
-            "cooling_min_dwell_days": 2,
-            "retired_min_dwell_days": 10,
+            "cooling_min_dwell_days": 5,
+            "retired_min_dwell_days": 21,
             "cooling_review_interval_minutes": 60,
             "cooling_review_batch_size": 12,
+            "min_scan_coverage": 4,
+            "guarded_buy_threshold_delta": 0.10,
+            "guarded_size_multiplier": 0.30,
+            "guarded_max_position_pct": 3.5,
+            "cooling_supplemental_buy_threshold_delta": 0.15,
+            "cooling_supplemental_size_multiplier": 0.15,
+            "cooling_supplemental_max_position_pct": 2.0,
             "max_auto_entries_per_batch": 4,
             "max_auto_entries_per_day": 12,
             "max_auto_entries_per_strategy_batch": 2,
@@ -158,10 +173,17 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "trial_min_dwell_checkpoints": 40,
             "trial_cold_start_min_checkpoints": 12,
             "trial_cold_start_health_floor": 55,
-            "cooling_min_dwell_days": 3,
-            "retired_min_dwell_days": 14,
+            "cooling_min_dwell_days": 7,
+            "retired_min_dwell_days": 30,
             "cooling_review_interval_minutes": 90,
             "cooling_review_batch_size": 8,
+            "min_scan_coverage": 2,
+            "guarded_buy_threshold_delta": 0.12,
+            "guarded_size_multiplier": 0.25,
+            "guarded_max_position_pct": 3.0,
+            "cooling_supplemental_buy_threshold_delta": 0.18,
+            "cooling_supplemental_size_multiplier": 0.10,
+            "cooling_supplemental_max_position_pct": 1.5,
             "max_auto_entries_per_batch": 2,
             "max_auto_entries_per_day": 6,
             "max_auto_entries_per_strategy_batch": 1,
@@ -179,6 +201,26 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
         policy = policies[profile_id]
         for field, value in profile_expected.items():
             assert getattr(policy, field) == value
+
+
+def test_build_lifecycle_gate_defaults():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    trial_gate = build_lifecycle_gate("trial", policy)
+    cooling_gate = build_lifecycle_gate("cooling", policy, supplemental=True)
+    exit_gate = build_lifecycle_gate("exit_only", policy)
+
+    assert trial_gate["mode"] == "trial_light"
+    assert trial_gate["buy_threshold_delta"] == 0.03
+    assert trial_gate["size_multiplier"] == policy.trial_position_multiplier
+    assert trial_gate["max_position_pct"] == policy.trial_max_position_pct
+    assert cooling_gate["mode"] == "cooling_supplemental"
+    assert cooling_gate["buy_threshold_delta"] == policy.cooling_supplemental_buy_threshold_delta
+    assert cooling_gate["size_multiplier"] == policy.cooling_supplemental_size_multiplier
+    assert cooling_gate["max_position_pct"] == policy.cooling_supplemental_max_position_pct
+    assert cooling_gate["requires_strong_confirmation"] is True
+    assert exit_gate["mode"] == "exit_only"
+    assert exit_gate["buy_blocked"] is True
 
 
 def test_detect_weakening_warning_and_downtrend_hit():
@@ -270,26 +312,41 @@ def test_resolve_active_to_exit_only_requires_holding_health_break_and_downtrend
     assert result.reason_code == "holding_downtrend_exit_only"
 
 
-def test_resolve_active_to_cooling_when_flat_and_downtrend_persists():
+def test_low_health_without_downtrend_does_not_force_cooling_or_exit_only():
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
 
-    early = resolve_next_status(
+    flat = resolve_next_status(
         current_status="active",
-        health_score=policy.cooling_threshold - 1,
-        downtrend_streak=policy.trial_min_dwell_checkpoints - 1,
+        health_score=0,
+        downtrend_streak=0,
         has_position=False,
         policy=policy,
     )
+    holding = resolve_next_status(
+        current_status="active",
+        health_score=0,
+        downtrend_streak=0,
+        has_position=True,
+        policy=policy,
+    )
+
+    assert flat.allowed is False
+    assert flat.reason_code == "no_transition"
+    assert holding.allowed is False
+    assert holding.reason_code == "holding_downtrend_not_confirmed"
+
+
+def test_resolve_active_to_cooling_when_flat_and_downtrend_persists():
+    policy = QuantUniverseLifecyclePolicy.stable_defaults()
+
     result = resolve_next_status(
         current_status="active",
-        health_score=policy.cooling_threshold - 1,
+        health_score=100,
         downtrend_streak=max(policy.downtrend_cooling_streak, policy.trial_min_dwell_checkpoints),
         has_position=False,
         policy=policy,
     )
 
-    assert early.allowed is False
-    assert early.reason_code == "trial_min_dwell_not_met"
     assert result.allowed is True
     assert result.to_status == QuantStatus.COOLING
     assert result.reason_code == "flat_downtrend_cooling"
@@ -1229,7 +1286,7 @@ def test_manager_update_after_signal_sets_cooling_until_when_entering_cooling(tm
     state = manager.db.get_quant_universe_state("600000")
     assert result["status_changed"] is True
     assert result["new_status"] == "cooling"
-    assert state["cooling_until"] == "2026-01-06T02:00:00Z"
+    assert state["cooling_until"] == "2026-01-08T02:00:00Z"
 
 
 def test_manager_update_after_signal_sets_retired_at_when_entering_retired(tmp_path):
