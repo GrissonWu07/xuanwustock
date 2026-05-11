@@ -821,6 +821,7 @@ Owner: Codex
 6. 补充扫描股票可以产生 BUY 信号，但必须应用更严格的 `cooling_supplemental_gate`。
 7. `cooling_supplemental_gate` 下的 BUY 必须同时满足 `buy_tier in {normal_buy, strong_buy}`、`buy_strength_score >= 0.45 + buy_threshold_delta`、趋势确认成立；`weak_buy` 或“背离试探”即使站上均线也必须转为 HOLD。
 8. 只有补充扫描产生可执行恢复买入或 active 级恢复信号时，状态才恢复为 `trial`；可执行恢复买入写入 `cooling_recovered_by_executable_buy` 事件，active 级恢复写入 `cooling_recovered_to_trial` 事件。恢复事件必须包含行情确认和 sizing 证据，不能只写候选来源。
+9. `cooling -> trial` 恢复时必须清空旧的 `downtrend_streak` 与 `weakening_warning_streak`，并清除 `cooling_until`。旧的下行累计只用于解释进入 cooling 的历史原因，不能带入恢复后的 trial 阶段，否则下一 checkpoint 会因为历史 streak 立即重新 cooling。
 
 ### 12.2 `retired -> trial`
 

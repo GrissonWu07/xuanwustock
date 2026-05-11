@@ -945,6 +945,9 @@ class QuantUniverseManager:
                 next_status = transition.to_status
                 status_changed = True
                 last_status_changed_at = _format_utc_iso_z(evaluation_time)
+                if current == QuantStatus.COOLING and next_status == QuantStatus.TRIAL:
+                    next_downtrend_streak = 0
+                    next_warning_streak = 0
                 if next_status == QuantStatus.COOLING:
                     cooling_until = _format_utc_iso_z(evaluation_time + timedelta(days=self.policy.cooling_min_dwell_days))
                 elif current == QuantStatus.COOLING:

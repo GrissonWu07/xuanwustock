@@ -1117,6 +1117,52 @@ def test_manager_update_after_signal_restores_cooling_from_executable_normal_buy
     assert manager.db.get_latest_quant_universe_event("600000")["reason_code"] == "cooling_recovered_by_executable_buy"
 
 
+def test_manager_update_after_signal_resets_streaks_when_cooling_buy_recovers(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "cooling",
+            "health_score": policy.cooling_threshold - 5,
+            "cooling_until": "2026-01-01T00:00:00Z",
+            "downtrend_streak": 100,
+            "weakening_warning_streak": 100,
+        },
+    )
+
+    recovery_signal = {
+        "action": "BUY",
+        "decision_time": "2026-01-05T10:00:00Z",
+        "tech_score": 0.3,
+        "context_score": 0.1,
+        "price": 12.8,
+        "ma20": 12.0,
+        "ma20_slope": 0.02,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.39, "fusion_score_delta": 0.04}},
+            "portfolio_execution_guard": {
+                "status": "normal_buy",
+                "buy_tier": "normal_buy",
+                "buy_strength_score": 0.71,
+            },
+            "execution_sizing_plan": {
+                "effective_position_pct": 6.0,
+                "final_budget": 24000.0,
+                "skip_reason": None,
+            },
+        },
+    }
+
+    result = manager.update_after_signal("600000", latest_signal=recovery_signal, recent_signals=[recovery_signal], position=None)
+
+    state = manager.db.get_quant_universe_state("600000")
+    assert result["new_status"] == "trial"
+    assert state["downtrend_streak"] == 0
+    assert state["weakening_warning_streak"] == 0
+
+
 def test_manager_update_after_signal_keeps_cooling_for_executable_weak_buy(tmp_path):
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
     manager = _manager(tmp_path, policy)
