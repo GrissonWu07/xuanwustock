@@ -47,6 +47,25 @@ type ProfitProtectionField = {
   step?: number;
 };
 
+type HardTrailingTier = {
+  name: string;
+  min_position_cost: number;
+  max_position_cost?: number;
+  peak_pct: number;
+  drawdown_pct: number;
+  min_price_gain: number;
+  min_price_gain_pct: number;
+  min_profit_amount: number;
+  min_profit_amount_pct: number;
+};
+
+type HardTrailingTierField = {
+  key: keyof Omit<HardTrailingTier, "name">;
+  label: LocaleText;
+  step: number;
+  optional?: boolean;
+};
+
 const BUILTIN_PROFILE_IDS = ["aggressive", "stable", "conservative"] as const;
 
 const TECHNICAL_GROUP_DIMENSIONS: Record<string, readonly string[]> = {
@@ -324,6 +343,70 @@ const PROFIT_PROTECTION_FIELDS: ProfitProtectionField[] = [
   { key: "hard_trailing_min_profit_amount_pct", label: { zh: "硬止盈最小浮盈率(%)", en: "Hard trailing min profit amount (%)" }, type: "number", path: ["hard_trailing_min_profit_amount_pct"], step: 1 },
 ];
 
+const DEFAULT_HARD_TRAILING_POSITION_TIERS: HardTrailingTier[] = [
+  {
+    name: "small",
+    min_position_cost: 0,
+    max_position_cost: 10000,
+    peak_pct: 12,
+    drawdown_pct: 6,
+    min_price_gain: 1,
+    min_price_gain_pct: 4,
+    min_profit_amount: 300,
+    min_profit_amount_pct: 4,
+  },
+  {
+    name: "regular",
+    min_position_cost: 10000,
+    max_position_cost: 30000,
+    peak_pct: 8,
+    drawdown_pct: 4,
+    min_price_gain: 0.8,
+    min_price_gain_pct: 4,
+    min_profit_amount: 300,
+    min_profit_amount_pct: 4,
+  },
+  {
+    name: "medium",
+    min_position_cost: 30000,
+    max_position_cost: 80000,
+    peak_pct: 6,
+    drawdown_pct: 3,
+    min_price_gain: 0.6,
+    min_price_gain_pct: 3,
+    min_profit_amount: 500,
+    min_profit_amount_pct: 3,
+  },
+  {
+    name: "large",
+    min_position_cost: 80000,
+    peak_pct: 5,
+    drawdown_pct: 2.5,
+    min_price_gain: 0.5,
+    min_price_gain_pct: 2.5,
+    min_profit_amount: 800,
+    min_profit_amount_pct: 2.5,
+  },
+];
+
+const HARD_TRAILING_TIER_LABELS: Record<string, LocaleText> = {
+  small: { zh: "小仓位", en: "Small" },
+  regular: { zh: "常规仓位", en: "Regular" },
+  medium: { zh: "中仓位", en: "Medium" },
+  large: { zh: "大仓位", en: "Large" },
+};
+
+const HARD_TRAILING_TIER_FIELDS: HardTrailingTierField[] = [
+  { key: "min_position_cost", label: { zh: "成本下限", en: "Min cost" }, step: 1000 },
+  { key: "max_position_cost", label: { zh: "成本上限", en: "Max cost" }, step: 1000, optional: true },
+  { key: "peak_pct", label: { zh: "峰值浮盈(%)", en: "Peak (%)" }, step: 0.5 },
+  { key: "drawdown_pct", label: { zh: "回撤(pp)", en: "Drawdown (pp)" }, step: 0.5 },
+  { key: "min_price_gain", label: { zh: "最小价差", en: "Min price gain" }, step: 0.1 },
+  { key: "min_price_gain_pct", label: { zh: "最小价差率(%)", en: "Min price gain (%)" }, step: 0.5 },
+  { key: "min_profit_amount", label: { zh: "最小浮盈", en: "Min profit" }, step: 100 },
+  { key: "min_profit_amount_pct", label: { zh: "最小浮盈率(%)", en: "Min profit (%)" }, step: 0.5 },
+];
+
 const STOCK_EXECUTION_FEEDBACK_FIELDS: ProfitProtectionField[] = [
   { key: "enabled", label: { zh: "启用个股执行反馈", en: "Enable stock execution feedback" }, type: "checkbox", path: ["enabled"] },
   { key: "lookback_days", label: { zh: "回看天数", en: "Lookback days" }, type: "number", path: ["lookback_days"], step: 1 },
@@ -444,6 +527,39 @@ const getBooleanAt = (root: Record<string, unknown>, path: string[], fallback: b
   return fallback;
 };
 
+const normalizeHardTrailingPositionTiers = (value: unknown): HardTrailingTier[] => {
+  const source = Array.isArray(value) ? value : [];
+  return DEFAULT_HARD_TRAILING_POSITION_TIERS.map((defaultTier, index) => {
+    const rawTier = isObject(source[index]) ? source[index] : {};
+    const tier: HardTrailingTier = {
+      name: typeof rawTier.name === "string" && rawTier.name.trim() ? rawTier.name.trim() : defaultTier.name,
+      min_position_cost: Number.isFinite(Number(rawTier.min_position_cost)) ? Number(rawTier.min_position_cost) : defaultTier.min_position_cost,
+      peak_pct: Number.isFinite(Number(rawTier.peak_pct)) ? Number(rawTier.peak_pct) : defaultTier.peak_pct,
+      drawdown_pct: Number.isFinite(Number(rawTier.drawdown_pct)) ? Number(rawTier.drawdown_pct) : defaultTier.drawdown_pct,
+      min_price_gain: Number.isFinite(Number(rawTier.min_price_gain)) ? Number(rawTier.min_price_gain) : defaultTier.min_price_gain,
+      min_price_gain_pct: Number.isFinite(Number(rawTier.min_price_gain_pct)) ? Number(rawTier.min_price_gain_pct) : defaultTier.min_price_gain_pct,
+      min_profit_amount: Number.isFinite(Number(rawTier.min_profit_amount)) ? Number(rawTier.min_profit_amount) : defaultTier.min_profit_amount,
+      min_profit_amount_pct: Number.isFinite(Number(rawTier.min_profit_amount_pct)) ? Number(rawTier.min_profit_amount_pct) : defaultTier.min_profit_amount_pct,
+    };
+    const rawMax = rawTier.max_position_cost;
+    if (Number.isFinite(Number(rawMax))) {
+      tier.max_position_cost = Number(rawMax);
+    } else if (Number.isFinite(Number(defaultTier.max_position_cost))) {
+      tier.max_position_cost = Number(defaultTier.max_position_cost);
+    }
+    return tier;
+  });
+};
+
+const getHardTrailingPositionTiers = (root: Record<string, unknown>): HardTrailingTier[] => {
+  let cursor: unknown = root;
+  for (const segment of ["base", "veto", "profit_protection", "hard_trailing_position_tiers"]) {
+    if (!isObject(cursor) && !Array.isArray(cursor)) return deepClone(DEFAULT_HARD_TRAILING_POSITION_TIERS);
+    cursor = (cursor as Record<string, unknown>)[segment];
+  }
+  return normalizeHardTrailingPositionTiers(cursor);
+};
+
 const ensureWeightMap = (root: Record<string, unknown>, path: string[], keys: readonly string[], fallback: number) => {
   const container = ensureObjectPath(root, path);
   keys.forEach((key) => {
@@ -491,12 +607,12 @@ const ensureProfitProtectionDefaults = (root: Record<string, unknown>, path: str
     tech_sell_min_profit_amount: 800,
     tech_sell_min_profit_amount_pct: 8,
     hard_trailing_enabled: true,
-    hard_trailing_peak_pct: 50,
-    hard_trailing_drawdown_pct: 18,
-    hard_trailing_min_price_gain: 2,
-    hard_trailing_min_price_gain_pct: 12,
-    hard_trailing_min_profit_amount: 1200,
-    hard_trailing_min_profit_amount_pct: 12,
+    hard_trailing_peak_pct: 8,
+    hard_trailing_drawdown_pct: 4,
+    hard_trailing_min_price_gain: 0.8,
+    hard_trailing_min_price_gain_pct: 4,
+    hard_trailing_min_profit_amount: 300,
+    hard_trailing_min_profit_amount_pct: 4,
   };
   Object.entries(defaults).forEach(([key, value]) => {
     if (!(key in container)) {
@@ -510,6 +626,7 @@ const ensureProfitProtectionDefaults = (root: Record<string, unknown>, path: str
     const parsed = Number(container[key]);
     container[key] = Number.isFinite(parsed) ? parsed : value;
   });
+  container.hard_trailing_position_tiers = normalizeHardTrailingPositionTiers(container.hard_trailing_position_tiers);
 };
 
 const ensureStockExecutionFeedbackDefaults = (root: Record<string, unknown>, path: string[]) => {
@@ -900,6 +1017,26 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
     if (param) setFocusedParam(param);
   };
 
+  const updateHardTrailingTierNumber = (tierIndex: number, key: HardTrailingTierField["key"], value: string) => {
+    const parsed = Number.parseFloat(value);
+    setEditableConfig((prev) => {
+      const next = deepClone(prev);
+      const container = ensureObjectPath(next, ["base", "veto", "profit_protection"]);
+      const tiers = normalizeHardTrailingPositionTiers(container.hard_trailing_position_tiers);
+      const tier = { ...tiers[tierIndex] };
+      if (key === "max_position_cost" && value.trim() === "") {
+        delete tier.max_position_cost;
+      } else {
+        tier[key] = Number.isFinite(parsed) ? parsed : 0;
+      }
+      tiers[tierIndex] = tier;
+      container.hard_trailing_position_tiers = tiers;
+      return next;
+    });
+    setFocusedFormulaSection(4);
+    setFocusedParam(`hard_trailing_position_tiers.${tierIndex}.${key}`);
+  };
+
   const buildCloneName = () => {
     const now = new Date();
     const stamp = `${now.getHours().toString().padStart(2, "0")}${now.getMinutes().toString().padStart(2, "0")}${now
@@ -1077,6 +1214,7 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
   }
 
   const selectedProfileId = selectedProfile?.id ?? "";
+  const hardTrailingTiers = getHardTrailingPositionTiers(editableConfig);
   const formulaCardClass = (section: 1 | 2 | 3 | 4) =>
     `strategy-config-formula__item${highlightFormula && focusedFormulaSection === section ? " is-highlight" : ""}`;
 
@@ -1279,6 +1417,55 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                   </div>
                 );
               })}
+            </div>
+            <div className="strategy-config-advanced">
+              <div className="strategy-config-card__header">
+                <div>
+                  <h3 className="strategy-config-card__title">{locale === "zh-CN" ? "持仓移动止盈分层" : "Position-size trailing tiers"}</h3>
+                  <div className="strategy-config-card__subtitle">
+                    {locale === "zh-CN"
+                      ? t("不同持仓成本使用不同峰值和回撤阈值；小仓位更宽，大仓位更严格。默认三套策略相同，但每个策略可单独保存。")
+                      : "Different position costs use different peak and drawdown thresholds. Small positions are wider; large positions are stricter. Defaults are shared but each strategy can save its own values."}
+                  </div>
+                </div>
+              </div>
+              <table className="strategy-config-table">
+                <thead>
+                  <tr>
+                    <th>{locale === "zh-CN" ? "档位" : "Tier"}</th>
+                    {HARD_TRAILING_TIER_FIELDS.map((field) => (
+                      <th key={`hard-tier-head-${String(field.key)}`}>{pickText(field.label, locale)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {hardTrailingTiers.map((tier, tierIndex) => (
+                    <tr key={`hard-tier-${tier.name}`}>
+                      <td>{pickText(HARD_TRAILING_TIER_LABELS[tier.name] ?? { zh: tier.name, en: tier.name }, locale)}</td>
+                      {HARD_TRAILING_TIER_FIELDS.map((field) => {
+                        const rawValue = tier[field.key];
+                        const value = typeof rawValue === "number" ? rawValue : "";
+                        return (
+                          <td key={`hard-tier-${tier.name}-${String(field.key)}`}>
+                            <input
+                              className="input"
+                              type="number"
+                              step={field.step}
+                              value={value}
+                              placeholder={field.optional ? (locale === "zh-CN" ? "无限" : "∞") : undefined}
+                              onFocus={() => {
+                                setFocusedFormulaSection(4);
+                                setFocusedParam(`hard_trailing_position_tiers.${tierIndex}.${String(field.key)}`);
+                              }}
+                              onChange={(event) => updateHardTrailingTierNumber(tierIndex, field.key, event.target.value)}
+                            />
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </WorkbenchCard>
 
