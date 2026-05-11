@@ -457,6 +457,49 @@ def test_position_hard_profit_trailing_veto_does_not_require_technical_sell():
     assert vetoes[0]["display_label"] == "硬移动止盈触发"
 
 
+def test_default_hard_profit_trailing_triggers_after_modest_gain_drawdown():
+    runtime = KernelStrategyRuntime()
+
+    decision = runtime.evaluate_position(
+        candidate={"stock_code": "600000", "stock_name": "浦发银行", "source": "manual", "sources": ["manual"]},
+        position={
+            "stock_code": "600000",
+            "stock_name": "浦发银行",
+            "quantity": 500,
+            "avg_price": 20.0,
+            "latest_price": 21.0,
+            "peak_price": 22.0,
+            "peak_unrealized_pnl_pct": 10.0,
+            "peak_unrealized_pnl": 1000.0,
+        },
+        market_snapshot={
+            "current_price": 21.0,
+            "ma5": 20.8,
+            "ma10": 20.5,
+            "ma20": 20.0,
+            "ma60": 19.0,
+            "macd": 0.2,
+            "dif": 0.2,
+            "dea": 0.1,
+            "hist": 0.1,
+            "hist_prev": 0.08,
+            "rsi14": 58.0,
+            "rsi12": 58.0,
+            "volume_ratio": 1.0,
+            "trend": "up",
+        },
+        current_time=datetime(2026, 2, 10, 10, 0),
+        analysis_timeframe="30m",
+        strategy_mode="stable",
+    )
+
+    explainability = (decision.strategy_profile or {}).get("explainability") or {}
+    vetoes = explainability.get("vetoes") or []
+
+    assert decision.action == "SELL"
+    assert vetoes[0]["id"] == "hard_profit_trailing_stop"
+
+
 def test_profit_protection_ignores_large_pct_when_absolute_gain_is_too_small():
     runtime = KernelStrategyRuntime()
     binding = _strategy_binding_with_profit_protection(
