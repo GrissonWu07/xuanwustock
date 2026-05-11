@@ -536,8 +536,47 @@ class SmartMonitorTDXDataFetcher:
             indicators = self._calculate_all_indicators(df, stock_code)
         if indicators:
             snapshot.update(indicators)
+        snapshot["recent_checkpoints"] = self._recent_checkpoints_from_history(df)
 
         return snapshot
+
+    def _recent_checkpoints_from_history(self, history_df: pd.DataFrame, *, limit: int = 20) -> list[dict]:
+        """Build checkpoint-bounded trend confirmation rows from historical bars."""
+        if history_df is None or history_df.empty:
+            return []
+
+        df = history_df.copy()
+        if "日期" not in df.columns or "收盘" not in df.columns:
+            return []
+        df["日期"] = pd.to_datetime(df["日期"])
+        df = df.sort_values("日期").reset_index(drop=True)
+        close = pd.to_numeric(df["收盘"], errors="coerce")
+        df["_ma5"] = close.rolling(5, min_periods=1).mean()
+        df["_ma10"] = close.rolling(10, min_periods=1).mean()
+        df["_ma20"] = close.rolling(20, min_periods=1).mean()
+        df["_ma60"] = close.rolling(60, min_periods=1).mean()
+        prev_ma20 = df["_ma20"].shift(1)
+        safe_prev_ma20 = prev_ma20.where(prev_ma20 != 0)
+        df["_ma20_slope"] = ((df["_ma20"] - prev_ma20) / safe_prev_ma20).fillna(0.0)
+
+        rows: list[dict] = []
+        for _, row in df.tail(max(int(limit), 1)).iterrows():
+            item = {
+                "datetime": row["日期"].strftime("%Y-%m-%d %H:%M:%S"),
+                "open": self._safe_float(row.get("开盘", 0)),
+                "high": self._safe_float(row.get("最高", 0)),
+                "low": self._safe_float(row.get("最低", 0)),
+                "close": self._safe_float(row.get("收盘", 0)),
+                "volume": self._safe_float(row.get("成交量", 0)),
+                "amount": self._safe_float(row.get("成交额", 0)),
+                "ma5": self._safe_float(row.get("_ma5", 0)),
+                "ma10": self._safe_float(row.get("_ma10", 0)),
+                "ma20": self._safe_float(row.get("_ma20", 0)),
+                "ma60": self._safe_float(row.get("_ma60", 0)),
+                "ma20_slope": self._safe_float(row.get("_ma20_slope", 0)),
+            }
+            rows.append(item)
+        return rows
 
     def _fetch_quote_data(self, market: int, code: str) -> Optional[Dict]:
         def operation(api: TdxHq_API):

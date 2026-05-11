@@ -325,22 +325,18 @@ class DualTrackResolver:
         standard_context = float(standard.context_score_min or 0.0)
         tech_edge = _clamp((tech_score - standard.tech_score_min) / max(strong_tech - standard.tech_score_min, 0.0001), 0.0, 1.0)
         context_edge = _clamp((ctx_score - standard_context) / max(strong_context - standard_context, 0.0001), 0.0, 1.0)
+        confirmed_checkpoints = _quality_confirmed_checkpoint_count(snapshot)
 
         if price > ma20 > 0 and ma5 > ma10 > ma20 and ma20_slope > 0:
             trend_structure = 1.0
-        elif price > ma20 > 0 and ma20_slope >= 0:
-            trend_structure = 0.6
+        elif confirmed_checkpoints >= 3 and ma20_slope >= 0:
+            trend_structure = 0.5
         elif price > ma20 > 0:
             trend_structure = 0.3
         else:
             trend_structure = 0.0
 
-        confirmation = _clamp(
-            _to_float(snapshot.get("trend_confirmed_checkpoints"), 0.0)
-            / max(_to_float(snapshot.get("required_confirm_checkpoints"), 3.0), 1.0),
-            0.0,
-            1.0,
-        )
+        confirmation = _quality_confirmation_score(snapshot)
         volume_score = 1.0 if volume_ratio >= 1.6 else 0.6 if volume_ratio >= 1.2 else 0.0
 
         if rsi < 75:
@@ -442,6 +438,63 @@ class DualTrackResolver:
         if position_ratio >= 0.3:
             return "light_divergence"
         return "no_position"
+
+
+def _quality_confirmation_score(snapshot: Mapping[str, Any]) -> float:
+    required = max(_to_float(snapshot.get("required_confirm_checkpoints"), 3.0), 1.0)
+    explicit_count = _to_float(snapshot.get("trend_confirmed_checkpoints"), 0.0)
+    explicit_score = _clamp(explicit_count / required, 0.0, 1.0)
+    recent_score = _recent_checkpoint_confirmation_score(snapshot, required)
+    return max(explicit_score, recent_score)
+
+
+def _quality_confirmed_checkpoint_count(snapshot: Mapping[str, Any]) -> int:
+    return max(int(_to_float(snapshot.get("trend_confirmed_checkpoints"), 0.0)), _recent_above_ma20_count(snapshot))
+
+
+def _recent_checkpoint_confirmation_score(snapshot: Mapping[str, Any], required: float) -> float:
+    above = _recent_above_ma20_count(snapshot)
+    if above <= 0:
+        recent = snapshot.get("recent_checkpoints")
+        if isinstance(recent, list) and _recent_retest_confirmed(snapshot, recent):
+            return 0.75
+        return 0.0
+    recent = snapshot.get("recent_checkpoints")
+    score = _clamp(above / required, 0.0, 1.0)
+    return max(score, 0.75) if isinstance(recent, list) and _recent_retest_confirmed(snapshot, recent) else score
+
+
+def _recent_above_ma20_count(snapshot: Mapping[str, Any]) -> int:
+    recent = snapshot.get("recent_checkpoints")
+    if not isinstance(recent, list) or not recent:
+        return 0
+    above = 0
+    for raw_item in reversed(recent):
+        item = raw_item if isinstance(raw_item, Mapping) else {}
+        close = _to_float(item.get("close"), 0.0)
+        ma20 = _to_float(item.get("ma20"), 0.0)
+        if close <= 0 or ma20 <= 0 or close <= ma20:
+            break
+        above += 1
+    return above
+
+
+def _recent_retest_confirmed(snapshot: Mapping[str, Any], recent: list[Any]) -> bool:
+    price = _to_float(snapshot.get("current_price") or snapshot.get("latest_price") or snapshot.get("close"), 0.0)
+    ma10 = _to_float(snapshot.get("ma10"), 0.0)
+    ma20 = _to_float(snapshot.get("ma20"), 0.0)
+    if price <= 0 or ma10 <= 0 or ma20 <= 0 or price <= ma20 or price <= ma10:
+        return False
+    tolerance = 1.0 - _to_float(snapshot.get("retest_tolerance_pct"), 1.5) / 100.0
+    window = [item if isinstance(item, Mapping) else {} for item in recent[-5:]]
+    broke_above = any(_to_float(item.get("close"), 0.0) > _to_float(item.get("ma20"), float("inf")) for item in window)
+    retested = any(
+        _to_float(item.get("low"), 0.0) > 0
+        and _to_float(item.get("ma20"), 0.0) > 0
+        and _to_float(item.get("low"), 0.0) >= _to_float(item.get("ma20"), 0.0) * tolerance
+        for item in window
+    )
+    return bool(broke_above and retested)
 
 
 def resolve_final_action(

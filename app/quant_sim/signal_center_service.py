@@ -180,7 +180,7 @@ class SignalCenterService:
 
         confidence = SignalCenterService._safe_float(fusion_breakdown.get("fusion_confidence"), None)
         if confidence is not None:
-            normalized["confidence"] = round(confidence * 100 if confidence <= 1 else confidence)
+            normalized["confidence"] = int(confidence * 100 if confidence <= 1 else confidence)
         return normalized
 
     def _apply_position_constraints(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -727,7 +727,11 @@ class SignalCenterService:
         strategy_profile = normalized.get("strategy_profile")
         if not isinstance(strategy_profile, dict):
             strategy_profile = {}
-        strategy_profile = self._ensure_kernel_positioning(strategy_profile)
+        strategy_profile = self._ensure_kernel_positioning(
+            strategy_profile,
+            fallback_position_pct=self._safe_float(normalized.get("position_size_pct"), 0.0) or 0.0,
+        )
+        normalized["strategy_profile"] = strategy_profile
         selected = (
             strategy_profile.get("selected_strategy_profile")
             if isinstance(strategy_profile.get("selected_strategy_profile"), dict)
@@ -774,25 +778,60 @@ class SignalCenterService:
         return normalized
 
     @staticmethod
-    def _ensure_kernel_positioning(strategy_profile: dict[str, Any]) -> dict[str, Any]:
+    def _ensure_kernel_positioning(
+        strategy_profile: dict[str, Any],
+        *,
+        fallback_position_pct: float = 0.0,
+    ) -> dict[str, Any]:
         normalized = dict(strategy_profile)
         if isinstance(normalized.get("kernel_positioning"), dict):
             return normalized
         explainability = normalized.get("explainability") if isinstance(normalized.get("explainability"), dict) else {}
         resonance = explainability.get("resonance") if isinstance(explainability.get("resonance"), dict) else {}
         quality_ratio = resonance.get("quality_adjusted_position_ratio")
-        if quality_ratio is None:
+        if quality_ratio is not None:
+            try:
+                quality_position_pct = round(float(quality_ratio) * 100.0, 6)
+            except (TypeError, ValueError):
+                quality_position_pct = None
+            if quality_position_pct is not None:
+                normalized["kernel_positioning"] = {
+                    "quality_position_pct": quality_position_pct,
+                    "rule_hit": resonance.get("rule_hit"),
+                    "signal_quality_score": resonance.get("signal_quality_score"),
+                    "quality_components": resonance.get("quality_components") if isinstance(resonance.get("quality_components"), dict) else {},
+                    "quality_penalties": resonance.get("quality_penalties") if isinstance(resonance.get("quality_penalties"), dict) else {},
+                }
+                return normalized
+
+        guard = (
+            normalized.get("portfolio_execution_guard")
+            if isinstance(normalized.get("portfolio_execution_guard"), dict)
+            else {}
+        )
+        has_structured_strategy_context = bool(
+            normalized.get("selected_strategy_profile")
+            or normalized.get("explainability")
+        )
+        if not has_structured_strategy_context:
             return normalized
-        try:
-            quality_position_pct = round(float(quality_ratio) * 100.0, 6)
-        except (TypeError, ValueError):
+        buy_strength = SignalCenterService._safe_float(guard.get("buy_strength_score"), None)
+        if buy_strength is None:
             return normalized
+        buy_tier = str(guard.get("buy_tier") or "").strip().lower()
+        if buy_tier not in {"weak_buy", "normal_buy", "strong_buy"} and buy_strength <= 0:
+            return normalized
+        strength = SignalCenterService._clamp(buy_strength, 0.0, 1.0)
+        quality_position_pct = round(max(0.0, fallback_position_pct) * strength, 6)
         normalized["kernel_positioning"] = {
             "quality_position_pct": quality_position_pct,
-            "rule_hit": resonance.get("rule_hit"),
-            "signal_quality_score": resonance.get("signal_quality_score"),
-            "quality_components": resonance.get("quality_components") if isinstance(resonance.get("quality_components"), dict) else {},
-            "quality_penalties": resonance.get("quality_penalties") if isinstance(resonance.get("quality_penalties"), dict) else {},
+            "rule_hit": "non_resonance_guard_quality",
+            "signal_quality_score": round(strength, 6),
+            "quality_components": {
+                "buy_strength_score": round(strength, 6),
+                "raw_position_pct": round(max(0.0, fallback_position_pct), 6),
+            },
+            "quality_penalties": {},
         }
         return normalized
 

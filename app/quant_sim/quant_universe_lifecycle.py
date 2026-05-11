@@ -844,6 +844,15 @@ class QuantUniverseManager:
                 signal_count=len(recent_signals),
                 has_position=has_position,
             )
+            health = _apply_active_upgrade_health_floor(
+                health,
+                policy=self.policy,
+                current_status=current,
+                latest_signal=latest_signal,
+                trend_confirmed=trend_confirmed,
+                trend_confirmed_streak=trend_confirmed_streak,
+                has_position=has_position,
+            )
             transition = resolve_next_status(
                 current_status=current,
                 health_score=health.health_score,
@@ -941,7 +950,14 @@ class QuantUniverseManager:
             return "non_tradable"
         if _is_future((state or {}).get("cooling_until"), None):
             return "cooling_blocked"
-        current_status = _status(stock.get("quant_status"))
+        state_status = _status((state or {}).get("quant_status"))
+        current_status = state_status if state else _status(stock.get("quant_status"))
+        if current_status == QuantStatus.COOLING:
+            return "cooling_review_required"
+        if current_status in {QuantStatus.TRIAL, QuantStatus.ACTIVE, QuantStatus.EXIT_ONLY}:
+            return "already_quant_managed"
+        if current_status == QuantStatus.MANUAL_PAUSED:
+            return "manual_paused"
         if current_status == QuantStatus.RETIRED and not self.policy.retired_reactivation_check_enabled:
             return "retired_reactivation_disabled"
         if current_status == QuantStatus.RETIRED and _retired_min_dwell_active(state, self.policy, evaluation_time):
@@ -1229,8 +1245,11 @@ def _signal_stock_feedback_status(signal: dict[str, Any]) -> str:
 
 
 def _signal_trend_confirmed(signal: dict[str, Any], policy: QuantUniverseLifecyclePolicy) -> bool:
-    if _action(signal) == "BUY":
-        return True
+    if _action(signal) != "BUY":
+        return False
+    guard_confirmation = _guard_trend_confirmed(signal, policy)
+    if guard_confirmation is not None:
+        return guard_confirmation
     tech_score = _float(signal.get("tech_score"), 0.0)
     fusion_score = _signal_fusion_score(signal, 0.0)
     buy_strength = _signal_buy_strength_score(signal, 0.0)
@@ -1243,6 +1262,26 @@ def _signal_trend_confirmed(signal: dict[str, Any], policy: QuantUniverseLifecyc
         and tech_score >= policy.weak_warning_tech_threshold
         and (ma20 <= 0 or price <= 0 or price >= ma20)
         and ma20_slope >= 0
+    )
+
+
+def _guard_trend_confirmed(signal: dict[str, Any], policy: QuantUniverseLifecyclePolicy) -> bool | None:
+    gate = _signal_portfolio_guard(signal)
+    trend = gate.get("trend_confirmation") if isinstance(gate.get("trend_confirmation"), dict) else {}
+    if not trend:
+        return None
+    components = gate.get("score_components") if isinstance(gate.get("score_components"), dict) else {}
+    buy_strength = _signal_buy_strength_score(signal, 0.0)
+    confirmation_score = _clamp(_float(components.get("confirmation_score"), 0.0), 0.0, 1.0)
+    above_ma20 = int(_float(trend.get("above_ma20_checkpoints"), 0.0))
+    return bool(
+        buy_strength >= 0.45
+        and (
+            bool(trend.get("ma_stack"))
+            or bool(trend.get("retest_confirmed"))
+            or (bool(trend.get("ma20_rising")) and above_ma20 >= policy.active_upgrade_confirm_checkpoints)
+            or confirmation_score >= 0.75
+        )
     )
 
 
@@ -1273,6 +1312,33 @@ def _apply_cold_start_health_floor(
     breakdown["cold_start_signal_count"] = int(signal_count)
     breakdown["cold_start_min_checkpoints"] = min_samples
     breakdown["cold_start_health_floor"] = round(floor, 4)
+    return HealthResult(health_score=round(floor, 4), breakdown=breakdown)
+
+
+def _apply_active_upgrade_health_floor(
+    health: HealthResult,
+    *,
+    policy: QuantUniverseLifecyclePolicy,
+    current_status: QuantStatus,
+    latest_signal: dict[str, Any],
+    trend_confirmed: bool,
+    trend_confirmed_streak: int,
+    has_position: bool,
+) -> HealthResult:
+    if current_status != QuantStatus.TRIAL or has_position:
+        return health
+    if not trend_confirmed or trend_confirmed_streak < policy.active_upgrade_confirm_checkpoints:
+        return health
+    strength_threshold = min(0.80, float(policy.trial_threshold) + 0.15)
+    if _signal_buy_strength_score(latest_signal, 0.0) < strength_threshold:
+        return health
+    floor = float(policy.active_upgrade_threshold)
+    if health.health_score >= floor:
+        return health
+    breakdown = dict(health.breakdown)
+    breakdown["active_upgrade_floor"] = round(floor, 4)
+    breakdown["active_upgrade_strength_threshold"] = round(strength_threshold, 4)
+    breakdown["active_upgrade_confirmed_streak"] = int(trend_confirmed_streak)
     return HealthResult(health_score=round(floor, 4), breakdown=breakdown)
 
 

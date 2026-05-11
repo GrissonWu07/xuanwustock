@@ -192,6 +192,74 @@ def test_create_signal_backfills_kernel_positioning_from_resonance(tmp_path):
     assert signal["position_size_pct"] == 5.0
 
 
+def test_create_signal_backfills_non_resonance_positioning_from_buy_strength(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "active", "health_score": 100})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {"stock_code": "000001", "stock_name": "平安银行", "latest_price": 10.0},
+        {
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "test",
+            "position_size_pct": 50.0,
+            "stop_loss_pct": 5,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "portfolio_execution_guard_policy": {"enabled": False},
+                "portfolio_execution_guard": {
+                    "status": "downgraded",
+                    "buy_tier": "weak_buy",
+                    "buy_tier_label": "弱买",
+                    "buy_strength_score": 0.236748,
+                },
+            },
+        },
+        notify=False,
+    )
+
+    profile = signal["strategy_profile"]
+    assert profile["kernel_positioning"]["rule_hit"] == "non_resonance_guard_quality"
+    assert profile["kernel_positioning"]["quality_position_pct"] == 11.8374
+    assert profile["execution_sizing_plan"]["kernel_quality_position_pct"] == 11.8374
+    assert signal["position_size_pct"] == 5.0
+
+
+def test_create_signal_keeps_fallback_position_when_guard_has_no_buy_tier(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "active", "health_score": 100})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {"stock_code": "000001", "stock_name": "平安银行", "latest_price": 10.0},
+        {
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "test",
+            "position_size_pct": 60.0,
+            "stop_loss_pct": 5,
+            "decision_type": "test",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "portfolio_execution_guard_policy": {"enabled": False},
+                "portfolio_execution_guard": {"status": "passed", "buy_tier": "none", "buy_strength_score": 0.0},
+            },
+        },
+        notify=False,
+    )
+
+    profile = signal["strategy_profile"]
+    assert "kernel_positioning" not in profile
+    assert profile["execution_sizing_plan"]["kernel_quality_position_pct"] == 60.0
+    assert signal["position_size_pct"] > 0
+
+
 def _buy_signal(signal_id: int, tier: str, final_budget: float, risk_pct: float = 0.30, status: str = "trial") -> dict:
     return {
         "id": signal_id,

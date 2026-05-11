@@ -726,7 +726,7 @@ def test_live_quant_drill_historical_candidate_events_promote_inactive_stock(tmp
     assert replay_signals
 
 
-def test_live_quant_drill_historical_candidate_events_can_wake_expired_cooling_stock(tmp_path, monkeypatch):
+def test_live_quant_drill_historical_candidate_events_do_not_wake_expired_cooling_stock(tmp_path, monkeypatch):
     live_db_file = tmp_path / "live.db"
     replay_db_file = tmp_path / "replay.db"
     live_db = QuantSimDB(str(live_db_file))
@@ -776,9 +776,14 @@ def test_live_quant_drill_historical_candidate_events_can_wake_expired_cooling_s
     )
 
     quant_events = service.db.list_sim_run_quant_events(result["run_id"], stock="600519")
-    replay_signals = service.db.get_sim_run_signals(result["run_id"], stock_keyword="600519")
-    assert any(event["from_status"] == "cooling" and event["to_status"] == "trial" for event in quant_events["items"])
-    assert replay_signals
+    candidate_events = service.db.list_sim_run_candidate_events(result["run_id"], stock="600519")
+    final_state = service.db.list_sim_run_quant_states(result["run_id"], stock="600519", page_size=1)["items"][0]
+    lifecycle = candidate_events["items"][0]["evidence_json"]["lifecycle_evaluation"]
+
+    assert not any(event["from_status"] == "cooling" and event["to_status"] == "trial" for event in quant_events["items"])
+    assert lifecycle["decision"] == "skipped"
+    assert lifecycle["skip_reason"] == "cooling_review_required"
+    assert final_state["quant_status"] == "cooling"
 
 
 def test_live_quant_drill_persists_quant_summary(tmp_path):

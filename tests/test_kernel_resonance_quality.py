@@ -92,6 +92,47 @@ def test_standard_resonance_no_longer_outputs_fixed_50_percent():
     assert "heat_penalty" in resonance["quality_penalties"]
 
 
+def test_resonance_quality_confirmation_uses_recent_checkpoint_window():
+    decision = _resolved_buy(
+        tech_score=0.72,
+        context_score=0.48,
+        snapshot={
+            "trend_confirmed_checkpoints": 0,
+            "required_confirm_checkpoints": 3,
+            "recent_checkpoints": [
+                {"close": 9.95, "low": 9.9, "ma20": 9.9},
+                {"close": 10.05, "low": 9.98, "ma20": 9.92},
+                {"close": 10.10, "low": 10.02, "ma20": 9.94},
+                {"close": 10.15, "low": 10.08, "ma20": 9.96},
+            ],
+        },
+    )
+
+    components = decision.dual_track_details["resonance_quality"]["quality_components"]
+    assert components["confirmation_score"] == 1.0
+
+
+def test_resonance_quality_trend_structure_has_middle_confirmation_score():
+    decision = _resolved_buy(
+        tech_score=0.72,
+        context_score=0.48,
+        snapshot={
+            "ma5": 9.95,
+            "ma10": 10.0,
+            "ma20": 9.9,
+            "ma20_slope": 0.0,
+            "recent_checkpoints": [
+                {"close": 9.95, "ma20": 9.85},
+                {"close": 10.05, "ma20": 9.88},
+                {"close": 10.10, "ma20": 9.90},
+            ],
+        },
+    )
+
+    components = decision.dual_track_details["resonance_quality"]["quality_components"]
+    assert components["trend_structure_score"] == 0.5
+
+
 def test_rsi_overheated_signal_gets_lower_position_than_clean_trend():
     clean = _resolved_buy(
         tech_score=0.8,
