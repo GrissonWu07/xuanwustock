@@ -29,8 +29,8 @@ Owner: Codex
 | 目标 | 验证固定股票名单下的策略收益 | 验证实时量化系统的上线运行过程 |
 | 股票范围 | 启动时固定，不随任务变化 | 随候选事件和生命周期动态变化 |
 | 入池 | 不处理 | 处理候选事件、eligible、auto trial |
-| 出池 | 不处理 | 处理 `exit_only / cooling / retired` |
-| 扫描对象 | 固定候选 + 持仓 | `trial / active / exit_only`，并低频复评 `cooling` |
+| 出池 | 不处理 | 处理 `exit_only / cooling / retired`，但以 soft gate 为主 |
+| 扫描对象 | 固定候选 + 持仓 | 默认扫 `trial / active / exit_only`；覆盖不足时补充扫 `cooling` |
 | 输出重点 | 收益、成交、信号、资金池 | 额外输出入池、出池、健康度、生命周期事件 |
 
 对客户的解释口径：
@@ -325,7 +325,7 @@ run_type = historical_backtest
 | `trial` | 1 | 是 | 否 | 是 | 新纳入量化，允许轻仓 BUY |
 | `active` | 1 | 是 | 否 | 是 | 正常实时量化扫描 |
 | `exit_only` | 1 | 是 | 否 | 是 | 只出场管理，禁止 BUY 和加仓 |
-| `cooling` | 1 | 否 | 是 | 是 | 冷却状态，不参与主扫描 |
+| `cooling` | 1 | 补充扫描 | 是 | 是 | 冷却状态；主扫描覆盖不足时可被补充纳入 |
 | `retired` | 0 | 否 | 否 | 仅高质量候选事件可重新进入 `trial` | 已退出自动量化 |
 | `manual_paused` | 0 | 否 | 否 | 否 | 用户手工暂停，系统不得自动恢复 |
 
@@ -335,15 +335,21 @@ run_type = historical_backtest
 2. 普通历史回放不读取这张状态机，也不写这些状态。
 3. `manual_paused` 在演练过程中不会由系统自动产生；它只可能从任务启动时的初始股票池快照带入。
 
-主扫描范围：
+默认主扫描范围：
 
 1. `trial`
 2. `active`
 3. `exit_only`
 
-低频复评范围：
+补充扫描范围：
 
 1. `cooling`
+
+补充扫描触发条件：
+
+1. 默认主扫描股票数 `< min_scan_coverage`
+2. 从 `cooling` 按 `has_recent_candidate_support DESC, recovery_score DESC, health_score DESC, last_health_evaluated_at ASC` 选取
+3. 补充股票必须应用 `cooling_supplemental_gate`
 
 不自动扫描：
 
@@ -373,7 +379,7 @@ run_type = historical_backtest
 2. `exit_only` 禁止 BUY 和加仓，只允许 SELL/HOLD。
 3. `manual_paused` 不得被系统自动恢复。
 4. `retired` 只能被高质量候选事件重新激活。
-5. `cooling` 不参与主扫描，只参与低频复评。
+5. `cooling` 不参与默认主扫描；只有在覆盖不足时进入补充扫描，或进入低频复评。
 
 ## 11. Checkpoint 执行顺序
 
@@ -384,43 +390,45 @@ run_type = historical_backtest
 3. 应用除权除息、停牌、涨跌停信息。
 4. 若当前 checkpoint 命中候选生成频率，则生成历史候选事件；否则跳过候选生成。
 5. 执行自动入池逻辑。
-6. 获取主扫描股票：
+6. 获取默认主扫描股票：
    - `trial`
    - `active`
    - `exit_only`
-7. 分析当前持仓股票。
-8. 分析当前可扫描候选股票。
-9. 执行实时量化信号逻辑：
+7. 若默认主扫描股票数 `< min_scan_coverage`，从 `cooling` 选取补充扫描股票，并附加 `cooling_supplemental_gate`。
+8. 分析当前持仓股票。
+9. 分析当前可扫描候选股票。
+10. 执行实时量化信号逻辑：
    - BUY 强弱分层
    - 冷启动轻仓
    - profit reentry 限制
    - 个股执行反馈
    - 组合级防守
    - 涨跌停不可成交
-10. 自动执行可成交信号。
-11. 更新账户、持仓、lot、slot、T+1 状态。
-12. 更新每只股票的 `health_score`。
-13. 执行生命周期状态流转。
-14. 执行 `cooling` opportunistic review。
-15. 写入 checkpoint 快照。
-16. 写入本 checkpoint 的信号、交易、候选事件、生命周期事件和股票状态快照。
+11. 自动执行可成交信号。
+12. 更新账户、持仓、lot、slot、T+1 状态。
+13. 更新每只股票的 `health_score`。
+14. 执行生命周期状态流转。
+15. 执行 `cooling` opportunistic review。
+16. 写入 checkpoint 快照。
+17. 写入本 checkpoint 的信号、交易、候选事件、生命周期事件和股票状态快照。
 
 执行顺序说明：
 
 1. 候选事件必须在主扫描前处理，否则新入池股票无法在同一 checkpoint 参与扫描。
 2. 生命周期状态必须在交易执行后更新，因为持仓是否清空会影响 `exit_only -> cooling/trial/active`。
-3. `cooling` 复评必须在主扫描后执行，避免冷却股挤占主扫描容量。
-4. 步骤 5 中新进入 `trial` 的股票，必须在步骤 6 到 8 的主扫描范围内立即可见。
+3. `cooling` 补充扫描只在默认主扫描覆盖不足时执行，不能挤占 `trial/active/exit_only` 默认主扫描容量。
+4. 步骤 5 中新进入 `trial` 的股票，必须在步骤 6 到 9 的扫描范围内立即可见。
 5. 若当前 checkpoint 不生成候选事件，步骤 5 仍需处理此前未 consumed 的 eligible 事件，例如从 `confirm_first` 切换到 `auto_trial` 的 run-local 设置不在本任务中发生，因此通常不会产生新入池。
 6. `cooling` 复评必须使用当前 checkpoint 的 run-local 历史快照，不得退回当前实时行情或远程即时 K 线。
-7. `cooling` 复评产生的 BUY 只能用于恢复 `cooling -> trial`，不得作为待执行交易信号直接成交。
+7. `cooling` 补充扫描可以产生可执行 BUY，但必须满足 `cooling_supplemental_gate` 的强确认、门槛上调和仓位上限；低频复评产生的 BUY 仍只用于恢复说明，不直接成交。
 8. 生命周期流转必须执行最短停留期：`trial` 未满足 `trial_min_dwell_checkpoints` 前不得进入 `cooling`；`cooling_until` 未到期前不得恢复或退休；`retired_at + retired_min_dwell_days` 未到期前不得通过候选事件复活，返回 `reason_code = retired_dwell_blocked`。
 9. 持仓股票进入 `exit_only` 必须有连续下行确认；不能只因为一次 checkpoint 的健康分低于阈值就立刻切成只出场管理。
 10. 若持仓来自同一交易日刚执行的 BUY，生命周期处于 T+1 保护期；该日内即使出现弱化信号，也不得立即切成 `exit_only`。
 11. `trial -> active` 必须在演练状态机中实际执行，且必须基于连续趋势确认 checkpoint，不得只因为单次候选事件或单次 BUY 直接升级。
 12. `trial` 冷启动样本不足时必须使用 profile 配置的健康分下限保护，避免演练首日把大部分股票打入 `cooling`。
-13. `cooling` 股票若被新的历史候选事件重新命中，允许该事件触发 `cooling -> trial` 恢复评估；恢复成功的股票在同一 checkpoint 的主扫描中必须可见。
+13. `cooling` 股票若被新的历史候选事件重新命中，只能提升补充扫描排序，不能仅凭来源直接恢复到 `trial`。
 14. 实时量化演练中，每个交易日第一个 checkpoint 必须全量复评已到期 `cooling` 股票；其他 checkpoint 可按 `cooling_review_batch_size` 轮转复评。
+15. `health_score` 低只能影响 gate、排序和解释；不得单独触发 `trial/active -> cooling/retired`。
 
 ## 12. 交易与风控规则
 
@@ -961,7 +969,7 @@ LiveQuantDrillMode
 7. `trial / active / exit_only / cooling / retired` 状态能在演练中变化。
 8. 有持仓股票不会直接进入 `retired`。
 9. `exit_only` 股票不会产生 BUY 成交。
-10. `cooling` 股票不参与主扫描，但参与低频复评。
+10. `cooling` 股票在默认主扫描覆盖不足时可参与补充扫描，并应用 `cooling_supplemental_gate`。
 11. 结果页能解释每一次入池、出池、冷却、恢复原因。
 12. 收益结果、实现盈亏、清算后总盈亏口径清楚区分。
 13. 缺失数据会在结果页显示 warning。
@@ -971,6 +979,8 @@ LiveQuantDrillMode
 17. drill 与普通历史回放互斥，任意一个运行中时另一个不能启动。
 18. `sim_run_quant_summary` 每个 checkpoint 写入一行状态聚合。
 19. 启动时锁定策略 profile 快照，运行期间 profile 修改不影响任务。
+20. aggressive 演练中，默认主扫描 + 补充扫描 + exit_only 的覆盖不得长期低于 `min_scan_coverage=6`；允许因数据缺失、停牌或涨跌停临时低于该值，但必须在 summary 中计数。
+21. `health_score` 低但没有连续 `downtrend_hit` 时，不得触发自动冷却或退休。
 
 ## 22. 测试要求
 
@@ -983,7 +993,7 @@ LiveQuantDrillMode
 5. 自动入池测试。
 6. `exit_only` BUY 阻断测试。
 7. 持仓股票禁止直接 retired 测试。
-8. cooling 低频复评测试。
+8. cooling 补充扫描与低频复评测试。
 9. 期末清算收益口径测试。
 10. live 表不被写入测试。
 11. 候选生成频率测试。
@@ -1011,7 +1021,7 @@ LiveQuantDrillMode
 2. 至少产生一条候选事件。
 3. 至少保存一条 `sim_run_quant_states`。
 4. 至少保存一条 `sim_run_quant_summary`。
-5. 若存在下行股票，能产生 `exit_only / cooling / retired` 事件。
+5. 若存在下行股票，能产生 `exit_only / cooling / retired` 事件，但不能让扫描覆盖长期跌破 profile 最小覆盖。
 6. 任务完成后 live-sim 当前账户和持仓未变化。
 7. 普通历史回放运行中启动 drill 返回 `409`。
 8. drill 运行中启动普通历史回放返回 `409`。

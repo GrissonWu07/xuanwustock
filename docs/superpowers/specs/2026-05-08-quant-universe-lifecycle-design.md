@@ -25,6 +25,13 @@ Owner: Codex
 
 本 spec 的目标，是把“纳入实时量化”和“退出实时量化”做成可解释、可配置、可回溯的生命周期系统，同时与现有股票池、实时模拟、历史回放和刷新架构保持一致。
 
+2026-05-11 修订：生命周期不再采用“预测性硬出池”作为核心机制。历史演练结果显示，过早把股票打入 `cooling/retired` 会让 aggressive 策略后段无标的可扫，收益显著落后固定池历史回放。因此本 spec 的核心语义调整为：
+
+1. 生命周期主要输出 **风险感知 gate**，控制扫描优先级、BUY 门槛、仓位上限和解释原因。
+2. `cooling` 不是“不看了”，而是进入补充扫描/恢复扫描队列。
+3. `health_score` 不再直接触发出池；状态降级必须由行情确认的 `downtrend_hit` 或用户手工操作驱动。
+4. aggressive / stable / conservative 必须有最小扫描覆盖，避免策略把量化股票池收缩到 0~1 只。
+
 策略相关约束：
 
 1. 所有生命周期参数、阈值、权重都必须挂靠到现有策略 profile
@@ -79,7 +86,7 @@ Owner: Codex
 2. 计算候选股票的纳入评分
 3. 决定是否自动纳入 `trial`
 4. 在实时模拟运行过程中维护 `health_score`
-5. 决定股票进入 `active / exit_only / cooling / retired`
+5. 输出股票的 `active / exit_only / cooling / retired` 生命周期状态和对应 `lifecycle_gate`
 6. 记录所有状态变更和原因
 
 系统保持以下分层：
@@ -93,8 +100,9 @@ Owner: Codex
    - 唯一允许改写 `quant_status / quant_enabled` 的逻辑层
 
 3. **实时模拟执行层**
-   - 只消费 `trial / active / exit_only`
-   - 不负责决定股票是否属于量化池
+   - 主消费 `trial / active / exit_only`
+   - 当主扫描覆盖不足时，可补充消费一批 `cooling` 股票
+   - 不负责决定股票是否属于量化池，但必须消费 `lifecycle_gate` 做 BUY 门槛和仓位裁剪
 
 4. **历史回放层**
    - 默认记录当前 `quant_enabled=1` 的任务股票范围快照
@@ -136,8 +144,9 @@ Owner: Codex
 5. `cooling`
    - 冷却状态
    - `quant_enabled=1`
-   - 不参与实时模拟主扫描
-   - 只参与低频重评估
+   - 不参与默认主扫描
+   - 当主扫描覆盖不足时，可作为补充扫描候选
+   - 补充扫描必须附带更严格的 `lifecycle_gate`
 
 6. `retired`
    - 退出自动量化状态
@@ -153,11 +162,12 @@ Owner: Codex
 
 ### 6.2 状态语义约束
 
-1. `trial / active / exit_only` 属于“实时模拟主扫描范围”
-2. `cooling` 不参与 10 分钟主扫描，但参与低频重评估
-3. `retired` 不参与任何自动扫描，只响应新的候选事件
+1. `trial / active / exit_only` 属于“默认主扫描范围”
+2. `cooling` 属于“补充扫描范围”：默认不抢占主扫描容量，但在最小扫描覆盖不足时参与同一 checkpoint 扫描
+3. `retired` 不参与常规扫描，只响应新的高质量候选事件或用户手工恢复
 4. 有 live-sim 持仓的股票，禁止直接从 `trial / active` 跳到 `cooling / retired`
 5. 有 live-sim 持仓且进入下行防守时，必须先进入 `exit_only`
+6. `health_score` 只影响 gate、排序和解释，不得单独触发 `trial/active -> cooling/retired`
 
 ### 6.3 合法流转
 
@@ -543,9 +553,20 @@ Owner: Codex
 
 ### 10.1 目标
 
-`health_score` 用于衡量一只量化股票当前是否仍值得占用实时扫描资源。
+`health_score` 用于衡量一只量化股票当前的风险状态和扫描优先级。
 
 范围：`0 ~ 100`
+
+硬约束：
+
+1. `health_score` 不直接决定出池。
+2. `health_score` 低时，只能导致：
+   - `buy_threshold_delta` 上调
+   - `position_size_multiplier` 下调
+   - `max_position_pct` 下调
+   - 补充扫描排序靠后
+   - UI 风险解释增强
+3. `trial / active -> cooling / retired` 必须由行情确认的连续 `downtrend_hit` 或用户手工操作触发。
 
 ### 10.2 构成
 
@@ -610,6 +631,7 @@ Owner: Codex
 2. 各 profile 的归一化阈值和 penalty 参数可以配置，但必须挂靠现有策略 profile
 3. `inactivity_penalty` 对 `trial` 和无持仓股票必须更敏感；当“连续无有效 BUY 天数”达到 `trial_no_buy_days_threshold` 时，应进入满额惩罚区间，而不是继续线性宽松递增
 4. 冷启动样本不足时必须启用健康分下限保护，避免 1-3 个 checkpoint 的弱 HOLD 把新入池股票直接打入 `cooling`。
+5. `health_score < cooling_threshold` 或 `health_score < retire_threshold` 不得单独作为状态流转条件。
 
 冷启动样本保护：
 
@@ -715,6 +737,8 @@ Owner: Codex
 
 ## 11. 自动退出与降级
 
+生命周期降级的设计目标是“风险感知管理”，不是“预测性剔除”。系统不得因为股票暂时弱势就让 aggressive 策略失去可交易标的。降级只能改变扫描/买入/仓位口径；真正退出必须慢、可解释、可恢复。
+
 ### 11.1 `exit_only`
 
 触发条件：
@@ -735,28 +759,31 @@ Owner: Codex
 触发条件：
 
 1. 当前无 live-sim 持仓
-2. `health_score < cooling_threshold`
-3. 且连续 `downtrend_hit >= max(downtrend_cooling_streak, trial_min_dwell_checkpoints)`
-4. `trial` 股票必须先满足 `trial_min_dwell_checkpoints`，不得在入池当日凭少量 checkpoint 进入 `cooling`
+2. 连续 `downtrend_hit >= downtrend_cooling_streak`
+3. `trial` 股票必须先满足 `trial_min_dwell_checkpoints`，不得在入池当日凭少量 checkpoint 进入 `cooling`
+4. 对 aggressive 策略，若进入 `cooling` 会导致默认主扫描覆盖低于 `min_scan_coverage`，则不得立即进入 `cooling`，而应进入带严格 gate 的 `guarded_scan` 派生扫描模式
 
 效果：
 
-1. 不参与 10 分钟主扫描
-2. 进入低频重评估
-3. 设置 `stock_universe_quant_state.cooling_until`
+1. 不参与默认主扫描排序
+2. 可在最小扫描覆盖不足时作为补充扫描候选
+3. 补充扫描必须使用 `cooling_supplemental_gate`
+4. 设置 `stock_universe_quant_state.cooling_until`，作为最短冷却观察期
 
 ### 11.3 `retired`
 
 触发条件：
 
 1. 已处于 `cooling`
-2. 冷却期后连续低频复评仍无改善，且 `health_score < retire_threshold`
-3. 一段时间内无新的有效候选事件支持
+2. 已满足 `cooling_min_dwell_days`
+3. 在冷却期后仍连续出现 `downtrend_hit`
+4. 一段时间内无新的有效候选事件支持
+5. 进入 `retired` 后不会破坏最小扫描覆盖；若会破坏，则继续保持 `cooling` 并带更严格 gate
 
 效果：
 
 1. `quant_enabled=0`
-2. 不参与自动扫描
+2. 不参与默认扫描或补充扫描
 3. 仅保留在股票池和事件历史中
 
 ## 12. 再入池与复活
@@ -766,17 +793,30 @@ Owner: Codex
 满足：
 
 1. 冷却期已结束
-2. 低频复评 checkpoint 中，趋势结构重新满足最低入场条件
-3. `health_score >= cooling_threshold`
+2. 补充扫描或复评 checkpoint 中，趋势结构重新满足最低入场条件
+3. `health_score >= cooling_threshold` 可作为排序和解释条件，但不是唯一恢复条件
 4. 若同时出现新候选事件，可用于排序和 UI 解释，但不是恢复的必要条件
-5. 若 cooling 股票被新的历史候选事件或实时发现事件重新命中，允许用该候选事件触发恢复评估；恢复成功只能进入 `trial`，不能直接成交或直接进入 `active`
+5. 若 cooling 股票被新的历史候选事件或实时发现事件重新命中，只能提高补充扫描优先级；不能仅凭候选来源直接恢复到 `trial`
+6. 恢复成功后只能进入 `trial`，不能直接进入 `active`
 
-低频复评要求：
+补充扫描与复评要求：
 
-1. 实时量化中，`cooling` 复评按 `cooling_review_batch_size` 分批轮转，不得长期只复评健康分最低的股票。
-2. 轮转排序优先使用最久未复评，其次使用较高健康分和恢复迹象，最后按股票代码稳定排序。
-3. 实时量化演练中，每个交易日第一个 checkpoint 必须全量复评已到期的 `cooling` 股票；其他 checkpoint 可按 `cooling_review_batch_size` 分批复评。
-4. `cooling` 复评产生的 BUY 只用于恢复 `cooling -> trial`，不得在同一复评信号中直接成交。
+1. 每个 checkpoint 先构造默认主扫描集合：`trial / active / exit_only`。
+2. 若默认主扫描集合数量 `< min_scan_coverage`，从 `cooling` 中补充 `min_scan_coverage - 默认主扫描数量` 只。
+3. 补充排序：
+   - `has_recent_candidate_support DESC`
+   - `recovery_score DESC`
+   - `health_score DESC`
+   - `last_health_evaluated_at ASC`
+   - `stock_code ASC`
+4. `has_recent_candidate_support` 只表示最近发现/研究重新命中，不直接加健康分。
+5. `recovery_score` 必须来自当前 checkpoint 的行情确认，推荐公式：
+   - `trend_recovery_score * 0.45`
+   - `buy_strength_score * 0.25`
+   - `ma20_reclaim_score * 0.20`
+   - `recent_candidate_support_score * 0.10`
+6. 补充扫描股票可以产生 BUY 信号，但必须应用更严格的 `cooling_supplemental_gate`。
+7. 若补充扫描产生可执行 BUY 或强恢复信号，状态应恢复为 `trial` 并写入 `cooling_recovered_to_trial` 事件；恢复事件必须包含行情确认理由，而不能只写候选来源。
 
 ### 12.2 `retired -> trial`
 
@@ -841,7 +881,12 @@ Owner: Codex
 
 ### 15.1 主扫描范围
 
-`/live-sim` 主扫描只处理：
+`/live-sim` 每个 checkpoint 的扫描分两层：
+
+1. 默认主扫描
+2. 覆盖不足时的补充扫描
+
+默认主扫描处理：
 
 1. `quant_enabled=1`
 2. `quant_status in ('trial', 'active', 'exit_only')`
@@ -851,35 +896,67 @@ Owner: Codex
 1. `trial / active` 允许 BUY
 2. `exit_only` 禁止 BUY，只允许 SELL/HOLD
 
+补充扫描处理：
+
+1. 当默认主扫描数量 `< min_scan_coverage` 时启用
+2. 仅从 `quant_status='cooling'` 且不在 `manual_ban/manual_paused` 的股票中选取
+3. 选取数量 = `min_scan_coverage - 默认主扫描数量`
+4. 补充股票必须带 `lifecycle_gate.mode = cooling_supplemental`
+5. 补充股票不得绕过涨跌停、T+1、组合防守、BUY 分层和资金槽规则
+
 执行约束必须落在信号生成层，而不是只靠 UI 或调度器过滤：
 
 1. 当股票 `quant_status = exit_only` 且原始决策动作是 `BUY` 或 `ADD` 时，信号生成层必须强制改写为 `HOLD`
 2. 改写后的信号必须保留 explain 字段，明确标注 `decision_type = exit_only_blocked`
 3. 若当前代码仍由 `SignalCenterService.create_signal` 负责最终信号落库，则该约束应在该层实现；若后续信号生成入口调整，则必须迁移到等价的统一 signal finalization 层
 
-### 15.2 低频重评估
+### 15.2 生命周期 gate
 
-`cooling` 股票不进入 10 分钟主扫描，但进入低频重评估任务。
+生命周期不直接 veto BUY，除 `exit_only` 外只提供 gate 给执行层消费。
 
-低频重评估默认周期建议：
+Gate 输出字段：
 
-1. aggressive：30 分钟
-2. stable：60 分钟
-3. conservative：90 分钟
+1. `mode`
+2. `buy_threshold_delta`
+3. `size_multiplier`
+4. `max_position_pct`
+5. `requires_strong_confirmation`
+6. `reason_code`
+7. `reason_text`
+
+默认 gate：
+
+| gate | buy_threshold_delta | size_multiplier | max_position_pct | requires_strong_confirmation |
+|---|---:|---:|---:|---:|
+| `normal_scan` | `0.00` | `1.00` | profile/default | false |
+| `trial_light` | `0.03` | `trial_position_multiplier` | `trial_max_position_pct` | false |
+| `guarded_scan` | `0.08` | `0.35` | `4.0` | true |
+| `cooling_supplemental` | `0.12` | `0.20` | `3.0` | true |
+| `exit_only` | N/A | `0.00` | `0.0` | N/A |
+
+执行层要求：
+
+1. SignalCenterService 或等价 signal finalization 层必须把 `lifecycle_gate` 写入 signal explain。
+2. BUY 分层计算必须先应用 `buy_threshold_delta`，再决定 weak/normal/strong。
+3. 执行仓位必须取 `min(existing_caps, max_position_pct)`，并应用 `size_multiplier`。
+4. `cooling_supplemental` 只有在满足强确认时才允许 BUY；否则只能记录 HOLD/观察。
+
+### 15.3 低频重评估
 
 补充规则：
 
-1. 若某次主扫描结束后，本地行情技术缓存已经是 fresh，系统可以顺手对一批 `cooling` 股票做 opportunistic review
-2. 实时量化每次 opportunistic review 最多处理 `cooling_review_batch_size` 只，不得固定写死为 5 只
-3. 实时量化演练在每个交易日第一个 checkpoint 必须全量复评已到期 `cooling` 股票，其他 checkpoint 再按 `cooling_review_batch_size` 轮转
-4. opportunistic review 的优先级按：
+1. 固定低频重评估仍保留，用于更新 `health_score`、`recovery_score` 和 UI 解释。
+2. 低频重评估不得替代最小扫描覆盖；覆盖不足时必须走 15.1 的补充扫描。
+3. 实时量化每次 opportunistic review 最多处理 `cooling_review_batch_size` 只，不得固定写死为 5 只。
+4. 实时量化演练在每个交易日第一个 checkpoint 必须全量复评已到期 `cooling` 股票，其他 checkpoint 再按 `cooling_review_batch_size` 轮转。
+5. opportunistic review 的优先级按：
    - `last_health_evaluated_at` 最早优先
    - 其次 `health_score` 较高者优先
    - 再其次按股票代码稳定排序
-5. opportunistic review 只读取已有 local cache，不额外触发远程拉取
-6. 即使启用 opportunistic review，仍需保留固定低频重评估兜底
+6. opportunistic review 只读取已有 local cache，不额外触发远程拉取
+7. 即使启用 opportunistic review，仍需保留固定低频重评估兜底
 
-### 15.3 不改变已有执行算法
+### 15.4 不改变已有执行算法
 
 本 spec 不改变：
 
@@ -1263,6 +1340,8 @@ Phase 2 可新增高级选项：
 
 1. `cooling_review_interval_minutes`
 2. `retired_reactivation_check_enabled`
+3. `min_scan_coverage`
+4. `cooling_supplemental_gate`
 
 ### 19.5 `trial` 仓位配置
 
@@ -1287,10 +1366,11 @@ Phase 2 可新增高级选项：
 2. `buy_strength_health_weight`
 3. `tech_health_weight`
 4. `context_health_weight`
-5. `candidate_support_bonus_multiplier`
-6. `execution_penalty_multiplier`
-7. `inactivity_penalty_multiplier`
-8. `reentry_watch_penalty_multiplier`
+5. `execution_penalty_multiplier`
+6. `inactivity_penalty_multiplier`
+7. `reentry_watch_penalty_multiplier`
+
+说明：候选来源和候选事件不得给 `health_score` 加分，因此不再配置 `candidate_support_bonus_multiplier`。候选支持只进入补充扫描排序和恢复 explain。
 
 ### 19.8 profile 绑定要求
 
@@ -1326,8 +1406,8 @@ Phase 2 可新增高级选项：
 12. `trial_min_dwell_checkpoints = 16`
 13. `trial_cold_start_min_checkpoints = 8`
 14. `trial_cold_start_health_floor = 45`
-15. `cooling_min_dwell_days = 1`
-16. `retired_min_dwell_days = 7`
+15. `cooling_min_dwell_days = 3`
+16. `retired_min_dwell_days = 14`
 17. `cooling_review_interval_minutes = 30`
 18. `cooling_review_batch_size = 20`
 19. `max_auto_entries_per_batch = 6`
@@ -1335,6 +1415,13 @@ Phase 2 可新增高级选项：
 21. `max_auto_entries_per_strategy_batch = 3`
 22. `max_same_industry_auto_entries_per_day = 3`
 23. `max_same_concept_auto_entries_per_day = 3`
+24. `min_scan_coverage = 6`
+25. `guarded_buy_threshold_delta = 0.08`
+26. `guarded_size_multiplier = 0.35`
+27. `guarded_max_position_pct = 4.0`
+28. `cooling_supplemental_buy_threshold_delta = 0.12`
+29. `cooling_supplemental_size_multiplier = 0.20`
+30. `cooling_supplemental_max_position_pct = 3.0`
 
 #### stable
 
@@ -1352,8 +1439,8 @@ Phase 2 可新增高级选项：
 12. `trial_min_dwell_checkpoints = 24`
 13. `trial_cold_start_min_checkpoints = 10`
 14. `trial_cold_start_health_floor = 50`
-15. `cooling_min_dwell_days = 2`
-16. `retired_min_dwell_days = 10`
+15. `cooling_min_dwell_days = 5`
+16. `retired_min_dwell_days = 21`
 17. `cooling_review_interval_minutes = 60`
 18. `cooling_review_batch_size = 12`
 19. `max_auto_entries_per_batch = 4`
@@ -1361,6 +1448,13 @@ Phase 2 可新增高级选项：
 21. `max_auto_entries_per_strategy_batch = 2`
 22. `max_same_industry_auto_entries_per_day = 2`
 23. `max_same_concept_auto_entries_per_day = 2`
+24. `min_scan_coverage = 4`
+25. `guarded_buy_threshold_delta = 0.10`
+26. `guarded_size_multiplier = 0.30`
+27. `guarded_max_position_pct = 3.0`
+28. `cooling_supplemental_buy_threshold_delta = 0.15`
+29. `cooling_supplemental_size_multiplier = 0.15`
+30. `cooling_supplemental_max_position_pct = 2.0`
 
 #### conservative
 
@@ -1378,8 +1472,8 @@ Phase 2 可新增高级选项：
 12. `trial_min_dwell_checkpoints = 40`
 13. `trial_cold_start_min_checkpoints = 12`
 14. `trial_cold_start_health_floor = 55`
-15. `cooling_min_dwell_days = 3`
-16. `retired_min_dwell_days = 14`
+15. `cooling_min_dwell_days = 7`
+16. `retired_min_dwell_days = 30`
 17. `cooling_review_interval_minutes = 90`
 18. `cooling_review_batch_size = 8`
 19. `max_auto_entries_per_batch = 2`
@@ -1387,6 +1481,13 @@ Phase 2 可新增高级选项：
 21. `max_auto_entries_per_strategy_batch = 1`
 22. `max_same_industry_auto_entries_per_day = 1`
 23. `max_same_concept_auto_entries_per_day = 1`
+24. `min_scan_coverage = 2`
+25. `guarded_buy_threshold_delta = 0.12`
+26. `guarded_size_multiplier = 0.25`
+27. `guarded_max_position_pct = 2.0`
+28. `cooling_supplemental_buy_threshold_delta = 0.18`
+29. `cooling_supplemental_size_multiplier = 0.10`
+30. `cooling_supplemental_max_position_pct = 1.5`
 
 约束：
 
@@ -1415,9 +1516,10 @@ Phase 2 可新增高级选项：
    - 日级 `basic_info`
    - 日级 `fundamental`
    - 低频 `flow_sentiment`
-   但不参与高频 `quote_realtime` 主扫描
-4. 若某股票处于 `trial / active / exit_only`，其行情技术刷新仍完全复用现有实时模拟 local-first 调度
-5. 若某股票被 `manual_pause` 或 `manual_ban`，系统不得因为刷新结果变化而自动恢复其扫描状态
+4. `cooling` 股票若被选入补充扫描，允许读取当前 local-first 行情技术快照；若本地缓存未覆盖，不得为单只 cooling 股票同步阻塞式远程拉取
+5. `retired` 股票不参与高频 `quote_realtime` 主扫描，只在新候选事件或用户操作后重新进入评估
+6. 若某股票处于 `trial / active / exit_only`，其行情技术刷新仍完全复用现有实时模拟 local-first 调度
+7. 若某股票被 `manual_pause` 或 `manual_ban`，系统不得因为刷新结果变化而自动恢复其扫描状态
 
 ### 20.1 端到端数据流
 
@@ -1435,16 +1537,20 @@ Phase 2 可新增高级选项：
    - `stock_universe.quant_enabled`
    - `stock_universe_quant_state`
    - `stock_universe_quant_events`
-6. `/live-sim` 主扫描只读取：
+6. `/live-sim` 默认主扫描读取：
    - `quant_enabled=1`
    - `quant_status in ('trial', 'active', 'exit_only')`
-7. 每次主扫描后更新：
+7. 若默认主扫描覆盖低于 `min_scan_coverage`，补充读取：
+   - `quant_enabled=1`
+   - `quant_status='cooling'`
+   - 按最近候选支持、恢复分、健康分和最久未评估排序
+8. 每次扫描后更新：
    - `health_score`
    - `warning/downtrend` 计数
    - 生命周期状态
-8. `cooling` 股票进入低频重评估链路
-9. `retired` 股票仅在高门槛候选事件触发时重新进入评估
-10. UI 只消费状态表与事件表提供的聚合结果，不直接从原始信号表拼装生命周期口径
+9. `cooling` 股票同时进入低频重评估链路，用于更新恢复解释和排序
+10. `retired` 股票仅在高门槛候选事件触发时重新进入评估
+11. UI 只消费状态表与事件表提供的聚合结果，不直接从原始信号表拼装生命周期口径
 
 ### 20.2 数据口径来源
 
@@ -1541,28 +1647,35 @@ python scripts/reset_stock_universe_deployment.py --yes --recreate
 7. 有持仓股票不会直接跳过 `exit_only`
 8. `manual_pause / manual_ban / manual_pin` 覆盖行为
 9. 历史回放仍只记录 `quant_enabled=1` 的任务股票范围快照
-10. `cooling` 股票不进入主扫描，但进入低频重评估
+10. `cooling` 股票在默认主扫描覆盖不足时进入补充扫描，并应用 `cooling_supplemental_gate`
+11. `health_score` 低但没有连续 `downtrend_hit` 时，不得触发 `trial/active -> cooling/retired`
+12. `min_scan_coverage` 生效：aggressive 演练中默认主扫描 + 补充扫描 + exit_only 覆盖不得长期低于 6
 
 ## 23. 推荐落地顺序
 
-优先级必须先解决“坏股票长期占用扫描资源”，再解决“好股票更快进入量化”。
+优先级必须先解决“硬出池导致无标的可扫”，再解决“坏股票长期占用正常仓位风险”。
 
 推荐顺序：
 
 1. 数据结构：`quant_status` + `stock_universe_quant_state` + 事件表
 2. `health_score`、`weakening_warning`、`downtrend_hit`
-3. `exit_only / cooling / retired` 退出与降级机制
-4. 工作台与 `/live-sim` 的状态展示
-5. 候选事件写入与候选分计算
-6. `trial` 自动纳入
-7. 通知
-8. `cooling` 低频重评估与 `retired` 高门槛复活
+3. `lifecycle_gate` 与执行层 BUY 门槛/仓位裁剪
+4. `min_scan_coverage` 与 `cooling` 补充扫描
+5. `exit_only / cooling / retired` 慢速降级机制
+6. 工作台与 `/live-sim` 的状态展示
+7. 候选事件写入与候选分计算
+8. `trial` 自动纳入
+9. 通知
+10. `cooling` 低频重评估与 `retired` 高门槛复活
 
 ## 24. 最终约束
 
-本 spec 的核心约束只有三条：
+本 spec 的核心约束：
 
 1. **自动入池只能先进入 `trial`，不能直接无门槛进入正式量化。**
 2. **进入下行时，若当前有持仓，必须先进入 `exit_only`，不能直接停止处理。**
-3. **所有自动纳入、降级、退出、恢复都必须写事件留痕，并允许用户手工覆盖。**
+3. **生命周期不直接替代信号算法；除 `exit_only` 外，它只能通过 gate 调整 BUY 门槛、仓位上限和扫描优先级。**
+4. **`health_score` 低不能单独触发出池；状态降级必须有连续 `downtrend_hit` 或用户手工操作。**
+5. **aggressive 策略必须保持最小扫描覆盖，避免自动管理把可交易股票收缩到 0~1 只。**
+6. **所有自动纳入、降级、退出、恢复都必须写事件留痕，并允许用户手工覆盖。**
 
