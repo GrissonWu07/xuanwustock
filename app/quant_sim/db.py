@@ -322,6 +322,7 @@ class QuantSimDB:
                     reentry_watch_until TEXT,
                     recovery_probe_until TEXT,
                     recovery_probe_attempt_count INTEGER DEFAULT 0,
+                    last_recovery_probe_attempt_at TEXT,
                     recent_probe_loss_count INTEGER DEFAULT 0,
                     last_recovery_probe_failure_at TEXT,
                     recovery_probe_cooldown_until TEXT,
@@ -338,6 +339,7 @@ class QuantSimDB:
             )
             self._ensure_column(cursor, "stock_universe_quant_state", "recovery_probe_until", "TEXT")
             self._ensure_column(cursor, "stock_universe_quant_state", "recovery_probe_attempt_count", "INTEGER DEFAULT 0")
+            self._ensure_column(cursor, "stock_universe_quant_state", "last_recovery_probe_attempt_at", "TEXT")
             self._ensure_column(cursor, "stock_universe_quant_state", "recent_probe_loss_count", "INTEGER DEFAULT 0")
             self._ensure_column(cursor, "stock_universe_quant_state", "last_recovery_probe_failure_at", "TEXT")
             self._ensure_column(cursor, "stock_universe_quant_state", "recovery_probe_cooldown_until", "TEXT")
@@ -863,6 +865,9 @@ class QuantSimDB:
                 tech_score REAL DEFAULT 0,
                 context_score REAL DEFAULT 0,
                 status TEXT DEFAULT 'observed',
+                execution_note TEXT,
+                blocked_reason TEXT,
+                cap_reason TEXT,
                 checkpoint_at TEXT,
                 created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                 updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -996,6 +1001,9 @@ class QuantSimDB:
             self._ensure_column(cursor, "sim_run_signals", "stop_loss_pct", "REAL DEFAULT 0")
             self._ensure_column(cursor, "sim_run_signals", "take_profit_pct", "REAL DEFAULT 0")
             self._ensure_column(cursor, "sim_run_signals", "status", "TEXT DEFAULT 'observed'")
+            self._ensure_column(cursor, "sim_run_signals", "execution_note", "TEXT")
+            self._ensure_column(cursor, "sim_run_signals", "blocked_reason", "TEXT")
+            self._ensure_column(cursor, "sim_run_signals", "cap_reason", "TEXT")
             self._ensure_column(cursor, "sim_run_signals", "updated_at", "TEXT")
             for table_name in ("sim_run_trades",):
                 self._ensure_column(cursor, table_name, "gross_amount", "REAL DEFAULT 0")
@@ -3335,6 +3343,15 @@ class QuantSimDB:
             created_at = signal.get("created_at") or self._now()
             updated_at = signal.get("updated_at") or created_at
             status = signal.get("status") or "observed"
+            strategy_profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+            auto_execution_skip = (
+                strategy_profile.get("auto_execution_skip")
+                if isinstance(strategy_profile.get("auto_execution_skip"), dict)
+                else {}
+            )
+            execution_note = signal.get("execution_note") or auto_execution_skip.get("execution_note")
+            blocked_reason = signal.get("blocked_reason") or auto_execution_skip.get("blocked_reason")
+            cap_reason = signal.get("cap_reason") or auto_execution_skip.get("cap_reason")
             payload = (
                 run_id,
                 source_signal_id,
@@ -3350,15 +3367,16 @@ class QuantSimDB:
                 float(signal.get("tech_score") or 0),
                 float(signal.get("context_score") or 0),
                 status,
+                execution_note,
+                blocked_reason,
+                cap_reason,
                 checkpoint_at,
                 created_at,
                 updated_at,
             )
-            strategy_profile_json = self._dumps_metadata(signal.get("strategy_profile"))
+            strategy_profile_json = self._dumps_metadata(strategy_profile)
             explainability_json = self._dumps_metadata(
-                (signal.get("strategy_profile") or {}).get("explainability")
-                if isinstance(signal.get("strategy_profile"), dict)
-                else {}
+                strategy_profile.get("explainability") if isinstance(strategy_profile, dict) else {}
             )
 
             existing_id: int | None = None
@@ -3383,9 +3401,9 @@ class QuantSimDB:
                     (
                         run_id, source_signal_id, stock_code, stock_name, action, confidence, reasoning,
                         position_size_pct, stop_loss_pct, take_profit_pct, decision_type, tech_score, context_score,
-                        status, checkpoint_at, created_at, updated_at
+                        status, execution_note, blocked_reason, cap_reason, checkpoint_at, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     payload,
                 )
@@ -3407,6 +3425,9 @@ class QuantSimDB:
                         tech_score = ?,
                         context_score = ?,
                         status = ?,
+                        execution_note = ?,
+                        blocked_reason = ?,
+                        cap_reason = ?,
                         checkpoint_at = ?,
                         created_at = ?,
                         updated_at = ?
@@ -4352,12 +4373,12 @@ class QuantSimDB:
                 stock_code, candidate_score, candidate_confidence, health_score,
                 downtrend_streak, weakening_warning_streak, blocked_streak, no_buy_days,
                 cooling_until, retired_at, retire_reason, reentry_watch_until,
-                recovery_probe_until, recovery_probe_attempt_count, recent_probe_loss_count,
-                last_recovery_probe_failure_at, recovery_probe_cooldown_until, probe_failure_reason,
+                recovery_probe_until, recovery_probe_attempt_count, last_recovery_probe_attempt_at,
+                recent_probe_loss_count, last_recovery_probe_failure_at, recovery_probe_cooldown_until, probe_failure_reason,
                 active_since, active_checkpoints, last_status_changed_at, last_health_evaluated_at,
                 snapshot_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(stock_code) DO UPDATE SET
                 candidate_score = excluded.candidate_score,
                 candidate_confidence = excluded.candidate_confidence,
@@ -4372,6 +4393,7 @@ class QuantSimDB:
                 reentry_watch_until = excluded.reentry_watch_until,
                 recovery_probe_until = excluded.recovery_probe_until,
                 recovery_probe_attempt_count = excluded.recovery_probe_attempt_count,
+                last_recovery_probe_attempt_at = excluded.last_recovery_probe_attempt_at,
                 recent_probe_loss_count = excluded.recent_probe_loss_count,
                 last_recovery_probe_failure_at = excluded.last_recovery_probe_failure_at,
                 recovery_probe_cooldown_until = excluded.recovery_probe_cooldown_until,
@@ -4398,6 +4420,7 @@ class QuantSimDB:
                 payload.get("reentry_watch_until"),
                 payload.get("recovery_probe_until"),
                 int(payload.get("recovery_probe_attempt_count") or 0),
+                payload.get("last_recovery_probe_attempt_at"),
                 int(payload.get("recent_probe_loss_count") or 0),
                 payload.get("last_recovery_probe_failure_at"),
                 payload.get("recovery_probe_cooldown_until"),
@@ -4603,6 +4626,7 @@ class QuantSimDB:
                 qs.reentry_watch_until AS reentry_watch_until,
                 qs.recovery_probe_until AS recovery_probe_until,
                 qs.recovery_probe_attempt_count AS recovery_probe_attempt_count,
+                qs.last_recovery_probe_attempt_at AS last_recovery_probe_attempt_at,
                 qs.recent_probe_loss_count AS recent_probe_loss_count,
                 qs.last_recovery_probe_failure_at AS last_recovery_probe_failure_at,
                 qs.recovery_probe_cooldown_until AS recovery_probe_cooldown_until,
@@ -5927,6 +5951,7 @@ class QuantSimDB:
                 qs.reentry_watch_until AS reentry_watch_until,
                 qs.recovery_probe_until AS recovery_probe_until,
                 qs.recovery_probe_attempt_count AS recovery_probe_attempt_count,
+                qs.last_recovery_probe_attempt_at AS last_recovery_probe_attempt_at,
                 qs.recent_probe_loss_count AS recent_probe_loss_count,
                 qs.last_recovery_probe_failure_at AS last_recovery_probe_failure_at,
                 qs.recovery_probe_cooldown_until AS recovery_probe_cooldown_until,
@@ -7407,6 +7432,7 @@ class QuantSimReplayDB(QuantSimDB):
                 cooling_until TEXT,
                 recovery_probe_until TEXT,
                 recovery_probe_attempt_count INTEGER DEFAULT 0,
+                last_recovery_probe_attempt_at TEXT,
                 recent_probe_loss_count INTEGER DEFAULT 0,
                 last_recovery_probe_failure_at TEXT,
                 recovery_probe_cooldown_until TEXT,
@@ -7509,6 +7535,7 @@ class QuantSimReplayDB(QuantSimDB):
         self._ensure_column(cursor, "sim_run_quant_states", "cooling_until", "TEXT")
         self._ensure_column(cursor, "sim_run_quant_states", "recovery_probe_until", "TEXT")
         self._ensure_column(cursor, "sim_run_quant_states", "recovery_probe_attempt_count", "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, "sim_run_quant_states", "last_recovery_probe_attempt_at", "TEXT")
         self._ensure_column(cursor, "sim_run_quant_states", "recent_probe_loss_count", "INTEGER DEFAULT 0")
         self._ensure_column(cursor, "sim_run_quant_states", "last_recovery_probe_failure_at", "TEXT")
         self._ensure_column(cursor, "sim_run_quant_states", "recovery_probe_cooldown_until", "TEXT")
@@ -7576,12 +7603,12 @@ class QuantSimReplayDB(QuantSimDB):
                         run_id, checkpoint_at, checkpoint_at_utc, stock_code, stock_name, market,
                         quant_enabled, quant_status, health_score, candidate_score, downtrend_streak,
                         weakening_warning_streak, blocked_streak, no_buy_days, cooling_until,
-                        recovery_probe_until, recovery_probe_attempt_count, recent_probe_loss_count,
-                        last_recovery_probe_failure_at, recovery_probe_cooldown_until, probe_failure_reason,
+                        recovery_probe_until, recovery_probe_attempt_count, last_recovery_probe_attempt_at,
+                        recent_probe_loss_count, last_recovery_probe_failure_at, recovery_probe_cooldown_until, probe_failure_reason,
                         active_since, active_checkpoints, retired_at, latest_reason, snapshot_json, created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(run_id, checkpoint_at_utc, stock_code) DO UPDATE SET
                         checkpoint_at = excluded.checkpoint_at,
                         stock_name = excluded.stock_name,
@@ -7597,6 +7624,7 @@ class QuantSimReplayDB(QuantSimDB):
                         cooling_until = excluded.cooling_until,
                         recovery_probe_until = excluded.recovery_probe_until,
                         recovery_probe_attempt_count = excluded.recovery_probe_attempt_count,
+                        last_recovery_probe_attempt_at = excluded.last_recovery_probe_attempt_at,
                         recent_probe_loss_count = excluded.recent_probe_loss_count,
                         last_recovery_probe_failure_at = excluded.last_recovery_probe_failure_at,
                         recovery_probe_cooldown_until = excluded.recovery_probe_cooldown_until,
@@ -7626,6 +7654,7 @@ class QuantSimReplayDB(QuantSimDB):
                         state.get("cooling_until"),
                         state.get("recovery_probe_until"),
                         int(state.get("recovery_probe_attempt_count") or 0),
+                        state.get("last_recovery_probe_attempt_at"),
                         int(state.get("recent_probe_loss_count") or 0),
                         state.get("last_recovery_probe_failure_at"),
                         state.get("recovery_probe_cooldown_until"),

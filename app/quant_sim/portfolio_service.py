@@ -106,7 +106,7 @@ class PortfolioService:
         if action == "BUY":
             price = self._resolve_signal_price(signal)
             if price <= 0:
-                self._record_auto_execute_skip(signal, "自动执行跳过：缺少有效最新价")
+                self._record_auto_execute_skip(signal, "自动执行跳过：缺少有效最新价", blocked_reason="missing_price")
                 return False
             block_reason = trade_block_reason(
                 action=action,
@@ -116,13 +116,18 @@ class PortfolioService:
                 signal=signal,
             )
             if block_reason:
-                self._record_auto_execute_skip(signal, f"自动执行跳过：{block_reason}")
+                self._record_auto_execute_skip(signal, f"自动执行跳过：{block_reason}", blocked_reason="trade_blocked")
                 return False
             quantity, sizing_evidence = self._estimate_buy_quantity(signal, price, settle_slots=settle_slots)
             self._attach_sizing_evidence(signal, sizing_evidence)
             if quantity <= 0:
                 reason = str(sizing_evidence.get("skip_reason") or "建议仓位不足买入一手")
-                self._record_auto_execute_skip(signal, f"自动执行跳过：{reason}")
+                self._record_auto_execute_skip(
+                    signal,
+                    f"自动执行跳过：{reason}",
+                    blocked_reason="sizing_skip",
+                    cap_reason=self._sizing_skip_cap_reason(sizing_evidence),
+                )
                 return False
             self.confirm_buy(
                 int(signal["id"]),
@@ -136,7 +141,7 @@ class PortfolioService:
         if action == "SELL":
             position = self._get_position(stock_code, as_of=executed_at)
             if not position:
-                self._record_auto_execute_skip(signal, "自动执行跳过：当前无可卖持仓")
+                self._record_auto_execute_skip(signal, "自动执行跳过：当前无可卖持仓", blocked_reason="no_position")
                 return False
             quantity = min(
                 int(position.get("quantity") or 0),
@@ -144,7 +149,7 @@ class PortfolioService:
             )
             price = self._resolve_signal_price(signal, fallback=position)
             if price <= 0:
-                self._record_auto_execute_skip(signal, "自动执行跳过：缺少有效最新价")
+                self._record_auto_execute_skip(signal, "自动执行跳过：缺少有效最新价", blocked_reason="missing_price")
                 return False
             block_reason = trade_block_reason(
                 action=action,
@@ -154,10 +159,10 @@ class PortfolioService:
                 signal=signal,
             )
             if block_reason:
-                self._record_auto_execute_skip(signal, f"自动执行跳过：{block_reason}")
+                self._record_auto_execute_skip(signal, f"自动执行跳过：{block_reason}", blocked_reason="trade_blocked")
                 return False
             if quantity <= 0:
-                self._record_auto_execute_skip(signal, "自动执行跳过：当前无可卖数量")
+                self._record_auto_execute_skip(signal, "自动执行跳过：当前无可卖数量", blocked_reason="no_sellable_quantity")
                 return False
             self.confirm_sell(
                 int(signal["id"]),
@@ -201,7 +206,12 @@ class PortfolioService:
             )
             for row in batch_rows:
                 if not row["allowed"]:
-                    self._record_auto_execute_skip(row["signal"], f"自动执行跳过：{row['reason_code']}")
+                    self._record_auto_execute_skip(
+                        row["signal"],
+                        f"自动执行跳过：{row['reason_code']}",
+                        blocked_reason="batch_execution_cap",
+                        cap_reason=str(row.get("reason_code") or ""),
+                    )
         executable = sells + [row["signal"] for row in batch_rows if row["allowed"]] + others
         for signal in executable:
             action = str(signal.get("action") or "").upper()
@@ -505,8 +515,54 @@ class PortfolioService:
                 return position
         return None
 
-    def _record_auto_execute_skip(self, signal: dict, reason: str) -> None:
+    def _record_auto_execute_skip(
+        self,
+        signal: dict,
+        reason: str,
+        *,
+        blocked_reason: str = "",
+        cap_reason: str = "",
+    ) -> None:
         signal_id = signal.get("id")
         if signal_id in (None, ""):
             return
-        self.db.update_signal_state(int(signal_id), execution_note=reason)
+        profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+        skip_payload = {
+            "execution_note": reason,
+            "blocked_reason": blocked_reason or self._infer_blocked_reason(reason),
+            "cap_reason": cap_reason or "",
+        }
+        next_profile = {**profile, "auto_execution_skip": skip_payload}
+        signal["strategy_profile"] = next_profile
+        signal["execution_note"] = reason
+        signal["blocked_reason"] = skip_payload["blocked_reason"]
+        signal["cap_reason"] = skip_payload["cap_reason"]
+        self.db.update_signal_state(int(signal_id), execution_note=reason, strategy_profile=next_profile)
+
+    @staticmethod
+    def _infer_blocked_reason(reason: str) -> str:
+        text = str(reason or "")
+        if "缺少有效最新价" in text:
+            return "missing_price"
+        if "无可卖持仓" in text:
+            return "no_position"
+        if "无可卖数量" in text:
+            return "no_sellable_quantity"
+        if "不足买入一手" in text or "建议仓位" in text:
+            return "sizing_skip"
+        return "auto_execution_skip"
+
+    @staticmethod
+    def _sizing_skip_cap_reason(sizing_evidence: dict) -> str:
+        if not isinstance(sizing_evidence, dict):
+            return ""
+        for key in ("skip_reason", "reason_code", "cap_reason"):
+            value = sizing_evidence.get(key)
+            if value:
+                return str(value)
+        reason_codes = sizing_evidence.get("cap_reason_codes")
+        if isinstance(reason_codes, list) and reason_codes:
+            return str(reason_codes[0])
+        if sizing_evidence.get("slot_capacity_capped"):
+            return "slot_capacity_capped"
+        return ""

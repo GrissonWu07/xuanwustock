@@ -1928,15 +1928,20 @@ class QuantSimReplayService:
         stock_code: str,
         reason_code: str,
     ) -> bool:
+        code = str(stock_code or "").strip().upper()
+        reason = str(reason_code or "").strip()
+        count_key = (code, reason)
+        counts = context.setdefault("_live_quant_drill_cooling_diagnostic_counts", {})
+        if not isinstance(counts, dict):
+            counts = {}
+            context["_live_quant_drill_cooling_diagnostic_counts"] = counts
+        counts[count_key] = int(counts.get(count_key) or 0) + 1
+
         recorded = context.setdefault("_live_quant_drill_cooling_diagnostic_keys", set())
         if not isinstance(recorded, set):
             recorded = set(recorded or [])
             context["_live_quant_drill_cooling_diagnostic_keys"] = recorded
-        key = (
-            checkpoint.date().isoformat(),
-            str(stock_code or "").strip().upper(),
-            str(reason_code or "").strip(),
-        )
+        key = (code, reason)
         if key in recorded:
             return False
         recorded.add(key)

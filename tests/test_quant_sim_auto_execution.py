@@ -1,5 +1,5 @@
 from app.quant_sim.candidate_pool_service import CandidatePoolService
-from app.quant_sim.db import QuantSimDB
+from app.quant_sim.db import QuantSimDB, QuantSimReplayDB
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.scheduler import QuantSimScheduler
 from app.quant_sim.signal_center_service import SignalCenterService
@@ -92,6 +92,65 @@ def test_auto_execute_pending_signals_applies_checkpoint_trial_risk_budget(tmp_p
     signals = {item["stock_code"]: item for item in db.get_signals(limit=10)}
     skipped = [item for item in signals.values() if "portfolio_trial_risk_budget_exhausted" in str(item.get("execution_note") or "")]
     assert len(skipped) == 1
+    skip_profile = skipped[0]["strategy_profile"]
+    assert skip_profile["auto_execution_skip"]["blocked_reason"] == "batch_execution_cap"
+    assert skip_profile["auto_execution_skip"]["cap_reason"] == "portfolio_trial_risk_budget_exhausted"
+
+
+def test_replay_signals_persist_structured_ignored_execution_reason(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=100000)
+    CandidatePoolService(db_file=db_path).add_manual_candidate("000001", "平安银行", "manual", latest_price=10.0)
+    db.upsert_quant_universe_state("000001", {"quant_status": "trial", "health_score": 100})
+    signal_id = db.add_signal(
+        {
+            "stock_code": "000001",
+            "stock_name": "平安银行",
+            "action": "BUY",
+            "confidence": 90,
+            "reasoning": "trial weak",
+            "position_size_pct": 6.0,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "portfolio_execution_guard": {"status": "downgraded", "buy_tier": "weak_buy"},
+                "execution_sizing_plan": {
+                    "buy_tier": "weak_buy",
+                    "final_budget": 6000.0,
+                    "risk_budget_pct": 0.90,
+                    "effective_position_pct": 6.0,
+                    "expected_stop_loss_pct": 15.0,
+                },
+                "quant_status": "trial",
+            },
+            "status": "pending",
+        }
+    )
+
+    portfolio = PortfolioService(db_file=db_path)
+    portfolio.auto_execute_pending_signals([db.get_signal(signal_id)], executed_at="2026-01-05T10:00:00Z")
+    skipped = db.get_signal(signal_id)
+
+    replay_db = QuantSimReplayDB(tmp_path / "replay.db")
+    run_id = replay_db.create_sim_run(
+        mode="live_quant_drill",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-01-05 10:00:00",
+        end_datetime="2026-01-05 10:00:00",
+        initial_cash=100000,
+        metadata={"run_type": "live_quant_drill"},
+    )
+    persisted = replay_db.upsert_sim_run_signals(run_id, [skipped])
+    replay_signal = replay_db.get_sim_run_signal(persisted[signal_id])
+
+    assert replay_signal["status"] == "pending"
+    assert replay_signal["execution_note"].startswith("自动执行跳过")
+    assert replay_signal["blocked_reason"] == "batch_execution_cap"
+    assert replay_signal["cap_reason"] == "portfolio_trial_risk_budget_exhausted"
 
 
 def test_scheduler_auto_executes_buy_signal_when_enabled(tmp_path, monkeypatch):

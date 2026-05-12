@@ -81,6 +81,7 @@ class QuantUniverseLifecyclePolicy:
     recovery_probe_failed_max_position_pct: float
     recovery_probe_failure_threshold: int
     recovery_probe_failure_lookback_days: int
+    recovery_probe_attempt_fatigue_threshold: int
     recovery_probe_cooldown_days: int
     cooling_supplemental_buy_threshold_delta: float
     cooling_supplemental_size_multiplier: float
@@ -153,6 +154,7 @@ class QuantUniverseLifecyclePolicy:
             recovery_probe_failed_max_position_pct=2.5,
             recovery_probe_failure_threshold=2,
             recovery_probe_failure_lookback_days=30,
+            recovery_probe_attempt_fatigue_threshold=4,
             recovery_probe_cooldown_days=20,
             cooling_supplemental_buy_threshold_delta=0.12,
             cooling_supplemental_size_multiplier=0.20,
@@ -226,6 +228,7 @@ class QuantUniverseLifecyclePolicy:
             recovery_probe_failed_max_position_pct=2.0,
             recovery_probe_failure_threshold=2,
             recovery_probe_failure_lookback_days=30,
+            recovery_probe_attempt_fatigue_threshold=3,
             recovery_probe_cooldown_days=25,
             cooling_supplemental_buy_threshold_delta=0.15,
             cooling_supplemental_size_multiplier=0.15,
@@ -299,6 +302,7 @@ class QuantUniverseLifecyclePolicy:
             recovery_probe_failed_max_position_pct=1.5,
             recovery_probe_failure_threshold=2,
             recovery_probe_failure_lookback_days=30,
+            recovery_probe_attempt_fatigue_threshold=2,
             recovery_probe_cooldown_days=30,
             cooling_supplemental_buy_threshold_delta=0.18,
             cooling_supplemental_size_multiplier=0.10,
@@ -579,6 +583,22 @@ def build_lifecycle_gate(
                     "recent_probe_loss_count": losses,
                     "probe_failure_reason": failure_reason,
                 }
+            fatigue_threshold = int(policy.recovery_probe_attempt_fatigue_threshold or 0)
+            if fatigue_threshold > 0 and attempts >= fatigue_threshold:
+                return {
+                    "mode": "recovery_probe_fatigue",
+                    "buy_threshold_delta": float(policy.recovery_probe_buy_threshold_delta) + 0.04,
+                    "size_multiplier": min(float(policy.recovery_probe_size_multiplier), 0.20),
+                    "max_position_pct": float(policy.recovery_probe_failed_max_position_pct),
+                    "confirmed_max_position_pct": float(policy.recovery_probe_confirmed_max_position_pct),
+                    "requires_strong_confirmation": True,
+                    "buy_blocked": False,
+                    "reason_code": "recovery_probe_attempt_fatigue",
+                    "reason_text": "同一股票 recovery probe 尝试过多且未形成有效恢复，后续仅允许强确认轻仓",
+                    "probe_attempt_count": attempts,
+                    "recent_probe_loss_count": losses,
+                    "probe_failure_reason": failure_reason or "recovery_probe_attempt_fatigue",
+                }
             return {
                 "mode": "recovery_probe",
                 "buy_threshold_delta": float(policy.recovery_probe_buy_threshold_delta),
@@ -671,6 +691,8 @@ def resolve_next_status(
         if has_position and downtrend_streak >= int(policy.active_exit_only_downtrend_streak or 0):
             if active_min_dwell_active:
                 return _blocked(current, "active_min_dwell_guarded", "active 最短停留期内仅进入 guarded gate")
+            if health_score > policy.exit_only_threshold:
+                return _blocked(current, "active_downtrend_guarded", "active 持仓短期弱化但健康分未跌破 exit_only 阈值，保留 active 并使用 guarded gate")
             return _transition(
                 current,
                 QuantStatus.EXIT_ONLY,
@@ -680,6 +702,8 @@ def resolve_next_status(
         if not has_position and downtrend_streak >= int(policy.active_cooling_downtrend_streak or 0):
             if active_min_dwell_active:
                 return _blocked(current, "active_min_dwell_guarded", "active 最短停留期内仅进入 guarded gate")
+            if health_score > policy.cooling_threshold:
+                return _blocked(current, "active_downtrend_guarded", "active 空仓短期弱化但健康分未跌破 cooling 阈值，保留 active 并使用 guarded gate")
             return _transition(
                 current,
                 QuantStatus.COOLING,
@@ -1112,8 +1136,9 @@ class QuantUniverseManager:
         active_since = previous_state.get("active_since")
         previous_active_checkpoints = int(previous_state.get("active_checkpoints") or 0)
         next_active_checkpoints = previous_active_checkpoints + 1 if current == QuantStatus.ACTIVE else 0
-        probe_attempt_count = int(previous_state.get("recovery_probe_attempt_count") or 0)
+        probe_attempt_count = _active_recent_probe_attempt_count(previous_state, self.policy, evaluation_time)
         recent_probe_loss_count = _active_recent_probe_loss_count(previous_state, self.policy, evaluation_time)
+        last_recovery_probe_attempt_at = previous_state.get("last_recovery_probe_attempt_at")
         last_recovery_probe_failure_at = previous_state.get("last_recovery_probe_failure_at")
         recovery_probe_cooldown_until = previous_state.get("recovery_probe_cooldown_until")
         probe_failure_reason = previous_state.get("probe_failure_reason")
@@ -1192,9 +1217,20 @@ class QuantUniverseManager:
                     next_downtrend_streak = 0
                     next_warning_streak = 0
                     probe_attempt_count += 1
+                    last_recovery_probe_attempt_at = _format_utc_iso_z(evaluation_time)
                     recovery_probe_until = _format_utc_iso_z(
                         evaluation_time + timedelta(hours=max(int(self.policy.recovery_probe_hours or 0), 0))
                     )
+                    fatigue_threshold = int(self.policy.recovery_probe_attempt_fatigue_threshold or 0)
+                    if (
+                        fatigue_threshold > 0
+                        and probe_attempt_count >= fatigue_threshold
+                        and recent_probe_loss_count <= 0
+                    ):
+                        probe_failure_reason = "recovery_probe_attempt_fatigue"
+                        recovery_probe_cooldown_until = _format_utc_iso_z(
+                            evaluation_time + timedelta(days=max(int(self.policy.recovery_probe_cooldown_days or 0), 0))
+                        )
                 elif next_status in {QuantStatus.ACTIVE, QuantStatus.COOLING, QuantStatus.EXIT_ONLY, QuantStatus.RETIRED}:
                     recovery_probe_until = None
                 if next_status == QuantStatus.ACTIVE:
@@ -1239,6 +1275,7 @@ class QuantUniverseManager:
                             "latest_signal": latest_signal,
                             "health": health.breakdown,
                             "probe_attempt_count": probe_attempt_count,
+                            "last_recovery_probe_attempt_at": last_recovery_probe_attempt_at,
                             "recent_probe_loss_count": recent_probe_loss_count,
                             "probe_failure_reason": probe_failure_reason,
                             "recovery_probe_cooldown_until": recovery_probe_cooldown_until,
@@ -1259,6 +1296,7 @@ class QuantUniverseManager:
                 "cooling_until": cooling_until,
                 "recovery_probe_until": recovery_probe_until,
                 "recovery_probe_attempt_count": probe_attempt_count,
+                "last_recovery_probe_attempt_at": last_recovery_probe_attempt_at,
                 "recent_probe_loss_count": recent_probe_loss_count,
                 "last_recovery_probe_failure_at": last_recovery_probe_failure_at,
                 "recovery_probe_cooldown_until": recovery_probe_cooldown_until,
@@ -1273,6 +1311,7 @@ class QuantUniverseManager:
                     "latest_signal": latest_signal,
                     "health": health.breakdown,
                     "probe_attempt_count": probe_attempt_count,
+                    "last_recovery_probe_attempt_at": last_recovery_probe_attempt_at,
                     "recent_probe_loss_count": recent_probe_loss_count,
                     "probe_failure_reason": probe_failure_reason,
                     "recovery_probe_cooldown_until": recovery_probe_cooldown_until,
@@ -1638,6 +1677,26 @@ def _active_recent_probe_loss_count(
     except (TypeError, ValueError):
         return count
     if now - failure_time > timedelta(days=max(int(policy.recovery_probe_failure_lookback_days or 0), 0)):
+        return 0
+    return count
+
+
+def _active_recent_probe_attempt_count(
+    state: dict[str, Any],
+    policy: QuantUniverseLifecyclePolicy,
+    now: datetime,
+) -> int:
+    count = int(state.get("recovery_probe_attempt_count") or 0)
+    if count <= 0:
+        return 0
+    attempt_at = state.get("last_recovery_probe_attempt_at")
+    if not attempt_at:
+        return count
+    try:
+        attempt_time = _to_datetime(attempt_at)
+    except (TypeError, ValueError):
+        return count
+    if now - attempt_time > timedelta(days=max(int(policy.recovery_probe_failure_lookback_days or 0), 0)):
         return 0
     return count
 

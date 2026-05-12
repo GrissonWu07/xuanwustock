@@ -632,6 +632,57 @@ def test_live_quant_drill_throttles_repeated_cooling_soft_gate_events(tmp_path):
     assert events[0]["reason_code"] in {"cooling_recovery_not_confirmed", "cooling_downtrend_soft_gate"}
 
 
+def test_live_quant_drill_cooling_diagnostic_records_once_per_stock_reason_across_run(tmp_path):
+    service = QuantSimReplayService(
+        db_file=str(tmp_path / "live.db"),
+        replay_db_file=str(tmp_path / "replay.db"),
+        snapshot_provider=DrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
+    temp_db_file = tmp_path / "temp.db"
+    temp_db = QuantSimDB(str(temp_db_file))
+    CandidatePoolService(db_file=str(temp_db_file)).add_manual_candidate("600519", "贵州茅台", "manual")
+    temp_db.upsert_quant_universe_state("600519", {"quant_status": "cooling", "health_score": 20})
+    engine = QuantSimEngine(
+        db_file=str(temp_db_file),
+        adapter=DrillHoldAdapter(),
+        stock_analysis_context_enabled=False,
+    )
+    portfolio = PortfolioService(db_file=str(temp_db_file))
+    manager = QuantUniverseManager(
+        db=temp_db,
+        profile_id="aggressive",
+        policy=engine._quant_lifecycle_policy_from_binding({"profile_id": "aggressive"}),
+        drill_mode=True,
+    )
+    context = {"timeframe": "30m", "market": "CN", "strategy_mode": "live_quant_drill"}
+
+    service._run_live_quant_drill_cooling_review(
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        context=context,
+        temp_db=temp_db,
+        engine=engine,
+        portfolio=portfolio,
+        manager=manager,
+    )
+    service._run_live_quant_drill_cooling_review(
+        checkpoint=datetime(2026, 1, 6, 10, 0),
+        context=context,
+        temp_db=temp_db,
+        engine=engine,
+        portfolio=portfolio,
+        manager=manager,
+    )
+
+    events = [
+        event
+        for event in temp_db.list_quant_universe_events(limit=20)
+        if event["stock_code"] == "600519" and event["event_type"] == "cooling_review_not_restored"
+    ]
+    assert len(events) == 1
+    assert context["_live_quant_drill_cooling_diagnostic_counts"][("600519", events[0]["reason_code"])] == 2
+
+
 def test_live_quant_drill_cooling_review_respects_cooling_until(tmp_path):
     service = QuantSimReplayService(
         db_file=str(tmp_path / "live.db"),

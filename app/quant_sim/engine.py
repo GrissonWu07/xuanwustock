@@ -343,6 +343,7 @@ class QuantSimEngine:
                 "cooling_until",
                 "recovery_probe_until",
                 "recovery_probe_attempt_count",
+                "last_recovery_probe_attempt_at",
                 "recent_probe_loss_count",
                 "last_recovery_probe_failure_at",
                 "recovery_probe_cooldown_until",
@@ -357,7 +358,7 @@ class QuantSimEngine:
             supplemental=supplemental,
             recovery_probe_active=is_recovery_probe_active(state, as_of),
             downtrend_streak=int(row.get("downtrend_streak") or 0),
-            recovery_probe_attempt_count=int((state or {}).get("recovery_probe_attempt_count") or 0),
+            recovery_probe_attempt_count=_active_recovery_probe_attempt_count(state, policy, as_of),
             recent_probe_loss_count=_active_recovery_probe_loss_count(state, policy, as_of),
             recovery_probe_cooldown_active=_is_recovery_probe_cooldown_active(state, as_of),
             probe_failure_reason=str((state or {}).get("probe_failure_reason") or ""),
@@ -758,6 +759,29 @@ def _active_recovery_probe_loss_count(
     except (TypeError, ValueError):
         return count
     if now_dt - failure_dt > timedelta(days=max(int(policy.recovery_probe_failure_lookback_days or 0), 0)):
+        return 0
+    return count
+
+
+def _active_recovery_probe_attempt_count(
+    state: dict[str, Any] | None,
+    policy: QuantUniverseLifecyclePolicy,
+    as_of: datetime | str | None,
+) -> int:
+    if not state:
+        return 0
+    count = int(state.get("recovery_probe_attempt_count") or 0)
+    if count <= 0:
+        return 0
+    attempt_at = state.get("last_recovery_probe_attempt_at")
+    if not attempt_at:
+        return count
+    try:
+        attempt_dt = _parse_gate_time(attempt_at)
+        now_dt = _parse_gate_time(as_of) if as_of is not None else datetime.now(tz=attempt_dt.tzinfo)
+    except (TypeError, ValueError):
+        return count
+    if now_dt - attempt_dt > timedelta(days=max(int(policy.recovery_probe_failure_lookback_days or 0), 0)):
         return 0
     return count
 

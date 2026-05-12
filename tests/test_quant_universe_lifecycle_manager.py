@@ -289,6 +289,25 @@ def test_build_lifecycle_gate_blocks_recovery_probe_when_failure_cooldown_active
     assert gate["recent_probe_loss_count"] == 2
 
 
+def test_build_lifecycle_gate_uses_probe_fatigue_when_attempts_repeat_without_success():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults().with_overrides(
+        recovery_probe_attempt_fatigue_threshold=4,
+    )
+
+    gate = build_lifecycle_gate(
+        "trial",
+        policy,
+        recovery_probe_active=True,
+        recovery_probe_attempt_count=4,
+        recent_probe_loss_count=0,
+    )
+
+    assert gate["mode"] == "recovery_probe_fatigue"
+    assert gate["requires_strong_confirmation"] is True
+    assert gate["max_position_pct"] == policy.recovery_probe_failed_max_position_pct
+    assert gate["reason_code"] == "recovery_probe_attempt_fatigue"
+
+
 def test_build_lifecycle_gate_softens_active_after_downtrend_warning():
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
 
@@ -447,7 +466,7 @@ def test_resolve_active_to_cooling_when_flat_and_downtrend_persists():
 
     result = resolve_next_status(
         current_status="active",
-        health_score=100,
+        health_score=policy.cooling_threshold,
         downtrend_streak=policy.active_cooling_downtrend_streak,
         has_position=False,
         active_dwell_checkpoints=policy.active_min_dwell_checkpoints,
@@ -699,6 +718,32 @@ def test_active_flat_downtrend_uses_active_specific_cooling_threshold():
     assert cooled.reason_code == "active_flat_downtrend_cooling"
 
 
+def test_active_downtrend_keeps_high_health_position_in_guarded_instead_of_exiting():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    holding = resolve_next_status(
+        current_status=QuantStatus.ACTIVE,
+        health_score=policy.exit_only_threshold + 20,
+        has_position=True,
+        downtrend_streak=policy.active_exit_only_downtrend_streak,
+        active_dwell_checkpoints=policy.active_min_dwell_checkpoints,
+        policy=policy,
+    )
+    flat = resolve_next_status(
+        current_status=QuantStatus.ACTIVE,
+        health_score=policy.cooling_threshold + 20,
+        has_position=False,
+        downtrend_streak=policy.active_cooling_downtrend_streak,
+        active_dwell_checkpoints=policy.active_min_dwell_checkpoints,
+        policy=policy,
+    )
+
+    assert holding.allowed is False
+    assert holding.reason_code == "active_downtrend_guarded"
+    assert flat.allowed is False
+    assert flat.reason_code == "active_downtrend_guarded"
+
+
 def _manager(
     tmp_path,
     policy: QuantUniverseLifecyclePolicy | None = None,
@@ -827,6 +872,59 @@ def test_manager_records_recovery_probe_failure_and_cooldown_after_repeated_fail
     assert state["recent_probe_loss_count"] == 2
     assert state["last_recovery_probe_failure_at"] == "2026-05-08T10:00:00Z"
     assert state["probe_failure_reason"] == "holding_downtrend_exit_only"
+    assert state["recovery_probe_cooldown_until"] == "2026-05-28T10:00:00Z"
+
+
+def test_manager_records_probe_attempt_fatigue_cooldown(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults().with_overrides(
+        recovery_probe_attempt_fatigue_threshold=3,
+        recovery_probe_cooldown_days=20,
+    )
+    manager = _manager(tmp_path, policy)
+    manager.db.update_quant_universe_settings({"auto_exit_enabled": True})
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "stock_name": "浦发银行",
+            "quant_status": "cooling",
+            "health_score": policy.cooling_threshold - 5,
+            "recovery_probe_attempt_count": 2,
+            "last_recovery_probe_attempt_at": "2026-05-01T10:00:00Z",
+            "cooling_until": "2026-05-01T00:00:00Z",
+        },
+    )
+    signal = {
+        "action": "BUY",
+        "decision_time": "2026-05-08T10:00:00Z",
+        "tech_score": 0.3,
+        "context_score": 0.1,
+        "price": 12.8,
+        "ma20": 12.0,
+        "ma20_slope": 0.02,
+        "status": "observed",
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.39, "fusion_score_delta": 0.04}},
+            "portfolio_execution_guard": {
+                "status": "normal_buy",
+                "buy_tier": "normal_buy",
+                "buy_strength_score": 0.71,
+            },
+            "execution_sizing_plan": {
+                "effective_position_pct": 6.0,
+                "final_budget": 24000.0,
+                "skip_reason": None,
+            },
+        },
+    }
+
+    result = manager.update_after_signal("600000", signal, recent_signals=[signal], position=None)
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["new_status"] == "trial"
+    assert state["recovery_probe_attempt_count"] == 3
+    assert state["last_recovery_probe_attempt_at"] == "2026-05-08T10:00:00Z"
+    assert state["probe_failure_reason"] == "recovery_probe_attempt_fatigue"
     assert state["recovery_probe_cooldown_until"] == "2026-05-28T10:00:00Z"
 
 
