@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -20,7 +20,11 @@ from app.quant_sim.dynamic_strategy import (
     DynamicStrategyController,
 )
 from app.quant_sim.portfolio_service import PortfolioService
-from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, build_lifecycle_gate
+from app.quant_sim.quant_universe_lifecycle import (
+    QuantUniverseLifecyclePolicy,
+    build_lifecycle_gate,
+    is_recovery_probe_active,
+)
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.stockpolicy_adapter import StockPolicyAdapter
 from app.watchlist_service import WatchlistService
@@ -287,6 +291,7 @@ class QuantSimEngine:
         *,
         exclude_codes: set[str] | None = None,
         policy: QuantUniverseLifecyclePolicy | None = None,
+        as_of: datetime | str | None = None,
     ) -> list[dict[str, Any]]:
         lifecycle_policy = policy or QuantUniverseLifecyclePolicy.stable_defaults()
         blocked = {str(code).strip() for code in (exclude_codes or set()) if str(code).strip()}
@@ -295,7 +300,7 @@ class QuantSimEngine:
             quant_statuses=LIVE_SCAN_QUANT_STATUSES,
         )
         normal_candidates = [
-            self._with_lifecycle_gate(candidate, lifecycle_policy)
+            self._with_lifecycle_gate(candidate, lifecycle_policy, as_of=as_of)
             for candidate in normal_candidates
             if str(candidate.get("stock_code") or "").strip() not in blocked
         ]
@@ -306,7 +311,7 @@ class QuantSimEngine:
 
         cooling_candidates = self.candidate_pool.list_candidates(status="active", quant_statuses=("cooling",))
         cooling_candidates = [
-            self._with_lifecycle_gate(candidate, lifecycle_policy, supplemental=True)
+            self._with_lifecycle_gate(candidate, lifecycle_policy, supplemental=True, as_of=as_of)
             for candidate in cooling_candidates
             if str(candidate.get("stock_code") or "").strip() not in blocked
         ]
@@ -319,6 +324,7 @@ class QuantSimEngine:
         policy: QuantUniverseLifecyclePolicy,
         *,
         supplemental: bool = False,
+        as_of: datetime | str | None = None,
     ) -> dict[str, Any]:
         row = dict(candidate)
         code = str(row.get("stock_code") or "").strip()
@@ -332,7 +338,16 @@ class QuantSimEngine:
                 "candidate_confidence",
                 "downtrend_streak",
                 "weakening_warning_streak",
+                "active_since",
+                "active_checkpoints",
                 "cooling_until",
+                "recovery_probe_until",
+                "recovery_probe_attempt_count",
+                "recent_probe_loss_count",
+                "last_recovery_probe_failure_at",
+                "recovery_probe_cooldown_until",
+                "probe_failure_reason",
+                "last_status_changed_at",
             ):
                 if state.get(key) not in (None, ""):
                     row[key] = state.get(key)
@@ -340,6 +355,12 @@ class QuantSimEngine:
             row.get("quant_status") or "active",
             policy,
             supplemental=supplemental,
+            recovery_probe_active=is_recovery_probe_active(state, as_of),
+            downtrend_streak=int(row.get("downtrend_streak") or 0),
+            recovery_probe_attempt_count=int((state or {}).get("recovery_probe_attempt_count") or 0),
+            recent_probe_loss_count=_active_recovery_probe_loss_count(state, policy, as_of),
+            recovery_probe_cooldown_active=_is_recovery_probe_cooldown_active(state, as_of),
+            probe_failure_reason=str((state or {}).get("probe_failure_reason") or ""),
         )
         return row
 
@@ -370,6 +391,7 @@ class QuantSimEngine:
         if profile_id == "aggressive":
             return QuantUniverseLifecyclePolicy.aggressive_defaults()
         return QuantUniverseLifecyclePolicy.stable_defaults()
+
 
     def _resolve_strategy_binding(
         self,
@@ -706,3 +728,45 @@ class QuantSimEngine:
             latest_signal=str(signal.get("action") or "").upper() or None,
             latest_price=decision_price if decision_price > 0 else None,
         )
+
+
+def _is_recovery_probe_cooldown_active(state: dict[str, Any] | None, as_of: datetime | str | None) -> bool:
+    if not state:
+        return False
+    value = state.get("recovery_probe_cooldown_until")
+    if not value:
+        return False
+    return is_recovery_probe_active({"recovery_probe_until": value}, as_of)
+
+
+def _active_recovery_probe_loss_count(
+    state: dict[str, Any] | None,
+    policy: QuantUniverseLifecyclePolicy,
+    as_of: datetime | str | None,
+) -> int:
+    if not state:
+        return 0
+    count = int(state.get("recent_probe_loss_count") or 0)
+    if count <= 0:
+        return 0
+    failure_at = state.get("last_recovery_probe_failure_at")
+    if not failure_at:
+        return count
+    try:
+        failure_dt = _parse_gate_time(failure_at)
+        now_dt = _parse_gate_time(as_of) if as_of is not None else datetime.now(tz=failure_dt.tzinfo)
+    except (TypeError, ValueError):
+        return count
+    if now_dt - failure_dt > timedelta(days=max(int(policy.recovery_probe_failure_lookback_days or 0), 0)):
+        return 0
+    return count
+
+
+def _parse_gate_time(value: datetime | str) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)

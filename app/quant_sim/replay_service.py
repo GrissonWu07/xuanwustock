@@ -869,6 +869,7 @@ class QuantSimReplayService:
                     "retired_at": row.get("retired_at"),
                     "retire_reason": row.get("retire_reason"),
                     "reentry_watch_until": row.get("reentry_watch_until"),
+                    "recovery_probe_until": row.get("recovery_probe_until"),
                     "last_status_changed_at": row.get("last_status_changed_at"),
                     "last_health_evaluated_at": row.get("last_health_evaluated_at"),
                     "snapshot": row.get("snapshot") or row.get("snapshot_json"),
@@ -1287,7 +1288,7 @@ class QuantSimReplayService:
             temp_db=temp_db,
             manager=manager,
         )
-        main_scan = self._run_live_quant_drill_main_scan(
+        cooling_review = self._run_live_quant_drill_cooling_review(
             checkpoint=checkpoint,
             context=context,
             temp_db=temp_db,
@@ -1295,7 +1296,7 @@ class QuantSimReplayService:
             portfolio=portfolio,
             manager=manager,
         )
-        cooling_review = self._run_live_quant_drill_cooling_review(
+        main_scan = self._run_live_quant_drill_main_scan(
             checkpoint=checkpoint,
             context=context,
             temp_db=temp_db,
@@ -1689,7 +1690,7 @@ class QuantSimReplayService:
             for item in portfolio.list_positions()
             if str(item.get("stock_code") or "").strip()
         }
-        scan_candidates = engine.list_live_scan_candidates(exclude_codes=held_codes, policy=manager.policy)
+        scan_candidates = engine.list_live_scan_candidates(exclude_codes=held_codes, policy=manager.policy, as_of=checkpoint)
         summary = self._run_checkpoint(
             checkpoint=checkpoint,
             timeframe=str(context.get("timeframe") or "30m"),
@@ -1901,22 +1902,45 @@ class QuantSimReplayService:
                         },
                     }
                 )
-                temp_db.record_quant_universe_event(
-                    {
-                        "stock_code": code,
-                        "event_type": "cooling_review_not_restored",
-                        "from_status": previous_status,
-                        "to_status": next_status,
-                        "trigger_source": "cooling_review",
-                        "reason_code": update.get("reason_code") or "cooling_recovery_not_confirmed",
-                        "reason_text": update.get("reason_text") or "冷却复评未满足恢复条件",
-                        "health_score_before": previous_state.get("health_score"),
-                        "health_score_after": latest_state.get("health_score") or update.get("health_score"),
-                        "candidate_score": latest_state.get("candidate_score") or previous_state.get("candidate_score") or 0,
-                        "evidence_json": diagnostics[-1]["evidence_json"],
-                    }
-                )
+                reason_code = update.get("reason_code") or "cooling_recovery_not_confirmed"
+                if self._should_record_live_quant_drill_cooling_diagnostic(context, checkpoint, code, reason_code):
+                    temp_db.record_quant_universe_event(
+                        {
+                            "stock_code": code,
+                            "event_type": "cooling_review_not_restored",
+                            "from_status": previous_status,
+                            "to_status": next_status,
+                            "trigger_source": "cooling_review",
+                            "reason_code": reason_code,
+                            "reason_text": update.get("reason_text") or "冷却复评未满足恢复条件",
+                            "health_score_before": previous_state.get("health_score"),
+                            "health_score_after": latest_state.get("health_score") or update.get("health_score"),
+                            "candidate_score": latest_state.get("candidate_score") or previous_state.get("candidate_score") or 0,
+                            "evidence_json": diagnostics[-1]["evidence_json"],
+                        }
+                    )
         return {"reviewed": reviewed, "restored": restored, "retired": retired, "diagnostics": diagnostics}
+
+    @staticmethod
+    def _should_record_live_quant_drill_cooling_diagnostic(
+        context: dict,
+        checkpoint: datetime,
+        stock_code: str,
+        reason_code: str,
+    ) -> bool:
+        recorded = context.setdefault("_live_quant_drill_cooling_diagnostic_keys", set())
+        if not isinstance(recorded, set):
+            recorded = set(recorded or [])
+            context["_live_quant_drill_cooling_diagnostic_keys"] = recorded
+        key = (
+            checkpoint.date().isoformat(),
+            str(stock_code or "").strip().upper(),
+            str(reason_code or "").strip(),
+        )
+        if key in recorded:
+            return False
+        recorded.add(key)
+        return True
 
     @staticmethod
     def _should_full_review_live_quant_drill_cooling(context: dict, checkpoint: datetime) -> bool:

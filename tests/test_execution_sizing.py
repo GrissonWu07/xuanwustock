@@ -327,6 +327,117 @@ def test_trial_normal_buy_with_confirmed_trend_uses_active_like_sizing(tmp_path)
     assert signal["position_size_pct"] == 9.0
 
 
+def test_recovery_probe_strong_confirmation_lifts_probe_cap(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "trial", "health_score": 60})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {
+            "stock_code": "000001",
+            "stock_name": "平安银行",
+            "latest_price": 10.0,
+                "lifecycle_gate": {
+                    "mode": "recovery_probe",
+                    "buy_threshold_delta": 0.08,
+                    "size_multiplier": 0.45,
+                    "max_position_pct": 6.0,
+                    "confirmed_max_position_pct": 10.0,
+                    "recent_probe_loss_count": 0,
+                    "requires_strong_confirmation": True,
+                    "buy_blocked": False,
+                },
+        },
+        {
+            "action": "BUY",
+            "confidence": 90,
+            "reasoning": "recovery probe",
+            "position_size_pct": 30,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "kernel_positioning": {"quality_position_pct": 30.0},
+                "portfolio_execution_guard_policy": {"enabled": False},
+                "portfolio_execution_guard": {
+                    "buy_tier": "strong_buy",
+                    "buy_strength_score": 0.9,
+                    "trend_confirmation": {
+                        "ma_stack": True,
+                        "ma20_rising": True,
+                        "above_ma20_checkpoints": 3,
+                        "retest_confirmed": False,
+                    },
+                },
+            },
+        },
+        notify=False,
+    )
+
+    profile = signal["strategy_profile"]
+    assert profile["lifecycle_gate"]["mode"] == "recovery_probe_confirmed"
+    assert profile["execution_sizing_plan"]["lifecycle_gate_max_position_pct"] == 10.0
+    assert profile["execution_sizing_plan"]["effective_position_pct"] == 10.0
+    assert signal["position_size_pct"] == 10.0
+
+
+def test_recovery_probe_recent_failure_keeps_retry_cap(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "trial", "health_score": 60})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {
+            "stock_code": "000001",
+            "stock_name": "平安银行",
+            "latest_price": 10.0,
+            "lifecycle_gate": {
+                "mode": "recovery_probe_retry",
+                "buy_threshold_delta": 0.12,
+                "size_multiplier": 0.20,
+                "max_position_pct": 2.5,
+                "confirmed_max_position_pct": 10.0,
+                "recent_probe_loss_count": 1,
+                "probe_failure_reason": "holding_downtrend_exit_only",
+                "requires_strong_confirmation": True,
+                "buy_blocked": False,
+            },
+        },
+        {
+            "action": "BUY",
+            "confidence": 90,
+            "reasoning": "recovery probe retry",
+            "position_size_pct": 30,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "kernel_positioning": {"quality_position_pct": 30.0},
+                "portfolio_execution_guard_policy": {"enabled": False},
+                "portfolio_execution_guard": {
+                    "buy_tier": "strong_buy",
+                    "buy_strength_score": 0.9,
+                    "trend_confirmation": {
+                        "ma_stack": True,
+                        "ma20_rising": True,
+                        "above_ma20_checkpoints": 3,
+                        "retest_confirmed": False,
+                    },
+                },
+            },
+        },
+        notify=False,
+    )
+
+    profile = signal["strategy_profile"]
+    assert profile["lifecycle_gate"]["mode"] == "recovery_probe_retry"
+    assert profile["execution_sizing_plan"]["lifecycle_gate_max_position_pct"] == 2.5
+    assert profile["execution_sizing_plan"]["effective_position_pct"] == 2.5
+    assert signal["position_size_pct"] == 2.5
+
+
 def test_trial_weak_buy_keeps_trial_light_sizing(tmp_path):
     db_path = tmp_path / "quant.db"
     db = QuantSimDB(db_path)

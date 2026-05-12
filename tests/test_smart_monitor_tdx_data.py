@@ -172,6 +172,8 @@ def test_build_snapshot_from_history_computes_historical_replay_snapshot(monkeyp
     assert latest_checkpoint["close"] == history_df.iloc[-1]["收盘"]
     assert latest_checkpoint["ma20"] > 0
     assert "ma20_slope" in latest_checkpoint
+    expected_return = history_df.iloc[-1]["收盘"] / history_df.iloc[-6]["收盘"] - 1
+    assert snapshot["recent_5d_return"] == round(expected_return, 6)
 
 
 def test_build_snapshot_from_history_reuses_precomputed_indicator_frame(monkeypatch):

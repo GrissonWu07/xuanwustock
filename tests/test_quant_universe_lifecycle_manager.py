@@ -117,6 +117,10 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "guarded_buy_threshold_delta": 0.08,
             "guarded_size_multiplier": 0.35,
             "guarded_max_position_pct": 4.0,
+            "recovery_probe_hours": 24,
+            "recovery_probe_buy_threshold_delta": 0.08,
+            "recovery_probe_size_multiplier": 0.45,
+            "recovery_probe_max_position_pct": 6.0,
             "cooling_supplemental_buy_threshold_delta": 0.12,
             "cooling_supplemental_size_multiplier": 0.20,
             "cooling_supplemental_max_position_pct": 3.0,
@@ -149,6 +153,10 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "guarded_buy_threshold_delta": 0.10,
             "guarded_size_multiplier": 0.30,
             "guarded_max_position_pct": 3.5,
+            "recovery_probe_hours": 36,
+            "recovery_probe_buy_threshold_delta": 0.10,
+            "recovery_probe_size_multiplier": 0.35,
+            "recovery_probe_max_position_pct": 4.0,
             "cooling_supplemental_buy_threshold_delta": 0.15,
             "cooling_supplemental_size_multiplier": 0.15,
             "cooling_supplemental_max_position_pct": 2.0,
@@ -181,6 +189,10 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "guarded_buy_threshold_delta": 0.12,
             "guarded_size_multiplier": 0.25,
             "guarded_max_position_pct": 3.0,
+            "recovery_probe_hours": 48,
+            "recovery_probe_buy_threshold_delta": 0.12,
+            "recovery_probe_size_multiplier": 0.25,
+            "recovery_probe_max_position_pct": 2.5,
             "cooling_supplemental_buy_threshold_delta": 0.18,
             "cooling_supplemental_size_multiplier": 0.10,
             "cooling_supplemental_max_position_pct": 1.5,
@@ -223,6 +235,78 @@ def test_build_lifecycle_gate_defaults():
     assert exit_gate["buy_blocked"] is True
 
 
+def test_build_lifecycle_gate_uses_recovery_probe_caps_before_trial_confirmation():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    gate = build_lifecycle_gate("trial", policy, recovery_probe_active=True)
+
+    assert gate["mode"] == "recovery_probe"
+    assert gate["buy_threshold_delta"] == policy.recovery_probe_buy_threshold_delta
+    assert gate["size_multiplier"] == policy.recovery_probe_size_multiplier
+    assert gate["max_position_pct"] == policy.recovery_probe_max_position_pct
+    assert gate["requires_strong_confirmation"] is True
+    assert gate["buy_blocked"] is False
+
+
+def test_build_lifecycle_gate_tightens_recovery_probe_after_recent_failure():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    gate = build_lifecycle_gate(
+        "trial",
+        policy,
+        recovery_probe_active=True,
+        recovery_probe_attempt_count=3,
+        recent_probe_loss_count=1,
+        probe_failure_reason="holding_downtrend_exit_only",
+    )
+
+    assert gate["mode"] == "recovery_probe_retry"
+    assert gate["max_position_pct"] == policy.recovery_probe_failed_max_position_pct
+    assert gate["probe_attempt_count"] == 3
+    assert gate["recent_probe_loss_count"] == 1
+    assert gate["probe_failure_reason"] == "holding_downtrend_exit_only"
+    assert gate["requires_strong_confirmation"] is True
+    assert gate["buy_blocked"] is False
+
+
+def test_build_lifecycle_gate_blocks_recovery_probe_when_failure_cooldown_active():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    gate = build_lifecycle_gate(
+        "trial",
+        policy,
+        recovery_probe_active=True,
+        recovery_probe_attempt_count=4,
+        recent_probe_loss_count=2,
+        recovery_probe_cooldown_active=True,
+        probe_failure_reason="probe_loss_threshold",
+    )
+
+    assert gate["mode"] == "recovery_probe_cooldown"
+    assert gate["buy_blocked"] is True
+    assert gate["max_position_pct"] == 0.0
+    assert gate["reason_code"] == "recovery_probe_cooldown"
+    assert gate["recent_probe_loss_count"] == 2
+
+
+def test_build_lifecycle_gate_softens_active_after_downtrend_warning():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    normal_gate = build_lifecycle_gate("active", policy, downtrend_streak=0)
+    guarded_gate = build_lifecycle_gate(
+        "active",
+        policy,
+        downtrend_streak=policy.active_guarded_downtrend_streak,
+    )
+
+    assert normal_gate["mode"] == "normal_scan"
+    assert guarded_gate["mode"] == "active_guarded"
+    assert guarded_gate["buy_threshold_delta"] == policy.guarded_buy_threshold_delta
+    assert guarded_gate["size_multiplier"] == policy.guarded_size_multiplier
+    assert guarded_gate["max_position_pct"] == policy.guarded_max_position_pct
+    assert guarded_gate["buy_blocked"] is False
+
+
 def test_detect_weakening_warning_and_downtrend_hit():
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
 
@@ -242,6 +326,27 @@ def test_detect_weakening_warning_and_downtrend_hit():
     assert detect_weakening_warning(warning_signal, policy) is True
     assert detect_downtrend_hit(downtrend_signal, {"weakening_warning_streak": 1}, policy) is True
     assert detect_downtrend_hit({"final_action": "SELL"}, {}, policy) is True
+
+
+def test_downtrend_warning_streak_does_not_self_perpetuate_after_recovery():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    recovered_signal = {
+        "final_action": "HOLD",
+        "tech_score": 0.32,
+        "fusion_score": 0.62,
+        "buy_threshold": policy.trial_threshold,
+        "buy_strength_score": 0.62,
+        "price": 10.8,
+        "ma20": 10.0,
+        "ma20_slope": 0.02,
+    }
+
+    assert detect_weakening_warning(recovered_signal, policy) is False
+    assert detect_downtrend_hit(
+        recovered_signal,
+        {"weakening_warning_streak": policy.warning_to_downtrend_threshold},
+        policy,
+    ) is False
 
 
 def test_candidate_score_uses_profile_weights_and_clamps_result():
@@ -297,19 +402,20 @@ def test_resolve_active_to_exit_only_requires_holding_health_break_and_downtrend
     result = resolve_next_status(
         current_status=QuantStatus.ACTIVE,
         health_score=policy.exit_only_threshold - 1,
-        downtrend_streak=policy.exit_only_downtrend_streak,
+        downtrend_streak=policy.active_exit_only_downtrend_streak,
         has_position=True,
+        active_dwell_checkpoints=policy.active_min_dwell_checkpoints,
         policy=policy,
     )
 
     assert post_buy_blocked.allowed is False
     assert post_buy_blocked.reason_code == "post_buy_grace_active"
     assert blocked.allowed is False
-    assert blocked.reason_code == "holding_downtrend_not_confirmed"
+    assert blocked.reason_code == "no_transition"
     assert result.allowed is True
     assert result.from_status == QuantStatus.ACTIVE
     assert result.to_status == QuantStatus.EXIT_ONLY
-    assert result.reason_code == "holding_downtrend_exit_only"
+    assert result.reason_code == "active_holding_downtrend_exit_only"
 
 
 def test_low_health_without_downtrend_does_not_force_cooling_or_exit_only():
@@ -333,7 +439,7 @@ def test_low_health_without_downtrend_does_not_force_cooling_or_exit_only():
     assert flat.allowed is False
     assert flat.reason_code == "no_transition"
     assert holding.allowed is False
-    assert holding.reason_code == "holding_downtrend_not_confirmed"
+    assert holding.reason_code == "no_transition"
 
 
 def test_resolve_active_to_cooling_when_flat_and_downtrend_persists():
@@ -342,14 +448,15 @@ def test_resolve_active_to_cooling_when_flat_and_downtrend_persists():
     result = resolve_next_status(
         current_status="active",
         health_score=100,
-        downtrend_streak=max(policy.downtrend_cooling_streak, policy.trial_min_dwell_checkpoints),
+        downtrend_streak=policy.active_cooling_downtrend_streak,
         has_position=False,
+        active_dwell_checkpoints=policy.active_min_dwell_checkpoints,
         policy=policy,
     )
 
     assert result.allowed is True
     assert result.to_status == QuantStatus.COOLING
-    assert result.reason_code == "flat_downtrend_cooling"
+    assert result.reason_code == "active_flat_downtrend_cooling"
 
 
 def test_resolve_trial_to_active_when_trend_confirmed_and_health_strong():
@@ -510,6 +617,88 @@ def test_manual_paused_is_not_auto_restored_and_active_to_retired_is_forbidden()
     assert forbidden.reason_code == "forbidden_direct_retire"
 
 
+def test_active_downtrend_uses_active_specific_slow_degrade_rules():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    held_early = resolve_next_status(
+        current_status=QuantStatus.ACTIVE,
+        health_score=25,
+        has_position=True,
+        downtrend_streak=policy.exit_only_downtrend_streak,
+        active_dwell_checkpoints=1,
+        policy=policy,
+    )
+    held_later = resolve_next_status(
+        current_status=QuantStatus.ACTIVE,
+        health_score=25,
+        has_position=True,
+        downtrend_streak=policy.active_exit_only_downtrend_streak - 1,
+        active_dwell_checkpoints=policy.active_min_dwell_checkpoints,
+        policy=policy,
+    )
+    exits = resolve_next_status(
+        current_status=QuantStatus.ACTIVE,
+        health_score=25,
+        has_position=True,
+        downtrend_streak=policy.active_exit_only_downtrend_streak,
+        active_dwell_checkpoints=policy.active_min_dwell_checkpoints,
+        policy=policy,
+    )
+
+    assert held_early.allowed is False
+    assert held_early.reason_code == "active_min_dwell_guarded"
+    assert held_later.allowed is False
+    assert held_later.reason_code == "active_downtrend_guarded"
+    assert exits.allowed is True
+    assert exits.to_status == QuantStatus.EXIT_ONLY
+    assert exits.reason_code == "active_holding_downtrend_exit_only"
+
+
+def test_active_immediate_sell_still_enters_exit_only():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    result = resolve_next_status(
+        current_status=QuantStatus.ACTIVE,
+        health_score=80,
+        has_position=True,
+        downtrend_streak=1,
+        active_dwell_checkpoints=0,
+        immediate_exit_signal=True,
+        policy=policy,
+    )
+
+    assert result.allowed is True
+    assert result.to_status == QuantStatus.EXIT_ONLY
+    assert result.reason_code == "active_immediate_exit_signal"
+
+
+def test_active_flat_downtrend_uses_active_specific_cooling_threshold():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    held = resolve_next_status(
+        current_status=QuantStatus.ACTIVE,
+        health_score=30,
+        has_position=False,
+        downtrend_streak=policy.downtrend_cooling_streak,
+        active_dwell_checkpoints=policy.active_min_dwell_checkpoints,
+        policy=policy,
+    )
+    cooled = resolve_next_status(
+        current_status=QuantStatus.ACTIVE,
+        health_score=30,
+        has_position=False,
+        downtrend_streak=policy.active_cooling_downtrend_streak,
+        active_dwell_checkpoints=policy.active_min_dwell_checkpoints,
+        policy=policy,
+    )
+
+    assert held.allowed is False
+    assert held.reason_code == "active_downtrend_guarded"
+    assert cooled.allowed is True
+    assert cooled.to_status == QuantStatus.COOLING
+    assert cooled.reason_code == "active_flat_downtrend_cooling"
+
+
 def _manager(
     tmp_path,
     policy: QuantUniverseLifecyclePolicy | None = None,
@@ -571,6 +760,74 @@ def test_manager_auto_trial_promotes_eligible_candidate(tmp_path):
     assert result["decision"] == "promoted_to_trial"
     assert state["quant_status"] == "trial"
     assert state["quant_enabled"] is True
+
+
+def test_quant_universe_state_persists_recovery_probe_diagnostics(tmp_path):
+    manager = _manager(tmp_path)
+
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "stock_name": "浦发银行",
+            "quant_status": "trial",
+            "recovery_probe_attempt_count": 3,
+            "recent_probe_loss_count": 2,
+            "last_recovery_probe_failure_at": "2026-05-08T10:00:00Z",
+            "recovery_probe_cooldown_until": "2026-05-28T10:00:00Z",
+            "probe_failure_reason": "holding_downtrend_exit_only",
+        },
+    )
+
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert state["recovery_probe_attempt_count"] == 3
+    assert state["recent_probe_loss_count"] == 2
+    assert state["last_recovery_probe_failure_at"] == "2026-05-08T10:00:00Z"
+    assert state["recovery_probe_cooldown_until"] == "2026-05-28T10:00:00Z"
+    assert state["probe_failure_reason"] == "holding_downtrend_exit_only"
+
+
+def test_manager_records_recovery_probe_failure_and_cooldown_after_repeated_failures(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults().with_overrides(
+        recovery_probe_failure_threshold=2,
+        recovery_probe_cooldown_days=20,
+    )
+    manager = _manager(tmp_path, policy)
+    manager.db.update_quant_universe_settings({"auto_exit_enabled": True})
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "stock_name": "浦发银行",
+            "quant_status": "trial",
+            "recovery_probe_until": "2026-05-10T10:00:00Z",
+            "recent_probe_loss_count": 1,
+            "last_recovery_probe_failure_at": "2026-05-01T10:00:00Z",
+            "downtrend_streak": policy.exit_only_downtrend_streak - 1,
+        },
+    )
+
+    result = manager.update_after_signal(
+        "600000",
+        {
+            "action": "HOLD",
+            "tech_score": -0.2,
+            "fusion_score": 0.1,
+            "fusion_score_delta": -0.1,
+            "decision_time": "2026-05-08T10:00:00Z",
+            "status": "observed",
+        },
+        recent_signals=[],
+        position={"stock_code": "600000", "quantity": 100, "unrealized_pnl_pct": -2.0},
+    )
+
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["new_status"] == "exit_only"
+    assert state["recent_probe_loss_count"] == 2
+    assert state["last_recovery_probe_failure_at"] == "2026-05-08T10:00:00Z"
+    assert state["probe_failure_reason"] == "holding_downtrend_exit_only"
+    assert state["recovery_probe_cooldown_until"] == "2026-05-28T10:00:00Z"
 
 
 def test_manager_drill_mode_does_not_promote_by_source_count_bonus(tmp_path):
@@ -1115,6 +1372,8 @@ def test_manager_update_after_signal_restores_cooling_from_executable_normal_buy
     assert result["old_status"] == "cooling"
     assert result["new_status"] == "trial"
     assert manager.db.get_latest_quant_universe_event("600000")["reason_code"] == "cooling_recovered_by_executable_buy"
+    state = manager.db.get_quant_universe_state("600000")
+    assert state["recovery_probe_until"] == "2026-01-06T10:00:00Z"
 
 
 def test_manager_update_after_signal_resets_streaks_when_cooling_buy_recovers(tmp_path):
@@ -1161,6 +1420,97 @@ def test_manager_update_after_signal_resets_streaks_when_cooling_buy_recovers(tm
     assert result["new_status"] == "trial"
     assert state["downtrend_streak"] == 0
     assert state["weakening_warning_streak"] == 0
+
+
+def test_manager_recovery_probe_blocks_same_checkpoint_active_upgrade(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "trial",
+            "health_score": policy.active_upgrade_threshold,
+            "recovery_probe_until": "2026-01-06T10:00:00Z",
+        },
+    )
+    signal = {
+        "action": "BUY",
+        "decision_time": "2026-01-05T10:00:00Z",
+        "tech_score": 0.7,
+        "context_score": 0.2,
+        "price": 12.8,
+        "ma20": 12.0,
+        "ma20_slope": 0.02,
+        "strategy_profile": {
+            "portfolio_execution_guard": {
+                "status": "strong_buy",
+                "buy_tier": "strong_buy",
+                "buy_strength_score": 0.9,
+                "trend_confirmation": {
+                    "ma_stack": True,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": policy.active_upgrade_confirm_checkpoints,
+                },
+            }
+        },
+    }
+
+    result = manager.update_after_signal(
+        "600000",
+        latest_signal=signal,
+        recent_signals=[signal] * policy.active_upgrade_confirm_checkpoints,
+        position={"quantity": 100},
+    )
+
+    assert result["status_changed"] is False
+    assert result["new_status"] == "trial"
+    assert result["reason_code"] == "recovery_probe_active"
+
+
+def test_manager_recovery_probe_expires_before_active_upgrade(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "trial",
+            "health_score": policy.active_upgrade_threshold,
+            "recovery_probe_until": "2026-01-05T09:59:59Z",
+        },
+    )
+    signal = {
+        "action": "BUY",
+        "decision_time": "2026-01-05T10:00:00Z",
+        "tech_score": 0.7,
+        "context_score": 0.2,
+        "price": 12.8,
+        "ma20": 12.0,
+        "ma20_slope": 0.02,
+        "strategy_profile": {
+            "portfolio_execution_guard": {
+                "status": "strong_buy",
+                "buy_tier": "strong_buy",
+                "buy_strength_score": 0.9,
+                "trend_confirmation": {
+                    "ma_stack": True,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": policy.active_upgrade_confirm_checkpoints,
+                },
+            }
+        },
+    }
+
+    result = manager.update_after_signal(
+        "600000",
+        latest_signal=signal,
+        recent_signals=[signal] * policy.active_upgrade_confirm_checkpoints,
+        position={"quantity": 100},
+    )
+
+    assert result["status_changed"] is True
+    assert result["new_status"] == "active"
 
 
 def test_manager_update_after_signal_keeps_cooling_for_executable_weak_buy(tmp_path):
@@ -1277,6 +1627,53 @@ def test_manager_trial_upgrades_to_active_after_confirmed_trend_window(tmp_path)
     assert manager.db.get_quant_universe_state("600000")["quant_status"] == "active"
 
 
+def test_manager_trial_active_upgrade_clears_stale_downtrend_memory(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "trial",
+            "health_score": 100.0,
+            "downtrend_streak": 9,
+            "weakening_warning_streak": 7,
+        },
+    )
+    signal = {
+        "stock_code": "600000",
+        "stock_name": "浦发银行",
+        "action": "BUY",
+        "decision_time": "2026-01-05T10:00:00Z",
+        "tech_score": 0.7,
+        "context_score": 0.2,
+        "price": 12.0,
+        "ma20": 11.0,
+        "ma20_slope": 0.05,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.8, "fusion_score_delta": 0.1}},
+            "portfolio_execution_guard": {
+                "status": "strong_buy",
+                "buy_strength_score": 0.75,
+                "score_components": {"confirmation_score": 1.0},
+                "trend_confirmation": {
+                    "ma_stack": True,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": policy.active_upgrade_confirm_checkpoints,
+                    "retest_confirmed": False,
+                },
+            },
+        },
+    }
+
+    result = manager.update_after_signal("600000", signal, [signal], None)
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["new_status"] == "active"
+    assert state["downtrend_streak"] == 0
+    assert state["weakening_warning_streak"] == 0
+
+
 def test_manager_trial_does_not_upgrade_when_buy_lacks_trend_confirmation(tmp_path):
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
     manager = _manager(tmp_path, policy)
@@ -1378,6 +1775,227 @@ def test_manager_trial_upgrades_when_recent_strong_signals_overcome_weak_history
     assert result["new_status"] == "active"
     assert state["quant_status"] == "active"
     assert state["snapshot_json"]["health"]["active_upgrade_floor"] == policy.active_upgrade_threshold
+
+
+def test_manager_trial_upgrades_after_executed_strong_buy_even_with_position(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "trial", "health_score": 20.0})
+
+    strong_signal = {
+        "stock_code": "600000",
+        "stock_name": "浦发银行",
+        "action": "BUY",
+        "status": "executed",
+        "decision_time": "2026-01-05T10:00:00Z",
+        "tech_score": 0.8,
+        "context_score": 0.2,
+        "price": 12.0,
+        "ma20": 11.0,
+        "ma20_slope": 0.05,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.8, "fusion_score_delta": 0.1}},
+            "portfolio_execution_guard": {
+                "status": "strong_buy",
+                "buy_strength_score": 0.82,
+                "score_components": {"confirmation_score": 1.0},
+                "trend_confirmation": {
+                    "ma_stack": True,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": policy.active_upgrade_confirm_checkpoints,
+                    "retest_confirmed": True,
+                },
+            },
+            "execution_sizing_plan": {
+                "buy_tier": "strong_buy",
+                "effective_position_pct": 12.5,
+                "final_budget": 50000,
+            },
+        },
+    }
+    weak_signal = {
+        **strong_signal,
+        "action": "HOLD",
+        "tech_score": -0.5,
+        "context_score": -0.2,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.1, "fusion_score_delta": -0.1}},
+            "portfolio_execution_guard": {
+                "status": "weak_buy",
+                "buy_strength_score": 0.05,
+                "score_components": {"confirmation_score": 0.0},
+                "trend_confirmation": {
+                    "ma_stack": False,
+                    "ma20_rising": False,
+                    "above_ma20_checkpoints": 0,
+                    "retest_confirmed": False,
+                },
+            },
+        },
+    }
+    recent_signals = [
+        strong_signal,
+        *[weak_signal] * 8,
+    ]
+
+    result = manager.update_after_signal(
+        "600000",
+        strong_signal,
+        recent_signals,
+        {"stock_code": "600000", "quantity": 100},
+    )
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["status_changed"] is True
+    assert result["new_status"] == "active"
+    assert state["quant_status"] == "active"
+    assert state["snapshot_json"]["health"]["active_upgrade_floor"] == policy.active_upgrade_threshold
+
+
+def test_manager_trial_position_upgrades_on_confirmed_hold_trend(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "trial", "health_score": 20.0})
+
+    hold_signal = {
+        "stock_code": "600000",
+        "stock_name": "浦发银行",
+        "action": "HOLD",
+        "status": "observed",
+        "decision_time": "2026-01-06T10:00:00Z",
+        "tech_score": 0.65,
+        "context_score": 0.15,
+        "price": 12.0,
+        "ma20": 11.0,
+        "ma20_slope": 0.03,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.72, "fusion_score_delta": 0.05}},
+            "portfolio_execution_guard": {
+                "status": "hold",
+                "buy_strength_score": 0.62,
+                "score_components": {"confirmation_score": 1.0},
+                "trend_confirmation": {
+                    "ma_stack": True,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": policy.active_upgrade_confirm_checkpoints,
+                    "retest_confirmed": False,
+                },
+            },
+        },
+    }
+
+    result = manager.update_after_signal(
+        "600000",
+        latest_signal=hold_signal,
+        recent_signals=[hold_signal] * policy.active_upgrade_confirm_checkpoints,
+        position={"stock_code": "600000", "quantity": 100},
+    )
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["status_changed"] is True
+    assert result["new_status"] == "active"
+    assert state["quant_status"] == "active"
+
+
+def test_manager_does_not_downgrade_profitable_active_hold_as_downtrend(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="301666", stock_name="大普微-UW", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "301666",
+        {
+            "quant_status": "active",
+            "health_score": 28.0,
+            "downtrend_streak": policy.active_exit_only_downtrend_streak - 1,
+            "weakening_warning_streak": policy.warning_to_downtrend_threshold,
+            "active_checkpoints": policy.active_min_dwell_checkpoints,
+            "active_since": "2026-04-29T02:00:00Z",
+        },
+    )
+    hold_signal = {
+        "stock_code": "301666",
+        "stock_name": "大普微-UW",
+        "action": "HOLD",
+        "status": "observed",
+        "decision_time": "2026-05-06T02:30:00Z",
+        "tech_score": 0.05,
+        "context_score": 0.05,
+        "price": 381.6,
+        "ma20": 301.78,
+        "ma20_slope": 6.48,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.62, "fusion_score_delta": -0.02}},
+            "portfolio_execution_guard": {
+                "status": "hold",
+                "buy_strength_score": 0.30,
+                "score_components": {"confirmation_score": 0.4},
+                "trend_confirmation": {
+                    "ma_stack": True,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": 16,
+                    "retest_confirmed": False,
+                },
+            },
+        },
+    }
+
+    result = manager.update_after_signal(
+        "301666",
+        latest_signal=hold_signal,
+        recent_signals=[hold_signal] * policy.health_score_lookback_checkpoints,
+        position={"stock_code": "301666", "quantity": 100, "unrealized_pnl_pct": 44.14},
+    )
+    state = manager.db.get_quant_universe_state("301666")
+
+    assert result["status_changed"] is False
+    assert result["new_status"] == "active"
+    assert state["downtrend_streak"] == 0
+    assert state["health_score"] >= policy.active_upgrade_threshold
+
+
+def test_manager_does_not_upgrade_trial_to_active_when_buy_was_not_executed(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="603669", stock_name="灵康药业", source="manual")
+    manager.db.upsert_quant_universe_state("603669", {"quant_status": "trial", "health_score": 100.0})
+    ignored_buy = {
+        "stock_code": "603669",
+        "stock_name": "灵康药业",
+        "action": "BUY",
+        "status": "ignored",
+        "decision_time": "2026-01-06T07:00:00Z",
+        "tech_score": 0.9,
+        "context_score": 0.3,
+        "price": 4.73,
+        "ma20": 4.67,
+        "ma20_slope": 0.01,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.82, "fusion_score_delta": 0.08}},
+            "portfolio_execution_guard": {
+                "status": "strong_buy",
+                "buy_strength_score": 0.86,
+                "score_components": {"confirmation_score": 1.0},
+                "trend_confirmation": {
+                    "ma_stack": True,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": policy.active_upgrade_confirm_checkpoints,
+                    "retest_confirmed": True,
+                },
+            },
+        },
+    }
+
+    result = manager.update_after_signal(
+        "603669",
+        latest_signal=ignored_buy,
+        recent_signals=[ignored_buy] * policy.active_upgrade_confirm_checkpoints,
+        position=None,
+    )
+
+    assert result["status_changed"] is False
+    assert result["new_status"] == "trial"
 
 
 def test_manager_update_after_signal_blocks_cooling_restore_until_min_dwell_expires(tmp_path):

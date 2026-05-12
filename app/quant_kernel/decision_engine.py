@@ -310,6 +310,8 @@ class DualTrackResolver:
         weights = policy["weights"]
         volatility = policy["volatility"]
         price = _to_float(snapshot.get("current_price") or snapshot.get("latest_price") or snapshot.get("close"), 0.0)
+        high = _to_float(snapshot.get("high"), 0.0)
+        low = _to_float(snapshot.get("low"), 0.0)
         ma5 = _to_float(snapshot.get("ma5"), 0.0)
         ma10 = _to_float(snapshot.get("ma10"), 0.0)
         ma20 = _to_float(snapshot.get("ma20"), 0.0)
@@ -366,6 +368,16 @@ class DualTrackResolver:
             volatility_penalty += _to_float(volatility["recent_return_penalty"])
         volatility_penalty = _clamp(volatility_penalty, 0.0, _to_float(volatility["max_volatility_penalty"]))
 
+        weak_close_penalty = 0.0
+        if high > low > 0 and price > 0:
+            range_pct = (high - low) / price
+            close_position = (price - low) / (high - low)
+            if (
+                range_pct >= _to_float(volatility.get("weak_close_range_threshold"), 0.03)
+                and close_position < _to_float(volatility.get("weak_close_position_threshold"), 0.45)
+            ):
+                weak_close_penalty = _to_float(volatility.get("weak_close_penalty"), 0.08)
+
         raw_score = (
             tech_edge * _to_float(weights["tech_edge"])
             + context_edge * _to_float(weights["context_edge"])
@@ -375,6 +387,7 @@ class DualTrackResolver:
             - heat_penalty
             - weak_structure_penalty
             - volatility_penalty
+            - weak_close_penalty
         )
         return {
             "score": _clamp(raw_score, 0.0, 1.0),
@@ -389,6 +402,7 @@ class DualTrackResolver:
                 "heat_penalty": round(heat_penalty, 6),
                 "weak_structure_penalty": round(weak_structure_penalty, 6),
                 "volatility_penalty": round(volatility_penalty, 6),
+                "weak_close_penalty": round(weak_close_penalty, 6),
                 "recent_return_missing": "recent_5d_return" not in snapshot,
             },
         }

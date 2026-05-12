@@ -734,6 +734,7 @@ class SignalCenterService:
             strategy_profile.get("lifecycle_gate"),
             strategy_profile,
         )
+        gate = strategy_profile["lifecycle_gate"]
         normalized["strategy_profile"] = strategy_profile
         action = str(normalized.get("action") or "HOLD").upper()
         if action not in {"BUY", "ADD"}:
@@ -760,7 +761,23 @@ class SignalCenterService:
     @classmethod
     def _maybe_relax_trial_lifecycle_gate(cls, gate: Any, strategy_profile: dict[str, Any]) -> dict[str, Any]:
         normalized_gate = dict(gate) if isinstance(gate, dict) else {}
-        if str(normalized_gate.get("mode") or "").strip().lower() != "trial_light":
+        mode = str(normalized_gate.get("mode") or "").strip().lower()
+        if mode == "recovery_probe":
+            if int(cls._safe_float(normalized_gate.get("recent_probe_loss_count"), 0.0) or 0) > 0:
+                return normalized_gate
+            if not cls._lifecycle_gate_has_confirmed_recovery_probe_sizing(strategy_profile, normalized_gate):
+                return normalized_gate
+            relaxed = dict(normalized_gate)
+            relaxed["mode"] = "recovery_probe_confirmed"
+            relaxed["size_multiplier"] = 1.0
+            relaxed["max_position_pct"] = cls._safe_float(
+                normalized_gate.get("confirmed_max_position_pct"),
+                normalized_gate.get("max_position_pct"),
+            )
+            relaxed["reason_code"] = "recovery_probe_strong_confirmed"
+            relaxed["reason_text"] = "recovery probe 出现 strong BUY 且趋势确认，放宽 probe 仓位上限"
+            return relaxed
+        if mode != "trial_light":
             return normalized_gate
         if not cls._lifecycle_gate_has_confirmed_trial_sizing(strategy_profile, normalized_gate):
             return normalized_gate
@@ -791,6 +808,18 @@ class SignalCenterService:
             or confirmation_score >= 0.75
         )
         return buy_strength >= threshold and trend_confirmed
+
+    @classmethod
+    def _lifecycle_gate_has_confirmed_recovery_probe_sizing(
+        cls,
+        strategy_profile: dict[str, Any],
+        gate: dict[str, Any],
+    ) -> bool:
+        guard = strategy_profile.get("portfolio_execution_guard") if isinstance(strategy_profile.get("portfolio_execution_guard"), dict) else {}
+        buy_tier = str(guard.get("buy_tier") or "").strip().lower()
+        if buy_tier != "strong_buy":
+            return False
+        return cls._lifecycle_gate_has_confirmed_trial_sizing(strategy_profile, gate)
 
     @classmethod
     def _lifecycle_gate_has_strong_confirmation(cls, strategy_profile: dict[str, Any], gate: dict[str, Any]) -> bool:

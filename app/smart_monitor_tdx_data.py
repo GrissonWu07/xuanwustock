@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -526,6 +526,7 @@ class SmartMonitorTDXDataFetcher:
         if snapshot["pre_close"] > 0:
             snapshot["change_amount"] = round(snapshot["current_price"] - snapshot["pre_close"], 4)
             snapshot["change_pct"] = round(snapshot["change_amount"] / snapshot["pre_close"] * 100, 4)
+        snapshot["recent_5d_return"] = self._recent_return_from_history(df, days=5)
 
         indicators = None
         if indicator_frame is not None and not indicator_frame.empty and "datetime" in indicator_frame.columns:
@@ -539,6 +540,27 @@ class SmartMonitorTDXDataFetcher:
         snapshot["recent_checkpoints"] = self._recent_checkpoints_from_history(df)
 
         return snapshot
+
+    def _recent_return_from_history(self, history_df: pd.DataFrame, *, days: int = 5) -> float:
+        """Return fractional close return over the latest historical lookback."""
+        if history_df is None or history_df.empty or "日期" not in history_df.columns or "收盘" not in history_df.columns:
+            return 0.0
+        df = history_df.copy()
+        df["日期"] = pd.to_datetime(df["日期"])
+        df = df.sort_values("日期").reset_index(drop=True)
+        latest_close = self._safe_float(df.iloc[-1].get("收盘", 0))
+        if latest_close <= 0 or len(df) < 2:
+            return 0.0
+        target_date = df.iloc[-1]["日期"] - timedelta(days=max(int(days), 1))
+        base_rows = df[df["日期"] <= target_date]
+        if base_rows.empty:
+            fallback_index = max(0, len(df) - int(days) - 1)
+            base_close = self._safe_float(df.iloc[fallback_index].get("收盘", 0))
+        else:
+            base_close = self._safe_float(base_rows.iloc[-1].get("收盘", 0))
+        if base_close <= 0:
+            return 0.0
+        return round(latest_close / base_close - 1.0, 6)
 
     def _recent_checkpoints_from_history(self, history_df: pd.DataFrame, *, limit: int = 20) -> list[dict]:
         """Build checkpoint-bounded trend confirmation rows from historical bars."""

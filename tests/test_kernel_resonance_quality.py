@@ -154,3 +154,36 @@ def test_rsi_overheated_signal_gets_lower_position_than_clean_trend():
 
     assert clean.position_ratio > hot.position_ratio
     assert hot.dual_track_details["resonance_quality"]["quality_penalties"]["heat_penalty"] >= 0.35
+
+
+def test_weak_close_quality_penalizes_fake_breakout_strength():
+    clean = _resolved_buy(
+        tech_score=0.8,
+        context_score=0.66,
+        snapshot={
+            "current_price": 10.8,
+            "high": 10.9,
+            "low": 10.0,
+            "rsi12": 68.0,
+            "volume_ratio": 2.0,
+            "recent_5d_return": 0.03,
+            "trend_confirmed_checkpoints": 3,
+        },
+    )
+    weak_close = _resolved_buy(
+        tech_score=0.8,
+        context_score=0.66,
+        snapshot={
+            "current_price": 10.15,
+            "high": 10.9,
+            "low": 10.0,
+            "rsi12": 68.0,
+            "volume_ratio": 2.0,
+            "recent_5d_return": 0.03,
+            "trend_confirmed_checkpoints": 3,
+        },
+    )
+
+    penalties = weak_close.dual_track_details["resonance_quality"]["quality_penalties"]
+    assert clean.position_ratio > weak_close.position_ratio
+    assert penalties["weak_close_penalty"] > 0

@@ -434,7 +434,7 @@ def test_live_quant_drill_main_scan_creates_checkpoint_signal(tmp_path):
     assert result["signals"][0]["action"] == "HOLD"
 
 
-def test_live_quant_drill_runs_cooling_opportunistic_review_after_main_scan(tmp_path, monkeypatch):
+def test_live_quant_drill_runs_cooling_review_before_main_scan(tmp_path, monkeypatch):
     service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
     call_order: list[str] = []
 
@@ -467,7 +467,7 @@ def test_live_quant_drill_runs_cooling_opportunistic_review_after_main_scan(tmp_
         manager=object(),
     )
 
-    assert call_order == ["main_scan", "cooling_review"]
+    assert call_order == ["cooling_review", "main_scan"]
 
 
 def test_live_quant_drill_cooling_review_uses_checkpoint_snapshot(tmp_path):
@@ -544,8 +544,8 @@ def test_live_quant_drill_records_cooling_review_not_restored_diagnostics(tmp_pa
     portfolio = PortfolioService(db_file=str(temp_db_file))
     manager = QuantUniverseManager(
         db=temp_db,
-        profile_id="stable",
-        policy=engine._quant_lifecycle_policy_from_binding({"profile_id": "stable"}),
+        profile_id="aggressive",
+        policy=engine._quant_lifecycle_policy_from_binding({"profile_id": "aggressive"}),
         drill_mode=True,
     )
     result = service._run_live_quant_drill_cooling_review(
@@ -575,6 +575,61 @@ def test_live_quant_drill_records_cooling_review_not_restored_diagnostics(tmp_pa
     assert event["to_status"] == "cooling"
     assert event["reason_code"] in {"cooling_recovery_not_confirmed", "cooling_downtrend_soft_gate"}
     assert event["evidence_json"]["review_signal_action"] == "HOLD"
+
+
+def test_live_quant_drill_throttles_repeated_cooling_soft_gate_events(tmp_path):
+    service = QuantSimReplayService(
+        db_file=str(tmp_path / "live.db"),
+        replay_db_file=str(tmp_path / "replay.db"),
+        snapshot_provider=DrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
+    temp_db_file = tmp_path / "temp.db"
+    temp_db = QuantSimDB(str(temp_db_file))
+    CandidatePoolService(db_file=str(temp_db_file)).add_manual_candidate("600519", "贵州茅台", "manual")
+    temp_db.upsert_quant_universe_state("600519", {"quant_status": "cooling", "health_score": 20})
+    engine = QuantSimEngine(
+        db_file=str(temp_db_file),
+        adapter=DrillHoldAdapter(),
+        stock_analysis_context_enabled=False,
+    )
+    portfolio = PortfolioService(db_file=str(temp_db_file))
+    manager = QuantUniverseManager(
+        db=temp_db,
+        profile_id="aggressive",
+        policy=engine._quant_lifecycle_policy_from_binding({"profile_id": "aggressive"}),
+        drill_mode=True,
+    )
+    context = {"timeframe": "30m", "market": "CN", "strategy_mode": "live_quant_drill"}
+
+    first = service._run_live_quant_drill_cooling_review(
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        context=context,
+        temp_db=temp_db,
+        engine=engine,
+        portfolio=portfolio,
+        manager=manager,
+    )
+    second = service._run_live_quant_drill_cooling_review(
+        checkpoint=datetime(2026, 1, 5, 10, 30),
+        context=context,
+        temp_db=temp_db,
+        engine=engine,
+        portfolio=portfolio,
+        manager=manager,
+    )
+
+    events = [
+        event
+        for event in temp_db.list_quant_universe_events(limit=20)
+        if event["stock_code"] == "600519" and event["event_type"] == "cooling_review_not_restored"
+    ]
+    assert first["reviewed"] == 1
+    assert second["reviewed"] == 1
+    assert len(first["diagnostics"]) == 1
+    assert len(second["diagnostics"]) == 1
+    assert len(events) == 1
+    assert events[0]["reason_code"] in {"cooling_recovery_not_confirmed", "cooling_downtrend_soft_gate"}
 
 
 def test_live_quant_drill_cooling_review_respects_cooling_until(tmp_path):

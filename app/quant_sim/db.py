@@ -320,6 +320,14 @@ class QuantSimDB:
                     retired_at TEXT,
                     retire_reason TEXT,
                     reentry_watch_until TEXT,
+                    recovery_probe_until TEXT,
+                    recovery_probe_attempt_count INTEGER DEFAULT 0,
+                    recent_probe_loss_count INTEGER DEFAULT 0,
+                    last_recovery_probe_failure_at TEXT,
+                    recovery_probe_cooldown_until TEXT,
+                    probe_failure_reason TEXT,
+                    active_since TEXT,
+                    active_checkpoints INTEGER DEFAULT 0,
                     last_status_changed_at TEXT,
                     last_health_evaluated_at TEXT,
                     snapshot_json TEXT,
@@ -328,6 +336,14 @@ class QuantSimDB:
                 )
                 """
             )
+            self._ensure_column(cursor, "stock_universe_quant_state", "recovery_probe_until", "TEXT")
+            self._ensure_column(cursor, "stock_universe_quant_state", "recovery_probe_attempt_count", "INTEGER DEFAULT 0")
+            self._ensure_column(cursor, "stock_universe_quant_state", "recent_probe_loss_count", "INTEGER DEFAULT 0")
+            self._ensure_column(cursor, "stock_universe_quant_state", "last_recovery_probe_failure_at", "TEXT")
+            self._ensure_column(cursor, "stock_universe_quant_state", "recovery_probe_cooldown_until", "TEXT")
+            self._ensure_column(cursor, "stock_universe_quant_state", "probe_failure_reason", "TEXT")
+            self._ensure_column(cursor, "stock_universe_quant_state", "active_since", "TEXT")
+            self._ensure_column(cursor, "stock_universe_quant_state", "active_checkpoints", "INTEGER DEFAULT 0")
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS stock_universe_candidate_events (
@@ -4336,10 +4352,12 @@ class QuantSimDB:
                 stock_code, candidate_score, candidate_confidence, health_score,
                 downtrend_streak, weakening_warning_streak, blocked_streak, no_buy_days,
                 cooling_until, retired_at, retire_reason, reentry_watch_until,
-                last_status_changed_at, last_health_evaluated_at, snapshot_json,
-                created_at, updated_at
+                recovery_probe_until, recovery_probe_attempt_count, recent_probe_loss_count,
+                last_recovery_probe_failure_at, recovery_probe_cooldown_until, probe_failure_reason,
+                active_since, active_checkpoints, last_status_changed_at, last_health_evaluated_at,
+                snapshot_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(stock_code) DO UPDATE SET
                 candidate_score = excluded.candidate_score,
                 candidate_confidence = excluded.candidate_confidence,
@@ -4352,6 +4370,14 @@ class QuantSimDB:
                 retired_at = excluded.retired_at,
                 retire_reason = excluded.retire_reason,
                 reentry_watch_until = excluded.reentry_watch_until,
+                recovery_probe_until = excluded.recovery_probe_until,
+                recovery_probe_attempt_count = excluded.recovery_probe_attempt_count,
+                recent_probe_loss_count = excluded.recent_probe_loss_count,
+                last_recovery_probe_failure_at = excluded.last_recovery_probe_failure_at,
+                recovery_probe_cooldown_until = excluded.recovery_probe_cooldown_until,
+                probe_failure_reason = excluded.probe_failure_reason,
+                active_since = excluded.active_since,
+                active_checkpoints = excluded.active_checkpoints,
                 last_status_changed_at = COALESCE(excluded.last_status_changed_at, last_status_changed_at),
                 last_health_evaluated_at = COALESCE(excluded.last_health_evaluated_at, last_health_evaluated_at),
                 snapshot_json = excluded.snapshot_json,
@@ -4370,6 +4396,14 @@ class QuantSimDB:
                 payload.get("retired_at"),
                 payload.get("retire_reason"),
                 payload.get("reentry_watch_until"),
+                payload.get("recovery_probe_until"),
+                int(payload.get("recovery_probe_attempt_count") or 0),
+                int(payload.get("recent_probe_loss_count") or 0),
+                payload.get("last_recovery_probe_failure_at"),
+                payload.get("recovery_probe_cooldown_until"),
+                payload.get("probe_failure_reason"),
+                payload.get("active_since"),
+                int(payload.get("active_checkpoints") or 0),
                 payload.get("last_status_changed_at"),
                 payload.get("last_health_evaluated_at") or now_text,
                 snapshot_text,
@@ -4567,6 +4601,14 @@ class QuantSimDB:
                 qs.retired_at AS retired_at,
                 qs.retire_reason AS retire_reason,
                 qs.reentry_watch_until AS reentry_watch_until,
+                qs.recovery_probe_until AS recovery_probe_until,
+                qs.recovery_probe_attempt_count AS recovery_probe_attempt_count,
+                qs.recent_probe_loss_count AS recent_probe_loss_count,
+                qs.last_recovery_probe_failure_at AS last_recovery_probe_failure_at,
+                qs.recovery_probe_cooldown_until AS recovery_probe_cooldown_until,
+                qs.probe_failure_reason AS probe_failure_reason,
+                qs.active_since AS active_since,
+                qs.active_checkpoints AS active_checkpoints,
                 qs.last_status_changed_at AS last_status_changed_at,
                 qs.last_health_evaluated_at AS last_health_evaluated_at,
                 qs.snapshot_json AS snapshot_json,
@@ -5883,6 +5925,14 @@ class QuantSimDB:
                 qs.retired_at AS retired_at,
                 qs.retire_reason AS retire_reason,
                 qs.reentry_watch_until AS reentry_watch_until,
+                qs.recovery_probe_until AS recovery_probe_until,
+                qs.recovery_probe_attempt_count AS recovery_probe_attempt_count,
+                qs.recent_probe_loss_count AS recent_probe_loss_count,
+                qs.last_recovery_probe_failure_at AS last_recovery_probe_failure_at,
+                qs.recovery_probe_cooldown_until AS recovery_probe_cooldown_until,
+                qs.probe_failure_reason AS probe_failure_reason,
+                qs.active_since AS active_since,
+                qs.active_checkpoints AS active_checkpoints,
                 qs.last_status_changed_at AS last_status_changed_at,
                 qs.last_health_evaluated_at AS last_health_evaluated_at,
                 qs.snapshot_json AS snapshot_json,
@@ -5903,7 +5953,15 @@ class QuantSimDB:
         payload["candidate_score"] = float(payload.get("candidate_score") or 0)
         payload["candidate_confidence"] = float(payload.get("candidate_confidence") or 0)
         payload["health_score"] = float(payload.get("health_score") if payload.get("health_score") is not None else 100)
-        for key in ("downtrend_streak", "weakening_warning_streak", "blocked_streak", "no_buy_days"):
+        for key in (
+            "downtrend_streak",
+            "weakening_warning_streak",
+            "blocked_streak",
+            "no_buy_days",
+            "active_checkpoints",
+            "recovery_probe_attempt_count",
+            "recent_probe_loss_count",
+        ):
             payload[key] = int(payload.get(key) or 0)
         payload["snapshot_json"] = self._loads_metadata(payload.get("snapshot_json"))
         payload["stock_name"] = payload.get("stock_name") or payload.get("stock_code")
@@ -7347,6 +7405,14 @@ class QuantSimReplayDB(QuantSimDB):
                 blocked_streak INTEGER DEFAULT 0,
                 no_buy_days INTEGER DEFAULT 0,
                 cooling_until TEXT,
+                recovery_probe_until TEXT,
+                recovery_probe_attempt_count INTEGER DEFAULT 0,
+                recent_probe_loss_count INTEGER DEFAULT 0,
+                last_recovery_probe_failure_at TEXT,
+                recovery_probe_cooldown_until TEXT,
+                probe_failure_reason TEXT,
+                active_since TEXT,
+                active_checkpoints INTEGER DEFAULT 0,
                 retired_at TEXT,
                 latest_reason TEXT,
                 snapshot_json TEXT,
@@ -7441,6 +7507,14 @@ class QuantSimReplayDB(QuantSimDB):
         self._ensure_column(cursor, "sim_run_quant_states", "blocked_streak", "INTEGER DEFAULT 0")
         self._ensure_column(cursor, "sim_run_quant_states", "no_buy_days", "INTEGER DEFAULT 0")
         self._ensure_column(cursor, "sim_run_quant_states", "cooling_until", "TEXT")
+        self._ensure_column(cursor, "sim_run_quant_states", "recovery_probe_until", "TEXT")
+        self._ensure_column(cursor, "sim_run_quant_states", "recovery_probe_attempt_count", "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, "sim_run_quant_states", "recent_probe_loss_count", "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, "sim_run_quant_states", "last_recovery_probe_failure_at", "TEXT")
+        self._ensure_column(cursor, "sim_run_quant_states", "recovery_probe_cooldown_until", "TEXT")
+        self._ensure_column(cursor, "sim_run_quant_states", "probe_failure_reason", "TEXT")
+        self._ensure_column(cursor, "sim_run_quant_states", "active_since", "TEXT")
+        self._ensure_column(cursor, "sim_run_quant_states", "active_checkpoints", "INTEGER DEFAULT 0")
         self._ensure_column(cursor, "sim_run_quant_states", "retired_at", "TEXT")
         self._ensure_column(cursor, "sim_run_quant_events", "reason_code", "TEXT")
         self._ensure_column(cursor, "sim_run_quant_events", "reason_text", "TEXT")
@@ -7501,10 +7575,13 @@ class QuantSimReplayDB(QuantSimDB):
                     (
                         run_id, checkpoint_at, checkpoint_at_utc, stock_code, stock_name, market,
                         quant_enabled, quant_status, health_score, candidate_score, downtrend_streak,
-                        weakening_warning_streak, blocked_streak, no_buy_days, cooling_until, retired_at,
-                        latest_reason, snapshot_json, created_at, updated_at
+                        weakening_warning_streak, blocked_streak, no_buy_days, cooling_until,
+                        recovery_probe_until, recovery_probe_attempt_count, recent_probe_loss_count,
+                        last_recovery_probe_failure_at, recovery_probe_cooldown_until, probe_failure_reason,
+                        active_since, active_checkpoints, retired_at, latest_reason, snapshot_json, created_at,
+                        updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(run_id, checkpoint_at_utc, stock_code) DO UPDATE SET
                         checkpoint_at = excluded.checkpoint_at,
                         stock_name = excluded.stock_name,
@@ -7518,6 +7595,14 @@ class QuantSimReplayDB(QuantSimDB):
                         blocked_streak = excluded.blocked_streak,
                         no_buy_days = excluded.no_buy_days,
                         cooling_until = excluded.cooling_until,
+                        recovery_probe_until = excluded.recovery_probe_until,
+                        recovery_probe_attempt_count = excluded.recovery_probe_attempt_count,
+                        recent_probe_loss_count = excluded.recent_probe_loss_count,
+                        last_recovery_probe_failure_at = excluded.last_recovery_probe_failure_at,
+                        recovery_probe_cooldown_until = excluded.recovery_probe_cooldown_until,
+                        probe_failure_reason = excluded.probe_failure_reason,
+                        active_since = excluded.active_since,
+                        active_checkpoints = excluded.active_checkpoints,
                         retired_at = excluded.retired_at,
                         latest_reason = excluded.latest_reason,
                         snapshot_json = excluded.snapshot_json,
@@ -7539,6 +7624,14 @@ class QuantSimReplayDB(QuantSimDB):
                         int(state.get("blocked_streak") or 0),
                         int(state.get("no_buy_days") or 0),
                         state.get("cooling_until"),
+                        state.get("recovery_probe_until"),
+                        int(state.get("recovery_probe_attempt_count") or 0),
+                        int(state.get("recent_probe_loss_count") or 0),
+                        state.get("last_recovery_probe_failure_at"),
+                        state.get("recovery_probe_cooldown_until"),
+                        state.get("probe_failure_reason"),
+                        state.get("active_since"),
+                        int(state.get("active_checkpoints") or 0),
                         state.get("retired_at"),
                         state.get("latest_reason"),
                         self._dumps_metadata(state.get("snapshot_json")),
