@@ -507,7 +507,9 @@ Owner: Codex
 
 1. `trial` 的最终目标仓位 = `min(正常信号建议仓位 × trial_position_multiplier, trial_max_position_pct)`
 2. 若现有 BUY 分层、冷启动限仓、再入场降仓、个股执行反馈或组合防守给出的倍率更严格，则取最小值
-3. `trial` 不单独绕过资金槽规则，数量仍由现有 `position_sizing / capital_slots` 逻辑计算
+3. 若 `trial` 中出现 `normal_buy/strong_buy`，且该信号已通过趋势确认和执行 sizing 检查，可进入 `trial_confirmed` sizing：继续保留 `quant_status=trial` 参与组合级 trial 风险预算，但单笔 lifecycle cap 使用 active 档位，不再套用 `trial_position_multiplier`
+4. `weak_buy` 不能进入 `trial_confirmed`，即使短线指标转强也只能按 trial 试错仓位执行
+5. `trial` 不单独绕过资金槽规则，数量仍由现有 `position_sizing / capital_slots` 逻辑计算
 
 默认值建议：
 
@@ -935,6 +937,7 @@ Gate 输出字段：
 |---|---:|---:|---:|---:|
 | `normal_scan` | `0.00` | `1.00` | profile/default | false |
 | `trial_light` | `0.03` | `trial_position_multiplier` | `trial_max_position_pct` | false |
+| `trial_confirmed` | `0.00` | `1.00` | profile/default | false |
 | `guarded_scan` | `0.08` | `0.35` | `4.0` | true |
 | `cooling_supplemental` | `0.12` | `0.20` | `3.0` | true |
 | `exit_only` | N/A | `0.00` | `0.0` | N/A |
@@ -944,7 +947,8 @@ Gate 输出字段：
 1. SignalCenterService 或等价 signal finalization 层必须把 `lifecycle_gate` 写入 signal explain。
 2. BUY 分层计算必须先应用 `buy_threshold_delta`，再决定 weak/normal/strong。
 3. 执行仓位必须取 `min(existing_caps, max_position_pct)`，并应用 `size_multiplier`。
-4. `cooling_supplemental` 只有在满足强确认时才允许 BUY；否则只能记录 HOLD/观察。
+4. `trial_confirmed` 只能由 signal finalization 层在看到 `normal_buy/strong_buy + 趋势确认` 后写入，不能由股票池静态状态直接生成。
+5. `cooling_supplemental` 只有在满足强确认时才允许 BUY；否则只能记录 HOLD/观察。
 
 ### 15.3 低频重评估
 

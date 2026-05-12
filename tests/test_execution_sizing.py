@@ -55,7 +55,30 @@ def test_execution_sizing_uses_resonance_quality_when_kernel_positioning_missing
     )
 
     assert plan["kernel_quality_position_pct"] == 19.508
-    assert plan["effective_position_pct"] == 5.0
+    assert plan["effective_position_pct"] == 6.0
+
+
+def test_aggressive_active_weak_buy_has_visible_upgrade_cap():
+    policy = default_execution_position_cap_policy("aggressive")
+    plan = build_execution_sizing_plan(
+        signal={
+            "position_size_pct": 20.0,
+            "stop_loss_pct": 5.0,
+            "strategy_profile": {
+                "portfolio_execution_guard": {"buy_tier": "weak_buy"},
+                "kernel_positioning": {"quality_position_pct": 20.0},
+            },
+        },
+        total_equity=400000,
+        available_cash=300000,
+        slot_available_cash=300000,
+        quant_status="active",
+        policy=policy,
+        price=10.0,
+    )
+
+    assert plan["buy_tier_cap_pct"] == 7.0
+    assert plan["effective_position_pct"] == 6.0
 
 
 def test_account_equity_tier_boundaries_are_mutually_exclusive():
@@ -252,6 +275,108 @@ def test_create_signal_copies_candidate_lifecycle_gate_into_profile(tmp_path):
     assert profile["execution_sizing_plan"]["effective_position_pct"] == 3.0
 
 
+def test_trial_normal_buy_with_confirmed_trend_uses_active_like_sizing(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "trial", "health_score": 42})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {
+            "stock_code": "000001",
+            "stock_name": "平安银行",
+            "latest_price": 10.0,
+            "lifecycle_gate": {
+                "mode": "trial_light",
+                "buy_threshold_delta": 0.03,
+                "size_multiplier": 0.5,
+                "max_position_pct": 12.5,
+                "buy_blocked": False,
+            },
+        },
+        {
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "test",
+            "position_size_pct": 30,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "kernel_positioning": {"quality_position_pct": 30.0},
+                "portfolio_execution_guard_policy": {"enabled": False},
+                "portfolio_execution_guard": {
+                    "buy_tier": "normal_buy",
+                    "buy_strength_score": 0.72,
+                    "trend_confirmation": {
+                        "ma_stack": False,
+                        "ma20_rising": True,
+                        "above_ma20_checkpoints": 3,
+                        "retest_confirmed": False,
+                    },
+                },
+            },
+        },
+        notify=False,
+    )
+
+    profile = signal["strategy_profile"]
+    assert profile["lifecycle_gate"]["mode"] == "trial_confirmed"
+    assert profile["execution_sizing_plan"]["lifecycle_cap_pct"] == 9.0
+    assert profile["execution_sizing_plan"]["effective_position_pct"] == 9.0
+    assert signal["position_size_pct"] == 9.0
+
+
+def test_trial_weak_buy_keeps_trial_light_sizing(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "trial", "health_score": 42})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {
+            "stock_code": "000001",
+            "stock_name": "平安银行",
+            "latest_price": 10.0,
+            "lifecycle_gate": {
+                "mode": "trial_light",
+                "buy_threshold_delta": 0.03,
+                "size_multiplier": 0.5,
+                "max_position_pct": 12.5,
+                "buy_blocked": False,
+            },
+        },
+        {
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "test",
+            "position_size_pct": 30,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "kernel_positioning": {"quality_position_pct": 30.0},
+                "portfolio_execution_guard_policy": {"enabled": False},
+                "portfolio_execution_guard": {
+                    "buy_tier": "weak_buy",
+                    "buy_strength_score": 0.62,
+                    "trend_confirmation": {
+                        "ma_stack": True,
+                        "ma20_rising": True,
+                        "above_ma20_checkpoints": 3,
+                        "retest_confirmed": False,
+                    },
+                },
+            },
+        },
+        notify=False,
+    )
+
+    profile = signal["strategy_profile"]
+    assert profile["lifecycle_gate"]["mode"] == "trial_light"
+    assert profile["execution_sizing_plan"]["effective_position_pct"] == 3.0
+
+
 def test_create_signal_blocks_cooling_buy_without_strong_lifecycle_confirmation(tmp_path):
     db_path = tmp_path / "quant.db"
     db = QuantSimDB(db_path)
@@ -401,7 +526,7 @@ def test_create_signal_backfills_kernel_positioning_from_resonance(tmp_path):
     profile = signal["strategy_profile"]
     assert profile["kernel_positioning"]["quality_position_pct"] == 19.508
     assert profile["execution_sizing_plan"]["kernel_quality_position_pct"] == 19.508
-    assert signal["position_size_pct"] == 5.0
+    assert signal["position_size_pct"] == 6.0
 
 
 def test_create_signal_backfills_non_resonance_positioning_from_buy_strength(tmp_path):
@@ -438,7 +563,7 @@ def test_create_signal_backfills_non_resonance_positioning_from_buy_strength(tmp
     assert profile["kernel_positioning"]["rule_hit"] == "non_resonance_guard_quality"
     assert profile["kernel_positioning"]["quality_position_pct"] == 11.8374
     assert profile["execution_sizing_plan"]["kernel_quality_position_pct"] == 11.8374
-    assert signal["position_size_pct"] == 5.0
+    assert signal["position_size_pct"] == 6.0
 
 
 def test_create_signal_keeps_fallback_position_when_guard_has_no_buy_tier(tmp_path):

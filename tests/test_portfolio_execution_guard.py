@@ -60,6 +60,8 @@ def test_policy_defaults_are_profile_specific_and_weights_normalize():
 
     assert aggressive["confirm_checkpoints"] == 2
     assert aggressive["full_edge"] == 0.10
+    assert aggressive["weak_buy_max_score"] < stable["weak_buy_max_score"] < conservative["weak_buy_max_score"]
+    assert aggressive["strong_buy_min_score"] == 0.78
     assert stable["confirm_checkpoints"] == 3
     assert conservative["weak_multiplier"] < stable["weak_multiplier"]
     assert aggressive["weight_edge"] > conservative["weight_edge"]

@@ -319,7 +319,7 @@ final_budget = min(
 
 | buy tier | aggressive | stable | conservative |
 |---|---:|---:|---:|
-| weak_buy cap | 5.0% | 3.5% | 2.0% |
+| weak_buy cap | 7.0% | 3.5% | 2.0% |
 | normal_buy cap | 9.0% | 7.0% | 5.0% |
 | strong_buy cap | 15.0% | 12.0% | 9.0% |
 
@@ -334,7 +334,7 @@ final_budget = min(
 | trial weak_buy | 3.0% | 2.0% | 1.0% |
 | trial normal_buy | 6.0% | 4.5% | 3.0% |
 | trial strong_buy | 10.0% | 8.0% | 6.0% |
-| active weak_buy | 5.0% | 3.5% | 2.0% |
+| active weak_buy | 7.0% | 3.5% | 2.0% |
 | active normal_buy | 9.0% | 7.0% | 5.0% |
 | active strong_buy | 15.0% | 12.0% | 9.0% |
 | exit_only | 0.0% | 0.0% | 0.0% |
@@ -381,6 +381,7 @@ final_budget = min(
 5. 对当前持仓市值累计 `trial_total_exposure_cap_pct` 与 `weak_buy_total_exposure_cap_pct`；超出后对应 BUY 转 HOLD/skip。
 6. 被截断的信号必须更新状态为 skipped/delayed，并记录 reason code：`portfolio_trial_risk_budget_exhausted`、`daily_trial_risk_budget_exhausted`、`trial_exposure_cap_hit`、`weak_buy_exposure_cap_hit`。
 7. 聚合 gate 不能改变 SELL 执行，不能阻止已有持仓的风险退出。
+8. 聚合 gate 只拦截新的 BUY 或加仓预算，不会因为 trial/weak 总暴露超限而强制卖出或减仓已有持仓；已有持仓只通过正常 SELL、止损、止盈和生命周期出场逻辑退出。
 
 ### 7.6 账户规模分层上限
 

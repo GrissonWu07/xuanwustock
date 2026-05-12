@@ -29,10 +29,10 @@ def default_execution_position_cap_policy(profile_id: str | None = None) -> dict
     key = _profile_key(profile_id)
     policies: dict[str, dict[str, Any]] = {
         "aggressive": {
-            "buy_tier_cap_pct": {"weak_buy": 5.0, "normal_buy": 9.0, "strong_buy": 15.0},
+            "buy_tier_cap_pct": {"weak_buy": 7.0, "normal_buy": 9.0, "strong_buy": 15.0},
             "lifecycle_cap_pct": {
                 "trial": {"weak_buy": 3.0, "normal_buy": 6.0, "strong_buy": 10.0},
-                "active": {"weak_buy": 5.0, "normal_buy": 9.0, "strong_buy": 15.0},
+                "active": {"weak_buy": 7.0, "normal_buy": 9.0, "strong_buy": 15.0},
                 "exit_only": {"weak_buy": 0.0, "normal_buy": 0.0, "strong_buy": 0.0},
             },
             "single_trade_risk_budget_pct": {"weak_buy": 0.30, "normal_buy": 0.45, "strong_buy": 0.65},
@@ -202,9 +202,10 @@ def build_execution_sizing_plan(
     risk_budget_pct = _float(policy["single_trade_risk_budget_pct"][tier])
     risk_budget_position_pct = (risk_budget_pct / stop_loss_pct) * 100.0
     buy_tier_cap = _float(policy["buy_tier_cap_pct"][tier])
-    lifecycle_cap_status = status if status in policy["lifecycle_cap_pct"] else "trial"
-    lifecycle_cap = _float(policy["lifecycle_cap_pct"].get(lifecycle_cap_status, policy["lifecycle_cap_pct"]["trial"])[tier])
     lifecycle_gate_mode = str(lifecycle_gate.get("mode") or "").strip()
+    lifecycle_cap_status = "active" if lifecycle_gate_mode == "trial_confirmed" else status
+    lifecycle_cap_status = lifecycle_cap_status if lifecycle_cap_status in policy["lifecycle_cap_pct"] else "trial"
+    lifecycle_cap = _float(policy["lifecycle_cap_pct"].get(lifecycle_cap_status, policy["lifecycle_cap_pct"]["trial"])[tier])
     lifecycle_gate_multiplier = _float(lifecycle_gate.get("size_multiplier"), 1.0)
     lifecycle_gate_max_pct = lifecycle_gate.get("max_position_pct")
     lifecycle_gate_adjusted_pct = kernel_pct * lifecycle_gate_multiplier

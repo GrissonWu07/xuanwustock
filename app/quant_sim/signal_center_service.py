@@ -730,6 +730,10 @@ class SignalCenterService:
             strategy_profile = {}
         strategy_profile = dict(strategy_profile)
         strategy_profile.setdefault("lifecycle_gate", dict(gate))
+        strategy_profile["lifecycle_gate"] = self._maybe_relax_trial_lifecycle_gate(
+            strategy_profile.get("lifecycle_gate"),
+            strategy_profile,
+        )
         normalized["strategy_profile"] = strategy_profile
         action = str(normalized.get("action") or "HOLD").upper()
         if action not in {"BUY", "ADD"}:
@@ -752,6 +756,41 @@ class SignalCenterService:
                 "需要更强趋势确认，转为HOLD。"
             ).strip()
         return normalized
+
+    @classmethod
+    def _maybe_relax_trial_lifecycle_gate(cls, gate: Any, strategy_profile: dict[str, Any]) -> dict[str, Any]:
+        normalized_gate = dict(gate) if isinstance(gate, dict) else {}
+        if str(normalized_gate.get("mode") or "").strip().lower() != "trial_light":
+            return normalized_gate
+        if not cls._lifecycle_gate_has_confirmed_trial_sizing(strategy_profile, normalized_gate):
+            return normalized_gate
+        relaxed = dict(normalized_gate)
+        relaxed["mode"] = "trial_confirmed"
+        relaxed["size_multiplier"] = 1.0
+        relaxed["max_position_pct"] = None
+        relaxed["reason_code"] = "trial_confirmed_active_like_sizing"
+        relaxed["reason_text"] = "trial 中的 normal/strong BUY 已通过趋势确认，按接近 active 的仓位规则执行"
+        return relaxed
+
+    @classmethod
+    def _lifecycle_gate_has_confirmed_trial_sizing(cls, strategy_profile: dict[str, Any], gate: dict[str, Any]) -> bool:
+        guard = strategy_profile.get("portfolio_execution_guard") if isinstance(strategy_profile.get("portfolio_execution_guard"), dict) else {}
+        buy_tier = str(guard.get("buy_tier") or "").strip().lower()
+        if buy_tier not in {"normal_buy", "strong_buy"}:
+            return False
+        buy_strength = cls._safe_float(guard.get("buy_strength_score"), 0.0) or 0.0
+        threshold = 0.45 + max(cls._safe_float(gate.get("buy_threshold_delta"), 0.0) or 0.0, 0.0)
+        trend = guard.get("trend_confirmation") if isinstance(guard.get("trend_confirmation"), dict) else {}
+        components = guard.get("score_components") if isinstance(guard.get("score_components"), dict) else {}
+        confirmation_score = cls._safe_float(components.get("confirmation_score"), 0.0) or 0.0
+        above_ma20 = int(cls._safe_float(trend.get("above_ma20_checkpoints"), 0.0) or 0)
+        trend_confirmed = bool(
+            trend.get("ma_stack")
+            or trend.get("retest_confirmed")
+            or (trend.get("ma20_rising") and above_ma20 >= 3)
+            or confirmation_score >= 0.75
+        )
+        return buy_strength >= threshold and trend_confirmed
 
     @classmethod
     def _lifecycle_gate_has_strong_confirmation(cls, strategy_profile: dict[str, Any], gate: dict[str, Any]) -> bool:
