@@ -556,11 +556,12 @@ def test_live_quant_drill_records_cooling_review_not_restored_diagnostics(tmp_pa
         portfolio=portfolio,
         manager=manager,
     )
-    service._persist_live_quant_drill_cooling_diagnostics(
+    service._persist_live_quant_drill_quant_snapshot(
         run_id=run_id,
         checkpoint=datetime(2026, 1, 5, 10, 0),
         context={"market": "CN"},
-        diagnostics=list(result.get("diagnostics") or []),
+        temp_db=temp_db,
+        checkpoint_metadata={"cooling_review": {"diagnostic_count": len(result.get("diagnostics") or [])}},
     )
 
     events = service.db.list_sim_run_quant_events(
