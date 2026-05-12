@@ -428,7 +428,12 @@ run_type = historical_backtest
 12. `trial` 冷启动样本不足时必须使用 profile 配置的健康分下限保护，避免演练首日把大部分股票打入 `cooling`。
 13. `cooling` 股票若被新的历史候选事件重新命中，只能提升补充扫描排序，不能仅凭来源直接恢复到 `trial`。
 14. 实时量化演练中，每个交易日第一个 checkpoint 必须全量复评已到期 `cooling` 股票；其他 checkpoint 可按 `cooling_review_batch_size` 轮转复评。
-15. `health_score` 低只能影响 gate、排序和解释；不得单独触发 `trial/active -> cooling/retired`。
+15. `cooling` 复评后若未恢复，必须记录逐股诊断事件，说明未恢复原因；不能只在 summary 中显示 `restored=0`。
+    - 事件类型：`cooling_review_not_restored`。
+    - 必备字段：`stock_code`、`from_status=cooling`、`to_status=cooling`、`reason_code`、`reason_text`、`health_score_before/after`。
+    - `evidence_json` 至少包含 `review_signal_action`、`buy_tier`、`execution_skip_reason`、`lifecycle_gate_mode`、`health_breakdown`。
+    - checkpoint summary 只保存 `diagnostic_count`，不内嵌逐股诊断明细。
+16. `health_score` 低只能影响 gate、排序和解释；不得单独触发 `trial/active -> cooling/retired`。
 
 ## 12. 交易与风控规则
 

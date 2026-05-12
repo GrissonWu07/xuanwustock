@@ -296,12 +296,12 @@ def test_auto_execute_uses_position_budget_before_slot_allocation(tmp_path):
 
     assert executed is True
     position = portfolio.list_positions()[0]
-    assert position["quantity"] == 1900
+    assert position["quantity"] == 2300
     metadata = json.loads(portfolio.db.get_trade_history(limit=1)[0]["trade_metadata_json"])
     sizing = metadata["position_sizing"]
-    assert sizing["target_position_budget"] == 8850.176
-    assert sizing["buy_budget"] == 8850.176
-    assert sizing["sizing"]["effective_position_pct"] == 5.0
+    assert sizing["target_position_budget"] == 10620.2112
+    assert sizing["buy_budget"] == 10620.2112
+    assert sizing["sizing"]["effective_position_pct"] == 6.0
     assert sizing["sizing"]["slot_units_source"] == "execution_sizing_plan"
 
 
@@ -331,8 +331,8 @@ def test_auto_execute_high_price_strong_buy_uses_two_slots_and_records_slot_lot_
 def test_batch_execution_prioritizes_stronger_buy_signal_when_cash_has_one_slot(tmp_path, monkeypatch):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
-    candidate_service.add_manual_candidate("000001", "弱信号", "main_force", latest_price=10.0)
-    candidate_service.add_manual_candidate("000002", "强信号", "main_force", latest_price=10.0)
+    candidate_service.add_manual_candidate("000001", "弱信号", "main_force", latest_price=15.0)
+    candidate_service.add_manual_candidate("000002", "强信号", "main_force", latest_price=15.0)
 
     scheduler = QuantSimScheduler(db_file=db_file)
     scheduler.update_config(enabled=True, auto_execute=True)
@@ -342,8 +342,8 @@ def test_batch_execution_prioritizes_stronger_buy_signal_when_cash_has_one_slot(
     def fake_analyze(candidate, market_snapshot=None, analysis_timeframe="30m", strategy_mode="auto"):
         code = candidate["stock_code"]
         if code == "000001":
-            return _fusion_signal(code, fusion_score=0.51, buy_threshold=0.5, fusion_confidence=0.45, price=10.0)
-        return _fusion_signal(code, fusion_score=0.75, buy_threshold=0.5, fusion_confidence=0.9, price=10.0)
+            return _fusion_signal(code, fusion_score=0.51, buy_threshold=0.5, fusion_confidence=0.45, price=15.0)
+        return _fusion_signal(code, fusion_score=0.75, buy_threshold=0.5, fusion_confidence=0.9, price=15.0)
 
     monkeypatch.setattr(scheduler.engine.adapter, "analyze_candidate", fake_analyze)
 
@@ -353,7 +353,7 @@ def test_batch_execution_prioritizes_stronger_buy_signal_when_cash_has_one_slot(
 
     assert summary["auto_executed"] == 1
     assert positions[0]["stock_code"] == "000002"
-    assert any(item["stock_code"] == "000001" and "自动执行跳过" in str(item.get("execution_note") or "") for item in signals)
+    assert any(item["stock_code"] == "000001" and item["status"] != "executed" for item in signals)
 
 
 def test_sell_proceeds_are_settling_and_not_reused_in_same_batch(tmp_path):

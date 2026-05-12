@@ -117,6 +117,17 @@ def _signal_quant_status(signal: dict[str, Any]) -> str:
     return str(profile.get("quant_status") or signal.get("quant_status") or "active").strip().lower()
 
 
+def _execution_batch_risk_pct(signal: dict[str, Any], plan: dict[str, Any]) -> float:
+    explicit = plan.get("batch_risk_pct")
+    if explicit not in (None, ""):
+        return max(_float(explicit), 0.0)
+    effective_pct = _float(plan.get("effective_position_pct"), _float(signal.get("position_size_pct"), 0.0))
+    stop_loss_pct = _float(plan.get("expected_stop_loss_pct"), _float(signal.get("stop_loss_pct"), 5.0))
+    if effective_pct > 0 and stop_loss_pct > 0:
+        return max(effective_pct * stop_loss_pct / 100.0, 0.0)
+    return max(_float(plan.get("risk_budget_pct"), 0.0), 0.0)
+
+
 def _priority(signal: dict[str, Any]) -> tuple[int, float, float, int]:
     plan = _signal_plan(signal)
     tier = str(plan.get("buy_tier") or _buy_tier(signal)).strip().lower()
@@ -149,12 +160,12 @@ def apply_batch_execution_caps(
         tier = str(plan.get("buy_tier") or _buy_tier(signal)).strip().lower()
         status = _signal_quant_status(signal)
         final_budget = _float(plan.get("final_budget"), 0.0)
-        risk_budget_pct = _float(plan.get("risk_budget_pct"), 0.0)
+        batch_risk_pct = _execution_batch_risk_pct(signal, plan)
         reason_code = ""
         if status == "trial":
-            if checkpoint_trial_risk + risk_budget_pct > float(policy["checkpoint_trial_risk_budget_pct"]) + 1e-9:
+            if checkpoint_trial_risk + batch_risk_pct > float(policy["checkpoint_trial_risk_budget_pct"]) + 1e-9:
                 reason_code = "portfolio_trial_risk_budget_exhausted"
-            elif day_trial_risk + risk_budget_pct > float(policy["daily_trial_risk_budget_pct"]) + 1e-9:
+            elif day_trial_risk + batch_risk_pct > float(policy["daily_trial_risk_budget_pct"]) + 1e-9:
                 reason_code = "daily_trial_risk_budget_exhausted"
             elif trial_exposure + final_budget > trial_exposure_cap + 1e-9:
                 reason_code = "trial_exposure_cap_hit"
@@ -163,12 +174,20 @@ def apply_batch_execution_caps(
         allowed = not reason_code
         if allowed:
             if status == "trial":
-                checkpoint_trial_risk += risk_budget_pct
-                day_trial_risk += risk_budget_pct
+                checkpoint_trial_risk += batch_risk_pct
+                day_trial_risk += batch_risk_pct
                 trial_exposure += final_budget
             if tier == "weak_buy":
                 weak_exposure += final_budget
-        rows.append({"signal_id": signal.get("id"), "allowed": allowed, "reason_code": reason_code, "signal": signal})
+        rows.append(
+            {
+                "signal_id": signal.get("id"),
+                "allowed": allowed,
+                "reason_code": reason_code,
+                "batch_risk_pct": round(batch_risk_pct, 6),
+                "signal": signal,
+            }
+        )
     return rows
 
 
@@ -231,6 +250,7 @@ def build_execution_sizing_plan(
         float(available_cash),
         float(slot_available_cash),
     )
+    batch_risk_pct = max(effective_pct * stop_loss_pct / 100.0, 0.0)
     one_lot_cost = max(_float(price), 0.0) * int(lot_size or 100)
     skip_reason = None
     if lifecycle_buy_blocked:
@@ -245,6 +265,7 @@ def build_execution_sizing_plan(
         **{key: round(value, 6) for key, value in cap_values.items()},
         "risk_budget_pct": round(risk_budget_pct, 6),
         "expected_stop_loss_pct": round(stop_loss_pct, 6),
+        "batch_risk_pct": round(batch_risk_pct, 6),
         "account_equity_tier_max_cash": round(account_tier["max_cash"], 4),
         "effective_position_pct": round(effective_pct, 6),
         "final_budget": round(final_budget, 4),

@@ -377,7 +377,11 @@ final_budget = min(
 1. `SignalCenterService` 仍负责为每条 BUY 生成单笔 `execution_sizing_plan`。
 2. `PortfolioService.auto_execute_pending_signals()` 在执行前读取同一批 pending BUY，按优先级排序。
 3. 排序顺序：`SELL` 优先；BUY 内部按 `strong_buy > normal_buy > weak_buy`、`buy_strength_score`、`confidence`、`signal_id` 排序。
-4. 对 `trial` BUY 累计本 checkpoint 和当日风险预算；超出 `checkpoint_trial_risk_budget_pct` 或 `daily_trial_risk_budget_pct` 的信号转 HOLD/skip。
+4. 对 `trial` BUY 累计本 checkpoint 和当日实际执行风险；超出 `checkpoint_trial_risk_budget_pct` 或 `daily_trial_risk_budget_pct` 的信号转 HOLD/skip。
+   - 实际执行风险字段为 `batch_risk_pct`。
+   - `batch_risk_pct = effective_position_pct * expected_stop_loss_pct / 100`。
+   - 若旧数据缺少 `batch_risk_pct`，可按 `effective_position_pct` 与 `expected_stop_loss_pct` 回算；再缺失时才 fallback 到名义 `risk_budget_pct`。
+   - `risk_budget_pct` 仍表示该 buy tier 的单笔风控预算，不得直接作为 batch 聚合累计值。
 5. 对当前持仓市值累计 `trial_total_exposure_cap_pct` 与 `weak_buy_total_exposure_cap_pct`；超出后对应 BUY 转 HOLD/skip。
 6. 被截断的信号必须更新状态为 skipped/delayed，并记录 reason code：`portfolio_trial_risk_budget_exhausted`、`daily_trial_risk_budget_exhausted`、`trial_exposure_cap_hit`、`weak_buy_exposure_cap_hit`。
 7. 聚合 gate 不能改变 SELL 执行，不能阻止已有持仓的风险退出。
@@ -484,6 +488,7 @@ CapitalSlots
     "lifecycle_cap_pct": 3.0,
     "risk_budget_pct": 0.30,
     "expected_stop_loss_pct": 5.0,
+    "batch_risk_pct": 0.15,
     "risk_budget_position_pct": 6.0,
     "account_equity_tier_cap_pct": 12.5,
     "account_equity_tier_max_cash": 70000.0,

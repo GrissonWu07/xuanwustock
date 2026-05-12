@@ -597,14 +597,23 @@ def test_create_signal_keeps_fallback_position_when_guard_has_no_buy_tier(tmp_pa
     assert signal["position_size_pct"] > 0
 
 
-def _buy_signal(signal_id: int, tier: str, final_budget: float, risk_pct: float = 0.30, status: str = "trial") -> dict:
+def _buy_signal(
+    signal_id: int,
+    tier: str,
+    final_budget: float,
+    risk_pct: float = 0.30,
+    status: str = "trial",
+    effective_position_pct: float = 3.0,
+    stop_loss_pct: float = 5.0,
+) -> dict:
     return {
         "id": signal_id,
         "stock_code": f"000{signal_id:03d}",
         "stock_name": f"股票{signal_id}",
         "action": "BUY",
         "confidence": 80 - signal_id,
-        "position_size_pct": 3.0,
+        "position_size_pct": effective_position_pct,
+        "stop_loss_pct": stop_loss_pct,
         "strategy_profile": {
             "portfolio_execution_guard": {
                 "buy_tier": tier,
@@ -614,7 +623,8 @@ def _buy_signal(signal_id: int, tier: str, final_budget: float, risk_pct: float 
                 "buy_tier": tier,
                 "final_budget": final_budget,
                 "risk_budget_pct": risk_pct,
-                "effective_position_pct": 3.0,
+                "effective_position_pct": effective_position_pct,
+                "expected_stop_loss_pct": stop_loss_pct,
             },
             "quant_status": status,
         },
@@ -624,9 +634,9 @@ def _buy_signal(signal_id: int, tier: str, final_budget: float, risk_pct: float 
 def test_batch_caps_skip_trial_buys_after_checkpoint_risk_budget():
     policy = default_execution_position_cap_policy("aggressive")
     signals = [
-        _buy_signal(1, "weak_buy", 6000, 0.30),
-        _buy_signal(2, "weak_buy", 6000, 0.30),
-        _buy_signal(3, "weak_buy", 6000, 0.30),
+        _buy_signal(1, "weak_buy", 6000, 0.30, effective_position_pct=6.0),
+        _buy_signal(2, "weak_buy", 6000, 0.30, effective_position_pct=6.0),
+        _buy_signal(3, "weak_buy", 6000, 0.30, effective_position_pct=6.0),
     ]
 
     result = apply_batch_execution_caps(
@@ -642,6 +652,26 @@ def test_batch_caps_skip_trial_buys_after_checkpoint_risk_budget():
     skipped = [item for item in result if not item["allowed"]]
     assert len(allowed) == 2
     assert skipped[0]["reason_code"] == "portfolio_trial_risk_budget_exhausted"
+
+
+def test_batch_caps_use_actual_execution_risk_not_nominal_tier_budget():
+    policy = default_execution_position_cap_policy("aggressive")
+    signals = [
+        _buy_signal(1, "strong_buy", 3000, 0.65, effective_position_pct=3.0, stop_loss_pct=5.0),
+        _buy_signal(2, "weak_buy", 3000, 0.30, effective_position_pct=3.0, stop_loss_pct=5.0),
+    ]
+
+    result = apply_batch_execution_caps(
+        signals=signals,
+        total_equity=100000,
+        existing_trial_market_value=0,
+        existing_weak_buy_market_value=0,
+        day_trial_risk_used_pct=0,
+        policy=policy,
+    )
+
+    assert [item["allowed"] for item in result] == [True, True]
+    assert [item["batch_risk_pct"] for item in result] == [0.15, 0.15]
 
 
 def test_batch_caps_skip_when_weak_buy_exposure_already_full():

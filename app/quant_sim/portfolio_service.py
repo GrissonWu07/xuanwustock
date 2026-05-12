@@ -258,7 +258,16 @@ class PortfolioService:
             if not plan:
                 position_sizing = metadata.get("position_sizing") if isinstance(metadata.get("position_sizing"), dict) else {}
                 plan = position_sizing.get("sizing") if isinstance(position_sizing.get("sizing"), dict) else {}
-            total += float(plan.get("risk_budget_pct") or 0.0)
+            batch_risk = plan.get("batch_risk_pct")
+            if batch_risk not in (None, ""):
+                total += float(batch_risk or 0.0)
+                continue
+            effective_pct = float(plan.get("effective_position_pct") or 0.0)
+            stop_loss_pct = float(plan.get("expected_stop_loss_pct") or 0.0)
+            if effective_pct > 0 and stop_loss_pct > 0:
+                total += effective_pct * stop_loss_pct / 100.0
+            else:
+                total += float(plan.get("risk_budget_pct") or 0.0)
         return total
 
     def preview_signal_sizing(

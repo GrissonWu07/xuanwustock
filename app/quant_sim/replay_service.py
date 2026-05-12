@@ -1303,6 +1303,15 @@ class QuantSimReplayService:
             portfolio=portfolio,
             manager=manager,
         )
+        cooling_diagnostics = list(cooling_review.get("diagnostics") or [])
+        self._persist_live_quant_drill_cooling_diagnostics(
+            run_id=run_id,
+            checkpoint=checkpoint,
+            context=context,
+            diagnostics=cooling_diagnostics,
+        )
+        cooling_review_summary = {key: value for key, value in cooling_review.items() if key != "diagnostics"}
+        cooling_review_summary["diagnostic_count"] = len(cooling_diagnostics)
         temp_db.add_account_snapshot(run_reason=f"live_quant_drill@{self._format_datetime(checkpoint)}")
         self._persist_live_quant_drill_quant_snapshot(
             run_id=run_id,
@@ -1313,7 +1322,7 @@ class QuantSimReplayService:
                 "candidate_event_count": int(candidate_processing.get("candidate_event_count") or 0),
                 "auto_promoted_count": int(candidate_processing.get("auto_promoted_count") or 0),
                 "auto_exited_count": int(main_scan.get("auto_exited_count") or 0),
-                "cooling_review": cooling_review,
+                "cooling_review": cooling_review_summary,
             },
         )
         account = temp_db.get_account_summary()
@@ -1330,9 +1339,47 @@ class QuantSimReplayService:
             "total_equity": float(account.get("total_equity") or 0),
             "positions": self._collect_position_snapshot(positions),
             "slot_summary": self._collect_slot_summary(temp_db),
-            "cooling_review": cooling_review,
+            "cooling_review": cooling_review_summary,
             "candidate_processing": candidate_processing,
         }
+
+    def _persist_live_quant_drill_cooling_diagnostics(
+        self,
+        *,
+        run_id: int,
+        checkpoint: datetime,
+        context: dict,
+        diagnostics: list[dict[str, Any]],
+    ) -> None:
+        if not diagnostics:
+            return
+        market = str(context.get("market") or "CN")
+        checkpoint_at = self._format_datetime(checkpoint)
+        checkpoint_at_utc = format_utc_iso_z(self._market_time_to_utc(checkpoint, market))
+        events: list[dict[str, Any]] = []
+        for item in diagnostics:
+            code = str(item.get("stock_code") or "").strip().upper()
+            if not code:
+                continue
+            events.append(
+                {
+                    "checkpoint_at": checkpoint_at,
+                    "checkpoint_at_utc": checkpoint_at_utc,
+                    "stock_code": code,
+                    "stock_name": item.get("stock_name") or code,
+                    "event_type": "cooling_review_not_restored",
+                    "from_status": item.get("from_status") or "cooling",
+                    "to_status": item.get("to_status") or "cooling",
+                    "reason_code": item.get("reason_code") or "cooling_recovery_not_confirmed",
+                    "reason_text": item.get("reason_text") or "冷却复评未恢复",
+                    "health_score_before": item.get("health_score_before"),
+                    "health_score_after": item.get("health_score_after"),
+                    "candidate_score": item.get("candidate_score"),
+                    "reason_json": item.get("reason_json") or {},
+                    "evidence_json": item.get("evidence_json") or {},
+                }
+            )
+        self.db.add_sim_run_quant_events(run_id, events)
 
     def _process_live_quant_drill_candidate_events(
         self,
@@ -1799,6 +1846,7 @@ class QuantSimReplayService:
         restored = 0
         retired = 0
         reviewed = 0
+        diagnostics: list[dict[str, Any]] = []
         timeframe = str(context.get("timeframe") or "30m")
         for item in selected:
             code = str(item.get("stock_code") or "").strip().upper()
@@ -1841,13 +1889,63 @@ class QuantSimReplayService:
                 ],
             ][:lookback]
             previous_status = str((temp_db.get_quant_universe_state(code) or {}).get("quant_status") or "cooling")
+            previous_state = temp_db.get_quant_universe_state(code) or {}
             update = manager.update_after_signal(code, review_signal, recent_signals, positions_by_code.get(code))
             next_status = str(update.get("new_status") or previous_status)
             if previous_status == "cooling" and next_status == "trial":
                 restored += 1
             elif previous_status == "cooling" and next_status == "retired":
                 retired += 1
-        return {"reviewed": reviewed, "restored": restored, "retired": retired}
+            elif previous_status == "cooling" and next_status == "cooling":
+                latest_state = temp_db.get_quant_universe_state(code) or {}
+                profile = (
+                    review_signal.get("strategy_profile")
+                    if isinstance(review_signal.get("strategy_profile"), dict)
+                    else {}
+                )
+                gate = (
+                    profile.get("lifecycle_gate")
+                    if isinstance(profile.get("lifecycle_gate"), dict)
+                    else {}
+                )
+                plan = (
+                    profile.get("execution_sizing_plan")
+                    if isinstance(profile.get("execution_sizing_plan"), dict)
+                    else {}
+                )
+                guard = (
+                    profile.get("portfolio_execution_guard")
+                    if isinstance(profile.get("portfolio_execution_guard"), dict)
+                    else {}
+                )
+                diagnostics.append(
+                    {
+                        "stock_code": code,
+                        "stock_name": candidate.get("stock_name") or code,
+                        "from_status": previous_status,
+                        "to_status": next_status,
+                        "reason_code": update.get("reason_code") or "cooling_recovery_not_confirmed",
+                        "reason_text": update.get("reason_text") or "冷却复评未满足恢复条件",
+                        "health_score_before": previous_state.get("health_score"),
+                        "health_score_after": latest_state.get("health_score") or update.get("health_score"),
+                        "candidate_score": latest_state.get("candidate_score") or previous_state.get("candidate_score") or 0,
+                        "reason_json": {
+                            "downtrend_hit": bool(update.get("downtrend_hit")),
+                            "weakening_warning_hit": bool(update.get("weakening_warning_hit")),
+                        },
+                        "evidence_json": {
+                            "review_signal_action": review_signal.get("action"),
+                            "decision_type": review_signal.get("decision_type"),
+                            "buy_tier": plan.get("buy_tier") or guard.get("buy_tier"),
+                            "buy_strength_score": guard.get("buy_strength_score"),
+                            "execution_skip_reason": plan.get("skip_reason"),
+                            "lifecycle_gate_mode": gate.get("mode"),
+                            "lifecycle_gate_reason_code": gate.get("reason_code"),
+                            "health_breakdown": update.get("health_breakdown") or {},
+                        },
+                    }
+                )
+        return {"reviewed": reviewed, "restored": restored, "retired": retired, "diagnostics": diagnostics}
 
     @staticmethod
     def _should_full_review_live_quant_drill_cooling(context: dict, checkpoint: datetime) -> bool:

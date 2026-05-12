@@ -905,6 +905,8 @@ class QuantUniverseManager:
         )
         status_changed = False
         next_status = current
+        transition_reason_code = "lifecycle_disabled"
+        transition_reason_text = "量化生命周期未启用"
         cooling_until = previous_state.get("cooling_until")
         retired_at = previous_state.get("retired_at")
         retire_reason = previous_state.get("retire_reason")
@@ -941,6 +943,8 @@ class QuantUniverseManager:
                 post_buy_grace_active=has_position and _has_same_day_buy_signal(recent_signals, evaluation_time),
                 policy=self.policy,
             )
+            transition_reason_code = transition.reason_code
+            transition_reason_text = transition.reason
             if transition.allowed and transition.to_status != current:
                 next_status = transition.to_status
                 status_changed = True
@@ -995,7 +999,12 @@ class QuantUniverseManager:
             "status_changed": status_changed,
             "old_status": current.value,
             "new_status": next_status.value,
+            "reason_code": transition_reason_code,
+            "reason_text": transition_reason_text,
             "health_score": health.health_score,
+            "health_breakdown": health.breakdown,
+            "downtrend_hit": downtrend_hit,
+            "weakening_warning_hit": warning_hit,
         }
 
     def overview(self) -> dict[str, Any]:
