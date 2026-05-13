@@ -1447,6 +1447,8 @@ class QuantSimReplayService:
                 checkpoint_at_utc=event["checkpoint_at_utc"],
                 evaluation=manager_result,
             )
+            if str(manager_result.get("decision") or "") == "cooling_review_queued":
+                self._queue_live_quant_drill_cooling_review(context, event["stock_code"])
             if str(manager_result.get("decision") or "") == "promoted_to_trial":
                 promoted += 1
                 consumed += self.db.mark_sim_run_candidate_events_consumed(
@@ -1460,6 +1462,17 @@ class QuantSimReplayService:
             "auto_promoted_count": promoted,
             "consumed_count": consumed,
         }
+
+    @staticmethod
+    def _queue_live_quant_drill_cooling_review(context: dict, stock_code: str) -> None:
+        code = str(stock_code or "").strip().upper()
+        if not code:
+            return
+        queued = context.setdefault("_live_quant_drill_forced_cooling_review_codes", set())
+        if not isinstance(queued, set):
+            queued = set(queued or [])
+            context["_live_quant_drill_forced_cooling_review_codes"] = queued
+        queued.add(code)
 
     def _generate_live_quant_drill_candidate_events(
         self,
@@ -1798,13 +1811,30 @@ class QuantSimReplayService:
     ) -> dict:
         cooling = temp_db.list_quant_universe_state(statuses=["cooling"], limit=1000).get("items") or []
         interval_minutes = max(1, int(manager.policy.cooling_review_interval_minutes or 1))
-        cooling = [
+        forced_codes = context.pop("_live_quant_drill_forced_cooling_review_codes", set())
+        if not isinstance(forced_codes, set):
+            forced_codes = set(forced_codes or [])
+        forced_codes = {str(code or "").strip().upper() for code in forced_codes if str(code or "").strip()}
+        due_cooling = [
             item
             for item in cooling
             if self._is_live_quant_drill_cooling_review_due(item, checkpoint=checkpoint, interval_minutes=interval_minutes)
         ]
+        forced_cooling = [
+            item
+            for item in cooling
+            if str(item.get("stock_code") or "").strip().upper() in forced_codes
+        ]
+        cooling_by_code: dict[str, dict[str, Any]] = {}
+        for item in [*forced_cooling, *due_cooling]:
+            code = str(item.get("stock_code") or "").strip().upper()
+            if code:
+                cooling_by_code[code] = item
+        cooling = list(cooling_by_code.values())
         cooling.sort(
             key=lambda item: (
+                0 if str(item.get("stock_code") or "").strip().upper() in forced_codes else 1,
+                -float(item.get("candidate_score") or 0),
                 str(item.get("last_health_evaluated_at") or ""),
                 -float(item.get("health_score") or 0),
                 str(item.get("stock_code") or ""),
@@ -1814,7 +1844,22 @@ class QuantSimReplayService:
             selected = cooling
         else:
             batch_size = max(1, int(manager.policy.cooling_review_batch_size or 1))
-            selected = cooling[: min(batch_size, len(cooling))]
+            forced_selected = [
+                item
+                for item in cooling
+                if str(item.get("stock_code") or "").strip().upper() in forced_codes
+            ]
+            forced_selected_codes = {
+                str(item.get("stock_code") or "").strip().upper()
+                for item in forced_selected
+                if str(item.get("stock_code") or "").strip()
+            }
+            remainder = [
+                item
+                for item in cooling
+                if str(item.get("stock_code") or "").strip().upper() not in forced_selected_codes
+            ]
+            selected = [*forced_selected, *remainder[: max(0, batch_size - len(forced_selected))]]
         if not selected:
             return {"reviewed": 0, "restored": 0, "retired": 0}
         positions_by_code = {
@@ -1870,7 +1915,14 @@ class QuantSimReplayService:
             ][:lookback]
             previous_status = str((temp_db.get_quant_universe_state(code) or {}).get("quant_status") or "cooling")
             previous_state = temp_db.get_quant_universe_state(code) or {}
-            update = manager.update_after_signal(code, review_signal, recent_signals, positions_by_code.get(code))
+            forced_review = code in forced_codes
+            update = manager.update_after_signal(
+                code,
+                review_signal,
+                recent_signals,
+                positions_by_code.get(code),
+                ignore_cooling_min_dwell=forced_review,
+            )
             next_status = str(update.get("new_status") or previous_status)
             if previous_status == "cooling" and next_status == "trial":
                 restored += 1

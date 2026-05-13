@@ -890,6 +890,14 @@ class QuantUniverseManager:
         current_status = _status(stock.get("quant_status") if stock else None)
         evaluation_time = capacity_at or event.get("occurred_at") or event.get("created_at")
         skip_reason = self._entry_skip_reason(stock, state, evaluation, evaluation_time=evaluation_time)
+        if skip_reason == "cooling_review_required" and evaluation["candidate_score"] >= self.policy.trial_threshold:
+            self._mark_candidate_events(event["stock_code"], "eligible")
+            return {
+                **evaluation,
+                "decision": "cooling_review_queued",
+                "skip_reason": skip_reason,
+                "reason_code": skip_reason,
+            }
         if skip_reason and skip_reason not in {"basic_info_missing"}:
             return {**evaluation, "decision": "skipped", "skip_reason": skip_reason, "reason_code": skip_reason}
         if evaluation["candidate_score"] < self.policy.trial_threshold:
@@ -1170,6 +1178,8 @@ class QuantUniverseManager:
         latest_signal: dict[str, Any],
         recent_signals: list[dict[str, Any]],
         position: dict[str, Any] | None,
+        *,
+        ignore_cooling_min_dwell: bool = False,
     ) -> dict[str, Any]:
         code = str(stock_code or "").strip().upper()
         stock = self._load_stock(code)
@@ -1192,9 +1202,13 @@ class QuantUniverseManager:
         next_downtrend_streak = int(previous_state.get("downtrend_streak") or 0) + 1 if downtrend_hit else 0
         next_warning_streak = int(previous_state.get("weakening_warning_streak") or 0) + 1 if warning_hit else 0
         evaluation_time = _signal_datetime(latest_signal)
-        cooling_min_dwell_active = current == QuantStatus.COOLING and _is_future(
-            previous_state.get("cooling_until"),
-            evaluation_time,
+        cooling_min_dwell_active = (
+            current == QuantStatus.COOLING
+            and not bool(ignore_cooling_min_dwell)
+            and _is_future(
+                previous_state.get("cooling_until"),
+                evaluation_time,
+            )
         )
         status_changed = False
         next_status = current

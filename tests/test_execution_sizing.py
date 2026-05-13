@@ -832,3 +832,33 @@ def test_batch_caps_skip_when_weak_buy_exposure_already_full():
 
     assert result[0]["allowed"] is False
     assert result[0]["reason_code"] == "weak_buy_exposure_cap_hit"
+
+
+def test_batch_caps_clip_strong_buy_to_remaining_trial_exposure_before_weaker_signal():
+    policy = default_execution_position_cap_policy("aggressive")
+    signals = [
+        _buy_signal(1, "weak_buy", 8000, 0.30, effective_position_pct=2.0),
+        _buy_signal(2, "strong_buy", 30000, 0.65, effective_position_pct=7.5),
+    ]
+
+    result = apply_batch_execution_caps(
+        signals=signals,
+        total_equity=400000,
+        existing_trial_market_value=70000,
+        existing_weak_buy_market_value=0,
+        day_trial_risk_used_pct=0,
+        policy=policy,
+    )
+
+    strong = next(item for item in result if item["signal"]["id"] == 2)
+    weak = next(item for item in result if item["signal"]["id"] == 1)
+    strong_plan = strong["signal"]["strategy_profile"]["execution_sizing_plan"]
+
+    assert strong["allowed"] is True
+    assert strong["reason_code"] == ""
+    assert strong_plan["final_budget"] == 10000
+    assert strong_plan["batch_cap_adjustment"]["reason_code"] == "trial_exposure_cap_applied"
+    assert strong_plan["effective_position_pct"] == 2.5
+    assert strong["batch_risk_pct"] == 0.125
+    assert weak["allowed"] is False
+    assert weak["reason_code"] == "trial_exposure_cap_hit"

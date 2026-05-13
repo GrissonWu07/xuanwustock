@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 BUY_TIER_ORDER = {"strong_buy": 0, "normal_buy": 1, "weak_buy": 2}
@@ -129,6 +130,51 @@ def _execution_batch_risk_pct(signal: dict[str, Any], plan: dict[str, Any]) -> f
     return max(_float(plan.get("risk_budget_pct"), 0.0), 0.0)
 
 
+def _replace_signal_plan(signal: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    adjusted = deepcopy(signal)
+    profile = adjusted.setdefault("strategy_profile", {})
+    if not isinstance(profile, dict):
+        profile = {}
+        adjusted["strategy_profile"] = profile
+    plan = profile.setdefault("execution_sizing_plan", {})
+    if not isinstance(plan, dict):
+        plan = {}
+        profile["execution_sizing_plan"] = plan
+    plan.update(updates)
+    return adjusted
+
+
+def _clip_signal_budget(
+    signal: dict[str, Any],
+    plan: dict[str, Any],
+    *,
+    allowed_budget: float,
+    total_equity: float,
+    reason_code: str,
+) -> tuple[dict[str, Any], dict[str, Any], float, float]:
+    final_budget = max(_float(plan.get("final_budget"), 0.0), 0.0)
+    allowed_budget = max(float(allowed_budget or 0.0), 0.0)
+    if final_budget <= 0 or allowed_budget <= 0 or allowed_budget >= final_budget:
+        batch_risk = _execution_batch_risk_pct(signal, plan)
+        return signal, plan, final_budget, batch_risk
+    stop_loss_pct = max(_float(plan.get("expected_stop_loss_pct"), _float(signal.get("stop_loss_pct"), 5.0)), 0.0)
+    effective_pct = (allowed_budget / max(float(total_equity or 0.0), 0.0001)) * 100.0
+    batch_risk = max(effective_pct * stop_loss_pct / 100.0, 0.0)
+    updates = {
+        "final_budget": round(allowed_budget, 6),
+        "effective_position_pct": round(effective_pct, 6),
+        "batch_risk_pct": round(batch_risk, 6),
+        "batch_cap_adjustment": {
+            "reason_code": reason_code,
+            "original_final_budget": round(final_budget, 6),
+            "adjusted_final_budget": round(allowed_budget, 6),
+        },
+    }
+    adjusted_signal = _replace_signal_plan(signal, updates)
+    adjusted_plan = _signal_plan(adjusted_signal)
+    return adjusted_signal, adjusted_plan, allowed_budget, batch_risk
+
+
 def _priority(signal: dict[str, Any]) -> tuple[int, float, float, int]:
     plan = _signal_plan(signal)
     tier = str(plan.get("buy_tier") or _buy_tier(signal)).strip().lower()
@@ -156,7 +202,8 @@ def apply_batch_execution_caps(
     trial_exposure_cap = float(total_equity) * float(policy["trial_total_exposure_cap_pct"]) / 100.0
     weak_exposure_cap = float(total_equity) * float(policy["weak_buy_total_exposure_cap_pct"]) / 100.0
     rows: list[dict[str, Any]] = []
-    for signal in sorted(signals, key=_priority):
+    for original_signal in sorted(signals, key=_priority):
+        signal = original_signal
         plan = _signal_plan(signal)
         tier = str(plan.get("buy_tier") or _buy_tier(signal)).strip().lower()
         status = _signal_quant_status(signal)
@@ -164,14 +211,47 @@ def apply_batch_execution_caps(
         batch_risk_pct = _execution_batch_risk_pct(signal, plan)
         reason_code = ""
         if status == "trial":
-            if checkpoint_trial_risk + batch_risk_pct > float(policy["checkpoint_trial_risk_budget_pct"]) + 1e-9:
+            remaining_checkpoint_risk = float(policy["checkpoint_trial_risk_budget_pct"]) - checkpoint_trial_risk
+            remaining_daily_risk = float(policy["daily_trial_risk_budget_pct"]) - day_trial_risk
+            remaining_trial_exposure = trial_exposure_cap - trial_exposure
+            if remaining_checkpoint_risk <= 1e-9:
                 reason_code = "portfolio_trial_risk_budget_exhausted"
+            elif checkpoint_trial_risk + batch_risk_pct > float(policy["checkpoint_trial_risk_budget_pct"]) + 1e-9:
+                reason_code = "portfolio_trial_risk_budget_exhausted"
+            elif remaining_daily_risk <= 1e-9:
+                reason_code = "daily_trial_risk_budget_exhausted"
             elif day_trial_risk + batch_risk_pct > float(policy["daily_trial_risk_budget_pct"]) + 1e-9:
                 reason_code = "daily_trial_risk_budget_exhausted"
-            elif trial_exposure + final_budget > trial_exposure_cap + 1e-9:
+            elif remaining_trial_exposure <= 1e-9:
                 reason_code = "trial_exposure_cap_hit"
+            else:
+                allowed_budget = final_budget
+                adjustment_reason = ""
+                if final_budget > remaining_trial_exposure + 1e-9:
+                    allowed_budget = min(allowed_budget, remaining_trial_exposure)
+                    adjustment_reason = "trial_exposure_cap_applied"
+                if adjustment_reason:
+                    signal, plan, final_budget, batch_risk_pct = _clip_signal_budget(
+                        signal,
+                        plan,
+                        allowed_budget=allowed_budget,
+                        total_equity=total_equity,
+                        reason_code=adjustment_reason,
+                    )
+                    if final_budget <= 1e-9:
+                        reason_code = adjustment_reason.replace("_applied", "_hit")
         if not reason_code and tier == "weak_buy" and weak_exposure + final_budget > weak_exposure_cap + 1e-9:
-            reason_code = "weak_buy_exposure_cap_hit"
+            remaining_weak_exposure = weak_exposure_cap - weak_exposure
+            if remaining_weak_exposure > 1e-9:
+                signal, plan, final_budget, batch_risk_pct = _clip_signal_budget(
+                    signal,
+                    plan,
+                    allowed_budget=remaining_weak_exposure,
+                    total_equity=total_equity,
+                    reason_code="weak_buy_exposure_cap_applied",
+                )
+            else:
+                reason_code = "weak_buy_exposure_cap_hit"
         allowed = not reason_code
         if allowed:
             if status == "trial":

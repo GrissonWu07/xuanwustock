@@ -956,7 +956,7 @@ def test_live_quant_drill_historical_candidate_events_promote_inactive_stock(tmp
     assert replay_signals
 
 
-def test_live_quant_drill_historical_candidate_events_do_not_wake_expired_cooling_stock(tmp_path, monkeypatch):
+def test_live_quant_drill_historical_candidate_events_queue_soft_review_for_cooling_stock(tmp_path, monkeypatch):
     live_db_file = tmp_path / "live.db"
     replay_db_file = tmp_path / "replay.db"
     live_db = QuantSimDB(str(live_db_file))
@@ -966,7 +966,7 @@ def test_live_quant_drill_historical_candidate_events_do_not_wake_expired_coolin
         {
             "quant_status": "cooling",
             "health_score": 35.0,
-            "cooling_until": "2026-01-04T02:00:00Z",
+            "cooling_until": "2026-01-10T02:00:00Z",
         },
     )
     service = QuantSimReplayService(
@@ -1011,8 +1011,9 @@ def test_live_quant_drill_historical_candidate_events_do_not_wake_expired_coolin
     lifecycle = candidate_events["items"][0]["evidence_json"]["lifecycle_evaluation"]
 
     assert not any(event["from_status"] == "cooling" and event["to_status"] == "trial" for event in quant_events["items"])
-    assert lifecycle["decision"] == "skipped"
+    assert lifecycle["decision"] == "cooling_review_queued"
     assert lifecycle["skip_reason"] == "cooling_review_required"
+    assert any(event["event_type"] == "cooling_review_not_restored" for event in quant_events["items"])
     assert final_state["quant_status"] == "cooling"
 
 

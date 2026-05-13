@@ -1193,7 +1193,7 @@ def test_manager_candidate_event_does_not_restore_expired_cooling_stock(tmp_path
         capacity_at=datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc),
     )
 
-    assert result["decision"] == "skipped"
+    assert result["decision"] == "cooling_review_queued"
     assert result["skip_reason"] == "cooling_review_required"
     assert manager.db.get_quant_universe_state("000001")["quant_status"] == "cooling"
 
