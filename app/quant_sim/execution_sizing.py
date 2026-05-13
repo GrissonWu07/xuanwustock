@@ -303,7 +303,13 @@ def build_execution_sizing_plan(
     risk_budget_position_pct = (risk_budget_pct / stop_loss_pct) * 100.0
     buy_tier_cap = _float(policy["buy_tier_cap_pct"][tier])
     lifecycle_gate_mode = str(lifecycle_gate.get("mode") or "").strip()
-    lifecycle_cap_status = "active" if lifecycle_gate_mode == "trial_confirmed" else status
+    small_account_strong_recovery = lifecycle_gate_mode == "strong_recovery_confirmed" and float(total_equity or 0.0) < 300000
+    lifecycle_cap_status = (
+        "active"
+        if lifecycle_gate_mode in {"trial_confirmed", "recovery_probe_confirmed"}
+        or (lifecycle_gate_mode == "strong_recovery_confirmed" and not small_account_strong_recovery)
+        else status
+    )
     lifecycle_cap_status = lifecycle_cap_status if lifecycle_cap_status in policy["lifecycle_cap_pct"] else "trial"
     portfolio_budget_status = "trial" if status == "trial" else status
     lifecycle_cap = _float(policy["lifecycle_cap_pct"].get(lifecycle_cap_status, policy["lifecycle_cap_pct"]["trial"])[tier])

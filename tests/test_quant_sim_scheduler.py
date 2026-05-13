@@ -6,7 +6,7 @@ from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.scheduler import QuantSimScheduler
-from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, QuantUniverseManager
 
 
 def test_scheduler_trading_time_uses_market_timezone_for_cn_hk_and_us():
@@ -512,6 +512,77 @@ def test_scheduler_opportunistic_review_skips_cooling_until_and_recent_reviews(t
 
     assert result["cooling_reviewed"] == 1
     assert reviewed == ["600003"]
+
+
+def test_scheduler_forces_cooling_review_when_candidate_event_is_queued(tmp_path, monkeypatch):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_manual_candidate("600000", "浦发银行", "manual")
+    candidate_service.db.update_quant_universe_settings(
+        {"auto_entry_mode": "auto_trial", "quant_universe_lifecycle_enabled": True, "auto_exit_enabled": True}
+    )
+    candidate_service.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "cooling",
+            "health_score": 72,
+            "candidate_score": 0.0,
+            "cooling_until": "2099-01-01T00:00:00Z",
+            "last_health_evaluated_at": "2026-05-08T00:05:00Z",
+        },
+    )
+    manager = QuantUniverseManager(
+        db=candidate_service.db,
+        policy=QuantUniverseLifecyclePolicy.aggressive_defaults(),
+        profile_id="aggressive",
+    )
+    decision = manager.ingest_candidate_event(
+        {
+            "stock_code": "600000",
+            "source_type": "low_price",
+            "source_score": 0.92,
+            "confidence": 0.9,
+            "trend": "up",
+            "occurred_at": "2026-05-08T00:10:00Z",
+        }
+    )
+    assert decision["decision"] == "cooling_review_queued"
+
+    scheduler = QuantSimScheduler(db_file=db_file)
+    monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
+    monkeypatch.setattr(scheduler, "_decision_time", lambda: datetime(2026, 5, 8, 0, 10, tzinfo=timezone.utc))
+    scheduler.engine.analyze_active_candidates = Mock(return_value=[])
+    scheduler.engine.analyze_positions = Mock(return_value=[])
+    scheduler.portfolio.list_positions = Mock(return_value=[])
+    reviewed: list[str] = []
+
+    def fake_build_review_signal(candidate, **kwargs):
+        del kwargs
+        reviewed.append(candidate["stock_code"])
+        return {
+            "id": 0,
+            "stock_code": candidate["stock_code"],
+            "stock_name": candidate.get("stock_name"),
+            "action": "BUY",
+            "tech_score": 0.72,
+            "context_score": 0.18,
+            "price": 12.0,
+            "ma20": 11.2,
+            "ma20_slope": 0.05,
+            "strategy_profile": {
+                "portfolio_execution_guard": {"buy_tier": "normal_buy", "buy_strength_score": 0.68},
+                "execution_sizing_plan": {"effective_position_pct": 0.06, "final_budget": 24000.0},
+            },
+            "status": "review",
+        }
+
+    monkeypatch.setattr(scheduler.engine, "build_candidate_review_signal", fake_build_review_signal)
+
+    result = scheduler.run_once("manual_scan")
+
+    assert result["cooling_reviewed"] == 1
+    assert reviewed == ["600000"]
+    assert candidate_service.db.get_quant_universe_state("600000")["quant_status"] == "trial"
 
 
 def test_scheduler_restores_background_job_from_persisted_config(tmp_path, monkeypatch):

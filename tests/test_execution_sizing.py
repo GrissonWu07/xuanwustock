@@ -377,10 +377,94 @@ def test_recovery_probe_strong_confirmation_lifts_probe_cap(tmp_path):
     )
 
     profile = signal["strategy_profile"]
+    assert profile["lifecycle_gate"]["mode"] == "strong_recovery_confirmed"
+    assert profile["execution_sizing_plan"]["lifecycle_gate_max_position_pct"] is None
+    assert profile["execution_sizing_plan"]["effective_position_pct"] == 12.5
+    assert signal["position_size_pct"] == 12.5
+
+
+def test_small_account_strong_recovery_keeps_trial_strong_cap():
+    policy = default_execution_position_cap_policy("aggressive")
+    plan = build_execution_sizing_plan(
+        signal={
+            "position_size_pct": 30.0,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "kernel_positioning": {"quality_position_pct": 30.0},
+                "portfolio_execution_guard": {"buy_tier": "strong_buy"},
+                "lifecycle_gate": {
+                    "mode": "strong_recovery_confirmed",
+                    "size_multiplier": 1.0,
+                    "max_position_pct": None,
+                },
+            },
+        },
+        total_equity=100000,
+        available_cash=100000,
+        slot_available_cash=100000,
+        quant_status="trial",
+        policy=policy,
+        price=16.93,
+    )
+
+    assert plan["effective_position_pct"] == 10.0
+    assert "trial_strong_buy_cap" in plan["cap_reason_codes"]
+
+
+def test_recovery_probe_normal_confirmation_lifts_probe_cap(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=100000)
+    db.upsert_quant_universe_state("301369", {"stock_name": "联动科技", "quant_status": "trial", "health_score": 60})
+    service = SignalCenterService(db_file=db_path)
+
+    signal = service.create_signal(
+        {
+            "stock_code": "301369",
+            "stock_name": "联动科技",
+            "latest_price": 136.52,
+            "lifecycle_gate": {
+                "mode": "recovery_probe",
+                "buy_threshold_delta": 0.08,
+                "size_multiplier": 0.45,
+                "max_position_pct": 6.0,
+                "confirmed_max_position_pct": 10.0,
+                "recent_probe_loss_count": 0,
+                "requires_strong_confirmation": True,
+                "buy_blocked": False,
+            },
+        },
+        {
+            "action": "BUY",
+            "confidence": 82,
+            "reasoning": "confirmed recovery probe normal buy",
+            "position_size_pct": 30,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "kernel_positioning": {"quality_position_pct": 30.0},
+                "portfolio_execution_guard_policy": {"enabled": False},
+                "portfolio_execution_guard": {
+                    "buy_tier": "normal_buy",
+                    "buy_strength_score": 0.73,
+                    "trend_confirmation": {
+                        "ma_stack": True,
+                        "ma20_rising": True,
+                        "above_ma20_checkpoints": 4,
+                        "retest_confirmed": False,
+                    },
+                    "score_components": {"confirmation_score": 0.72},
+                },
+            },
+        },
+        notify=False,
+    )
+
+    profile = signal["strategy_profile"]
     assert profile["lifecycle_gate"]["mode"] == "recovery_probe_confirmed"
     assert profile["execution_sizing_plan"]["lifecycle_gate_max_position_pct"] == 10.0
-    assert profile["execution_sizing_plan"]["effective_position_pct"] == 10.0
-    assert signal["position_size_pct"] == 10.0
+    assert profile["execution_sizing_plan"]["effective_position_pct"] == 9.0
+    assert signal["position_size_pct"] == 9.0
 
 
 def test_recovery_probe_confirmed_ignores_old_probe_multiplier():

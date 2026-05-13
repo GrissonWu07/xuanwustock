@@ -44,6 +44,60 @@ def test_auto_execute_uses_execution_sizing_final_budget(tmp_path):
     assert trade["gross_amount"] <= 12000
 
 
+def test_auto_execute_confirmed_recovery_allows_one_lot_within_account_cap(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=100000)
+    CandidatePoolService(db_file=db_path).add_manual_candidate("301369", "联动科技", "manual", latest_price=136.52)
+    db.upsert_quant_universe_state("301369", {"stock_name": "联动科技", "quant_status": "trial", "health_score": 70})
+    signal_id = db.add_signal(
+        {
+            "stock_code": "301369",
+            "stock_name": "联动科技",
+            "action": "BUY",
+            "confidence": 82,
+            "reasoning": "confirmed recovery normal buy",
+            "position_size_pct": 9.0,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "price": 136.52,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "portfolio_execution_guard": {
+                    "status": "passed",
+                    "buy_tier": "normal_buy",
+                    "buy_strength_score": 0.73,
+                },
+                "lifecycle_gate": {"mode": "recovery_probe_confirmed"},
+                "execution_sizing_plan": {
+                    "buy_tier": "normal_buy",
+                    "final_budget": 9000.0,
+                    "effective_position_pct": 9.0,
+                    "account_equity_tier_cap_pct": 15.0,
+                    "one_lot_cost": 13652.0,
+                    "lifecycle_gate_mode": "recovery_probe_confirmed",
+                    "skip_reason": None,
+                },
+                "quant_status": "trial",
+            },
+            "status": "pending",
+        }
+    )
+
+    service = PortfolioService(db_file=db_path)
+    executed = service.auto_execute_signal(db.get_signal(signal_id), executed_at="2026-02-27T10:00:00Z")
+
+    assert executed is True
+    trade = db.get_trade_history(limit=1)[0]
+    assert trade["stock_code"] == "301369"
+    assert trade["quantity"] == 100
+    signal = db.get_signal(signal_id)
+    sizing = signal["strategy_profile"]["position_sizing"]
+    assert sizing["one_lot_floor_override"] is True
+    assert sizing["quantity"] == 100
+
+
 def test_auto_execute_pending_signals_applies_checkpoint_trial_risk_budget(tmp_path):
     db_path = tmp_path / "quant.db"
     db = QuantSimDB(db_path)

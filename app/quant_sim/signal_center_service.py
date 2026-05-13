@@ -868,15 +868,26 @@ class SignalCenterService:
                 return normalized_gate
             if not cls._lifecycle_gate_has_confirmed_recovery_probe_sizing(strategy_profile, normalized_gate):
                 return normalized_gate
-            relaxed = dict(normalized_gate)
-            relaxed["mode"] = "recovery_probe_confirmed"
-            relaxed["size_multiplier"] = 1.0
-            relaxed["max_position_pct"] = cls._safe_float(
-                normalized_gate.get("confirmed_max_position_pct"),
-                normalized_gate.get("max_position_pct"),
+            guard = (
+                strategy_profile.get("portfolio_execution_guard")
+                if isinstance(strategy_profile.get("portfolio_execution_guard"), dict)
+                else {}
             )
-            relaxed["reason_code"] = "recovery_probe_strong_confirmed"
-            relaxed["reason_text"] = "recovery probe 出现 strong BUY 且趋势确认，放宽 probe 仓位上限"
+            buy_tier = str(guard.get("buy_tier") or "").strip().lower()
+            relaxed = dict(normalized_gate)
+            relaxed["mode"] = "strong_recovery_confirmed" if buy_tier == "strong_buy" else "recovery_probe_confirmed"
+            relaxed["size_multiplier"] = 1.0
+            if buy_tier == "strong_buy":
+                relaxed["max_position_pct"] = None
+                relaxed["reason_code"] = "strong_recovery_confirmed_active_like_sizing"
+                relaxed["reason_text"] = "recovery probe 出现 strong BUY 且趋势确认，按 active-like 仓位执行"
+            else:
+                relaxed["max_position_pct"] = cls._safe_float(
+                    normalized_gate.get("confirmed_max_position_pct"),
+                    normalized_gate.get("max_position_pct"),
+                )
+                relaxed["reason_code"] = "recovery_probe_normal_confirmed"
+                relaxed["reason_text"] = "recovery probe 出现 normal BUY 且趋势确认，放宽 probe 仓位上限"
             return relaxed
         if mode != "trial_light":
             return normalized_gate
@@ -918,7 +929,7 @@ class SignalCenterService:
     ) -> bool:
         guard = strategy_profile.get("portfolio_execution_guard") if isinstance(strategy_profile.get("portfolio_execution_guard"), dict) else {}
         buy_tier = str(guard.get("buy_tier") or "").strip().lower()
-        if buy_tier != "strong_buy":
+        if buy_tier not in {"normal_buy", "strong_buy"}:
             return False
         return cls._lifecycle_gate_has_confirmed_trial_sizing(strategy_profile, gate)
 

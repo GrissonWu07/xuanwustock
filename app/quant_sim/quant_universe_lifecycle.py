@@ -1458,12 +1458,12 @@ class QuantUniverseManager:
             return "manual_ban"
         if self._is_non_tradable(stock):
             return "non_tradable"
-        if _is_future((state or {}).get("cooling_until"), None):
-            return "cooling_blocked"
         state_status = _status((state or {}).get("quant_status"))
         current_status = state_status if state else _status(stock.get("quant_status"))
         if current_status == QuantStatus.COOLING:
             return "cooling_review_required"
+        if _is_future((state or {}).get("cooling_until"), None):
+            return "cooling_blocked"
         if current_status in {QuantStatus.TRIAL, QuantStatus.ACTIVE, QuantStatus.EXIT_ONLY}:
             return "already_quant_managed"
         if current_status == QuantStatus.MANUAL_PAUSED:
@@ -1536,6 +1536,9 @@ class QuantUniverseManager:
         )
         conn.commit()
         conn.close()
+
+    def mark_candidate_events_reviewed(self, stock_code: str) -> None:
+        self._mark_candidate_events(stock_code, "cooling_reviewed")
 
     def _load_stock(self, stock_code: str) -> dict[str, Any] | None:
         conn = self.db._connect()

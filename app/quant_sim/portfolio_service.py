@@ -19,7 +19,11 @@ from app.quant_sim.capital_slots import (
 )
 from app.quant_sim.db import DEFAULT_DB_FILE, QuantSimDB
 from app.quant_sim.execution_constraints import trade_block_reason
-from app.quant_sim.execution_sizing import apply_batch_execution_caps, default_execution_position_cap_policy
+from app.quant_sim.execution_sizing import (
+    apply_batch_execution_caps,
+    build_execution_sizing_plan,
+    default_execution_position_cap_policy,
+)
 
 
 _HARD_EXIT_SELL_TOKENS = (
@@ -384,23 +388,42 @@ class PortfolioService:
             buy_budget = min(final_budget, float(summary["available_cash"] or 0.0), slot_available_cash)
             lot_cost_with_fee = price * self.A_SHARE_LOT_SIZE * (1 + commission_rate)
             sizing = {**execution_plan, "slot_units_source": "execution_sizing_plan"}
+            one_lot_floor_override = False
+            original_buy_budget = buy_budget
             if buy_budget < lot_cost_with_fee:
-                return 0, build_sizing_explainability(
-                    config=capital_config,
-                    slot_plan=slot_plan,
-                    sizing=sizing,
-                    available_cash=float(summary["available_cash"] or 0),
+                if self._execution_one_lot_floor_allowed(
+                    signal=signal,
+                    execution_plan=execution_plan,
+                    total_equity=float(summary["total_equity"] or 0.0),
+                    available_cash=float(summary["available_cash"] or 0.0),
                     slot_available_cash=slot_available_cash,
-                    buy_budget=buy_budget,
-                    quantity=0,
-                    skip_reason=str(execution_plan.get("skip_reason") or "execution_sizing_budget不足买入一手"),
-                    target_position_pct=float(execution_plan.get("effective_position_pct") or 0.0),
-                    target_position_budget=final_budget,
-                    slot_capacity_capped=slot_available_cash + 1e-6 < final_budget,
-                )
+                    lot_cost_with_fee=lot_cost_with_fee,
+                ):
+                    one_lot_floor_override = True
+                    buy_budget = lot_cost_with_fee
+                    sizing = {
+                        **sizing,
+                        "one_lot_floor_override": True,
+                        "one_lot_floor_original_budget": round(original_buy_budget, 4),
+                        "one_lot_floor_reason": "confirmed_lifecycle_signal_within_account_cap",
+                    }
+                else:
+                    return 0, build_sizing_explainability(
+                        config=capital_config,
+                        slot_plan=slot_plan,
+                        sizing=sizing,
+                        available_cash=float(summary["available_cash"] or 0),
+                        slot_available_cash=slot_available_cash,
+                        buy_budget=buy_budget,
+                        quantity=0,
+                        skip_reason=str(execution_plan.get("skip_reason") or "execution_sizing_budget不足买入一手"),
+                        target_position_pct=float(execution_plan.get("effective_position_pct") or 0.0),
+                        target_position_budget=final_budget,
+                        slot_capacity_capped=slot_available_cash + 1e-6 < final_budget,
+                    )
             lots = floor(buy_budget / lot_cost_with_fee)
             quantity = int(lots * self.A_SHARE_LOT_SIZE)
-            return quantity, build_sizing_explainability(
+            evidence = build_sizing_explainability(
                 config=capital_config,
                 slot_plan=slot_plan,
                 sizing=sizing,
@@ -413,6 +436,11 @@ class PortfolioService:
                 target_position_budget=final_budget,
                 slot_capacity_capped=slot_available_cash + 1e-6 < final_budget,
             )
+            if one_lot_floor_override:
+                evidence["one_lot_floor_override"] = True
+                evidence["one_lot_floor_original_budget"] = round(original_buy_budget, 4)
+                evidence["one_lot_floor_reason"] = "confirmed_lifecycle_signal_within_account_cap"
+            return quantity, evidence
         if not capital_config["capital_slot_enabled"]:
             quantity = self._estimate_legacy_buy_quantity(signal, price, summary, commission_rate)
             return quantity, {"mode": "legacy_position_pct", "quantity": quantity}
@@ -683,6 +711,71 @@ class PortfolioService:
         if sizing_evidence.get("slot_capacity_capped"):
             return "slot_capacity_capped"
         return ""
+
+    @classmethod
+    def _execution_one_lot_floor_allowed(
+        cls,
+        *,
+        signal: dict,
+        execution_plan: dict,
+        total_equity: float,
+        available_cash: float,
+        slot_available_cash: float,
+        lot_cost_with_fee: float,
+    ) -> bool:
+        if not isinstance(execution_plan, dict) or execution_plan.get("skip_reason"):
+            return False
+        if total_equity <= 0 or lot_cost_with_fee <= 0:
+            return False
+        if lot_cost_with_fee > available_cash + 1e-6 or lot_cost_with_fee > slot_available_cash + 1e-6:
+            return False
+        profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+        guard = profile.get("portfolio_execution_guard") if isinstance(profile.get("portfolio_execution_guard"), dict) else {}
+        tier = str(execution_plan.get("buy_tier") or guard.get("buy_tier") or "").strip().lower()
+        if tier not in {"normal_buy", "strong_buy"}:
+            return False
+        gate = profile.get("lifecycle_gate") if isinstance(profile.get("lifecycle_gate"), dict) else {}
+        gate_mode = str(execution_plan.get("lifecycle_gate_mode") or gate.get("mode") or "").strip().lower()
+        if gate_mode not in {"recovery_probe_confirmed", "trial_confirmed", "strong_recovery_confirmed"}:
+            return False
+        account_cap_pct = cls._execution_plan_account_cap_pct(execution_plan, profile, total_equity)
+        if account_cap_pct <= 0:
+            return False
+        one_lot_pct = lot_cost_with_fee / total_equity * 100.0
+        return one_lot_pct <= account_cap_pct + 1e-9
+
+    @staticmethod
+    def _execution_plan_account_cap_pct(execution_plan: dict, profile: dict, total_equity: float) -> float:
+        try:
+            explicit = float(execution_plan.get("account_equity_tier_cap_pct") or 0.0)
+        except (TypeError, ValueError):
+            explicit = 0.0
+        if explicit > 0:
+            return explicit
+        selected = profile.get("selected_strategy_profile") if isinstance(profile.get("selected_strategy_profile"), dict) else {}
+        profile_id = str(selected.get("id") or "aggressive").strip() or "aggressive"
+        try:
+            policy = default_execution_position_cap_policy(profile_id)
+            # Reuse the public sizing helper rather than duplicating account tier boundaries.
+            probe_plan = {
+                "position_size_pct": 100.0,
+                "stop_loss_pct": 5.0,
+                "strategy_profile": {
+                    "portfolio_execution_guard": {"buy_tier": "strong_buy"},
+                    "kernel_positioning": {"quality_position_pct": 100.0},
+                },
+            }
+            sized = build_execution_sizing_plan(
+                signal=probe_plan,
+                total_equity=total_equity,
+                available_cash=total_equity,
+                slot_available_cash=total_equity,
+                quant_status="active",
+                policy=policy,
+            )
+            return float(sized.get("account_equity_tier_cap_pct") or 0.0)
+        except Exception:
+            return 0.0
 
     @classmethod
     def _is_weak_dual_track_sell(cls, signal: dict) -> bool:

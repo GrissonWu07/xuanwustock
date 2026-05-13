@@ -18,7 +18,7 @@ from app.quant_sim.dynamic_strategy import (
 )
 from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.portfolio_service import PortfolioService
-from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
+from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, QuantUniverseManager
 from app.quant_sim.quant_universe_notifications import build_quant_universe_retired_notification
 from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
 from app.notification_service import notification_service
@@ -340,13 +340,16 @@ class QuantSimScheduler:
         rows = self.db.list_quant_universe_state(statuses=["cooling"], limit=1000)["items"]
         decision_time = self._decision_time()
         interval_minutes = max(1, int(policy.cooling_review_interval_minutes or 1))
+        forced_codes = self._candidate_supported_cooling_review_codes(rows, policy)
         rows = [
             item
             for item in rows
-            if self._is_cooling_review_due(item, now=decision_time, interval_minutes=interval_minutes)
+            if str(item.get("stock_code") or "").strip().upper() in forced_codes
+            or self._is_cooling_review_due(item, now=decision_time, interval_minutes=interval_minutes)
         ]
         rows.sort(
             key=lambda item: (
+                0 if str(item.get("stock_code") or "").strip().upper() in forced_codes else 1,
                 str(item.get("last_health_evaluated_at") or ""),
                 -float(item.get("health_score") or 0),
                 str(item.get("stock_code") or ""),
@@ -387,8 +390,35 @@ class QuantSimScheduler:
                 review_signal,
                 *self.engine.signal_center.list_signals(stock_code=code, limit=max(0, lookback - 1)),
             ][:lookback]
-            manager.update_after_signal(code, review_signal, recent_signals, positions_by_code.get(code))
+            manager.update_after_signal(
+                code,
+                review_signal,
+                recent_signals,
+                positions_by_code.get(code),
+                ignore_cooling_min_dwell=code in forced_codes,
+            )
+            if code in forced_codes:
+                manager.mark_candidate_events_reviewed(code)
         return len(selected)
+
+    def _candidate_supported_cooling_review_codes(
+        self,
+        rows: list[dict],
+        policy: QuantUniverseLifecyclePolicy,
+    ) -> set[str]:
+        forced_codes: set[str] = set()
+        for item in rows:
+            code = str(item.get("stock_code") or "").strip().upper()
+            if not code:
+                continue
+            if float(item.get("candidate_score") or 0) < float(policy.trial_threshold or 0):
+                continue
+            events = self.db.list_candidate_events(stock_code=code, status="eligible", limit=1)
+            if not events:
+                events = self.db.list_candidate_events(stock_code=code, status="active", limit=1)
+            if events:
+                forced_codes.add(code)
+        return forced_codes
 
     @classmethod
     def _is_cooling_review_due(cls, item: dict, *, now: datetime, interval_minutes: int) -> bool:

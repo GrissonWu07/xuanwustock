@@ -1175,8 +1175,8 @@ def test_manager_manual_ban_and_cooling_window_block_entry(tmp_path):
 
     assert banned["decision"] == "skipped"
     assert banned["skip_reason"] == "manual_ban"
-    assert cooling["decision"] == "skipped"
-    assert cooling["skip_reason"] == "cooling_blocked"
+    assert cooling["decision"] == "cooling_review_queued"
+    assert cooling["skip_reason"] == "cooling_review_required"
 
 
 def test_manager_candidate_event_does_not_restore_expired_cooling_stock(tmp_path):
