@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.gateway_api import UIApiContext, create_app
+from app.gateway.quant_universe_entry import _candidate_event_payload
 
 
 def _context(tmp_path):
@@ -16,6 +17,23 @@ def _context(tmp_path):
         stock_analysis_db_file=tmp_path / "analysis.db",
         main_force_batch_db_file=tmp_path / "main_force_batch.db",
     )
+
+
+def test_candidate_event_payload_does_not_default_score_from_source_identity():
+    payload = _candidate_event_payload(
+        {
+            "code": "600000",
+            "name": "浦发银行",
+            "source": "low_price_bull",
+        },
+        source_type="discover",
+    )
+
+    assert payload["source_type"] == "discover"
+    assert payload["source_key"] == "low_price_bull"
+    assert payload["source_score"] == 0.0
+    assert payload["confidence"] == 0.0
+    assert payload["trend"] == "neutral"
 
 
 def test_quant_universe_state_settings_and_overview_endpoints(tmp_path):

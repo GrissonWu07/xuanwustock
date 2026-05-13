@@ -6098,10 +6098,25 @@ class QuantSimDB:
         ):
             payload[key] = int(payload.get(key) or 0)
         payload["snapshot_json"] = self._loads_metadata(payload.get("snapshot_json"))
+        self._sanitize_legacy_source_weighted_candidate_state(payload)
         payload["stock_name"] = payload.get("stock_name") or payload.get("stock_code")
         payload["quant_status"] = payload.get("quant_status") or "inactive"
         payload["quant_manual_override"] = payload.get("quant_manual_override") or ""
         return payload
+
+    @staticmethod
+    def _sanitize_legacy_source_weighted_candidate_state(payload: dict[str, Any]) -> None:
+        snapshot = payload.get("snapshot_json")
+        if not isinstance(snapshot, dict):
+            return
+        breakdown = snapshot.get("candidate_score_breakdown")
+        if not isinstance(breakdown, dict) or "source_score_component" not in breakdown:
+            return
+        sanitized_breakdown = {key: value for key, value in breakdown.items() if key != "source_score_component"}
+        snapshot["candidate_score_breakdown"] = sanitized_breakdown
+        snapshot["legacy_source_score_component_ignored"] = True
+        payload["candidate_score"] = 0.0
+        payload["candidate_confidence"] = 0.0
 
     def _candidate_event_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)

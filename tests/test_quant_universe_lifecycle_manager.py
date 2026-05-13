@@ -386,21 +386,29 @@ def test_downtrend_warning_streak_does_not_self_perpetuate_after_recovery():
     ) is False
 
 
-def test_candidate_score_uses_profile_weights_and_clamps_result():
+def test_candidate_score_uses_explicit_recommendation_not_source_identity():
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
     events = [
         {"source_type": "discover", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
         {"source_type": "research", "source_score": 0.6, "confidence": 0.6, "trend": "up"},
     ]
+    same_quality_different_sources = [
+        {"source_type": "low_price", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
+        {"source_type": "main_force", "source_score": 0.6, "confidence": 0.6, "trend": "up"},
+    ]
 
     result = calculate_candidate_score(events, {"is_liquid": True}, policy)
+    same_quality_result = calculate_candidate_score(same_quality_different_sources, {"is_liquid": True}, policy)
 
     assert 0 <= result["candidate_score"] <= 1
-    assert result["candidate_score"] == 0.86
-    assert result["breakdown"]["multi_source_bonus"] == 1.0
+    assert result["candidate_score"] == same_quality_result["candidate_score"]
+    assert result["candidate_score"] == 0.6986
+    assert result["breakdown"]["recommendation_score_component"] == 0.8
+    assert "source_score_component" not in result["breakdown"]
+    assert result["breakdown"]["multi_source_bonus"] == 0.0
 
 
-def test_live_quant_drill_candidate_score_does_not_use_source_count_bonus():
+def test_candidate_score_does_not_use_source_count_bonus():
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
     single_source = [
         {"source_type": "discover", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
@@ -410,12 +418,15 @@ def test_live_quant_drill_candidate_score_does_not_use_source_count_bonus():
         {"source_type": "research", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
     ]
 
-    single_result = calculate_candidate_score(single_source, {"is_liquid": True}, policy, drill_mode=True)
-    multi_result = calculate_candidate_score(multi_source, {"is_liquid": True}, policy, drill_mode=True)
+    single_result = calculate_candidate_score(single_source, {"is_liquid": True}, policy)
+    multi_result = calculate_candidate_score(multi_source, {"is_liquid": True}, policy)
+    drill_result = calculate_candidate_score(multi_source, {"is_liquid": True}, policy, drill_mode=True)
 
     assert single_result["candidate_score"] == multi_result["candidate_score"]
+    assert multi_result["candidate_score"] == drill_result["candidate_score"]
     assert single_result["breakdown"]["multi_source_bonus"] == 0.0
     assert multi_result["breakdown"]["multi_source_bonus"] == 0.0
+    assert drill_result["breakdown"]["multi_source_bonus"] == 0.0
 
 
 def test_resolve_active_to_exit_only_requires_holding_health_break_and_downtrend_confirmation():

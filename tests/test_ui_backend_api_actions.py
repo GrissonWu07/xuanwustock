@@ -1477,6 +1477,9 @@ def test_discover_run_strategy_executes_real_selector_runners_and_persists_resul
                         "总市值": 1234.0,
                         "市盈率": 48.5,
                         "市净率": 8.2,
+                        "score": 0.88,
+                        "confidence": 0.82,
+                        "trend": "up",
                         "理由": "主力资金回流",
                     }
                 ]
@@ -1494,6 +1497,9 @@ def test_discover_run_strategy_executes_real_selector_runners_and_persists_resul
                         "总市值": 2000.0,
                         "市盈率": 4.2,
                         "市净率": 0.6,
+                        "score": 0.86,
+                        "confidence": 0.8,
+                        "trend": "up",
                         "理由": "低价高弹性",
                     }
                 ]
@@ -1511,6 +1517,9 @@ def test_discover_run_strategy_executes_real_selector_runners_and_persists_resul
                         "总市值": 9000.0,
                         "市盈率": 18.2,
                         "市净率": 5.6,
+                        "score": 0.86,
+                        "confidence": 0.8,
+                        "trend": "up",
                         "理由": "小而活跃",
                     }
                 ]
@@ -1528,6 +1537,9 @@ def test_discover_run_strategy_executes_real_selector_runners_and_persists_resul
                         "总市值": 18200.0,
                         "市盈率": 26.1,
                         "市净率": 9.8,
+                        "score": 0.86,
+                        "confidence": 0.8,
+                        "trend": "up",
                         "理由": "利润增长稳定",
                     }
                 ]
@@ -1545,6 +1557,9 @@ def test_discover_run_strategy_executes_real_selector_runners_and_persists_resul
                         "总市值": 11000.0,
                         "市盈率": 6.8,
                         "市净率": 1.0,
+                        "score": 0.86,
+                        "confidence": 0.8,
+                        "trend": "up",
                         "理由": "低估值修复",
                     }
                 ]
@@ -1589,6 +1604,9 @@ def test_discover_run_strategy_auto_trial_promotes_discovered_stocks(tmp_path, m
                         "总市值": 2000.0,
                         "市盈率": 4.2,
                         "市净率": 0.6,
+                        "score": 0.86,
+                        "confidence": 0.8,
+                        "trend": "up",
                         "理由": "低价高弹性",
                     }
                 ]

@@ -336,14 +336,14 @@ Owner: Codex
 
 建议构成：
 
-1. `source_score_component`
-   - 来源原始评分归一化
+1. `recommendation_score_component`
+   - 发现 / 研究事件明确给出的推荐分归一化；不得按 `source_type`、来源名称或策略名称默认给分
 2. `confidence_component`
    - 来源置信度归一化
 3. `trend_component`
    - 趋势确认加分
-4. `multi_source_bonus`
-   - 多来源共振加分
+4. `strong_recommendation_bonus`
+   - 推荐分、置信度和趋势同时较强时的质量加分；不得使用“来源数量越多分越高”的多来源加分
 5. `liquidity_penalty`
    - 流动性不足扣分
 6. `cooldown_penalty`
@@ -361,40 +361,41 @@ Owner: Codex
 
 #### aggressive
 
-1. `source_score_weight = 0.40`
+1. `recommendation_score_weight = 0.40`
 2. `confidence_weight = 0.20`
 3. `trend_weight = 0.15`
-4. `multi_source_weight = 0.25`
+4. `strong_recommendation_weight = 0.25`
 5. `liquidity_penalty_multiplier = 0.80`
 6. `cooldown_penalty_multiplier = 0.80`
 7. `manual_priority_bonus_multiplier = 1.10`
 
 #### stable
 
-1. `source_score_weight = 0.35`
+1. `recommendation_score_weight = 0.35`
 2. `confidence_weight = 0.20`
 3. `trend_weight = 0.25`
-4. `multi_source_weight = 0.20`
+4. `strong_recommendation_weight = 0.20`
 5. `liquidity_penalty_multiplier = 1.00`
 6. `cooldown_penalty_multiplier = 1.00`
 7. `manual_priority_bonus_multiplier = 1.00`
 
 #### conservative
 
-1. `source_score_weight = 0.30`
+1. `recommendation_score_weight = 0.30`
 2. `confidence_weight = 0.20`
 3. `trend_weight = 0.35`
-4. `multi_source_weight = 0.15`
+4. `strong_recommendation_weight = 0.15`
 5. `liquidity_penalty_multiplier = 1.20`
 6. `cooldown_penalty_multiplier = 1.20`
 7. `manual_priority_bonus_multiplier = 0.90`
 
 约束：
 
-1. `source_score_weight + confidence_weight + trend_weight + multi_source_weight = 1.0`
-2. aggressive 更重“来源强度 + 多来源共振”
+1. `recommendation_score_weight + confidence_weight + trend_weight + strong_recommendation_weight = 1.0`
+2. aggressive 更重“明确推荐强度 + 强推荐确认”
 3. conservative 更重“趋势结构 + 冷却惩罚”
 4. stable 作为中性模板，取中间值
+5. `source_type`、来源名称、来源数量只能用于展示、审计和容量限制，不能进入 `candidate_score`
 
 ### 8.3 自动纳入模式
 
@@ -1370,10 +1371,10 @@ Phase 2 可新增高级选项：
 
 ### 19.6 候选分权重配置
 
-1. `source_score_weight`
+1. `recommendation_score_weight`
 2. `confidence_weight`
 3. `trend_weight`
-4. `multi_source_weight`
+4. `strong_recommendation_weight`
 5. `liquidity_penalty_multiplier`
 6. `cooldown_penalty_multiplier`
 7. `manual_priority_bonus_multiplier`

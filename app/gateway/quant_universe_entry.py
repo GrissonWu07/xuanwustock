@@ -8,21 +8,6 @@ from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy,
 
 
 ENTRY_QUANT_STATUSES = {"trial", "active", "exit_only"}
-AUTO_ENTRY_SOURCE_SCORES = {
-    "ai_scanner": 0.92,
-    "main_force": 0.88,
-    "low_price_bull": 0.84,
-    "small_cap": 0.82,
-    "profit_growth": 0.84,
-    "value_stock": 0.82,
-    "research": 0.84,
-}
-DEFAULT_ENTRY_CONFIDENCE = {
-    "discover": 0.78,
-    "research": 0.76,
-}
-
-
 def ingest_lifecycle_entry_rows(
     context: Any,
     rows: list[dict[str, Any]],
@@ -241,14 +226,14 @@ def _source_score(row: dict[str, Any], *, source_type: str, source_key: str) -> 
     )
     if explicit is not None:
         return round(_normalized_unit_score(explicit), 4)
-    return AUTO_ENTRY_SOURCE_SCORES.get(str(source_key or "").strip().lower(), AUTO_ENTRY_SOURCE_SCORES.get(source_type, 0.84))
+    return 0.0
 
 
 def _confidence(row: dict[str, Any], *, source_type: str) -> float:
     explicit = _first_number(row.get("confidence"))
     if explicit is not None:
         return round(_normalized_unit_score(explicit), 4)
-    return DEFAULT_ENTRY_CONFIDENCE.get(source_type, 0.76)
+    return 0.0
 
 
 def _trend(row: dict[str, Any]) -> str:
@@ -259,7 +244,7 @@ def _trend(row: dict[str, Any]) -> str:
         return "down"
     if raw in {"flat", "neutral", "震荡", "中性"}:
         return "neutral"
-    return "up"
+    return "neutral"
 
 
 def _policy_for_db(db: Any) -> QuantUniverseLifecyclePolicy:

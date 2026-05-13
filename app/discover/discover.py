@@ -298,6 +298,9 @@ def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at:
         "marketCap": market_cap,
         "peRatio": pe,
         "pbRatio": pb,
+        "score": _first_non_empty(row, ["score", "scanner_score", "confidence_score", "candidate_score"]),
+        "confidence": _first_non_empty(row, ["confidence", "confidence_score"]),
+        "trend": _first_non_empty(row, ["trend", "trend_direction", "direction"]),
         "reason": reason,
         "selectedAt": _system_time(selected_at, ""),
     }

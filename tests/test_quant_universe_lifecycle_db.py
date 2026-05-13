@@ -83,6 +83,34 @@ def test_quant_universe_state_crud_updates_stock_membership(tmp_path):
     assert int(row["quant_enabled"]) == 1
 
 
+def test_quant_universe_state_ignores_legacy_source_weighted_candidate_score(tmp_path):
+    db = QuantSimDB(tmp_path / "quant_sim.db")
+    db.upsert_quant_universe_state(
+        "600000",
+        {
+            "stock_name": "浦发银行",
+            "quant_status": "trial",
+            "candidate_score": 0.82,
+            "candidate_confidence": 0.78,
+            "health_score": 90.0,
+            "snapshot_json": {
+                "candidate_score_breakdown": {
+                    "source_score_component": 0.82,
+                    "confidence_component": 0.78,
+                    "trend_component": 1.0,
+                }
+            },
+        },
+    )
+
+    loaded = db.get_quant_universe_state("600000")
+
+    assert loaded["candidate_score"] == 0
+    assert loaded["candidate_confidence"] == 0
+    assert loaded["snapshot_json"]["legacy_source_score_component_ignored"] is True
+    assert "source_score_component" not in loaded["snapshot_json"]["candidate_score_breakdown"]
+
+
 def test_quant_universe_events_settings_and_overview(tmp_path):
     db = QuantSimDB(tmp_path / "quant_sim.db")
     db.add_candidate({"stock_code": "600000", "stock_name": "浦发银行", "source": "manual"})

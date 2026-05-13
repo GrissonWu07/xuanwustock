@@ -108,10 +108,10 @@ class QuantUniverseLifecyclePolicy:
     cooling_supplemental_max_position_pct: float
     trial_position_multiplier: float
     trial_max_position_pct: float
-    source_score_weight: float
+    recommendation_score_weight: float
     confidence_weight: float
     trend_weight: float
-    multi_source_weight: float
+    strong_recommendation_weight: float
     liquidity_penalty_multiplier: float
     cooldown_penalty_multiplier: float
     manual_priority_bonus_multiplier: float
@@ -182,10 +182,10 @@ class QuantUniverseLifecyclePolicy:
             cooling_supplemental_max_position_pct=3.0,
             trial_position_multiplier=0.50,
             trial_max_position_pct=12.5,
-            source_score_weight=0.40,
+            recommendation_score_weight=0.40,
             confidence_weight=0.20,
             trend_weight=0.15,
-            multi_source_weight=0.25,
+            strong_recommendation_weight=0.25,
             liquidity_penalty_multiplier=0.80,
             cooldown_penalty_multiplier=0.80,
             manual_priority_bonus_multiplier=1.10,
@@ -257,10 +257,10 @@ class QuantUniverseLifecyclePolicy:
             cooling_supplemental_max_position_pct=2.0,
             trial_position_multiplier=0.35,
             trial_max_position_pct=10.0,
-            source_score_weight=0.35,
+            recommendation_score_weight=0.35,
             confidence_weight=0.20,
             trend_weight=0.25,
-            multi_source_weight=0.20,
+            strong_recommendation_weight=0.20,
             liquidity_penalty_multiplier=1.00,
             cooldown_penalty_multiplier=1.00,
             manual_priority_bonus_multiplier=1.00,
@@ -332,10 +332,10 @@ class QuantUniverseLifecyclePolicy:
             cooling_supplemental_max_position_pct=1.5,
             trial_position_multiplier=0.25,
             trial_max_position_pct=7.5,
-            source_score_weight=0.30,
+            recommendation_score_weight=0.30,
             confidence_weight=0.20,
             trend_weight=0.35,
-            multi_source_weight=0.15,
+            strong_recommendation_weight=0.15,
             liquidity_penalty_multiplier=1.20,
             cooldown_penalty_multiplier=1.20,
             manual_priority_bonus_multiplier=0.90,
@@ -507,33 +507,56 @@ def calculate_candidate_score(
 ) -> dict[str, Any]:
     if not events:
         return {"candidate_score": 0.0, "breakdown": {}}
-    source_component = max(_float(event.get("source_score"), 0.0) for event in events)
-    confidence_component = sum(_float(event.get("confidence"), 0.0) for event in events) / len(events)
+    recommendation_score_component = max(_recommendation_score(event) for event in events)
+    confidence_component = max(_float(event.get("confidence"), 0.0) for event in events)
     trend_component = max(_trend_score(event.get("trend")) for event in events)
-    source_count = len({str(event.get("source_type") or "") for event in events if event.get("source_type")})
-    multi_source_bonus = 0.0 if drill_mode or source_count < 2 else 1.0
+    strong_recommendation_bonus = _strong_recommendation_bonus(
+        recommendation_score_component,
+        confidence_component,
+        trend_component,
+    )
+    multi_source_bonus = 0.0
     liquidity_penalty = 0.0 if stock_snapshot.get("is_liquid", True) else 0.10 * policy.liquidity_penalty_multiplier
     cooldown_penalty = 0.15 * policy.cooldown_penalty_multiplier if stock_snapshot.get("in_cooldown") else 0.0
     manual_priority_bonus = 0.08 * policy.manual_priority_bonus_multiplier if stock_snapshot.get("manual_priority") else 0.0
     weighted_sum = (
-        source_component * policy.source_score_weight
+        recommendation_score_component * policy.recommendation_score_weight
         + confidence_component * policy.confidence_weight
         + trend_component * policy.trend_weight
-        + multi_source_bonus * policy.multi_source_weight
+        + strong_recommendation_bonus * policy.strong_recommendation_weight
     )
     candidate_score = _clamp(weighted_sum + manual_priority_bonus - liquidity_penalty - cooldown_penalty, 0.0, 1.0)
     return {
         "candidate_score": round(candidate_score, 4),
         "breakdown": {
-            "source_score_component": round(source_component, 4),
+            "recommendation_score_component": round(recommendation_score_component, 4),
             "confidence_component": round(confidence_component, 4),
             "trend_component": round(trend_component, 4),
+            "strong_recommendation_bonus": round(strong_recommendation_bonus, 4),
             "multi_source_bonus": round(multi_source_bonus, 4),
             "liquidity_penalty": round(liquidity_penalty, 4),
             "cooldown_penalty": round(cooldown_penalty, 4),
             "manual_priority_bonus": round(manual_priority_bonus, 4),
         },
     }
+
+
+def _recommendation_score(event: dict[str, Any]) -> float:
+    # This is an explicit recommendation score emitted by discovery/research.
+    # The source identity (low_price/main_force/research/manual) is metadata and
+    # must not add points by itself.
+    for key in ("candidate_score", "source_score", "score"):
+        value = event.get(key)
+        if value not in (None, ""):
+            return _clamp(_float(value, 0.0), 0.0, 1.0)
+    return 0.0
+
+
+def _strong_recommendation_bonus(event_score: float, confidence: float, trend_score: float) -> float:
+    if trend_score <= 0:
+        return 0.0
+    quality_floor = min(_clamp(event_score, 0.0, 1.0), _clamp(confidence, 0.0, 1.0))
+    return _clamp((quality_floor - 0.65) / 0.35, 0.0, 1.0)
 
 
 def build_lifecycle_gate(
