@@ -47,6 +47,27 @@ class FakeReplayDB:
         self.calls.append({"method": "candidate_events", "run_id": run_id, **kwargs})
         return {"items": [], "total": 0, "page": kwargs.get("page", 1), "pageSize": kwargs.get("page_size", 50)}
 
+    def list_profit_gap_attributions(self, historical_run_id, drill_run_id, *, limit=200):
+        self.calls.append(
+            {
+                "method": "profit_gap",
+                "historical_run_id": historical_run_id,
+                "drill_run_id": drill_run_id,
+                "limit": limit,
+            }
+        )
+        return [
+            {
+                "stock_code": "301666",
+                "stock_name": "大普微-UW",
+                "historical_total_pnl": 41119.0,
+                "drill_total_pnl": 18023.59,
+                "pnl_gap": 23095.41,
+                "attribution_labels": ["size_too_small"],
+                "primary_reason": "entry matched but drill sizing was materially lower",
+            }
+        ]
+
 
 def test_start_drill_gateway_calls_replay_service():
     context = FakeContext()
@@ -111,6 +132,7 @@ def test_drill_lifecycle_query_endpoints_are_registered():
     assert "/api/v1/quant/replay/{run_id}/quant-states" in routes
     assert "/api/v1/quant/replay/{run_id}/quant-events" in routes
     assert "/api/v1/quant/replay/{run_id}/candidate-events" in routes
+    assert "/api/v1/quant/his-replay/runs/{drill_run_id}/profit-gap" in routes
 
 
 def test_drill_lifecycle_endpoint_rejects_missing_and_non_drill_runs():
@@ -149,4 +171,29 @@ def test_drill_lifecycle_query_endpoints_pass_filters_to_replay_db():
         "stock": "600519",
         "page": 2,
         "page_size": 3,
+    }
+
+
+def test_profit_gap_endpoint_reads_replay_attribution_rows():
+    from app.gateway_api import create_app
+
+    context = FakeContext()
+    context.replay = FakeReplayDB({"id": 2, "mode": "live_quant_drill", "metadata": {"run_type": "live_quant_drill"}})
+    client = TestClient(create_app(context))
+
+    response = client.get(
+        "/api/v1/quant/his-replay/runs/2/profit-gap",
+        params={"historicalRunId": 1, "limit": 25},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["historical_run_id"] == 1
+    assert payload["drill_run_id"] == 2
+    assert payload["items"][0]["attribution_labels"] == ["size_too_small"]
+    assert context.replay.calls[-1] == {
+        "method": "profit_gap",
+        "historical_run_id": 1,
+        "drill_run_id": 2,
+        "limit": 25,
     }

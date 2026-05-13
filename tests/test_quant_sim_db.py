@@ -88,6 +88,7 @@ def test_quant_replay_db_only_creates_replay_tables(tmp_path):
         "sim_run_quant_events",
         "sim_run_candidate_events",
         "sim_run_quant_summary",
+        "sim_run_profit_gap_attributions",
     }
 
 

@@ -114,7 +114,8 @@ def _signal_plan(signal: dict[str, Any]) -> dict[str, Any]:
 
 def _signal_quant_status(signal: dict[str, Any]) -> str:
     profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
-    return str(profile.get("quant_status") or signal.get("quant_status") or "active").strip().lower()
+    plan = profile.get("execution_sizing_plan") if isinstance(profile.get("execution_sizing_plan"), dict) else {}
+    return str(plan.get("quant_status_for_portfolio_budget") or profile.get("quant_status") or signal.get("quant_status") or "active").strip().lower()
 
 
 def _execution_batch_risk_pct(signal: dict[str, Any], plan: dict[str, Any]) -> float:
@@ -224,8 +225,11 @@ def build_execution_sizing_plan(
     lifecycle_gate_mode = str(lifecycle_gate.get("mode") or "").strip()
     lifecycle_cap_status = "active" if lifecycle_gate_mode == "trial_confirmed" else status
     lifecycle_cap_status = lifecycle_cap_status if lifecycle_cap_status in policy["lifecycle_cap_pct"] else "trial"
+    portfolio_budget_status = "trial" if status == "trial" else status
     lifecycle_cap = _float(policy["lifecycle_cap_pct"].get(lifecycle_cap_status, policy["lifecycle_cap_pct"]["trial"])[tier])
     lifecycle_gate_multiplier = _float(lifecycle_gate.get("size_multiplier"), 1.0)
+    if lifecycle_gate_mode in {"recovery_probe_confirmed", "strong_recovery_confirmed", "trial_confirmed"}:
+        lifecycle_gate_multiplier = 1.0
     lifecycle_gate_max_pct = lifecycle_gate.get("max_position_pct")
     lifecycle_gate_adjusted_pct = kernel_pct * lifecycle_gate_multiplier
     lifecycle_buy_blocked = bool(lifecycle_gate.get("buy_blocked"))
@@ -274,6 +278,7 @@ def build_execution_sizing_plan(
         "cap_reasons": cap_reasons,
         "cap_reason_codes": cap_reason_codes,
         "lifecycle_gate_mode": lifecycle_gate_mode,
+        "quant_status_for_portfolio_budget": portfolio_budget_status,
         "lifecycle_gate_size_multiplier": round(lifecycle_gate_multiplier, 6) if lifecycle_gate else None,
         "lifecycle_gate_adjusted_position_pct": round(lifecycle_gate_adjusted_pct, 6) if lifecycle_gate else None,
         "lifecycle_gate_max_position_pct": round(_float(lifecycle_gate_max_pct), 6)

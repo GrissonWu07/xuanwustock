@@ -710,6 +710,11 @@ Owner: Codex
 
 1. `weakening_warning` 增加预警计数，不直接把股票移出量化
 2. `downtrend_hit` 只参与 `exit_only / cooling` 的状态判断，不得自动推动 `cooling -> retired`
+3. 普通 `dual_track_weighted_sell` 属于弱 SELL，只能累计 `downtrend_hit`，不得让 `active` 立即进入 `exit_only`
+4. 只有硬风控 SELL 才能触发 immediate exit，例如 `hard_stop_loss / stop_loss / risk_stop / quick_stoploss / hard_profit_trailing_stop / profit_tech_sell`
+5. 弱 SELL 在信号生成层必须转为 `HOLD / observed`，`decision_type = weak_sell_observe`；不得进入 pending SELL，也不得被自动执行
+6. 硬风控 SELL 不受弱 SELL 观察规则影响，必须继续保留 `SELL / pending`，由执行层按交易约束处理
+7. 自动执行层必须有二次防线：若收到 `dual_track_weighted_sell` 且没有硬风控 veto，必须记录 `blocked_reason = weak_sell_observe` 并跳过成交，防止 replay/drill 或旧信号绕过信号生成层
 
 默认 profile 建议：
 
@@ -750,6 +755,8 @@ Owner: Codex
 2. 连续 `downtrend_hit >= exit_only_downtrend_streak`
 3. `health_score < exit_only_threshold` 只能提高风险解释和排序优先级，不能单独触发 `exit_only`
 4. 若最近 BUY 发生在同一交易日，处于 T+1 生命周期保护期，不允许当天立刻切入 `exit_only`
+5. 若出现普通弱 SELL，必须按连续下行确认处理；不能只因单次弱 SELL 立刻切入 `exit_only`
+6. 若出现硬风控 SELL，可立即进入 `exit_only`，不得被弱 SELL 观察规则阻断
 
 效果：
 
@@ -802,7 +809,9 @@ Owner: Codex
 6. `health_score >= cooling_threshold` 只作为排序和解释条件，不足以单独恢复
 7. 若同时出现新候选事件，可用于排序和 UI 解释，但不是恢复的必要条件
 8. 若 cooling 股票被新的历史候选事件或实时发现事件重新命中，只能提高补充扫描优先级；不能仅凭候选来源直接恢复到 `trial`
-9. 恢复成功后只能进入 `trial`，不能直接进入 `active`
+9. 普通恢复买入进入 `trial`；若恢复买入为 `strong_buy`、通过趋势确认，且连续确认数量达到 `active_upgrade_confirm_checkpoints`，允许直接进入 `active`，并记录 `cooling_strong_recovered_to_active`
+10. `cooling -> trial` 恢复买入后进入 `recovery_probe` 观察窗口；若观察窗口内再次出现 `strong_buy` 且趋势确认达标，允许 `trial -> active`，并记录 `trial_recovery_probe_strong_upgraded_to_active`
+11. `recovery_probe` 买入后的退出保护期由 `recovery_probe_exit_grace_hours` 控制；保护期内不得因短周期下行直接切 `exit_only`，但若已有近期 probe 亏损记录，则不得享受该保护，必须让失败冷却逻辑生效
 
 补充扫描与复评要求：
 
@@ -822,7 +831,7 @@ Owner: Codex
    - `recent_candidate_support_score * 0.10`
 6. 补充扫描股票可以产生 BUY 信号，但必须应用更严格的 `cooling_supplemental_gate`。
 7. `cooling_supplemental_gate` 下的 BUY 必须同时满足 `buy_tier in {normal_buy, strong_buy}`、`buy_strength_score >= 0.45 + buy_threshold_delta`、趋势确认成立；`weak_buy` 或“背离试探”即使站上均线也必须转为 HOLD。
-8. 只有补充扫描产生可执行恢复买入或 active 级恢复信号时，状态才恢复为 `trial`；可执行恢复买入写入 `cooling_recovered_by_executable_buy` 事件，active 级恢复写入 `cooling_recovered_to_trial` 事件。恢复事件必须包含行情确认和 sizing 证据，不能只写候选来源。
+8. 只有补充扫描产生可执行恢复买入或 active 级恢复信号时，状态才恢复；普通可执行恢复买入写入 `cooling_recovered_by_executable_buy` 并进入 `trial`，active 级恢复写入 `cooling_recovered_to_trial` 并进入 `trial`，strong BUY 且趋势确认达标写入 `cooling_strong_recovered_to_active` 并直接进入 `active`。恢复事件必须包含行情确认和 sizing 证据，不能只写候选来源。
 9. `cooling -> trial` 恢复时必须清空旧的 `downtrend_streak` 与 `weakening_warning_streak`，并清除 `cooling_until`。旧的下行累计只用于解释进入 cooling 的历史原因，不能带入恢复后的 trial 阶段，否则下一 checkpoint 会因为历史 streak 立即重新 cooling。
 
 ### 12.2 `retired -> trial`
@@ -1428,9 +1437,11 @@ Phase 2 可新增高级选项：
 25. `guarded_buy_threshold_delta = 0.08`
 26. `guarded_size_multiplier = 0.35`
 27. `guarded_max_position_pct = 4.0`
-28. `cooling_supplemental_buy_threshold_delta = 0.12`
-29. `cooling_supplemental_size_multiplier = 0.20`
-30. `cooling_supplemental_max_position_pct = 3.0`
+28. `recovery_probe_hours = 24`
+29. `recovery_probe_exit_grace_hours = 48`
+30. `cooling_supplemental_buy_threshold_delta = 0.12`
+31. `cooling_supplemental_size_multiplier = 0.20`
+32. `cooling_supplemental_max_position_pct = 3.0`
 
 #### stable
 
@@ -1460,10 +1471,12 @@ Phase 2 可新增高级选项：
 24. `min_scan_coverage = 4`
 25. `guarded_buy_threshold_delta = 0.10`
 26. `guarded_size_multiplier = 0.30`
-27. `guarded_max_position_pct = 3.0`
-28. `cooling_supplemental_buy_threshold_delta = 0.15`
-29. `cooling_supplemental_size_multiplier = 0.15`
-30. `cooling_supplemental_max_position_pct = 2.0`
+27. `guarded_max_position_pct = 3.5`
+28. `recovery_probe_hours = 36`
+29. `recovery_probe_exit_grace_hours = 48`
+30. `cooling_supplemental_buy_threshold_delta = 0.15`
+31. `cooling_supplemental_size_multiplier = 0.15`
+32. `cooling_supplemental_max_position_pct = 2.0`
 
 #### conservative
 
@@ -1493,10 +1506,12 @@ Phase 2 可新增高级选项：
 24. `min_scan_coverage = 2`
 25. `guarded_buy_threshold_delta = 0.12`
 26. `guarded_size_multiplier = 0.25`
-27. `guarded_max_position_pct = 2.0`
-28. `cooling_supplemental_buy_threshold_delta = 0.18`
-29. `cooling_supplemental_size_multiplier = 0.10`
-30. `cooling_supplemental_max_position_pct = 1.5`
+27. `guarded_max_position_pct = 3.0`
+28. `recovery_probe_hours = 48`
+29. `recovery_probe_exit_grace_hours = 72`
+30. `cooling_supplemental_buy_threshold_delta = 0.18`
+31. `cooling_supplemental_size_multiplier = 0.10`
+32. `cooling_supplemental_max_position_pct = 1.5`
 
 约束：
 

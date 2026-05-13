@@ -178,6 +178,7 @@ describe("StrategyConfigPage config normalization", () => {
       max_auto_entries_per_batch: 4,
       max_auto_entries_per_day: 12,
       max_auto_entries_per_strategy_batch: 2,
+      recovery_probe_exit_grace_hours: 48,
     });
   });
 
@@ -231,6 +232,7 @@ describe("StrategyConfigPage config normalization", () => {
     expect(scoped.getByText(/strong_candidate_threshold/)).toBeInTheDocument();
     expect(scoped.getByText(/health_score_lookback_checkpoints/)).toBeInTheDocument();
     expect(scoped.getByText(/trial_position_multiplier/)).toBeInTheDocument();
+    expect(scoped.getByText(/recovery_probe_exit_grace_hours/)).toBeInTheDocument();
     expect(scoped.queryByText(/auto_exit_enabled/)).not.toBeInTheDocument();
   });
 

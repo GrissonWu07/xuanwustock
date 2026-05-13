@@ -267,6 +267,145 @@ def test_auto_execute_skips_sell_when_stock_is_limit_down(tmp_path):
     assert "跌停不可卖出" in history[0]["execution_note"]
 
 
+def test_auto_execute_observes_weak_dual_track_sell(tmp_path):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
+    portfolio_service = PortfolioService(db_file=tmp_path / "app.quant_sim.db")
+    candidate_service.add_manual_candidate("600000", "浦发银行", "manual", latest_price=10.2)
+    candidate = candidate_service.list_candidates()[0]
+    buy_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 84, "reasoning": "建仓", "position_size_pct": 20},
+    )
+    portfolio_service.confirm_buy(
+        buy_signal["id"],
+        price=10.0,
+        quantity=100,
+        note="预先持仓",
+        executed_at="2026-04-08 10:00:00",
+    )
+    weak_sell_id = portfolio_service.db.add_signal(
+        {
+            "stock_code": "600000",
+            "stock_name": "浦发银行",
+            "action": "SELL",
+            "confidence": 70,
+            "reasoning": "普通双轨卖出",
+            "position_size_pct": 0,
+            "decision_type": "dual_track_weighted_sell",
+            "strategy_profile": {
+                "explainability": {
+                    "fusion_breakdown": {
+                        "final_action": "SELL",
+                        "weighted_action_raw": "SELL",
+                    }
+                }
+            },
+            "status": "pending",
+        }
+    )
+
+    executed = portfolio_service.auto_execute_signal(
+        portfolio_service.db.get_signal(weak_sell_id),
+        note="自动卖出",
+        executed_at="2026-04-09 10:00:00",
+    )
+    signal = portfolio_service.db.get_signal(weak_sell_id)
+
+    assert executed is False
+    assert len(portfolio_service.get_trade_history()) == 1
+    assert signal["execution_note"].startswith("自动执行跳过：弱SELL观察")
+    assert signal["blocked_reason"] == "weak_sell_observe"
+    assert signal["execution_diagnostics"]["sellable_quantity"] == 100
+    assert signal["execution_diagnostics"]["locked_quantity"] == 0
+    assert signal["execution_diagnostics"]["is_weak_sell_observe"] is True
+    assert signal["strategy_profile"]["auto_execution_skip"]["blocked_reason"] == "weak_sell_observe"
+    assert signal["strategy_profile"]["auto_execution_skip"]["execution_diagnostics"]["sell_trigger_type"] == "weak_sell_observe"
+
+
+def test_replay_signal_upsert_persists_execution_diagnostics(tmp_path):
+    db = QuantSimReplayDB(tmp_path / "replay.db")
+    db.upsert_sim_run_signals(
+        1,
+        [
+            {
+                "id": 100,
+                "stock_code": "600000",
+                "stock_name": "浦发银行",
+                "action": "SELL",
+                "status": "ignored",
+                "execution_note": "自动执行跳过：当前无可卖数量",
+                "blocked_reason": "no_sellable_quantity",
+                "strategy_profile": {
+                    "auto_execution_skip": {
+                        "blocked_reason": "no_sellable_quantity",
+                        "execution_diagnostics": {
+                            "sellable_quantity": 0,
+                            "locked_quantity": 100,
+                            "blocked_reason": "no_sellable_quantity",
+                        },
+                    }
+                },
+            }
+        ],
+    )
+
+    saved = db.get_sim_run_signals(1, include_strategy_profile=True)[0]
+    assert saved["blocked_reason"] == "no_sellable_quantity"
+    assert saved["execution_diagnostics"]["sellable_quantity"] == 0
+    assert saved["execution_diagnostics"]["locked_quantity"] == 100
+
+
+def test_auto_execute_keeps_hard_risk_sell_executable(tmp_path):
+    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
+    signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
+    portfolio_service = PortfolioService(db_file=tmp_path / "app.quant_sim.db")
+    candidate_service.add_manual_candidate("600000", "浦发银行", "manual", latest_price=9.4)
+    candidate = candidate_service.list_candidates()[0]
+    buy_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 84, "reasoning": "建仓", "position_size_pct": 20},
+    )
+    portfolio_service.confirm_buy(
+        buy_signal["id"],
+        price=10.0,
+        quantity=100,
+        note="预先持仓",
+        executed_at="2026-04-08 10:00:00",
+    )
+    hard_sell_id = portfolio_service.db.add_signal(
+        {
+            "stock_code": "600000",
+            "stock_name": "浦发银行",
+            "action": "SELL",
+            "confidence": 90,
+            "reasoning": "硬止损",
+            "position_size_pct": 0,
+            "decision_type": "dual_track_weighted_sell",
+            "strategy_profile": {
+                "explainability": {
+                    "fusion_breakdown": {
+                        "final_action": "SELL",
+                        "weighted_action_raw": "SELL",
+                        "veto_id": "hard_stop_loss",
+                        "veto_trigger_type": "hard_stop_loss",
+                    }
+                }
+            },
+            "status": "pending",
+        }
+    )
+
+    executed = portfolio_service.auto_execute_signal(
+        portfolio_service.db.get_signal(hard_sell_id),
+        note="自动卖出",
+        executed_at="2026-04-09 10:00:00",
+    )
+
+    assert executed is True
+    assert portfolio_service.get_trade_history(limit=1)[0]["action"] == "sell"
+
+
 def test_scheduler_auto_executes_buy_signal_from_watchlist_candidate_and_syncs_watchlist(tmp_path, monkeypatch):
     quant_db = tmp_path / "app.quant_sim.db"
     watch_db = quant_db

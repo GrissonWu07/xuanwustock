@@ -32,6 +32,25 @@ class AutoEntryMode(str, Enum):
     AUTO_TRIAL = "auto_trial"
 
 
+_IMMEDIATE_EXIT_DECISION_TOKENS = (
+    "hard_stop_loss",
+    "stop_loss",
+    "risk_stop",
+    "quick_stoploss",
+    "hard_profit_trailing_stop",
+    "profit_tech_sell",
+)
+
+_IMMEDIATE_EXIT_VETO_IDS = {
+    "hard_stop_loss",
+    "stop_loss",
+    "risk_stop",
+    "quick_stoploss",
+    "hard_profit_trailing_stop",
+    "profit_tech_sell",
+}
+
+
 @dataclass(frozen=True)
 class QuantUniverseLifecyclePolicy:
     profile_id: str
@@ -74,6 +93,7 @@ class QuantUniverseLifecyclePolicy:
     guarded_size_multiplier: float
     guarded_max_position_pct: float
     recovery_probe_hours: int
+    recovery_probe_exit_grace_hours: int
     recovery_probe_buy_threshold_delta: float
     recovery_probe_size_multiplier: float
     recovery_probe_max_position_pct: float
@@ -147,15 +167,16 @@ class QuantUniverseLifecyclePolicy:
             guarded_size_multiplier=0.35,
             guarded_max_position_pct=4.0,
             recovery_probe_hours=24,
+            recovery_probe_exit_grace_hours=48,
             recovery_probe_buy_threshold_delta=0.08,
             recovery_probe_size_multiplier=0.45,
             recovery_probe_max_position_pct=6.0,
             recovery_probe_confirmed_max_position_pct=10.0,
             recovery_probe_failed_max_position_pct=2.5,
             recovery_probe_failure_threshold=2,
-            recovery_probe_failure_lookback_days=30,
+            recovery_probe_failure_lookback_days=20,
             recovery_probe_attempt_fatigue_threshold=4,
-            recovery_probe_cooldown_days=20,
+            recovery_probe_cooldown_days=15,
             cooling_supplemental_buy_threshold_delta=0.12,
             cooling_supplemental_size_multiplier=0.20,
             cooling_supplemental_max_position_pct=3.0,
@@ -221,15 +242,16 @@ class QuantUniverseLifecyclePolicy:
             guarded_size_multiplier=0.30,
             guarded_max_position_pct=3.5,
             recovery_probe_hours=36,
+            recovery_probe_exit_grace_hours=48,
             recovery_probe_buy_threshold_delta=0.10,
             recovery_probe_size_multiplier=0.35,
             recovery_probe_max_position_pct=4.0,
             recovery_probe_confirmed_max_position_pct=7.0,
             recovery_probe_failed_max_position_pct=2.0,
             recovery_probe_failure_threshold=2,
-            recovery_probe_failure_lookback_days=30,
+            recovery_probe_failure_lookback_days=25,
             recovery_probe_attempt_fatigue_threshold=3,
-            recovery_probe_cooldown_days=25,
+            recovery_probe_cooldown_days=20,
             cooling_supplemental_buy_threshold_delta=0.15,
             cooling_supplemental_size_multiplier=0.15,
             cooling_supplemental_max_position_pct=2.0,
@@ -295,6 +317,7 @@ class QuantUniverseLifecyclePolicy:
             guarded_size_multiplier=0.25,
             guarded_max_position_pct=3.0,
             recovery_probe_hours=48,
+            recovery_probe_exit_grace_hours=72,
             recovery_probe_buy_threshold_delta=0.12,
             recovery_probe_size_multiplier=0.25,
             recovery_probe_max_position_pct=2.5,
@@ -659,6 +682,8 @@ def resolve_next_status(
     cooling_min_dwell_active: bool = False,
     cooling_recovery_buy: bool = False,
     recovery_probe_active: bool = False,
+    recovery_probe_strong_confirmed: bool = False,
+    recovery_probe_exit_grace_active: bool = False,
     post_buy_grace_active: bool = False,
     active_dwell_checkpoints: int = 0,
     immediate_exit_signal: bool = False,
@@ -717,14 +742,23 @@ def resolve_next_status(
     if current == QuantStatus.TRIAL:
         if (
             current == QuantStatus.TRIAL
-            and not recovery_probe_active
+            and (not recovery_probe_active or recovery_probe_strong_confirmed)
             and health_score >= policy.active_upgrade_threshold
             and trend_confirmed
             and active_trend_confirm_checkpoints >= policy.active_upgrade_confirm_checkpoints
         ):
+            if recovery_probe_active:
+                return _transition(
+                    current,
+                    QuantStatus.ACTIVE,
+                    "trial_recovery_probe_strong_upgraded_to_active",
+                    "recovery probe 出现 strong BUY 且趋势确认，升级 active",
+                )
             return _transition(current, QuantStatus.ACTIVE, "trial_upgraded_to_active", "trial 趋势确认，升级 active")
         if has_position and post_buy_grace_active and downtrend_streak >= policy.exit_only_downtrend_streak:
             return _blocked(current, "post_buy_grace_active", "买入当日处于 T+1 保护期，暂不切入只出场管理")
+        if has_position and recovery_probe_exit_grace_active and downtrend_streak >= policy.exit_only_downtrend_streak:
+            return _blocked(current, "recovery_probe_grace_active", "recovery probe 买入后的保护期内暂不切入只出场管理")
         if has_position and health_score < policy.exit_only_threshold and downtrend_streak < policy.exit_only_downtrend_streak:
             return _blocked(current, "holding_downtrend_not_confirmed", "持仓健康分偏弱，但连续下行确认不足")
         if has_position and downtrend_streak >= policy.exit_only_downtrend_streak:
@@ -753,6 +787,18 @@ def resolve_next_status(
     if current == QuantStatus.COOLING:
         if cooling_min_dwell_active:
             return _blocked(current, "cooling_min_dwell_active", "冷却最短停留期未结束")
+        if (
+            cooling_recovery_buy
+            and recovery_probe_strong_confirmed
+            and trend_confirmed
+            and active_trend_confirm_checkpoints >= policy.active_upgrade_confirm_checkpoints
+        ):
+            return _transition(
+                current,
+                QuantStatus.ACTIVE,
+                "cooling_strong_recovered_to_active",
+                "冷却复评出现 strong BUY 且趋势确认，直接恢复 active",
+            )
         if cooling_recovery_buy:
             return _transition(current, QuantStatus.TRIAL, "cooling_recovered_by_executable_buy", "冷却复评出现可执行买入信号，回到 trial")
         if (
@@ -1169,6 +1215,11 @@ class QuantUniverseManager:
                 trend_confirmed = False
                 trend_confirmed_streak = 0
             cooling_recovery_buy = current == QuantStatus.COOLING and _signal_cooling_recovery_buy(latest_signal)
+            recovery_probe_strong_confirmed = bool(
+                _signal_strong_buy(latest_signal)
+                and trend_confirmed
+                and trend_confirmed_streak >= int(self.policy.active_upgrade_confirm_checkpoints or 0)
+            )
             health = _apply_cold_start_health_floor(
                 health,
                 policy=self.policy,
@@ -1202,6 +1253,9 @@ class QuantUniverseManager:
                 cooling_min_dwell_active=cooling_min_dwell_active,
                 cooling_recovery_buy=cooling_recovery_buy,
                 recovery_probe_active=recovery_probe_active,
+                recovery_probe_strong_confirmed=recovery_probe_strong_confirmed,
+                recovery_probe_exit_grace_active=has_position
+                and _recovery_probe_exit_grace_active(previous_state, self.policy, evaluation_time),
                 post_buy_grace_active=has_position and _has_same_day_buy_signal(recent_signals, evaluation_time),
                 active_dwell_checkpoints=previous_active_checkpoints,
                 immediate_exit_signal=_signal_requires_immediate_exit(latest_signal),
@@ -1213,24 +1267,27 @@ class QuantUniverseManager:
                 next_status = transition.to_status
                 status_changed = True
                 last_status_changed_at = _format_utc_iso_z(evaluation_time)
-                if current == QuantStatus.COOLING and next_status == QuantStatus.TRIAL:
+                if current == QuantStatus.COOLING and next_status in {QuantStatus.TRIAL, QuantStatus.ACTIVE}:
                     next_downtrend_streak = 0
                     next_warning_streak = 0
                     probe_attempt_count += 1
                     last_recovery_probe_attempt_at = _format_utc_iso_z(evaluation_time)
-                    recovery_probe_until = _format_utc_iso_z(
-                        evaluation_time + timedelta(hours=max(int(self.policy.recovery_probe_hours or 0), 0))
-                    )
-                    fatigue_threshold = int(self.policy.recovery_probe_attempt_fatigue_threshold or 0)
-                    if (
-                        fatigue_threshold > 0
-                        and probe_attempt_count >= fatigue_threshold
-                        and recent_probe_loss_count <= 0
-                    ):
-                        probe_failure_reason = "recovery_probe_attempt_fatigue"
-                        recovery_probe_cooldown_until = _format_utc_iso_z(
-                            evaluation_time + timedelta(days=max(int(self.policy.recovery_probe_cooldown_days or 0), 0))
+                    if next_status == QuantStatus.TRIAL:
+                        recovery_probe_until = _format_utc_iso_z(
+                            evaluation_time + timedelta(hours=max(int(self.policy.recovery_probe_hours or 0), 0))
                         )
+                        fatigue_threshold = int(self.policy.recovery_probe_attempt_fatigue_threshold or 0)
+                        if (
+                            fatigue_threshold > 0
+                            and probe_attempt_count >= fatigue_threshold
+                            and recent_probe_loss_count <= 0
+                        ):
+                            probe_failure_reason = "recovery_probe_attempt_fatigue"
+                            recovery_probe_cooldown_until = _format_utc_iso_z(
+                                evaluation_time + timedelta(days=max(int(self.policy.recovery_probe_cooldown_days or 0), 0))
+                            )
+                    else:
+                        recovery_probe_until = None
                 elif next_status in {QuantStatus.ACTIVE, QuantStatus.COOLING, QuantStatus.EXIT_ONLY, QuantStatus.RETIRED}:
                     recovery_probe_until = None
                 if next_status == QuantStatus.ACTIVE:
@@ -1631,6 +1688,19 @@ def _signal_fusion_delta(signal: dict[str, Any], default: float) -> float:
     return _float(breakdown.get("fusion_score_delta"), default)
 
 
+def _signal_veto_id(signal: dict[str, Any]) -> str:
+    for key in ("veto_id", "veto_trigger_type", "trigger_type"):
+        value = str(signal.get(key) or "").strip().lower()
+        if value:
+            return value
+    breakdown = _signal_fusion_breakdown(signal)
+    for key in ("veto_id", "veto_trigger_type", "trigger_type"):
+        value = str(breakdown.get(key) or "").strip().lower()
+        if value:
+            return value
+    return ""
+
+
 def _signal_portfolio_guard(signal: dict[str, Any]) -> dict[str, Any]:
     profile = _signal_profile(signal)
     gate = profile.get("portfolio_execution_guard") if isinstance(profile.get("portfolio_execution_guard"), dict) else {}
@@ -1657,8 +1727,24 @@ def _signal_cooling_recovery_buy(signal: dict[str, Any]) -> bool:
     return _float(plan.get("effective_position_pct"), 0.0) > 0 or _float(plan.get("final_budget"), 0.0) > 0
 
 
+def _signal_strong_buy(signal: dict[str, Any]) -> bool:
+    if _action(signal) != "BUY":
+        return False
+    guard = _signal_portfolio_guard(signal)
+    buy_tier = str(guard.get("buy_tier") or guard.get("status") or "").strip().lower()
+    return buy_tier == "strong_buy"
+
+
 def _signal_requires_immediate_exit(signal: dict[str, Any]) -> bool:
-    return _action(signal) == "SELL" or bool(signal.get("quick_stoploss_failure"))
+    if bool(signal.get("quick_stoploss_failure")):
+        return True
+    if _action(signal) != "SELL":
+        return False
+    decision_type = str(signal.get("decision_type") or "").strip().lower()
+    if any(token in decision_type for token in _IMMEDIATE_EXIT_DECISION_TOKENS):
+        return True
+    veto_id = _signal_veto_id(signal)
+    return veto_id in _IMMEDIATE_EXIT_VETO_IDS
 
 
 def _active_recent_probe_loss_count(
@@ -1972,6 +2058,29 @@ def _is_future(value: datetime | str | None, now: datetime | str | None) -> bool
 
 def is_recovery_probe_active(state: dict[str, Any] | None, now: datetime | str | None = None) -> bool:
     return _is_future((state or {}).get("recovery_probe_until"), now)
+
+
+def _recovery_probe_exit_grace_active(
+    state: dict[str, Any] | None,
+    policy: QuantUniverseLifecyclePolicy,
+    now: datetime | str | None,
+) -> bool:
+    hours = int(policy.recovery_probe_exit_grace_hours or 0)
+    if hours <= 0:
+        return False
+    if int((state or {}).get("recent_probe_loss_count") or 0) > 0:
+        return False
+    if _is_future((state or {}).get("recovery_probe_until"), now):
+        return True
+    attempt_at = (state or {}).get("last_recovery_probe_attempt_at")
+    if not attempt_at:
+        return False
+    try:
+        target = _to_datetime(attempt_at) + timedelta(hours=hours)
+        current = _to_datetime(now) if now is not None else datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    return current < target
 
 
 def _retired_min_dwell_active(

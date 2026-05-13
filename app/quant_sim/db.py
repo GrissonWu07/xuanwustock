@@ -441,6 +441,9 @@ class QuantSimDB:
                 status TEXT DEFAULT 'observed',
                 executed_action TEXT,
                 execution_note TEXT,
+                blocked_reason TEXT,
+                cap_reason TEXT,
+                execution_diagnostics_json TEXT DEFAULT '{}',
                 delay_count INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                 updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -868,6 +871,7 @@ class QuantSimDB:
                 execution_note TEXT,
                 blocked_reason TEXT,
                 cap_reason TEXT,
+                execution_diagnostics_json TEXT DEFAULT '{}',
                 checkpoint_at TEXT,
                 created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                 updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -885,6 +889,30 @@ class QuantSimDB:
                 created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                 updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                 FOREIGN KEY(signal_id) REFERENCES sim_run_signals(id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_run_profit_gap_attributions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                historical_run_id INTEGER NOT NULL,
+                drill_run_id INTEGER NOT NULL,
+                stock_code TEXT NOT NULL,
+                stock_name TEXT,
+                historical_total_pnl REAL DEFAULT 0,
+                drill_total_pnl REAL DEFAULT 0,
+                pnl_gap REAL DEFAULT 0,
+                historical_first_buy_at TEXT,
+                drill_first_buy_at TEXT,
+                historical_first_buy_price REAL,
+                drill_first_buy_price REAL,
+                historical_buy_amount REAL DEFAULT 0,
+                drill_buy_amount REAL DEFAULT 0,
+                attribution_labels_json TEXT DEFAULT '[]',
+                primary_reason TEXT,
+                evidence_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
             )
             """
         )
@@ -930,11 +958,20 @@ class QuantSimDB:
             ON sim_run_signals(run_id, UPPER(action), checkpoint_at DESC, id DESC)
             """
         )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sim_run_profit_gap_pair_gap
+            ON sim_run_profit_gap_attributions(historical_run_id, drill_run_id, pnl_gap DESC)
+            """
+        )
 
         self._ensure_column(cursor, "strategy_signals", "decision_type", "TEXT")
         self._ensure_column(cursor, "strategy_signals", "tech_score", "REAL DEFAULT 0")
         self._ensure_column(cursor, "strategy_signals", "context_score", "REAL DEFAULT 0")
         self._ensure_column(cursor, "strategy_signals", "strategy_profile_json", "TEXT")
+        self._ensure_column(cursor, "strategy_signals", "blocked_reason", "TEXT")
+        self._ensure_column(cursor, "strategy_signals", "cap_reason", "TEXT")
+        self._ensure_column(cursor, "strategy_signals", "execution_diagnostics_json", "TEXT DEFAULT '{}'")
         self._ensure_column(cursor, "sim_positions", "peak_price", "REAL DEFAULT 0")
         self._ensure_column(cursor, "sim_positions", "peak_unrealized_pnl", "REAL DEFAULT 0")
         self._ensure_column(cursor, "sim_positions", "peak_unrealized_pnl_pct", "REAL DEFAULT 0")
@@ -1004,7 +1041,25 @@ class QuantSimDB:
             self._ensure_column(cursor, "sim_run_signals", "execution_note", "TEXT")
             self._ensure_column(cursor, "sim_run_signals", "blocked_reason", "TEXT")
             self._ensure_column(cursor, "sim_run_signals", "cap_reason", "TEXT")
+            self._ensure_column(cursor, "sim_run_signals", "execution_diagnostics_json", "TEXT DEFAULT '{}'")
             self._ensure_column(cursor, "sim_run_signals", "updated_at", "TEXT")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "historical_run_id", "INTEGER DEFAULT 0")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "drill_run_id", "INTEGER DEFAULT 0")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "stock_code", "TEXT")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "stock_name", "TEXT")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "historical_total_pnl", "REAL DEFAULT 0")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "drill_total_pnl", "REAL DEFAULT 0")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "pnl_gap", "REAL DEFAULT 0")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "historical_first_buy_at", "TEXT")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "drill_first_buy_at", "TEXT")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "historical_first_buy_price", "REAL")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "drill_first_buy_price", "REAL")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "historical_buy_amount", "REAL DEFAULT 0")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "drill_buy_amount", "REAL DEFAULT 0")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "attribution_labels_json", "TEXT DEFAULT '[]'")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "primary_reason", "TEXT")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "evidence_json", "TEXT DEFAULT '{}'")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "created_at", "TEXT")
             for table_name in ("sim_run_trades",):
                 self._ensure_column(cursor, table_name, "gross_amount", "REAL DEFAULT 0")
                 self._ensure_column(cursor, table_name, "commission_fee", "REAL DEFAULT 0")
@@ -1453,6 +1508,7 @@ class QuantSimDB:
                     SET candidate_id = ?, stock_name = ?, confidence = ?, reasoning = ?,
                         position_size_pct = ?, stop_loss_pct = ?, take_profit_pct = ?,
                         decision_type = ?, tech_score = ?, context_score = ?, strategy_profile_json = ?,
+                        execution_diagnostics_json = ?,
                         updated_at = ?
                     WHERE id = ?
                     """,
@@ -1468,6 +1524,7 @@ class QuantSimDB:
                         signal.get("tech_score", 0),
                         signal.get("context_score", 0),
                         self._dumps_metadata(signal.get("strategy_profile")),
+                        self._dumps_metadata(signal.get("execution_diagnostics")),
                         now_text,
                         signal_id,
                     ),
@@ -1482,9 +1539,9 @@ class QuantSimDB:
             (
                 candidate_id, stock_code, stock_name, action, confidence, reasoning,
                 position_size_pct, stop_loss_pct, take_profit_pct, decision_type,
-                tech_score, context_score, strategy_profile_json, status, created_at, updated_at
+                tech_score, context_score, strategy_profile_json, execution_diagnostics_json, status, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.get("candidate_id"),
@@ -1500,6 +1557,7 @@ class QuantSimDB:
                 signal.get("tech_score", 0),
                 signal.get("context_score", 0),
                 self._dumps_metadata(signal.get("strategy_profile")),
+                self._dumps_metadata(signal.get("execution_diagnostics")),
                 status,
                 now_text,
                 now_text,
@@ -1599,6 +1657,9 @@ class QuantSimDB:
         position_size_pct: Optional[float] = None,
         status: Optional[str] = None,
         execution_note: Optional[str] = None,
+        blocked_reason: Optional[str] = None,
+        cap_reason: Optional[str] = None,
+        execution_diagnostics: Optional[dict[str, Any]] = None,
         strategy_profile: Optional[dict[str, Any]] = None,
     ) -> None:
         updates = []
@@ -1619,6 +1680,15 @@ class QuantSimDB:
         if execution_note is not None:
             updates.append("execution_note = ?")
             params.append(execution_note)
+        if blocked_reason is not None:
+            updates.append("blocked_reason = ?")
+            params.append(blocked_reason)
+        if cap_reason is not None:
+            updates.append("cap_reason = ?")
+            params.append(cap_reason)
+        if execution_diagnostics is not None:
+            updates.append("execution_diagnostics_json = ?")
+            params.append(self._dumps_metadata(execution_diagnostics) or "{}")
         if strategy_profile is not None:
             updates.append("strategy_profile_json = ?")
             params.append(self._dumps_metadata(strategy_profile))
@@ -3352,6 +3422,11 @@ class QuantSimDB:
             execution_note = signal.get("execution_note") or auto_execution_skip.get("execution_note")
             blocked_reason = signal.get("blocked_reason") or auto_execution_skip.get("blocked_reason")
             cap_reason = signal.get("cap_reason") or auto_execution_skip.get("cap_reason")
+            execution_diagnostics = signal.get("execution_diagnostics")
+            if not isinstance(execution_diagnostics, dict):
+                execution_diagnostics = auto_execution_skip.get("execution_diagnostics")
+            if not isinstance(execution_diagnostics, dict):
+                execution_diagnostics = {}
             payload = (
                 run_id,
                 source_signal_id,
@@ -3370,6 +3445,7 @@ class QuantSimDB:
                 execution_note,
                 blocked_reason,
                 cap_reason,
+                self._dumps_metadata(execution_diagnostics) or "{}",
                 checkpoint_at,
                 created_at,
                 updated_at,
@@ -3401,9 +3477,9 @@ class QuantSimDB:
                     (
                         run_id, source_signal_id, stock_code, stock_name, action, confidence, reasoning,
                         position_size_pct, stop_loss_pct, take_profit_pct, decision_type, tech_score, context_score,
-                        status, execution_note, blocked_reason, cap_reason, checkpoint_at, created_at, updated_at
+                        status, execution_note, blocked_reason, cap_reason, execution_diagnostics_json, checkpoint_at, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     payload,
                 )
@@ -3428,6 +3504,7 @@ class QuantSimDB:
                         execution_note = ?,
                         blocked_reason = ?,
                         cap_reason = ?,
+                        execution_diagnostics_json = ?,
                         checkpoint_at = ?,
                         created_at = ?,
                         updated_at = ?
@@ -7130,6 +7207,8 @@ class QuantSimDB:
         payload = self._row_to_dict(row)
         if "metadata_json" in payload:
             payload["metadata"] = self._loads_metadata(payload.get("metadata_json"))
+        if "execution_diagnostics_json" in payload:
+            payload["execution_diagnostics"] = self._loads_metadata(payload.pop("execution_diagnostics_json", None))
         if include_strategy_profile:
             payload["strategy_profile"] = self._loads_metadata(payload.pop("strategy_profile_json", None))
         else:
@@ -7373,6 +7452,7 @@ class QuantSimReplayDB(QuantSimDB):
         "sim_run_quant_events",
         "sim_run_candidate_events",
         "sim_run_quant_summary",
+        "sim_run_profit_gap_attributions",
     }
 
     def __init__(
@@ -8069,5 +8149,102 @@ class QuantSimReplayDB(QuantSimDB):
                 (int(run_id),),
             )
             return [self._decode_live_quant_drill_row(row, ("metadata_json",)) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def replace_profit_gap_attributions(
+        self,
+        historical_run_id: int,
+        drill_run_id: int,
+        rows: list[dict[str, Any]],
+    ) -> None:
+        now_text = self._now()
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                DELETE FROM sim_run_profit_gap_attributions
+                WHERE historical_run_id = ? AND drill_run_id = ?
+                """,
+                (int(historical_run_id), int(drill_run_id)),
+            )
+            for row in rows:
+                labels = row.get("attribution_labels")
+                if not isinstance(labels, list):
+                    labels = []
+                evidence = row.get("evidence_json")
+                if not isinstance(evidence, dict):
+                    evidence = {}
+                cursor.execute(
+                    """
+                    INSERT INTO sim_run_profit_gap_attributions
+                    (
+                        historical_run_id, drill_run_id, stock_code, stock_name,
+                        historical_total_pnl, drill_total_pnl, pnl_gap,
+                        historical_first_buy_at, drill_first_buy_at,
+                        historical_first_buy_price, drill_first_buy_price,
+                        historical_buy_amount, drill_buy_amount,
+                        attribution_labels_json, primary_reason, evidence_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(historical_run_id),
+                        int(drill_run_id),
+                        str(row.get("stock_code") or "").strip(),
+                        row.get("stock_name"),
+                        float(row.get("historical_total_pnl") or 0),
+                        float(row.get("drill_total_pnl") or 0),
+                        float(row.get("pnl_gap") or 0),
+                        row.get("historical_first_buy_at"),
+                        row.get("drill_first_buy_at"),
+                        row.get("historical_first_buy_price"),
+                        row.get("drill_first_buy_price"),
+                        float(row.get("historical_buy_amount") or 0),
+                        float(row.get("drill_buy_amount") or 0),
+                        json.dumps(labels, ensure_ascii=False),
+                        row.get("primary_reason"),
+                        self._dumps_metadata(evidence) or "{}",
+                        now_text,
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_profit_gap_attributions(
+        self,
+        historical_run_id: int,
+        drill_run_id: int,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT *
+                FROM sim_run_profit_gap_attributions
+                WHERE historical_run_id = ? AND drill_run_id = ?
+                ORDER BY pnl_gap DESC, id ASC
+                LIMIT ?
+                """,
+                (int(historical_run_id), int(drill_run_id), max(1, int(limit))),
+            )
+            items: list[dict[str, Any]] = []
+            for row in cursor.fetchall():
+                payload = self._row_to_dict(row)
+                try:
+                    labels = json.loads(payload.get("attribution_labels_json") or "[]")
+                except json.JSONDecodeError:
+                    labels = []
+                payload["attribution_labels"] = labels if isinstance(labels, list) else []
+                payload["evidence_json"] = self._loads_metadata(payload.get("evidence_json"))
+                items.append(payload)
+            return items
         finally:
             conn.close()

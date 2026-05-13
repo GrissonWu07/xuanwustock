@@ -424,16 +424,18 @@ run_type = historical_backtest
 8. 生命周期流转必须执行最短停留期：`trial` 未满足 `trial_min_dwell_checkpoints` 前不得进入 `cooling`；`cooling_until` 未到期前不得恢复或退休；`retired_at + retired_min_dwell_days` 未到期前不得通过候选事件复活，返回 `reason_code = retired_dwell_blocked`。
 9. 持仓股票进入 `exit_only` 必须有连续下行确认；不能只因为一次 checkpoint 的健康分低于阈值就立刻切成只出场管理。
 10. 若持仓来自同一交易日刚执行的 BUY，生命周期处于 T+1 保护期；该日内即使出现弱化信号，也不得立即切成 `exit_only`。
-11. `trial -> active` 必须在演练状态机中实际执行，且必须基于连续趋势确认 checkpoint，不得只因为单次候选事件或单次 BUY 直接升级。
-12. `trial` 冷启动样本不足时必须使用 profile 配置的健康分下限保护，避免演练首日把大部分股票打入 `cooling`。
-13. `cooling` 股票若被新的历史候选事件重新命中，只能提升补充扫描排序，不能仅凭来源直接恢复到 `trial`。
-14. 实时量化演练中，每个交易日第一个 checkpoint 必须全量复评已到期 `cooling` 股票；其他 checkpoint 可按 `cooling_review_batch_size` 轮转复评。
-15. `cooling` 复评后若未恢复，必须记录逐股诊断事件，说明未恢复原因；不能只在 summary 中显示 `restored=0`。
+11. 普通 `dual_track_weighted_sell` 属于弱 SELL，只能累计下行确认；信号生成层必须转为 `HOLD / observed` 且 `decision_type = weak_sell_observe`，不得进入自动执行队列，也不得让 `active` 单次立即进入 `exit_only`。自动执行层也必须二次校验：若收到无硬风控 veto 的 `dual_track_weighted_sell`，记录 `blocked_reason = weak_sell_observe` 并跳过成交。硬风控 SELL 例外，包括 `hard_stop_loss / stop_loss / risk_stop / quick_stoploss / hard_profit_trailing_stop / profit_tech_sell`，必须继续保留为 `SELL / pending`。
+12. `trial -> active` 必须在演练状态机中实际执行，且必须基于连续趋势确认 checkpoint，不得只因为单次候选事件或单次 BUY 直接升级。处于 `recovery_probe` 的 `trial` 股票只有在 `strong_buy` 且趋势确认达标时，才可解除 probe 限制升级为 `active`。
+13. `trial` 冷启动样本不足时必须使用 profile 配置的健康分下限保护，避免演练首日把大部分股票打入 `cooling`。
+14. `cooling` 股票若被新的历史候选事件重新命中，只能提升补充扫描排序，不能仅凭来源直接恢复到 `trial`。
+15. 实时量化演练中，每个交易日第一个 checkpoint 必须全量复评已到期 `cooling` 股票；其他 checkpoint 可按 `cooling_review_batch_size` 轮转复评。
+16. `cooling` 复评后若未恢复，必须记录逐股诊断事件，说明未恢复原因；不能只在 summary 中显示 `restored=0`。
     - 事件类型：`cooling_review_not_restored`。
     - 必备字段：`stock_code`、`from_status=cooling`、`to_status=cooling`、`reason_code`、`reason_text`、`health_score_before/after`。
     - `evidence_json` 至少包含 `review_signal_action`、`buy_tier`、`execution_skip_reason`、`lifecycle_gate_mode`、`health_breakdown`。
     - checkpoint summary 只保存 `diagnostic_count`，不内嵌逐股诊断明细。
-16. `health_score` 低只能影响 gate、排序和解释；不得单独触发 `trial/active -> cooling/retired`。
+17. `cooling` 复评若产生可执行 `strong_buy`，并满足 active 级趋势确认，可直接恢复为 `active`；普通 `normal_buy` 仍恢复为 `trial` 并进入 recovery probe 观察。
+18. `health_score` 低只能影响 gate、排序和解释；不得单独触发 `trial/active -> cooling/retired`。
 
 ## 12. 交易与风控规则
 

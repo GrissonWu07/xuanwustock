@@ -22,6 +22,25 @@ from app.quant_sim.execution_sizing import build_execution_sizing_plan, default_
 from app.smart_monitor_db import SmartMonitorDB, DEFAULT_DB_FILE as SMART_MONITOR_DB_FILE
 
 
+_HARD_EXIT_SELL_TOKENS = (
+    "hard_stop_loss",
+    "stop_loss",
+    "risk_stop",
+    "quick_stoploss",
+    "hard_profit_trailing_stop",
+    "profit_tech_sell",
+)
+
+_HARD_EXIT_VETO_IDS = {
+    "hard_stop_loss",
+    "stop_loss",
+    "risk_stop",
+    "quick_stoploss",
+    "hard_profit_trailing_stop",
+    "profit_tech_sell",
+}
+
+
 class SignalCenterService:
     """Normalizes strategy decisions into persisted signals."""
 
@@ -101,8 +120,10 @@ class SignalCenterService:
         payload = self._apply_reentry_constraints(candidate, payload)
         payload = self._apply_stock_execution_feedback(candidate, payload)
         payload = self._apply_portfolio_execution_guard(candidate, payload)
+        payload = self._apply_false_strong_filter(payload)
         payload = self._apply_lifecycle_gate_profile(candidate, payload)
         payload = self._apply_execution_sizing_plan(candidate, payload)
+        payload = self._apply_weak_sell_observation_guard(candidate, payload)
         payload = self._apply_transaction_cost_constraints(candidate, payload)
         payload = self._apply_lifecycle_exit_only_guard(candidate, payload)
         action = str(payload.get("action", "HOLD")).upper()
@@ -367,6 +388,44 @@ class SignalCenterService:
         normalized["decision_type"] = "exit_only_blocked"
         base_reasoning = str(normalized.get("reasoning") or "").strip()
         normalized["reasoning"] = f"{base_reasoning} 生命周期门控：exit_only 只出场管理，禁止新买入或加仓，转为HOLD。".strip()
+        return normalized
+
+    def _apply_weak_sell_observation_guard(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        action = str(normalized.get("action") or "HOLD").upper()
+        if action != "SELL":
+            return normalized
+        if self._is_hard_exit_sell(normalized):
+            return normalized
+        if not self._is_dual_track_sell(normalized):
+            return normalized
+
+        strategy_profile = normalized.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            strategy_profile = {}
+        strategy_profile = dict(strategy_profile)
+        explainability = strategy_profile.get("explainability")
+        if not isinstance(explainability, dict):
+            explainability = {}
+        explainability = dict(explainability)
+        explainability["weak_sell_observation_gate"] = {
+            "status": "observed",
+            "original_action": "SELL",
+            "reason": "普通双轨 SELL 不属于硬止损或浮盈保护，需连续确认后再退出。",
+            "hard_exit_veto_id": self._sell_veto_id(normalized),
+        }
+        strategy_profile["explainability"] = explainability
+        normalized["strategy_profile"] = strategy_profile
+        normalized["action"] = "HOLD"
+        normalized["position_size_pct"] = 0.0
+        normalized["decision_type"] = "weak_sell_observe"
+        confidence = self._safe_float(normalized.get("confidence"), 0.0) or 0.0
+        normalized["confidence"] = round(self._clamp(confidence * 0.75, 0.0, 100.0))
+        base_reasoning = str(normalized.get("reasoning") or "").strip()
+        normalized["reasoning"] = (
+            f"{base_reasoning} 弱SELL观察：普通双轨卖出未触发硬止损/浮盈保护，"
+            "先转为HOLD，等待连续走弱确认。"
+        ).strip()
         return normalized
 
     def _apply_transaction_cost_constraints(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -759,6 +818,48 @@ class SignalCenterService:
         return normalized
 
     @classmethod
+    def _apply_false_strong_filter(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        if str(normalized.get("action") or "HOLD").upper() not in {"BUY", "ADD"}:
+            return normalized
+        profile = normalized.get("strategy_profile") if isinstance(normalized.get("strategy_profile"), dict) else {}
+        guard = profile.get("portfolio_execution_guard") if isinstance(profile.get("portfolio_execution_guard"), dict) else {}
+        if str(guard.get("buy_tier") or "").strip().lower() != "strong_buy":
+            return normalized
+        trend = guard.get("trend_confirmation") if isinstance(guard.get("trend_confirmation"), dict) else {}
+        components = guard.get("score_components") if isinstance(guard.get("score_components"), dict) else {}
+        reasons: list[str] = []
+        above_ma20 = int(cls._safe_float(trend.get("above_ma20_checkpoints"), 0.0) or 0)
+        confirmation_score = cls._safe_float(components.get("confirmation_score"), 0.0) or 0.0
+        structure_ok = bool(
+            trend.get("ma_stack")
+            or trend.get("retest_confirmed")
+            or (trend.get("ma20_rising") and above_ma20 >= 2)
+            or confirmation_score >= 0.75
+        )
+        if not structure_ok:
+            reasons.append("weak_trend_structure")
+        ma20_distance_pct = abs(cls._safe_float(trend.get("ma20_distance_pct"), 0.0) or 0.0)
+        rsi = cls._safe_float(trend.get("rsi"), 0.0) or 0.0
+        if ma20_distance_pct >= 10.0 and rsi >= 86.0:
+            reasons.append("overheated_distance")
+        lifecycle_gate = profile.get("lifecycle_gate") if isinstance(profile.get("lifecycle_gate"), dict) else {}
+        if int(cls._safe_float(lifecycle_gate.get("recent_probe_loss_count"), 0.0) or 0) > 0:
+            reasons.append("recent_probe_failure")
+        if not reasons:
+            return normalized
+
+        next_profile = dict(profile)
+        next_guard = dict(guard)
+        next_guard["buy_tier"] = "normal_buy"
+        next_guard["buy_tier_label"] = "普通买入"
+        next_guard["strong_filter_result"] = "downgraded"
+        next_guard["strong_filter_reasons"] = reasons
+        next_profile["portfolio_execution_guard"] = next_guard
+        normalized["strategy_profile"] = next_profile
+        return normalized
+
+    @classmethod
     def _maybe_relax_trial_lifecycle_gate(cls, gate: Any, strategy_profile: dict[str, Any]) -> dict[str, Any]:
         normalized_gate = dict(gate) if isinstance(gate, dict) else {}
         mode = str(normalized_gate.get("mode") or "").strip().lower()
@@ -1049,6 +1150,51 @@ class SignalCenterService:
         context_signal = str(dual.get("context_signal") or "").upper()
         resonance_type = str(dual.get("resonance_type") or "").lower()
         return (tech_signal == "BUY" and context_signal == "BUY") or resonance_type in {"strong_buy", "bullish_resonance", "heavy_resonance"}
+
+    @classmethod
+    def _is_hard_exit_sell(cls, payload: dict[str, Any]) -> bool:
+        if bool(payload.get("quick_stoploss_failure")):
+            return True
+        decision_type = str(payload.get("decision_type") or "").strip().lower()
+        if any(token in decision_type for token in _HARD_EXIT_SELL_TOKENS):
+            return True
+        return cls._sell_veto_id(payload) in _HARD_EXIT_VETO_IDS
+
+    @staticmethod
+    def _is_dual_track_sell(payload: dict[str, Any]) -> bool:
+        decision_type = str(payload.get("decision_type") or "").strip().lower()
+        if decision_type == "dual_track_weighted_sell":
+            return True
+        fusion_breakdown = SignalCenterService._fusion_breakdown(payload)
+        final_action = str(fusion_breakdown.get("final_action") or "").strip().upper()
+        raw_action = str(
+            fusion_breakdown.get("weighted_action_raw") or fusion_breakdown.get("weighted_threshold_action") or ""
+        ).strip().upper()
+        return final_action == "SELL" and raw_action == "SELL"
+
+    @classmethod
+    def _sell_veto_id(cls, payload: dict[str, Any]) -> str:
+        for key in ("veto_id", "veto_trigger_type", "trigger_type"):
+            value = str(payload.get(key) or "").strip().lower()
+            if value:
+                return value
+        fusion_breakdown = cls._fusion_breakdown(payload)
+        for key in ("veto_id", "veto_trigger_type", "trigger_type"):
+            value = str(fusion_breakdown.get(key) or "").strip().lower()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _fusion_breakdown(payload: dict[str, Any]) -> dict[str, Any]:
+        strategy_profile = payload.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            return {}
+        explainability = strategy_profile.get("explainability")
+        if not isinstance(explainability, dict):
+            return {}
+        fusion_breakdown = explainability.get("fusion_breakdown")
+        return fusion_breakdown if isinstance(fusion_breakdown, dict) else {}
 
     def _resolve_reentry_time(self, payload: dict[str, Any], metrics: dict[str, Any]) -> datetime | None:
         for value in (metrics.get("update_time"), payload.get("decision_time")):

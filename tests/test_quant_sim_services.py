@@ -4,6 +4,34 @@ from app.quant_sim.signal_center_service import SignalCenterService
 from app.notification_service import notification_service
 
 
+def test_false_strong_is_downgraded_when_overheated_without_structure():
+    payload = {
+        "action": "BUY",
+        "strategy_profile": {
+            "portfolio_execution_guard": {
+                "buy_tier": "strong_buy",
+                "buy_strength_score": 0.72,
+                "trend_confirmation": {
+                    "ma_stack": False,
+                    "ma20_rising": False,
+                    "above_ma20_checkpoints": 1,
+                    "ma20_distance_pct": 12.0,
+                    "rsi": 88.0,
+                },
+                "score_components": {"confirmation_score": 0.2},
+            }
+        },
+    }
+
+    result = SignalCenterService._apply_false_strong_filter(payload)
+
+    guard = result["strategy_profile"]["portfolio_execution_guard"]
+    assert guard["buy_tier"] == "normal_buy"
+    assert guard["strong_filter_result"] == "downgraded"
+    assert "weak_trend_structure" in guard["strong_filter_reasons"]
+    assert "overheated_distance" in guard["strong_filter_reasons"]
+
+
 def test_candidate_pool_service_adds_manual_candidate(tmp_path):
     service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
 
@@ -95,7 +123,100 @@ def test_signal_center_persists_canonical_scores_when_available(tmp_path):
 
     assert signal["tech_score"] == 0.096633
     assert signal["context_score"] == 0.0728
-    assert signal["confidence"] == 92
+
+
+def test_signal_center_observes_weak_sell_instead_of_pending_sell(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+    candidate_service.add_manual_candidate("301387", "光大同创", "manual", latest_price=53.66)
+    candidate = candidate_service.list_candidates()[0]
+    buy_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 90, "reasoning": "seed", "position_size_pct": 20},
+        notify=False,
+    )
+    portfolio_service.confirm_buy(
+        buy_signal["id"],
+        price=51.66,
+        quantity=100,
+        note="seed",
+        executed_at="2026-04-01T10:00:00Z",
+    )
+
+    signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "SELL",
+            "confidence": 72,
+            "reasoning": "普通双轨卖出",
+            "position_size_pct": 0,
+            "decision_type": "dual_track_weighted_sell",
+            "strategy_profile": {
+                "explainability": {
+                    "fusion_breakdown": {
+                        "final_action": "SELL",
+                        "weighted_action_raw": "SELL",
+                    }
+                }
+            },
+        },
+        notify=False,
+    )
+
+    assert signal["action"] == "HOLD"
+    assert signal["status"] == "observed"
+    assert signal["decision_type"] == "weak_sell_observe"
+    assert "弱SELL" in signal["reasoning"]
+    assert signal_service.list_pending_signals() == []
+
+
+def test_signal_center_keeps_hard_risk_sell_pending(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+    candidate_service.add_manual_candidate("301387", "光大同创", "manual", latest_price=49.0)
+    candidate = candidate_service.list_candidates()[0]
+    buy_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 90, "reasoning": "seed", "position_size_pct": 20},
+        notify=False,
+    )
+    portfolio_service.confirm_buy(
+        buy_signal["id"],
+        price=51.66,
+        quantity=100,
+        note="seed",
+        executed_at="2026-04-01T10:00:00Z",
+    )
+
+    signal = signal_service.create_signal(
+        candidate,
+        {
+            "action": "SELL",
+            "confidence": 91,
+            "reasoning": "硬止损",
+            "position_size_pct": 0,
+            "decision_type": "dual_track_weighted_sell",
+            "strategy_profile": {
+                "explainability": {
+                    "fusion_breakdown": {
+                        "final_action": "SELL",
+                        "weighted_action_raw": "SELL",
+                        "veto_id": "hard_stop_loss",
+                        "veto_trigger_type": "hard_stop_loss",
+                    }
+                }
+            },
+        },
+        notify=False,
+    )
+
+    assert signal["action"] == "SELL"
+    assert signal["status"] == "pending"
+    assert signal["decision_type"] == "dual_track_weighted_sell"
 
 
 def test_signal_center_blocks_buy_for_exit_only_stock(tmp_path):

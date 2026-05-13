@@ -121,6 +121,12 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "recovery_probe_buy_threshold_delta": 0.08,
             "recovery_probe_size_multiplier": 0.45,
             "recovery_probe_max_position_pct": 6.0,
+            "recovery_probe_confirmed_max_position_pct": 10.0,
+            "recovery_probe_failed_max_position_pct": 2.5,
+            "recovery_probe_failure_threshold": 2,
+            "recovery_probe_failure_lookback_days": 20,
+            "recovery_probe_attempt_fatigue_threshold": 4,
+            "recovery_probe_cooldown_days": 15,
             "cooling_supplemental_buy_threshold_delta": 0.12,
             "cooling_supplemental_size_multiplier": 0.20,
             "cooling_supplemental_max_position_pct": 3.0,
@@ -157,6 +163,12 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "recovery_probe_buy_threshold_delta": 0.10,
             "recovery_probe_size_multiplier": 0.35,
             "recovery_probe_max_position_pct": 4.0,
+            "recovery_probe_confirmed_max_position_pct": 7.0,
+            "recovery_probe_failed_max_position_pct": 2.0,
+            "recovery_probe_failure_threshold": 2,
+            "recovery_probe_failure_lookback_days": 25,
+            "recovery_probe_attempt_fatigue_threshold": 3,
+            "recovery_probe_cooldown_days": 20,
             "cooling_supplemental_buy_threshold_delta": 0.15,
             "cooling_supplemental_size_multiplier": 0.15,
             "cooling_supplemental_max_position_pct": 2.0,
@@ -193,6 +205,12 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "recovery_probe_buy_threshold_delta": 0.12,
             "recovery_probe_size_multiplier": 0.25,
             "recovery_probe_max_position_pct": 2.5,
+            "recovery_probe_confirmed_max_position_pct": 5.0,
+            "recovery_probe_failed_max_position_pct": 1.5,
+            "recovery_probe_failure_threshold": 2,
+            "recovery_probe_failure_lookback_days": 30,
+            "recovery_probe_attempt_fatigue_threshold": 2,
+            "recovery_probe_cooldown_days": 30,
             "cooling_supplemental_buy_threshold_delta": 0.18,
             "cooling_supplemental_size_multiplier": 0.10,
             "cooling_supplemental_max_position_pct": 1.5,
@@ -689,6 +707,93 @@ def test_active_immediate_sell_still_enters_exit_only():
     assert result.allowed is True
     assert result.to_status == QuantStatus.EXIT_ONLY
     assert result.reason_code == "active_immediate_exit_signal"
+
+
+def test_manager_active_weak_sell_observes_instead_of_immediate_exit(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "active",
+            "health_score": 78.0,
+            "active_since": "2026-01-05T10:00:00Z",
+            "active_checkpoints": policy.active_min_dwell_checkpoints + 4,
+        },
+    )
+    signal = {
+        "stock_code": "600000",
+        "stock_name": "浦发银行",
+        "action": "SELL",
+        "decision_type": "dual_track_weighted_sell",
+        "decision_time": "2026-01-06T10:30:00Z",
+        "tech_score": 0.35,
+        "context_score": 0.04,
+        "fusion_score": 0.30,
+        "price": 12.8,
+        "ma20": 12.0,
+        "ma20_slope": 0.02,
+        "unrealized_pnl_pct": -1.8,
+    }
+
+    result = manager.update_after_signal(
+        "600000",
+        latest_signal=signal,
+        recent_signals=[signal],
+        position={"stock_code": "600000", "quantity": 100, "unrealized_pnl_pct": -1.8},
+    )
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["status_changed"] is False
+    assert result["new_status"] == "active"
+    assert result["reason_code"] == "active_downtrend_guarded"
+    assert state["quant_status"] == "active"
+
+
+def test_manager_active_hard_stop_sell_still_immediately_exits(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "active",
+            "health_score": 78.0,
+            "active_since": "2026-01-05T10:00:00Z",
+            "active_checkpoints": policy.active_min_dwell_checkpoints + 4,
+        },
+    )
+    signal = {
+        "stock_code": "600000",
+        "stock_name": "浦发银行",
+        "action": "SELL",
+        "decision_type": "hard_stop_loss",
+        "decision_time": "2026-01-06T10:30:00Z",
+        "tech_score": -0.8,
+        "context_score": -0.3,
+        "fusion_score": 0.05,
+        "quick_stoploss_failure": False,
+        "strategy_profile": {
+            "explainability": {
+                "fusion_breakdown": {
+                    "veto_id": "hard_stop_loss",
+                    "veto_trigger_type": "hard_stop_loss",
+                }
+            }
+        },
+    }
+
+    result = manager.update_after_signal(
+        "600000",
+        latest_signal=signal,
+        recent_signals=[signal],
+        position={"stock_code": "600000", "quantity": 100, "unrealized_pnl_pct": -6.0},
+    )
+
+    assert result["status_changed"] is True
+    assert result["new_status"] == "exit_only"
+    assert result["reason_code"] == "active_immediate_exit_signal"
 
 
 def test_active_flat_downtrend_uses_active_specific_cooling_threshold():
@@ -1520,7 +1625,7 @@ def test_manager_update_after_signal_resets_streaks_when_cooling_buy_recovers(tm
     assert state["weakening_warning_streak"] == 0
 
 
-def test_manager_recovery_probe_blocks_same_checkpoint_active_upgrade(tmp_path):
+def test_manager_recovery_probe_strong_confirmation_upgrades_to_active(tmp_path):
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
     manager = _manager(tmp_path, policy)
     manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
@@ -1561,9 +1666,77 @@ def test_manager_recovery_probe_blocks_same_checkpoint_active_upgrade(tmp_path):
         position={"quantity": 100},
     )
 
-    assert result["status_changed"] is False
-    assert result["new_status"] == "trial"
-    assert result["reason_code"] == "recovery_probe_active"
+    assert result["status_changed"] is True
+    assert result["new_status"] == "active"
+    assert result["reason_code"] == "trial_recovery_probe_strong_upgraded_to_active"
+
+
+def test_resolve_trial_recovery_probe_grace_blocks_fast_exit_only():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    result = resolve_next_status(
+        current_status=QuantStatus.TRIAL,
+        health_score=policy.exit_only_threshold - 5,
+        has_position=True,
+        downtrend_streak=policy.exit_only_downtrend_streak,
+        recovery_probe_exit_grace_active=True,
+        policy=policy,
+    )
+
+    assert result.allowed is False
+    assert result.reason_code == "recovery_probe_grace_active"
+
+
+def test_manager_cooling_strong_trend_recovery_upgrades_directly_to_active(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "cooling",
+            "health_score": policy.cooling_threshold - 5,
+            "cooling_until": "2026-01-01T00:00:00Z",
+        },
+    )
+    signal = {
+        "action": "BUY",
+        "decision_time": "2026-01-05T10:00:00Z",
+        "tech_score": 0.7,
+        "context_score": 0.2,
+        "price": 12.8,
+        "ma20": 12.0,
+        "ma20_slope": 0.02,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.8, "fusion_score_delta": 0.1}},
+            "portfolio_execution_guard": {
+                "status": "strong_buy",
+                "buy_tier": "strong_buy",
+                "buy_strength_score": 0.9,
+                "score_components": {"confirmation_score": 1.0},
+                "trend_confirmation": {
+                    "ma_stack": True,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": policy.active_upgrade_confirm_checkpoints,
+                    "retest_confirmed": False,
+                },
+            },
+            "execution_sizing_plan": {
+                "effective_position_pct": 10.0,
+                "final_budget": 40000.0,
+                "skip_reason": None,
+            },
+        },
+    }
+
+    result = manager.update_after_signal("600000", latest_signal=signal, recent_signals=[signal], position=None)
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["status_changed"] is True
+    assert result["new_status"] == "active"
+    assert result["reason_code"] == "cooling_strong_recovered_to_active"
+    assert state["quant_status"] == "active"
+    assert state["recovery_probe_until"] is None
 
 
 def test_manager_recovery_probe_expires_before_active_upgrade(tmp_path):

@@ -33,6 +33,7 @@ from app.gateway.workbench_analysis import _analysis_options, _hydrate_cached_wo
 from app.portfolio_rebalance_tasks import portfolio_rebalance_task_manager
 from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.db import is_sqlite_locked_error
+from app.quant_sim.profit_gap_attribution import build_profit_gap_attributions_from_runs
 from app.stock_analysis_daily_scheduler import get_stock_analysis_daily_scheduler
 from app.stock_refresh_scheduler import get_unified_stock_refresh_scheduler
 from app.version_info import get_version_info
@@ -444,6 +445,39 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
             if is_sqlite_locked_error(exc):
                 raise _his_replay_database_busy(exc) from exc
             raise
+
+    @app.get("/api/v1/quant/his-replay/runs/{drill_run_id}/profit-gap")
+    def get_his_replay_profit_gap(
+        drill_run_id: int,
+        historicalRunId: int | None = None,
+        historical_run_id: int | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        historical_id = historicalRunId if historicalRunId is not None else historical_run_id
+        if historical_id is None:
+            raise HTTPException(status_code=400, detail="historicalRunId is required")
+        replay_db = _live_quant_drill_replay_db(api_context, drill_run_id)
+        rows = replay_db.list_profit_gap_attributions(
+            int(historical_id),
+            int(drill_run_id),
+            limit=max(1, min(int(limit or 200), 500)),
+        )
+        if not rows:
+            build_profit_gap_attributions_from_runs(
+                replay_db,
+                historical_run_id=int(historical_id),
+                drill_run_id=int(drill_run_id),
+            )
+            rows = replay_db.list_profit_gap_attributions(
+                int(historical_id),
+                int(drill_run_id),
+                limit=max(1, min(int(limit or 200), 500)),
+            )
+        return {
+            "historical_run_id": int(historical_id),
+            "drill_run_id": int(drill_run_id),
+            "items": rows,
+        }
 
     @app.get("/api/v1/quant/replay/{run_id}/quant-states")
     def get_live_drill_quant_states(

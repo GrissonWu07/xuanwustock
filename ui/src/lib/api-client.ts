@@ -209,6 +209,18 @@ export function createApiClient(options: ApiClientOptions = {}) {
   const getReplayCapitalPool = async <T,>(query?: Record<string, QueryValue>): Promise<T> =>
     requestLive<T>(withQuery("/api/v1/quant/his-replay/capital-pool", query));
 
+  const getReplayProfitGap = async <T,>(
+    drillRunId: string | number,
+    historicalRunId: string | number,
+    limit: number = 200,
+  ): Promise<T> =>
+    requestLive<T>(
+      withQuery(`/api/v1/quant/his-replay/runs/${encodeURIComponent(String(drillRunId))}/profit-gap`, {
+        historicalRunId,
+        limit,
+      }),
+    );
+
   const requestPortfolioPosition = async <T,>(symbol: string): Promise<T> => {
     if (!symbol.trim()) {
       throw new ApiError(t("Missing stock code"), 400, `/api/v1/portfolio_v2/positions/${symbol}`);
@@ -296,6 +308,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
     getTaskStatus: requestTask,
     getReplayProgress,
     getReplayCapitalPool,
+    getReplayProfitGap,
     getPortfolioPosition: requestPortfolioPosition,
     patchPortfolioPosition,
     listStrategyProfiles,

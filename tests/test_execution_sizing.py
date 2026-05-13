@@ -323,6 +323,7 @@ def test_trial_normal_buy_with_confirmed_trend_uses_active_like_sizing(tmp_path)
     profile = signal["strategy_profile"]
     assert profile["lifecycle_gate"]["mode"] == "trial_confirmed"
     assert profile["execution_sizing_plan"]["lifecycle_cap_pct"] == 9.0
+    assert profile["execution_sizing_plan"]["quant_status_for_portfolio_budget"] == "trial"
     assert profile["execution_sizing_plan"]["effective_position_pct"] == 9.0
     assert signal["position_size_pct"] == 9.0
 
@@ -380,6 +381,37 @@ def test_recovery_probe_strong_confirmation_lifts_probe_cap(tmp_path):
     assert profile["execution_sizing_plan"]["lifecycle_gate_max_position_pct"] == 10.0
     assert profile["execution_sizing_plan"]["effective_position_pct"] == 10.0
     assert signal["position_size_pct"] == 10.0
+
+
+def test_recovery_probe_confirmed_ignores_old_probe_multiplier():
+    policy = default_execution_position_cap_policy("aggressive")
+    plan = build_execution_sizing_plan(
+        signal={
+            "position_size_pct": 30.0,
+            "stop_loss_pct": 5,
+            "strategy_profile": {
+                "kernel_positioning": {"quality_position_pct": 30.0},
+                "portfolio_execution_guard": {"buy_tier": "strong_buy"},
+                "lifecycle_gate": {
+                    "mode": "recovery_probe_confirmed",
+                    "size_multiplier": 0.25,
+                    "max_position_pct": 10.0,
+                },
+            },
+        },
+        total_equity=400000,
+        available_cash=300000,
+        slot_available_cash=300000,
+        quant_status="trial",
+        policy=policy,
+        price=10.0,
+    )
+
+    assert plan["lifecycle_gate_size_multiplier"] == 1.0
+    assert plan["lifecycle_gate_adjusted_position_pct"] == 30.0
+    assert plan["lifecycle_gate_max_position_pct"] == 10.0
+    assert plan["effective_position_pct"] == 10.0
+    assert plan["quant_status_for_portfolio_budget"] == "trial"
 
 
 def test_recovery_probe_recent_failure_keeps_retry_cap(tmp_path):

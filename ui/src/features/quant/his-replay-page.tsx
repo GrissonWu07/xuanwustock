@@ -71,6 +71,22 @@ const EXECUTION_STAT_GROUPS = [
 type ReplayProgressSnapshot = Pick<ReplaySnapshot, "updatedAt" | "tasks"> &
   Partial<Pick<ReplaySnapshot, "holdings" | "trades" | "signals" | "tradeCostSummary">>;
 
+type ProfitGapAttributionItem = {
+  stock_code?: string;
+  stock_name?: string;
+  historical_total_pnl?: number | string;
+  drill_total_pnl?: number | string;
+  pnl_gap?: number | string;
+  attribution_labels?: string[];
+  primary_reason?: string;
+};
+
+type ProfitGapAttributionResponse = {
+  historical_run_id: number;
+  drill_run_id: number;
+  items: ProfitGapAttributionItem[];
+};
+
 function parseDateRange(range: string) {
   const match = String(range).match(/(\d{4}-\d{2}-\d{2})\s*->\s*(\d{4}-\d{2}-\d{2}|now)/);
   return {
@@ -156,6 +172,52 @@ function formatSummaryPercent(value: unknown, fallback = "--") {
 
 function findMetricValue(metrics: ReplaySnapshot["tradeCostSummary"], label: string) {
   return metrics?.find((metric) => metric.label === label)?.value;
+}
+
+function isLiveQuantDrillTask(task: ReplaySnapshot["tasks"][number] | null | undefined) {
+  const runType = String(task?.runType ?? "").toLowerCase();
+  const mode = String(task?.mode ?? "").toLowerCase();
+  return runType === "live_quant_drill" || mode === "live_quant_drill";
+}
+
+function pickComparableHistoricalTask(
+  tasks: ReplaySnapshot["tasks"],
+  drillTask: ReplaySnapshot["tasks"][number] | null | undefined,
+) {
+  if (!drillTask || !isLiveQuantDrillTask(drillTask)) return null;
+  return (
+    tasks.find((task) => {
+      if (!task.runId || task.runId === drillTask.runId || isLiveQuantDrillTask(task)) return false;
+      if (String(task.status).toLowerCase() !== "completed") return false;
+      return (
+        task.range === drillTask.range
+        && task.timeframe === drillTask.timeframe
+        && task.market === drillTask.market
+        && task.strategyProfileId === drillTask.strategyProfileId
+      );
+    }) ?? null
+  );
+}
+
+function profitGapRows(items: ProfitGapAttributionItem[]): TableRow[] {
+  return items.map((item, index) => {
+    const code = toDisplayText(item.stock_code, "--");
+    const name = toDisplayText(item.stock_name, code);
+    return {
+      id: `${code}-${index}`,
+      code,
+      name,
+      cells: [
+        code,
+        name,
+        formatSummaryNumber(item.historical_total_pnl),
+        formatSummaryNumber(item.drill_total_pnl),
+        formatSummaryNumber(item.pnl_gap),
+        (item.attribution_labels ?? []).join(", ") || "--",
+        toDisplayText(item.primary_reason, "--"),
+      ],
+    };
+  });
 }
 
 function findMetric(metrics: ReplaySnapshot["tradeCostSummary"], label: string) {
@@ -648,7 +710,12 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [checkpointPage, setCheckpointPage] = useState(1);
   const [checkpointLoading, setCheckpointLoading] = useState(false);
   const [checkpointError, setCheckpointError] = useState("");
+  const [profitGapRowsState, setProfitGapRowsState] = useState<TableRow[]>([]);
+  const [profitGapLoading, setProfitGapLoading] = useState(false);
+  const [profitGapError, setProfitGapError] = useState("");
   const runningReplayTaskKey = replayPollingTaskKey(snapshot?.tasks);
+  const selectedTaskForProfitGap = snapshot?.tasks.find((task) => task.id === selectedTaskId) ?? snapshot?.tasks[0] ?? null;
+  const comparableHistoricalTask = snapshot ? pickComparableHistoricalTask(snapshot.tasks, selectedTaskForProfitGap) : null;
 
   const loadReplayCheckpointPage = useCallback(
     async (page: number, checkpointAt?: string) => {
@@ -783,6 +850,48 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     setSignalPage(1);
   }, [signalStockFilter, signalActionFilter]);
 
+  useEffect(() => {
+    if (
+      !selectedTaskForProfitGap?.runId
+      || !comparableHistoricalTask?.runId
+      || typeof activeClient.getReplayProfitGap !== "function"
+    ) {
+      setProfitGapRowsState([]);
+      setProfitGapError("");
+      setProfitGapLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setProfitGapLoading(true);
+    setProfitGapError("");
+    void activeClient
+      .getReplayProfitGap<ProfitGapAttributionResponse>(
+        selectedTaskForProfitGap.runId,
+        comparableHistoricalTask.runId,
+        200,
+      )
+      .then((payload) => {
+        if (!cancelled) {
+          setProfitGapRowsState(profitGapRows(payload.items ?? []));
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setProfitGapRowsState([]);
+          setProfitGapError(error instanceof Error ? error.message : t("收益差异归因加载失败"));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setProfitGapLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeClient, comparableHistoricalTask?.runId, selectedTaskForProfitGap?.runId]);
+
   if (resource.status === "loading" && !resource.data) {
     return <PageLoadingState title={t("历史回放加载中")} description={t("正在读取回放任务、候选池和交易结果。")} />;
   }
@@ -908,6 +1017,15 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     rows: selectedTask?.profitLossByStock ?? [],
     emptyLabel: t("暂无盈亏构成"),
     emptyMessage: t("选中任务还没有可归集到股票的成交或期末持仓。"),
+  };
+  const selectedTaskProfitGapAttributions: TableSection = {
+    columns: [t("代码"), t("名称"), t("历史盈亏"), t("演练盈亏"), t("差额"), t("归因"), t("主要原因")],
+    rows: selectedTask?.profitGapAttributions?.length ? selectedTask.profitGapAttributions : profitGapRowsState,
+    emptyLabel: profitGapLoading ? t("收益差异归因加载中") : t("暂无收益差异归因"),
+    emptyMessage: profitGapError
+      || (comparableHistoricalTask
+        ? t("当前对比任务还没有生成收益差异归因。")
+        : t("需要选择同区间的实时量化演练和历史回放任务后才会展示。")),
   };
   const tradeRows = withCodeName(snapshot.trades.rows, 2);
   const signalTable = removeExecutionResultColumn(snapshot.signals);
@@ -1469,6 +1587,19 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
             compactConfig={{ coreColumnIndexes: [0, 2, 3, 4], detailColumnIndexes: [1, 5, 6, 7, 8] }}
             signalDetailSource="replay"
           />
+
+          {isLiveQuantDrillTask(selectedTask) || selectedTaskProfitGapAttributions.rows.length ? (
+            <QuantTableSectionCard
+              title={t("收益差异归因")}
+              description={t("对比同区间历史回放和实时量化演练，标记买太小、买太晚、误买、probe亏损和SELL阻断。")}
+              table={selectedTaskProfitGapAttributions}
+              emptyTitle={selectedTaskProfitGapAttributions.emptyLabel ?? t("暂无收益差异归因")}
+              emptyDescription={selectedTaskProfitGapAttributions.emptyMessage ?? t("需要选择同区间的实时量化演练和历史回放任务后才会展示。")}
+              tableLayout="auto"
+              compactConfig={{ coreColumnIndexes: [0, 2, 3, 4], detailColumnIndexes: [1, 5, 6] }}
+              signalDetailSource="replay"
+            />
+          ) : null}
 
           <div className="section-grid">
             <QuantTableSectionCard

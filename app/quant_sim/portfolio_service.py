@@ -22,6 +22,25 @@ from app.quant_sim.execution_constraints import trade_block_reason
 from app.quant_sim.execution_sizing import apply_batch_execution_caps, default_execution_position_cap_policy
 
 
+_HARD_EXIT_SELL_TOKENS = (
+    "hard_stop_loss",
+    "stop_loss",
+    "risk_stop",
+    "quick_stoploss",
+    "hard_profit_trailing_stop",
+    "profit_tech_sell",
+)
+
+_HARD_EXIT_VETO_IDS = {
+    "hard_stop_loss",
+    "stop_loss",
+    "risk_stop",
+    "quick_stoploss",
+    "hard_profit_trailing_stop",
+    "profit_tech_sell",
+}
+
+
 class PortfolioService:
     """Executes manual confirmations against the simulation ledger."""
 
@@ -127,6 +146,11 @@ class PortfolioService:
                     f"自动执行跳过：{reason}",
                     blocked_reason="sizing_skip",
                     cap_reason=self._sizing_skip_cap_reason(sizing_evidence),
+                    execution_diagnostics={
+                        "blocked_reason": "sizing_skip",
+                        "cap_reason": self._sizing_skip_cap_reason(sizing_evidence),
+                        "sizing": sizing_evidence,
+                    },
                 )
                 return False
             self.confirm_buy(
@@ -141,7 +165,21 @@ class PortfolioService:
         if action == "SELL":
             position = self._get_position(stock_code, as_of=executed_at)
             if not position:
-                self._record_auto_execute_skip(signal, "自动执行跳过：当前无可卖持仓", blocked_reason="no_position")
+                self._record_auto_execute_skip(
+                    signal,
+                    "自动执行跳过：当前无可卖持仓",
+                    blocked_reason="no_position",
+                    execution_diagnostics=self._sell_execution_diagnostics(signal, None, blocked_reason="no_position"),
+                )
+                return False
+            if self._is_weak_dual_track_sell(signal):
+                self._record_auto_execute_skip(
+                    signal,
+                    "自动执行跳过：弱SELL观察，未触发硬止损/浮盈保护，等待连续走弱确认",
+                    blocked_reason="weak_sell_observe",
+                    cap_reason="weak_sell_observe",
+                    execution_diagnostics=self._sell_execution_diagnostics(signal, position, blocked_reason="weak_sell_observe"),
+                )
                 return False
             quantity = min(
                 int(position.get("quantity") or 0),
@@ -149,7 +187,12 @@ class PortfolioService:
             )
             price = self._resolve_signal_price(signal, fallback=position)
             if price <= 0:
-                self._record_auto_execute_skip(signal, "自动执行跳过：缺少有效最新价", blocked_reason="missing_price")
+                self._record_auto_execute_skip(
+                    signal,
+                    "自动执行跳过：缺少有效最新价",
+                    blocked_reason="missing_price",
+                    execution_diagnostics=self._sell_execution_diagnostics(signal, position, blocked_reason="missing_price"),
+                )
                 return False
             block_reason = trade_block_reason(
                 action=action,
@@ -159,11 +202,30 @@ class PortfolioService:
                 signal=signal,
             )
             if block_reason:
-                self._record_auto_execute_skip(signal, f"自动执行跳过：{block_reason}", blocked_reason="trade_blocked")
+                self._record_auto_execute_skip(
+                    signal,
+                    f"自动执行跳过：{block_reason}",
+                    blocked_reason="trade_blocked",
+                    execution_diagnostics=self._sell_execution_diagnostics(signal, position, blocked_reason="trade_blocked"),
+                )
                 return False
             if quantity <= 0:
-                self._record_auto_execute_skip(signal, "自动执行跳过：当前无可卖数量", blocked_reason="no_sellable_quantity")
+                self._record_auto_execute_skip(
+                    signal,
+                    "自动执行跳过：当前无可卖数量",
+                    blocked_reason="no_sellable_quantity",
+                    execution_diagnostics=self._sell_execution_diagnostics(signal, position, blocked_reason="no_sellable_quantity"),
+                )
                 return False
+            self._attach_execution_diagnostics(
+                signal,
+                self._sell_execution_diagnostics(
+                    signal,
+                    position,
+                    blocked_reason="",
+                    actual_sell_at=executed_at or self.db._now(),
+                ),
+            )
             self.confirm_sell(
                 int(signal["id"]),
                 price=price,
@@ -522,22 +584,77 @@ class PortfolioService:
         *,
         blocked_reason: str = "",
         cap_reason: str = "",
+        execution_diagnostics: dict | None = None,
     ) -> None:
         signal_id = signal.get("id")
         if signal_id in (None, ""):
             return
         profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+        diagnostics = execution_diagnostics if isinstance(execution_diagnostics, dict) else {}
         skip_payload = {
             "execution_note": reason,
             "blocked_reason": blocked_reason or self._infer_blocked_reason(reason),
             "cap_reason": cap_reason or "",
+            "execution_diagnostics": diagnostics,
         }
         next_profile = {**profile, "auto_execution_skip": skip_payload}
         signal["strategy_profile"] = next_profile
         signal["execution_note"] = reason
         signal["blocked_reason"] = skip_payload["blocked_reason"]
         signal["cap_reason"] = skip_payload["cap_reason"]
-        self.db.update_signal_state(int(signal_id), execution_note=reason, strategy_profile=next_profile)
+        signal["execution_diagnostics"] = diagnostics
+        self.db.update_signal_state(
+            int(signal_id),
+            execution_note=reason,
+            blocked_reason=skip_payload["blocked_reason"],
+            cap_reason=skip_payload["cap_reason"],
+            execution_diagnostics=diagnostics,
+            strategy_profile=next_profile,
+        )
+
+    def _attach_execution_diagnostics(self, signal: dict, diagnostics: dict) -> None:
+        signal_id = signal.get("id")
+        if signal_id in (None, ""):
+            return
+        signal["execution_diagnostics"] = diagnostics
+        try:
+            self.db.update_signal_state(int(signal_id), execution_diagnostics=diagnostics)
+        except Exception:
+            return
+
+    def _sell_execution_diagnostics(
+        self,
+        signal: dict,
+        position: dict | None,
+        *,
+        blocked_reason: str,
+        actual_sell_at: str | datetime | None = None,
+    ) -> dict:
+        quantity = int((position or {}).get("quantity") or 0)
+        sellable_quantity = int((position or {}).get("sellable_quantity") or 0)
+        locked_quantity = int((position or {}).get("locked_quantity") or max(quantity - sellable_quantity, 0))
+        hard_veto_id = self._sell_veto_id(signal)
+        sell_trigger_type = "weak_sell_observe" if blocked_reason == "weak_sell_observe" else hard_veto_id
+        if not sell_trigger_type:
+            sell_trigger_type = str(signal.get("decision_type") or "sell_signal").strip() or "sell_signal"
+        return {
+            "sell_trigger_type": sell_trigger_type,
+            "hard_veto_id": hard_veto_id,
+            "is_weak_sell_observe": blocked_reason == "weak_sell_observe",
+            "sellable_quantity": sellable_quantity,
+            "locked_quantity": locked_quantity,
+            "blocked_reason": blocked_reason,
+            "first_sell_signal_at": signal.get("created_at") or signal.get("checkpoint_at"),
+            "actual_sell_at": self._format_execution_time(actual_sell_at) if actual_sell_at else None,
+        }
+
+    @staticmethod
+    def _format_execution_time(value: str | datetime | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
 
     @staticmethod
     def _infer_blocked_reason(reason: str) -> str:
@@ -566,3 +683,48 @@ class PortfolioService:
         if sizing_evidence.get("slot_capacity_capped"):
             return "slot_capacity_capped"
         return ""
+
+    @classmethod
+    def _is_weak_dual_track_sell(cls, signal: dict) -> bool:
+        if str(signal.get("action") or "").upper() != "SELL":
+            return False
+        if cls._is_hard_exit_sell(signal):
+            return False
+        decision_type = str(signal.get("decision_type") or "").strip().lower()
+        if decision_type == "dual_track_weighted_sell":
+            return True
+        fusion_breakdown = cls._fusion_breakdown(signal)
+        final_action = str(fusion_breakdown.get("final_action") or "").strip().upper()
+        raw_action = str(
+            fusion_breakdown.get("weighted_action_raw") or fusion_breakdown.get("weighted_threshold_action") or ""
+        ).strip().upper()
+        return final_action == "SELL" and raw_action == "SELL"
+
+    @classmethod
+    def _is_hard_exit_sell(cls, signal: dict) -> bool:
+        if bool(signal.get("quick_stoploss_failure")):
+            return True
+        decision_type = str(signal.get("decision_type") or "").strip().lower()
+        if any(token in decision_type for token in _HARD_EXIT_SELL_TOKENS):
+            return True
+        return cls._sell_veto_id(signal) in _HARD_EXIT_VETO_IDS
+
+    @classmethod
+    def _sell_veto_id(cls, signal: dict) -> str:
+        for key in ("veto_id", "veto_trigger_type", "trigger_type"):
+            value = str(signal.get(key) or "").strip().lower()
+            if value:
+                return value
+        fusion_breakdown = cls._fusion_breakdown(signal)
+        for key in ("veto_id", "veto_trigger_type", "trigger_type"):
+            value = str(fusion_breakdown.get(key) or "").strip().lower()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _fusion_breakdown(signal: dict) -> dict:
+        profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+        explainability = profile.get("explainability") if isinstance(profile.get("explainability"), dict) else {}
+        fusion_breakdown = explainability.get("fusion_breakdown")
+        return fusion_breakdown if isinstance(fusion_breakdown, dict) else {}
