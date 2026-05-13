@@ -17,7 +17,7 @@ from app.quant_kernel import ReplayTimepointGenerator
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.capital_slots import DEFAULT_CAPITAL_SLOT_CONFIG
 from app.quant_sim.corporate_actions import AkshareCorporateActionProvider
-from app.quant_sim.db import DEFAULT_DB_FILE, DEFAULT_REPLAY_DB_FILE, QuantSimDB, QuantSimReplayDB
+from app.quant_sim.db import DEFAULT_COMMISSION_RATE, DEFAULT_DB_FILE, DEFAULT_REPLAY_DB_FILE, DEFAULT_SELL_TAX_RATE, QuantSimDB, QuantSimReplayDB
 from app.quant_sim.dynamic_strategy import (
     DEFAULT_AI_DYNAMIC_LOOKBACK,
     DEFAULT_AI_DYNAMIC_STRENGTH,
@@ -955,8 +955,16 @@ class QuantSimReplayService:
         except (TypeError, ValueError):
             dynamic_lookback = DEFAULT_AI_DYNAMIC_LOOKBACK
         dynamic_lookback = max(6, min(336, dynamic_lookback))
-        resolved_commission_rate = float(commission_rate if commission_rate is not None else 0.0)
-        resolved_sell_tax_rate = float(sell_tax_rate if sell_tax_rate is not None else 0.0)
+        resolved_commission_rate = self._resolve_fee_rate(
+            commission_rate,
+            scheduler_config.get("commission_rate"),
+            DEFAULT_COMMISSION_RATE,
+        )
+        resolved_sell_tax_rate = self._resolve_fee_rate(
+            sell_tax_rate,
+            scheduler_config.get("sell_tax_rate"),
+            DEFAULT_SELL_TAX_RATE,
+        )
 
         return {
             "start_dt": start_dt,
@@ -1337,6 +1345,21 @@ class QuantSimReplayService:
             "cooling_review": cooling_review_summary,
             "candidate_processing": candidate_processing,
         }
+
+    @staticmethod
+    def _resolve_fee_rate(value: Any, scheduler_value: Any, default: float) -> float:
+        source = value if value is not None else scheduler_value
+        try:
+            parsed = float(default if source in (None, "") else source)
+        except (TypeError, ValueError):
+            parsed = float(default)
+        if parsed < 0:
+            parsed = 0.0
+        if parsed > 1:
+            parsed = parsed / 100.0
+        if parsed > 0.2:
+            parsed = 0.2
+        return round(parsed, 8)
 
     def _process_live_quant_drill_candidate_events(
         self,

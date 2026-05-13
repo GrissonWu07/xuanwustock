@@ -5,7 +5,7 @@ import pandas as pd
 
 from app.quant_kernel.models import Decision
 from app.quant_sim.candidate_pool_service import CandidatePoolService
-from app.quant_sim.db import QuantSimDB
+from app.quant_sim.db import DEFAULT_COMMISSION_RATE, DEFAULT_SELL_TAX_RATE, QuantSimDB
 from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.replay_service import MainProjectHistoricalSnapshotProvider, QuantSimReplayService
@@ -16,6 +16,37 @@ from app.notification_service import notification_service
 def test_replay_queue_methods_accept_initial_cash():
     assert "initial_cash" in inspect.signature(QuantSimReplayService.enqueue_historical_range).parameters
     assert "initial_cash" in inspect.signature(QuantSimReplayService.enqueue_past_to_live).parameters
+
+
+def test_replay_context_uses_default_trade_cost_rates_when_payload_omits_them(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    CandidatePoolService(db_file=db_file).add_candidate(
+        stock_code="600519",
+        stock_name="贵州茅台",
+        source="manual",
+        latest_price=10.0,
+        notes="费率默认值测试",
+    )
+    service = QuantSimReplayService(
+        db_file=db_file,
+        snapshot_provider=FakeSnapshotProvider(),
+        adapter=FakeAdapter(),
+    )
+
+    context = service._prepare_replay_context(  # noqa: SLF001 - regression coverage for run metadata defaults
+        start_datetime="2026-01-05 10:00:00",
+        end_datetime="2026-01-05 11:00:00",
+        timeframe="30m",
+        market="CN",
+        strategy_mode="auto",
+        strategy_profile_id=None,
+        initial_cash=100000,
+        commission_rate=None,
+        sell_tax_rate=None,
+    )
+
+    assert context["commission_rate"] == DEFAULT_COMMISSION_RATE
+    assert context["sell_tax_rate"] == DEFAULT_SELL_TAX_RATE
 
 
 class FakeSnapshotProvider:
