@@ -47,13 +47,14 @@ class FakeReplayDB:
         self.calls.append({"method": "candidate_events", "run_id": run_id, **kwargs})
         return {"items": [], "total": 0, "page": kwargs.get("page", 1), "pageSize": kwargs.get("page_size", 50)}
 
-    def list_profit_gap_attributions(self, historical_run_id, drill_run_id, *, limit=200):
+    def list_profit_gap_attributions(self, historical_run_id, drill_run_id, *, limit=200, **filters):
         self.calls.append(
             {
                 "method": "profit_gap",
                 "historical_run_id": historical_run_id,
                 "drill_run_id": drill_run_id,
                 "limit": limit,
+                **filters,
             }
         )
         return [
@@ -64,6 +65,10 @@ class FakeReplayDB:
                 "drill_total_pnl": 18023.59,
                 "pnl_gap": 23095.41,
                 "attribution_labels": ["size_too_small"],
+                "primary_label": "size_too_small",
+                "sub_reason": "recovery_probe_cap",
+                "severity": "high",
+                "actionable": True,
                 "primary_reason": "entry matched but drill sizing was materially lower",
             }
         ]
@@ -191,9 +196,53 @@ def test_profit_gap_endpoint_reads_replay_attribution_rows():
     assert payload["historical_run_id"] == 1
     assert payload["drill_run_id"] == 2
     assert payload["items"][0]["attribution_labels"] == ["size_too_small"]
+    assert payload["summary"]["by_label"]["size_too_small"] == 1
+    assert payload["summary"]["actionable_count"] == 1
     assert context.replay.calls[-1] == {
         "method": "profit_gap",
         "historical_run_id": 1,
         "drill_run_id": 2,
         "limit": 25,
+        "label": "",
+        "sub_reason": "",
+        "severity": "",
+        "actionable": None,
+        "min_abs_gap": None,
+        "stock": "",
+    }
+
+
+def test_profit_gap_endpoint_passes_v2_filters():
+    from app.gateway_api import create_app
+
+    context = FakeContext()
+    context.replay = FakeReplayDB({"id": 2, "mode": "live_quant_drill", "metadata": {"run_type": "live_quant_drill"}})
+    client = TestClient(create_app(context))
+
+    response = client.get(
+        "/api/v1/quant/his-replay/runs/2/profit-gap",
+        params={
+            "historicalRunId": 1,
+            "limit": 25,
+            "label": "size_too_small",
+            "subReason": "recovery_probe_cap",
+            "severity": "high",
+            "actionableOnly": "true",
+            "minAbsGap": 500,
+            "stock": "301666",
+        },
+    )
+
+    assert response.status_code == 200
+    assert context.replay.calls[-1] == {
+        "method": "profit_gap",
+        "historical_run_id": 1,
+        "drill_run_id": 2,
+        "limit": 25,
+        "label": "size_too_small",
+        "sub_reason": "recovery_probe_cap",
+        "severity": "high",
+        "actionable": True,
+        "min_abs_gap": 500.0,
+        "stock": "301666",
     }

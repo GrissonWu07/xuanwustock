@@ -213,11 +213,13 @@ export function createApiClient(options: ApiClientOptions = {}) {
     drillRunId: string | number,
     historicalRunId: string | number,
     limit: number = 200,
+    filters: Record<string, QueryValue> = {},
   ): Promise<T> =>
     requestLive<T>(
       withQuery(`/api/v1/quant/his-replay/runs/${encodeURIComponent(String(drillRunId))}/profit-gap`, {
         historicalRunId,
         limit,
+        ...filters,
       }),
     );
 

@@ -90,6 +90,39 @@ def _snapshot_portfolio(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return _snapshot_portfolio_impl(*args, **kwargs)
 
 
+def _profit_gap_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_label: dict[str, int] = {}
+    by_sub_reason: dict[str, int] = {}
+    by_severity: dict[str, int] = {}
+    actionable_count = 0
+    large_unclassified_count = 0
+    for row in rows:
+        label = str(row.get("primary_label") or (row.get("attribution_labels") or ["unclassified"])[0] or "unclassified")
+        sub_reason = str(row.get("sub_reason") or "")
+        severity = str(row.get("severity") or "")
+        by_label[label] = by_label.get(label, 0) + 1
+        if sub_reason:
+            by_sub_reason[sub_reason] = by_sub_reason.get(sub_reason, 0) + 1
+        if severity:
+            by_severity[severity] = by_severity.get(severity, 0) + 1
+        if row.get("actionable"):
+            actionable_count += 1
+        try:
+            pnl_gap = abs(float(row.get("pnl_gap") or 0))
+        except (TypeError, ValueError):
+            pnl_gap = 0.0
+        if pnl_gap >= 500 and label == "unclassified":
+            large_unclassified_count += 1
+    return {
+        "total": len(rows),
+        "by_label": by_label,
+        "by_sub_reason": by_sub_reason,
+        "by_severity": by_severity,
+        "actionable_count": actionable_count,
+        "large_unclassified_count": large_unclassified_count,
+    }
+
+
 def _action_portfolio_analyze(context: UIApiContext, payload: Any) -> dict[str, Any]:
     _sync_portfolio_compat_hooks()
     return _action_portfolio_analyze_impl(context, payload)
@@ -452,30 +485,51 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
         historicalRunId: int | None = None,
         historical_run_id: int | None = None,
         limit: int = 200,
+        label: str = "",
+        subReason: str = "",
+        sub_reason: str = "",
+        severity: str = "",
+        actionable: bool | None = None,
+        actionableOnly: bool | None = None,
+        minAbsGap: float | None = None,
+        min_abs_gap: float | None = None,
+        stock: str = "",
     ) -> dict[str, Any]:
         historical_id = historicalRunId if historicalRunId is not None else historical_run_id
         if historical_id is None:
             raise HTTPException(status_code=400, detail="historicalRunId is required")
         replay_db = _live_quant_drill_replay_db(api_context, drill_run_id)
-        rows = replay_db.list_profit_gap_attributions(
+        existing_rows = replay_db.list_profit_gap_attributions(
             int(historical_id),
             int(drill_run_id),
-            limit=max(1, min(int(limit or 200), 500)),
+            limit=1,
         )
-        if not rows:
+        if not existing_rows:
             build_profit_gap_attributions_from_runs(
                 replay_db,
                 historical_run_id=int(historical_id),
                 drill_run_id=int(drill_run_id),
             )
-            rows = replay_db.list_profit_gap_attributions(
-                int(historical_id),
-                int(drill_run_id),
-                limit=max(1, min(int(limit or 200), 500)),
-            )
+        effective_actionable = actionable
+        if actionableOnly is not None:
+            effective_actionable = True if actionableOnly else None
+        effective_sub_reason = subReason or sub_reason
+        effective_min_abs_gap = minAbsGap if minAbsGap is not None else min_abs_gap
+        rows = replay_db.list_profit_gap_attributions(
+            int(historical_id),
+            int(drill_run_id),
+            limit=max(1, min(int(limit or 200), 500)),
+            label=label,
+            sub_reason=effective_sub_reason,
+            severity=severity,
+            actionable=effective_actionable,
+            min_abs_gap=effective_min_abs_gap,
+            stock=stock,
+        )
         return {
             "historical_run_id": int(historical_id),
             "drill_run_id": int(drill_run_id),
+            "summary": _profit_gap_summary(rows),
             "items": rows,
         }
 

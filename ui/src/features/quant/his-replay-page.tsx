@@ -26,6 +26,19 @@ const AI_DYNAMIC_STRATEGY_OPTIONS = [
   { value: "hybrid", label: t("开启") },
 ];
 
+const PROFIT_GAP_LABEL_OPTIONS = [
+  "entry_too_late",
+  "size_too_small",
+  "bad_extra_buy",
+  "sell_blocked_or_late",
+  "same_entry_exit_gap",
+  "mark_to_market_gap",
+  "missing_evidence",
+  "drill_better",
+];
+
+const PROFIT_GAP_SEVERITY_OPTIONS = ["high", "medium", "low", "none"];
+
 const MARKET_OPTIONS = ["CN", "HK", "US"] as const;
 const REPLAY_PROGRESS_REFRESH_MS = 10 * 1000;
 const REPLAY_CHECKPOINT_PAGE_SIZE = 50;
@@ -78,12 +91,25 @@ type ProfitGapAttributionItem = {
   drill_total_pnl?: number | string;
   pnl_gap?: number | string;
   attribution_labels?: string[];
+  primary_label?: string;
+  sub_reason?: string;
+  severity?: string;
+  actionable?: boolean;
+  recommended_action?: string;
   primary_reason?: string;
 };
 
 type ProfitGapAttributionResponse = {
   historical_run_id: number;
   drill_run_id: number;
+  summary?: {
+    total?: number;
+    by_label?: Record<string, number>;
+    by_sub_reason?: Record<string, number>;
+    by_severity?: Record<string, number>;
+    actionable_count?: number;
+    large_unclassified_count?: number;
+  };
   items: ProfitGapAttributionItem[];
 };
 
@@ -213,7 +239,11 @@ function profitGapRows(items: ProfitGapAttributionItem[]): TableRow[] {
         formatSummaryNumber(item.historical_total_pnl),
         formatSummaryNumber(item.drill_total_pnl),
         formatSummaryNumber(item.pnl_gap),
-        (item.attribution_labels ?? []).join(", ") || "--",
+        toDisplayText(item.primary_label ?? (item.attribution_labels ?? [])[0], "--"),
+        toDisplayText(item.sub_reason, "--"),
+        toDisplayText(item.severity, "--"),
+        item.actionable ? t("需要处理") : t("观察"),
+        toDisplayText(item.recommended_action, "--"),
         toDisplayText(item.primary_reason, "--"),
       ],
     };
@@ -711,8 +741,13 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
   const [checkpointLoading, setCheckpointLoading] = useState(false);
   const [checkpointError, setCheckpointError] = useState("");
   const [profitGapRowsState, setProfitGapRowsState] = useState<TableRow[]>([]);
+  const [profitGapSummary, setProfitGapSummary] = useState<ProfitGapAttributionResponse["summary"] | null>(null);
   const [profitGapLoading, setProfitGapLoading] = useState(false);
   const [profitGapError, setProfitGapError] = useState("");
+  const [profitGapLabelFilter, setProfitGapLabelFilter] = useState("ALL");
+  const [profitGapSeverityFilter, setProfitGapSeverityFilter] = useState("ALL");
+  const [profitGapActionableOnly, setProfitGapActionableOnly] = useState(false);
+  const [profitGapMinAbsGap, setProfitGapMinAbsGap] = useState(500);
   const runningReplayTaskKey = replayPollingTaskKey(snapshot?.tasks);
   const selectedTaskForProfitGap = snapshot?.tasks.find((task) => task.id === selectedTaskId) ?? snapshot?.tasks[0] ?? null;
   const comparableHistoricalTask = snapshot ? pickComparableHistoricalTask(snapshot.tasks, selectedTaskForProfitGap) : null;
@@ -857,6 +892,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
       || typeof activeClient.getReplayProfitGap !== "function"
     ) {
       setProfitGapRowsState([]);
+      setProfitGapSummary(null);
       setProfitGapError("");
       setProfitGapLoading(false);
       return;
@@ -870,15 +906,23 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
         selectedTaskForProfitGap.runId,
         comparableHistoricalTask.runId,
         200,
+        {
+          label: profitGapLabelFilter === "ALL" ? undefined : profitGapLabelFilter,
+          severity: profitGapSeverityFilter === "ALL" ? undefined : profitGapSeverityFilter,
+          actionableOnly: profitGapActionableOnly || undefined,
+          minAbsGap: profitGapMinAbsGap || undefined,
+        },
       )
       .then((payload) => {
         if (!cancelled) {
           setProfitGapRowsState(profitGapRows(payload.items ?? []));
+          setProfitGapSummary(payload.summary ?? null);
         }
       })
       .catch((error) => {
         if (!cancelled) {
           setProfitGapRowsState([]);
+          setProfitGapSummary(null);
           setProfitGapError(error instanceof Error ? error.message : t("收益差异归因加载失败"));
         }
       })
@@ -890,7 +934,15 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [activeClient, comparableHistoricalTask?.runId, selectedTaskForProfitGap?.runId]);
+  }, [
+    activeClient,
+    comparableHistoricalTask?.runId,
+    profitGapActionableOnly,
+    profitGapLabelFilter,
+    profitGapMinAbsGap,
+    profitGapSeverityFilter,
+    selectedTaskForProfitGap?.runId,
+  ]);
 
   if (resource.status === "loading" && !resource.data) {
     return <PageLoadingState title={t("历史回放加载中")} description={t("正在读取回放任务、候选池和交易结果。")} />;
@@ -1019,7 +1071,7 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
     emptyMessage: t("选中任务还没有可归集到股票的成交或期末持仓。"),
   };
   const selectedTaskProfitGapAttributions: TableSection = {
-    columns: [t("代码"), t("名称"), t("历史盈亏"), t("演练盈亏"), t("差额"), t("归因"), t("主要原因")],
+    columns: [t("代码"), t("名称"), t("历史盈亏"), t("演练盈亏"), t("差额"), t("归因"), t("子原因"), t("严重级别"), t("处理状态"), t("建议动作"), t("主要原因")],
     rows: selectedTask?.profitGapAttributions?.length ? selectedTask.profitGapAttributions : profitGapRowsState,
     emptyLabel: profitGapLoading ? t("收益差异归因加载中") : t("暂无收益差异归因"),
     emptyMessage: profitGapError
@@ -1138,6 +1190,63 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
       {renderPager(page, pages, setPage)}
       <span className="summary-item__body table-toolbar-compact__count" style={{ margin: 0 }}>
         {filteredCountText}
+      </span>
+    </div>
+  );
+  const renderProfitGapToolbar = () => (
+    <div className="table-toolbar-compact" style={{ alignItems: "center" }}>
+      <select
+        className="input"
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
+        value={profitGapLabelFilter}
+        onChange={(event) => setProfitGapLabelFilter(event.target.value)}
+        aria-label={t("归因筛选")}
+      >
+        <option value="ALL">{t("全部归因")}</option>
+        {PROFIT_GAP_LABEL_OPTIONS.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+      <select
+        className="input"
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px" }}
+        value={profitGapSeverityFilter}
+        onChange={(event) => setProfitGapSeverityFilter(event.target.value)}
+        aria-label={t("严重级别筛选")}
+      >
+        <option value="ALL">{t("全部级别")}</option>
+        {PROFIT_GAP_SEVERITY_OPTIONS.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+      <label className="badge badge--neutral" style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <input
+          type="checkbox"
+          checked={profitGapActionableOnly}
+          onChange={(event) => setProfitGapActionableOnly(event.target.checked)}
+        />
+        {t("仅看需处理")}
+      </label>
+      <input
+        className="input"
+        type="number"
+        min={0}
+        step={100}
+        style={{ height: toolbarControlHeight, minHeight: toolbarControlHeight, padding: "0 10px", width: 120 }}
+        value={profitGapMinAbsGap}
+        onChange={(event) => setProfitGapMinAbsGap(Math.max(0, Number(event.target.value) || 0))}
+        aria-label={t("最小差额")}
+      />
+      <span className="summary-item__body table-toolbar-compact__count" style={{ margin: 0 }}>
+        {t("合计 {v0} 条 · 需处理 {v1} 条 · 大额未分类 {v2} 条", {
+          v0: profitGapSummary?.total ?? selectedTaskProfitGapAttributions.rows.length,
+          v1: profitGapSummary?.actionable_count ?? 0,
+          v2: profitGapSummary?.large_unclassified_count ?? 0,
+        })}
       </span>
     </div>
   );
@@ -1595,8 +1704,9 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
               table={selectedTaskProfitGapAttributions}
               emptyTitle={selectedTaskProfitGapAttributions.emptyLabel ?? t("暂无收益差异归因")}
               emptyDescription={selectedTaskProfitGapAttributions.emptyMessage ?? t("需要选择同区间的实时量化演练和历史回放任务后才会展示。")}
+              toolbar={renderProfitGapToolbar()}
               tableLayout="auto"
-              compactConfig={{ coreColumnIndexes: [0, 2, 3, 4], detailColumnIndexes: [1, 5, 6] }}
+              compactConfig={{ coreColumnIndexes: [0, 4, 5, 6], detailColumnIndexes: [1, 2, 3, 7, 8, 9, 10] }}
               signalDetailSource="replay"
             />
           ) : null}

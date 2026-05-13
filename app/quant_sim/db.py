@@ -58,6 +58,18 @@ DEFAULT_CAPITAL_HIGH_PRICE_THRESHOLD = float(DEFAULT_CAPITAL_SLOT_CONFIG["capita
 DEFAULT_CAPITAL_HIGH_PRICE_MAX_SLOT_UNITS = float(DEFAULT_CAPITAL_SLOT_CONFIG["capital_high_price_max_slot_units"])
 DEFAULT_CAPITAL_SELL_CASH_REUSE_POLICY = str(DEFAULT_CAPITAL_SLOT_CONFIG["capital_sell_cash_reuse_policy"])
 DEFAULT_STRATEGY_PROFILE_ID = "aggressive"
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
 DEFAULT_STRATEGY_PROFILE_NAME = "积极"
 LEGACY_DEFAULT_STRATEGY_PROFILE_ID = "default"
 A_SHARE_LOT_SIZE = 100
@@ -910,8 +922,18 @@ class QuantSimDB:
                 historical_buy_amount REAL DEFAULT 0,
                 drill_buy_amount REAL DEFAULT 0,
                 attribution_labels_json TEXT DEFAULT '[]',
+                primary_label TEXT,
+                sub_reason TEXT,
+                severity TEXT,
+                actionable INTEGER DEFAULT 0,
+                recommended_action TEXT,
                 primary_reason TEXT,
                 evidence_json TEXT DEFAULT '{}',
+                historical_trade_path_json TEXT DEFAULT '[]',
+                drill_trade_path_json TEXT DEFAULT '[]',
+                entry_timeline_json TEXT DEFAULT '{}',
+                sizing_cap_chain_json TEXT DEFAULT '[]',
+                sell_diagnostics_json TEXT DEFAULT '[]',
                 created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
             )
             """
@@ -1057,8 +1079,18 @@ class QuantSimDB:
             self._ensure_column(cursor, "sim_run_profit_gap_attributions", "historical_buy_amount", "REAL DEFAULT 0")
             self._ensure_column(cursor, "sim_run_profit_gap_attributions", "drill_buy_amount", "REAL DEFAULT 0")
             self._ensure_column(cursor, "sim_run_profit_gap_attributions", "attribution_labels_json", "TEXT DEFAULT '[]'")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "primary_label", "TEXT")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "sub_reason", "TEXT")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "severity", "TEXT")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "actionable", "INTEGER DEFAULT 0")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "recommended_action", "TEXT")
             self._ensure_column(cursor, "sim_run_profit_gap_attributions", "primary_reason", "TEXT")
             self._ensure_column(cursor, "sim_run_profit_gap_attributions", "evidence_json", "TEXT DEFAULT '{}'")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "historical_trade_path_json", "TEXT DEFAULT '[]'")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "drill_trade_path_json", "TEXT DEFAULT '[]'")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "entry_timeline_json", "TEXT DEFAULT '{}'")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "sizing_cap_chain_json", "TEXT DEFAULT '[]'")
+            self._ensure_column(cursor, "sim_run_profit_gap_attributions", "sell_diagnostics_json", "TEXT DEFAULT '[]'")
             self._ensure_column(cursor, "sim_run_profit_gap_attributions", "created_at", "TEXT")
             for table_name in ("sim_run_trades",):
                 self._ensure_column(cursor, table_name, "gross_amount", "REAL DEFAULT 0")
@@ -8176,6 +8208,11 @@ class QuantSimReplayDB(QuantSimDB):
                 evidence = row.get("evidence_json")
                 if not isinstance(evidence, dict):
                     evidence = {}
+                historical_trade_path = row.get("historical_trade_path_json")
+                drill_trade_path = row.get("drill_trade_path_json")
+                entry_timeline = row.get("entry_timeline_json")
+                sizing_cap_chain = row.get("sizing_cap_chain_json")
+                sell_diagnostics = row.get("sell_diagnostics_json")
                 cursor.execute(
                     """
                     INSERT INTO sim_run_profit_gap_attributions
@@ -8185,9 +8222,12 @@ class QuantSimReplayDB(QuantSimDB):
                         historical_first_buy_at, drill_first_buy_at,
                         historical_first_buy_price, drill_first_buy_price,
                         historical_buy_amount, drill_buy_amount,
-                        attribution_labels_json, primary_reason, evidence_json, created_at
+                        attribution_labels_json, primary_label, sub_reason, severity,
+                        actionable, recommended_action, primary_reason, evidence_json,
+                        historical_trade_path_json, drill_trade_path_json, entry_timeline_json,
+                        sizing_cap_chain_json, sell_diagnostics_json, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         int(historical_run_id),
@@ -8204,8 +8244,18 @@ class QuantSimReplayDB(QuantSimDB):
                         float(row.get("historical_buy_amount") or 0),
                         float(row.get("drill_buy_amount") or 0),
                         json.dumps(labels, ensure_ascii=False),
+                        row.get("primary_label") or (labels[0] if labels else None),
+                        row.get("sub_reason"),
+                        row.get("severity"),
+                        1 if row.get("actionable") else 0,
+                        row.get("recommended_action"),
                         row.get("primary_reason"),
                         self._dumps_metadata(evidence) or "{}",
+                        self._dumps_metadata(historical_trade_path if isinstance(historical_trade_path, list) else []),
+                        self._dumps_metadata(drill_trade_path if isinstance(drill_trade_path, list) else []),
+                        self._dumps_metadata(entry_timeline if isinstance(entry_timeline, dict) else {}),
+                        self._dumps_metadata(sizing_cap_chain if isinstance(sizing_cap_chain, list) else []),
+                        self._dumps_metadata(sell_diagnostics if isinstance(sell_diagnostics, list) else []),
                         now_text,
                     ),
                 )
@@ -8221,19 +8271,48 @@ class QuantSimReplayDB(QuantSimDB):
         historical_run_id: int,
         drill_run_id: int,
         limit: int = 200,
+        *,
+        label: str = "",
+        sub_reason: str = "",
+        severity: str = "",
+        actionable: bool | None = None,
+        min_abs_gap: float | None = None,
+        stock: str = "",
     ) -> list[dict[str, Any]]:
+        clauses = ["historical_run_id = ?", "drill_run_id = ?"]
+        params: list[Any] = [int(historical_run_id), int(drill_run_id)]
+        if label:
+            clauses.append("(primary_label = ? OR attribution_labels_json LIKE ?)")
+            params.extend([label, f"%{label}%"])
+        if sub_reason:
+            clauses.append("sub_reason = ?")
+            params.append(sub_reason)
+        if severity:
+            clauses.append("severity = ?")
+            params.append(severity)
+        if actionable is not None:
+            clauses.append("actionable = ?")
+            params.append(1 if actionable else 0)
+        if min_abs_gap is not None:
+            clauses.append("ABS(pnl_gap) >= ?")
+            params.append(float(min_abs_gap or 0))
+        if stock:
+            like_stock = f"%{stock}%"
+            clauses.append("(stock_code LIKE ? OR stock_name LIKE ?)")
+            params.extend([like_stock, like_stock])
+        where_sql = " AND ".join(clauses)
         conn = self._connect()
         try:
             cursor = conn.cursor()
             cursor.execute(
-                """
+                f"""
                 SELECT *
                 FROM sim_run_profit_gap_attributions
-                WHERE historical_run_id = ? AND drill_run_id = ?
+                WHERE {where_sql}
                 ORDER BY pnl_gap DESC, id ASC
                 LIMIT ?
                 """,
-                (int(historical_run_id), int(drill_run_id), max(1, int(limit))),
+                tuple(params + [max(1, int(limit))]),
             )
             items: list[dict[str, Any]] = []
             for row in cursor.fetchall():
@@ -8243,7 +8322,13 @@ class QuantSimReplayDB(QuantSimDB):
                 except json.JSONDecodeError:
                     labels = []
                 payload["attribution_labels"] = labels if isinstance(labels, list) else []
+                payload["actionable"] = bool(payload.get("actionable"))
                 payload["evidence_json"] = self._loads_metadata(payload.get("evidence_json"))
+                payload["historical_trade_path_json"] = _json_list(payload.get("historical_trade_path_json"))
+                payload["drill_trade_path_json"] = _json_list(payload.get("drill_trade_path_json"))
+                payload["entry_timeline_json"] = self._loads_metadata(payload.get("entry_timeline_json"))
+                payload["sizing_cap_chain_json"] = _json_list(payload.get("sizing_cap_chain_json"))
+                payload["sell_diagnostics_json"] = _json_list(payload.get("sell_diagnostics_json"))
                 items.append(payload)
             return items
         finally:

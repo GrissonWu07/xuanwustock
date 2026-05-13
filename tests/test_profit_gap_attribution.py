@@ -30,6 +30,11 @@ def test_labels_size_too_small_when_entry_matches_but_amount_is_low():
 
     assert rows[0]["stock_code"] == "301666"
     assert rows[0]["attribution_labels"] == ["size_too_small"]
+    assert rows[0]["primary_label"] == "size_too_small"
+    assert rows[0]["sub_reason"] == "recovery_probe_cap"
+    assert rows[0]["severity"] == "high"
+    assert rows[0]["actionable"] is True
+    assert rows[0]["recommended_action"]
     assert rows[0]["primary_reason"] == "entry matched but drill sizing was materially lower"
 
 
@@ -67,7 +72,9 @@ def test_labels_entry_too_late_and_bad_extra_buy():
 
     by_code = {row["stock_code"]: row for row in rows}
     assert "entry_too_late" in by_code["300736"]["attribution_labels"]
+    assert by_code["300736"]["sub_reason"] == "candidate_discovered_late"
     assert by_code["600768"]["attribution_labels"] == ["bad_extra_buy"]
+    assert by_code["600768"]["sub_reason"] == "acceptable_exploration_loss"
 
 
 def test_labels_repeat_probe_loss_sell_blocked_and_drill_better():
@@ -93,7 +100,10 @@ def test_labels_repeat_probe_loss_sell_blocked_and_drill_better():
     by_code = {row["stock_code"]: row for row in rows}
     assert "repeat_probe_loss" in by_code["301183"]["attribution_labels"]
     assert "sell_blocked_or_late" in by_code["301183"]["attribution_labels"]
+    assert by_code["301183"]["primary_label"] == "sell_blocked_or_late"
+    assert by_code["301183"]["sub_reason"] in {"hard_sell_not_executed", "sell_signal_late"}
     assert by_code["300488"]["attribution_labels"] == ["drill_better"]
+    assert by_code["300488"]["actionable"] is False
 
 
 def test_replay_db_replaces_and_lists_profit_gap_attributions(tmp_path):
@@ -127,6 +137,8 @@ def test_replay_db_replaces_and_lists_profit_gap_attributions(tmp_path):
     assert len(rows) == 1
     assert rows[0]["stock_code"] == "301666"
     assert rows[0]["attribution_labels"] == ["size_too_small"]
+    assert rows[0]["primary_label"] == "size_too_small"
+    assert rows[0]["sub_reason"] == "weak_or_normal_tier_cap"
     assert rows[0]["evidence_json"]["buy_tiers"] == ["strong_buy"]
 
     db.replace_profit_gap_attributions(
@@ -140,8 +152,18 @@ def test_replay_db_replaces_and_lists_profit_gap_attributions(tmp_path):
                 "drill_total_pnl": -2996.98,
                 "pnl_gap": 2996.98,
                 "attribution_labels": ["bad_extra_buy"],
+                "primary_label": "bad_extra_buy",
+                "sub_reason": "acceptable_exploration_loss",
+                "severity": "medium",
+                "actionable": True,
+                "recommended_action": "Review extra drill-only buy before widening auto-entry.",
                 "primary_reason": "drill bought a losing stock that historical replay did not buy",
                 "evidence_json": {"blocked_reasons": ["cash"]},
+                "historical_trade_path_json": [],
+                "drill_trade_path_json": [],
+                "entry_timeline_json": {},
+                "sizing_cap_chain_json": [],
+                "sell_diagnostics_json": [],
             }
         ],
     )
@@ -149,6 +171,13 @@ def test_replay_db_replaces_and_lists_profit_gap_attributions(tmp_path):
     rows = db.list_profit_gap_attributions(10, 20)
     assert [row["stock_code"] for row in rows] == ["600768"]
     assert rows[0]["evidence_json"] == {"blocked_reasons": ["cash"]}
+    assert rows[0]["sub_reason"] == "acceptable_exploration_loss"
+    assert rows[0]["actionable"] is True
+    assert db.list_profit_gap_attributions(10, 20, label="bad_extra_buy")[0]["stock_code"] == "600768"
+    assert db.list_profit_gap_attributions(10, 20, sub_reason="acceptable_exploration_loss")[0]["stock_code"] == "600768"
+    assert db.list_profit_gap_attributions(10, 20, severity="medium")[0]["stock_code"] == "600768"
+    assert db.list_profit_gap_attributions(10, 20, actionable=True)[0]["stock_code"] == "600768"
+    assert db.list_profit_gap_attributions(10, 20, min_abs_gap=1000)[0]["stock_code"] == "600768"
 
 
 def test_build_profit_gap_from_runs_uses_trades_positions_and_signal_diagnostics():
@@ -203,11 +232,23 @@ def test_build_profit_gap_from_runs_uses_trades_positions_and_signal_diagnostics
                         "strategy_profile": {
                             "portfolio_execution_guard": {"buy_tier": "strong_buy"},
                             "lifecycle_gate": {"mode": "recovery_probe_confirmed"},
-                            "execution_sizing_plan": {"primary_cap_reason": "recovery_probe_max_position_pct"},
+                            "execution_sizing_plan": {
+                                "primary_cap_reason": "recovery_probe_max_position_pct",
+                                "cap_chain": [{"cap": "recovery_probe_max_position_pct", "budget": 24000}],
+                            },
                         },
                     }
                 ]
             return []
+
+        def list_sim_run_candidate_events(self, run_id, **kwargs):
+            return {"items": [{"stock_code": "301666", "checkpoint_at_utc": "2026-04-28T02:00:00Z", "source_type": "manual_seed", "status": "consumed"}]}
+
+        def list_sim_run_quant_events(self, run_id, **kwargs):
+            return {"items": [{"stock_code": "301666", "checkpoint_at_utc": "2026-04-28T02:00:00Z", "from_status": "cooling", "to_status": "trial", "reason_code": "cooling_review_confirmed"}]}
+
+        def list_sim_run_quant_states(self, run_id, **kwargs):
+            return {"items": [{"stock_code": "301666", "checkpoint_at_utc": "2026-04-28T02:00:00Z", "quant_status": "trial", "health_score": 75}]}
 
         def replace_profit_gap_attributions(self, historical_run_id, drill_run_id, rows):
             self.persisted = (historical_run_id, drill_run_id, rows)
@@ -219,4 +260,37 @@ def test_build_profit_gap_from_runs_uses_trades_positions_and_signal_diagnostics
     assert rows[0]["stock_code"] == "301666"
     assert rows[0]["attribution_labels"] == ["size_too_small"]
     assert rows[0]["evidence_json"]["buy_tiers"] == ["strong_buy"]
+    assert rows[0]["sizing_cap_chain_json"] == [{"cap": "recovery_probe_max_position_pct", "budget": 24000}]
+    assert rows[0]["historical_trade_path_json"][0]["action"] == "BUY"
+    assert rows[0]["drill_trade_path_json"][0]["action"] == "BUY"
     assert db.persisted[0:2] == (1, 2)
+
+
+def test_large_gap_unclassified_gets_missing_evidence_sub_reason():
+    rows = build_profit_gap_attributions(
+        historical=[
+            {
+                "stock_code": "300106",
+                "stock_name": "西部牧业",
+                "total_pnl": 2000.0,
+                "first_buy_at": "2026-01-09T02:00:00Z",
+                "first_buy_price": 8.0,
+                "buy_amount": 20000.0,
+            }
+        ],
+        drill=[
+            {
+                "stock_code": "300106",
+                "stock_name": "西部牧业",
+                "total_pnl": 0.0,
+                "first_buy_at": "2026-01-09T02:00:00Z",
+                "first_buy_price": 8.0,
+                "buy_amount": 20000.0,
+            }
+        ],
+    )
+
+    assert rows[0]["pnl_gap"] == 2000.0
+    assert rows[0]["attribution_labels"] != ["unclassified"]
+    assert rows[0]["primary_label"] == "same_entry_exit_gap"
+    assert rows[0]["sub_reason"] == "same_entry_exit_gap"
