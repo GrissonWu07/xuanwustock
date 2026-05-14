@@ -8058,6 +8058,7 @@ class QuantSimReplayDB(QuantSimDB):
             evidence["lifecycle_evaluation"] = {
                 "decision": evaluation.get("decision"),
                 "skip_reason": evaluation.get("skip_reason") or "",
+                "entry_gate": evaluation.get("entry_gate") if isinstance(evaluation.get("entry_gate"), dict) else {},
                 "evaluated_candidate_score": float(evaluation.get("candidate_score") or 0),
                 "breakdown": evaluation.get("breakdown") if isinstance(evaluation.get("breakdown"), dict) else {},
             }

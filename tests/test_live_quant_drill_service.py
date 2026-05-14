@@ -43,6 +43,20 @@ class DrillSnapshotProvider:
         }
 
 
+def _passing_low_price_evidence() -> dict:
+    return {
+        "price": 8.8,
+        "ma5": 9.2,
+        "ma10": 9.0,
+        "ma20": 8.6,
+        "ma20_slope": 0.02,
+        "amount": 80_000_000,
+        "volume_ratio": 1.5,
+        "rsi": 62,
+        "macd": 0.05,
+    }
+
+
 class PreparedOnlyDrillSnapshotProvider(DrillSnapshotProvider):
     def __init__(self) -> None:
         self.prepared: list[tuple[tuple[str, ...], datetime, datetime, str]] = []
@@ -856,7 +870,7 @@ def test_live_quant_drill_new_trial_is_scanned_in_same_checkpoint(tmp_path, monk
                 "trend": "up",
                 "status": "active",
                 "reason_text": "historical low price candidate",
-                "evidence_json": {"price_structure": "strong"},
+                "evidence_json": _passing_low_price_evidence(),
             }
         ]
 
@@ -896,6 +910,7 @@ def test_live_quant_drill_auto_entry_disabled_keeps_candidate_out_of_scan(tmp_pa
                 "trend": "up",
                 "status": "active",
                 "reason_text": "historical low price candidate",
+                "evidence_json": _passing_low_price_evidence(),
             }
         ],
     )
@@ -990,6 +1005,7 @@ def test_live_quant_drill_historical_candidate_events_queue_soft_review_for_cool
                 "trend": "up",
                 "status": "active",
                 "reason_text": "expired cooling stock is rediscovered",
+                "evidence_json": _passing_low_price_evidence(),
             }
         ],
     )
@@ -1067,6 +1083,7 @@ def test_live_quant_drill_persists_lifecycle_events_from_run_local_db(tmp_path, 
                 "trend": "up",
                 "status": "active",
                 "reason_text": "historical low price candidate",
+                "evidence_json": _passing_low_price_evidence(),
             }
         ],
     )

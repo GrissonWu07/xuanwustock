@@ -100,10 +100,13 @@ def _lifecycle_entry_fields(db: Any, stock_code: str) -> dict[str, Any]:
         state = db.get_quant_universe_state(stock_code) or {}
         eligible_events = db.list_candidate_events(stock_code=stock_code, status="eligible", limit=20)
         active_events = db.list_candidate_events(stock_code=stock_code, status="active", limit=20)
+        blocked_events = db.list_candidate_events(stock_code=stock_code, status="blocked", limit=20)
+        recommended_events = db.list_candidate_events(stock_code=stock_code, status="recommended_only", limit=20)
+        rejected_events = db.list_candidate_events(stock_code=stock_code, status="rejected", limit=20)
     except Exception:
         return _empty_entry_fields()
 
-    best_event = _best_event(eligible_events + active_events)
+    best_event = _best_event(eligible_events + active_events + blocked_events + recommended_events + rejected_events)
     quant_status = str(state.get("quant_status") or "inactive").strip() or "inactive"
     manual_override = str(state.get("quant_manual_override") or "").strip()
     candidate_score = _score_from_state_or_event(state, best_event)
@@ -116,6 +119,15 @@ def _lifecycle_entry_fields(db: Any, stock_code: str) -> dict[str, Any]:
         eligible_status = "already_in_quant"
     elif blocking_reason:
         eligible_status = "skipped"
+    elif recommended_events:
+        eligible_status = "recommended_only"
+        blocking_reason = _event_gate_reason(best_event) or "recommended_only"
+    elif blocked_events:
+        eligible_status = "blocked"
+        blocking_reason = _event_gate_reason(best_event) or "entry_gate_blocked"
+    elif rejected_events:
+        eligible_status = "rejected"
+        blocking_reason = _event_gate_reason(best_event) or "entry_gate_rejected"
     elif eligible_events:
         eligible_status = "eligible"
     else:
@@ -152,6 +164,24 @@ def _best_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not events:
         return None
     return max(events, key=lambda event: (_float(event.get("source_score")), _float(event.get("confidence"))))
+
+
+def _event_gate_reason(event: dict[str, Any] | None) -> str:
+    if not isinstance(event, dict):
+        return ""
+    payload = event.get("payload_json")
+    if not isinstance(payload, dict):
+        return ""
+    gate = payload.get("entry_gate")
+    if not isinstance(gate, dict):
+        return ""
+    reason = str(gate.get("reason_code") or "").strip()
+    if reason:
+        return reason
+    reason_codes = gate.get("reason_codes")
+    if isinstance(reason_codes, list) and reason_codes:
+        return str(reason_codes[0] or "").strip()
+    return ""
 
 
 def _ensure_stock_universe_row(context: Any, row: dict[str, Any], *, source_type: str) -> None:
@@ -202,6 +232,17 @@ def _candidate_event_payload(row: dict[str, Any], *, source_type: str) -> dict[s
             "industry": row.get("industry") or row.get("sector") or "",
             "source": row.get("source") or row.get("strategyName") or "",
             "latest_price": row.get("latestPrice") or row.get("latest_price") or row.get("price"),
+            "price": row.get("price") or row.get("latestPrice") or row.get("latest_price"),
+            "ma5": row.get("ma5") or row.get("MA5"),
+            "ma10": row.get("ma10") or row.get("MA10"),
+            "ma20": row.get("ma20") or row.get("MA20"),
+            "ma20_slope": row.get("ma20_slope") or row.get("MA20_slope") or row.get("ma20Slope"),
+            "ma60": row.get("ma60") or row.get("MA60"),
+            "amount": row.get("amount") or row.get("turnover") or row.get("成交额"),
+            "volume_ratio": row.get("volume_ratio") or row.get("量比"),
+            "rsi": row.get("rsi") or row.get("rsi12") or row.get("RSI"),
+            "macd": row.get("macd") or row.get("MACD"),
+            "technical_confirmation_count": row.get("technical_confirmation_count"),
             "eligible_status_before": row.get("eligible_status"),
         },
     }
@@ -222,7 +263,6 @@ def _source_score(row: dict[str, Any], *, source_type: str, source_key: str) -> 
         row.get("source_score"),
         row.get("score"),
         row.get("scanner_score"),
-        row.get("confidence_score"),
     )
     if explicit is not None:
         return round(_normalized_unit_score(explicit), 4)
@@ -230,7 +270,7 @@ def _source_score(row: dict[str, Any], *, source_type: str, source_key: str) -> 
 
 
 def _confidence(row: dict[str, Any], *, source_type: str) -> float:
-    explicit = _first_number(row.get("confidence"))
+    explicit = _first_number(row.get("confidence"), row.get("confidence_score"), row.get("source_confidence"))
     if explicit is not None:
         return round(_normalized_unit_score(explicit), 4)
     return 0.0

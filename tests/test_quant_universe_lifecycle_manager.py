@@ -923,6 +923,74 @@ def test_manager_auto_trial_promotes_eligible_candidate(tmp_path):
     assert state["quant_enabled"] is True
 
 
+def test_low_price_event_requires_trend_repair_before_auto_entry(tmp_path):
+    manager = _manager(tmp_path, policy=QuantUniverseLifecyclePolicy.aggressive_defaults())
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="low_price")
+
+    result = manager.ingest_candidate_event(
+        {
+            "stock_code": "600000",
+            "source_type": "low_price",
+            "source_key": "low_price:test",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": {
+                "price": 8.8,
+                "ma5": 8.7,
+                "ma10": 8.9,
+                "ma20": 9.4,
+                "ma20_slope": -0.02,
+                "amount": 60_000_000,
+                "volume_ratio": 1.6,
+                "rsi": 58,
+                "macd": 0.05,
+            },
+        }
+    )
+
+    assert result["decision"] == "skipped"
+    assert result["reason_code"] == "low_price_below_falling_ma20"
+    assert manager.db.get_quant_universe_state("600000")["quant_status"] == "inactive"
+    blocked_events = manager.db.list_candidate_events(stock_code="600000", status="blocked")
+    assert blocked_events[0]["payload_json"]["entry_gate"]["result"] == "eligible_blocked"
+
+
+def test_research_event_requires_technical_confirmation_for_auto_entry(tmp_path):
+    manager = _manager(tmp_path, policy=QuantUniverseLifecyclePolicy.aggressive_defaults())
+    manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="research")
+
+    result = manager.ingest_candidate_event(
+        {
+            "stock_code": "600000",
+            "source_type": "research",
+            "source_key": "research:test",
+            "source_score": 0.98,
+            "confidence": 0.95,
+            "trend": "up",
+            "payload_json": {
+                "price": 9.8,
+                "ma5": 9.6,
+                "ma10": 9.7,
+                "ma20": 10.1,
+                "ma20_slope": -0.01,
+                "amount": 100_000_000,
+                "volume_ratio": 1.4,
+                "rsi": 62,
+                "macd": 0.08,
+            },
+        }
+    )
+
+    assert result["decision"] == "skipped"
+    assert result["reason_code"] == "ai_requires_technical_confirmation"
+    assert manager.db.get_quant_universe_state("600000")["quant_status"] == "inactive"
+    recommended_events = manager.db.list_candidate_events(stock_code="600000", status="recommended_only")
+    assert recommended_events[0]["payload_json"]["entry_gate"]["result"] == "recommended_only"
+
+
 def test_quant_universe_state_persists_recovery_probe_diagnostics(tmp_path):
     manager = _manager(tmp_path)
 
@@ -1189,7 +1257,24 @@ def test_manager_candidate_event_does_not_restore_expired_cooling_stock(tmp_path
     )
 
     result = manager.ingest_candidate_event(
-        {"stock_code": "000001", "source_type": "low_price", "source_score": 0.95, "confidence": 0.9, "trend": "up"},
+        {
+            "stock_code": "000001",
+            "source_type": "low_price",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": {
+                "price": 8.8,
+                "ma5": 9.2,
+                "ma10": 9.0,
+                "ma20": 8.6,
+                "ma20_slope": 0.02,
+                "amount": 80_000_000,
+                "volume_ratio": 1.5,
+                "rsi": 62,
+                "macd": 0.05,
+            },
+        },
         capacity_at=datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc),
     )
 
@@ -1367,7 +1452,24 @@ def test_manager_retired_reactivation_requires_high_threshold(tmp_path):
         {"stock_code": "600000", "source_type": "discover", "source_score": 0.7, "confidence": 0.6, "trend": "up"}
     )
     strong = manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "research", "source_score": 0.98, "confidence": 0.95, "trend": "up"}
+        {
+            "stock_code": "600000",
+            "source_type": "research",
+            "source_score": 0.98,
+            "confidence": 0.95,
+            "trend": "up",
+            "payload_json": {
+                "price": 10.8,
+                "ma5": 10.9,
+                "ma10": 10.6,
+                "ma20": 10.1,
+                "ma20_slope": 0.02,
+                "amount": 120_000_000,
+                "volume_ratio": 1.4,
+                "rsi": 61,
+                "macd": 0.06,
+            },
+        }
     )
 
     assert weak["decision"] == "skipped"

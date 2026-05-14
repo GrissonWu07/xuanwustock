@@ -1497,11 +1497,19 @@ def test_discover_run_strategy_executes_real_selector_runners_and_persists_resul
                         "总市值": 2000.0,
                         "市盈率": 4.2,
                         "市净率": 0.6,
-                        "score": 0.86,
-                        "confidence": 0.8,
-                        "trend": "up",
-                        "理由": "低价高弹性",
-                    }
+                            "score": 0.86,
+                            "confidence": 0.8,
+                            "trend": "up",
+                            "ma5": 10.4,
+                            "ma10": 10.3,
+                            "ma20": 10.0,
+                            "ma20_slope": 0.02,
+                            "amount": 80_000_000,
+                            "volume_ratio": 1.5,
+                            "rsi": 60,
+                            "macd": 0.05,
+                            "理由": "低价高弹性",
+                        }
                 ]
             ), "ok"
 
@@ -1607,6 +1615,14 @@ def test_discover_run_strategy_auto_trial_promotes_discovered_stocks(tmp_path, m
                         "score": 0.86,
                         "confidence": 0.8,
                         "trend": "up",
+                        "ma5": 10.4,
+                        "ma10": 10.3,
+                        "ma20": 10.0,
+                        "ma20_slope": 0.02,
+                        "amount": 80_000_000,
+                        "volume_ratio": 1.5,
+                        "rsi": 60,
+                        "macd": 0.05,
                         "理由": "低价高弹性",
                     }
                 ]

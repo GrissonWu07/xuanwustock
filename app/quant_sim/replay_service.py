@@ -1541,9 +1541,11 @@ class QuantSimReplayService:
         ma5 = self._snapshot_float(snapshot, "ma5", "MA5")
         ma10 = self._snapshot_float(snapshot, "ma10", "MA10")
         ma20 = self._snapshot_float(snapshot, "ma20", "MA20")
+        ma20_slope = self._snapshot_float(snapshot, "ma20_slope", "MA20_slope", "ma20Slope")
         macd = self._snapshot_float(snapshot, "macd", "MACD")
         rsi = self._snapshot_float(snapshot, "rsi12", "rsi", "RSI")
         volume_ratio = self._snapshot_float(snapshot, "volume_ratio", "量比")
+        amount = self._snapshot_float(snapshot, "amount", "turnover", "成交额")
         score = 0.48
         if price <= 12:
             score += 0.08
@@ -1578,9 +1580,11 @@ class QuantSimReplayService:
                 "ma5": ma5,
                 "ma10": ma10,
                 "ma20": ma20,
+                "ma20_slope": ma20_slope,
                 "macd": macd,
                 "rsi": rsi,
                 "volume_ratio": volume_ratio,
+                "amount": amount,
                 "score_basis": "as_of_price_volume_trend",
             },
         }

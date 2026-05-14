@@ -8,6 +8,8 @@ from enum import Enum
 import json
 from typing import Any
 
+from app.quant_sim.candidate_entry_gate import evaluate_candidate_entry_gate
+
 
 class QuantStatus(str, Enum):
     INACTIVE = "inactive"
@@ -883,6 +885,19 @@ class QuantUniverseManager:
 
     def ingest_candidate_event(self, payload: dict[str, Any], *, capacity_at: Any | None = None) -> dict[str, Any]:
         event = self.db.add_candidate_event({**payload, "status": payload.get("status") or "active"})
+        entry_gate = evaluate_candidate_entry_gate(event, profile_id=self.profile_id)
+        self._persist_candidate_event_entry_gate(event, entry_gate)
+        if not entry_gate["passed"]:
+            return {
+                "stock_code": event["stock_code"],
+                "candidate_score": 0.0,
+                "candidate_confidence": _float(event.get("confidence"), 0.0),
+                "breakdown": {"entry_gate": entry_gate},
+                "entry_gate": entry_gate,
+                "decision": "skipped",
+                "skip_reason": entry_gate["reason_code"],
+                "reason_code": entry_gate["reason_code"],
+            }
         evaluation = self.evaluate_candidate(event["stock_code"])
         settings = self.db.get_quant_universe_settings()
         stock = self._load_stock(event["stock_code"])
@@ -1533,6 +1548,30 @@ class QuantUniverseManager:
             WHERE stock_code = ? AND status IN ('active', 'eligible')
             """,
             (status, status, now_text, now_text, str(stock_code or "").strip().upper()),
+        )
+        conn.commit()
+        conn.close()
+
+    def _persist_candidate_event_entry_gate(self, event: dict[str, Any], entry_gate: dict[str, Any]) -> None:
+        event_id = int(_float(event.get("id"), 0.0) or 0)
+        if event_id <= 0:
+            return
+        payload = event.get("payload_json") if isinstance(event.get("payload_json"), dict) else {}
+        payload = dict(payload)
+        payload["entry_gate"] = entry_gate
+        conn = self.db._connect()
+        cursor = conn.cursor()
+        now_text = self.db._now()
+        status = str(entry_gate.get("status") or event.get("status") or "active")
+        cursor.execute(
+            """
+            UPDATE stock_universe_candidate_events
+            SET status = ?,
+                payload_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (status, self.db._dumps_metadata(payload), now_text, event_id),
         )
         conn.commit()
         conn.close()
