@@ -304,7 +304,7 @@ def test_signal_center_blocks_buy_when_portfolio_guard_blocks(tmp_path):
     assert gate["portfolio_guard"]["loss_budget_triggered"] is True
 
 
-def test_signal_center_skips_portfolio_guard_for_position_add(tmp_path):
+def test_signal_center_applies_portfolio_guard_for_position_add(tmp_path):
     db_file = tmp_path / "quant_sim.db"
     service = SignalCenterService(db_file=db_file)
     payload = _signal(decision_type="position_add")
@@ -321,9 +321,12 @@ def test_signal_center_skips_portfolio_guard_for_position_add(tmp_path):
     service.db.get_portfolio_execution_guard_summary = blocked_summary
     result = service._apply_portfolio_execution_guard({"stock_code": "300857", "market": "A"}, payload)
 
-    assert result["action"] == "BUY"
-    assert result["decision_type"] == "position_add"
-    assert "portfolio_execution_guard" not in result["strategy_profile"]
+    gate = result["strategy_profile"]["portfolio_execution_guard"]
+
+    assert result["action"] == "HOLD"
+    assert result["decision_type"] == "portfolio_execution_guard_blocked"
+    assert gate["status"] == "blocked"
+    assert gate["portfolio_guard"]["loss_budget_triggered"] is True
 
 
 def test_signal_center_buy_limit_counts_pending_buys_before_execution(tmp_path):

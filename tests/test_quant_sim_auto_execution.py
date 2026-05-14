@@ -670,6 +670,7 @@ def test_auto_execute_position_add_uses_add_delta_not_full_target(tmp_path):
                     "allow_pyramiding": True,
                     "add_min_unrealized_pnl_pct": 2.0,
                     "add_min_tech_score": 0.25,
+                    "portfolio_execution_guard_policy": {"enabled": False},
                 },
                 "explainability": {"fusion_breakdown": {"fusion_confidence": 0.74}},
             },

@@ -608,6 +608,7 @@ def test_signal_center_marks_position_buy_as_add_and_uses_target_delta(tmp_path)
                     "allow_pyramiding": True,
                     "add_min_unrealized_pnl_pct": 2.0,
                     "add_min_tech_score": 0.25,
+                    "portfolio_execution_guard_policy": {"enabled": False},
                 },
                 "explainability": {
                     "fusion_breakdown": {
@@ -630,6 +631,163 @@ def test_signal_center_marks_position_buy_as_add_and_uses_target_delta(tmp_path)
     assert gate["add_position_delta_pct"] == 14.81
     assert add_signal["strategy_profile"]["execution_sizing_plan"]["kernel_quality_position_pct"] == 14.81
     assert add_signal["strategy_profile"]["execution_sizing_plan"]["effective_position_pct"] == add_signal["position_size_pct"]
+
+
+def test_signal_center_blocks_divergence_probe_new_buy(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+
+    candidate_service.add_manual_candidate("300390", "天华新能", "main_force", latest_price=52.0)
+    candidate = candidate_service.list_candidates()[0]
+
+    blocked = signal_service.create_signal(
+        {**candidate, "latest_price": 52.0},
+        {
+            "action": "BUY",
+            "confidence": 86,
+            "reasoning": "⚠️ 背离试探 | 技术面短线偏强但结构不足",
+            "position_size_pct": 20,
+            "tech_score": 0.32,
+            "strategy_profile": {
+                "explainability": {
+                    "dual_track": {
+                        "resonance_type": "light_divergence",
+                    },
+                    "resonance": {
+                        "quality_adjusted_position_ratio": 0.35,
+                    },
+                },
+            },
+        },
+        notify=False,
+    )
+
+    gate = blocked["strategy_profile"]["divergence_probe_gate"]
+
+    assert blocked["action"] == "HOLD"
+    assert blocked["status"] == "observed"
+    assert blocked["position_size_pct"] == 0
+    assert blocked["decision_type"] == "divergence_probe_blocked"
+    assert gate["status"] == "blocked"
+    assert gate["has_position"] is False
+    assert "背离试探不新开仓" in "；".join(gate["reasons"])
+
+
+def test_signal_center_blocks_divergence_probe_position_add(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+
+    candidate_service.add_manual_candidate("300390", "天华新能", "main_force", latest_price=52.0)
+    candidate = candidate_service.list_candidates()[0]
+    first_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 82, "reasoning": "先建仓", "position_size_pct": 5},
+    )
+    portfolio_service.confirm_buy(first_signal["id"], price=50.0, quantity=100, note="已有底仓")
+    portfolio_service.db.update_position_market_price("300390", 52.0)
+
+    blocked = signal_service.create_signal(
+        {**candidate, "latest_price": 52.0},
+        {
+            "action": "BUY",
+            "confidence": 86,
+            "reasoning": "⚠️ 背离试探 | 技术面短线偏强但结构不足",
+            "position_size_pct": 20,
+            "tech_score": 0.32,
+            "strategy_profile": {
+                "effective_thresholds": {
+                    "max_position_ratio": 0.3,
+                    "allow_pyramiding": True,
+                    "add_min_unrealized_pnl_pct": 2.0,
+                    "add_min_tech_score": 0.25,
+                    "portfolio_execution_guard_policy": {"enabled": False},
+                },
+                "explainability": {
+                    "dual_track": {
+                        "resonance_type": "light_divergence",
+                    },
+                    "resonance": {
+                        "quality_adjusted_position_ratio": 0.35,
+                    },
+                    "fusion_breakdown": {
+                        "fusion_confidence": 0.74,
+                    },
+                },
+            },
+        },
+        notify=False,
+    )
+
+    gate = blocked["strategy_profile"]["position_add_gate"]
+
+    assert blocked["action"] == "HOLD"
+    assert blocked["status"] == "observed"
+    assert blocked["position_size_pct"] == 0
+    assert blocked["decision_type"] == "position_add_blocked"
+    assert gate["status"] == "blocked"
+    assert gate["divergence_probe_blocked"] is True
+    assert "背离试探不允许加仓" in "；".join(gate["reasons"])
+
+
+def test_signal_center_blocks_hot_position_add(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+
+    candidate_service.add_manual_candidate("300390", "天华新能", "main_force", latest_price=60.0)
+    candidate = candidate_service.list_candidates()[0]
+    first_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 82, "reasoning": "先建仓", "position_size_pct": 5},
+    )
+    portfolio_service.confirm_buy(first_signal["id"], price=50.0, quantity=100, note="已有底仓")
+    portfolio_service.db.update_position_market_price("300390", 60.0)
+
+    blocked = signal_service.create_signal(
+        {**candidate, "latest_price": 60.0},
+        {
+            "action": "BUY",
+            "confidence": 88,
+            "reasoning": "持仓趋势增强",
+            "position_size_pct": 20,
+            "tech_score": 0.5,
+            "strategy_profile": {
+                "effective_thresholds": {
+                    "max_position_ratio": 0.3,
+                    "allow_pyramiding": True,
+                    "add_min_unrealized_pnl_pct": 2.0,
+                    "add_min_tech_score": 0.25,
+                    "add_hot_rsi": 75.0,
+                    "add_extreme_ma20_distance_pct": 5.0,
+                },
+                "market_snapshot": {
+                    "current_price": 60.0,
+                    "ma20": 50.0,
+                    "rsi12": 82.0,
+                },
+                "explainability": {
+                    "fusion_breakdown": {
+                        "fusion_confidence": 0.8,
+                    },
+                },
+            },
+        },
+        notify=False,
+    )
+
+    gate = blocked["strategy_profile"]["position_add_gate"]
+
+    assert blocked["action"] == "HOLD"
+    assert blocked["status"] == "observed"
+    assert blocked["position_size_pct"] == 0
+    assert blocked["decision_type"] == "position_add_blocked"
+    assert gate["status"] == "blocked"
+    assert gate["hot_zone_blocked"] is True
+    assert "RSI12 82.00" in "；".join(gate["reasons"])
 
 
 def test_signal_center_blocks_position_add_when_gate_fails(tmp_path):

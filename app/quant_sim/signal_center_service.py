@@ -117,6 +117,7 @@ class SignalCenterService:
         payload = self._normalize_decision_payload(decision)
         payload = self._apply_position_constraints(candidate, payload)
         payload = self._apply_position_add_gate(candidate, payload)
+        payload = self._apply_divergence_probe_guard(candidate, payload)
         payload = self._apply_reentry_constraints(candidate, payload)
         payload = self._apply_stock_execution_feedback(candidate, payload)
         payload = self._apply_portfolio_execution_guard(candidate, payload)
@@ -292,11 +293,38 @@ class SignalCenterService:
         profit_gate_passed = unrealized_pnl_pct >= min_unrealized_pnl_pct
         trend_gate_passed = tech_score >= min_tech_score and fusion_confidence >= min_fusion_confidence
         capacity_gate_passed = add_position_delta_pct > 0
+        divergence_probe_blocked = self._is_divergence_probe_signal(normalized, strategy_profile)
+        add_hot_rsi = self._safe_float(thresholds.get("add_hot_rsi"), 78.0) or 78.0
+        add_extreme_ma20_distance_pct = (
+            self._safe_float(thresholds.get("add_extreme_ma20_distance_pct"), 5.0) or 5.0
+        )
+        add_very_hot_rsi = self._safe_float(thresholds.get("add_very_hot_rsi"), 85.0) or 85.0
+        metrics = self._extract_reentry_market_metrics(candidate, normalized)
+        rsi12 = self._safe_float(metrics.get("rsi12"), None)
+        ma20_distance_pct = self._safe_float(metrics.get("ma20_distance_pct"), None)
+        hot_zone_blocked = bool(
+            (rsi12 is not None and rsi12 >= add_very_hot_rsi)
+            or (
+                rsi12 is not None
+                and ma20_distance_pct is not None
+                and rsi12 >= add_hot_rsi
+                and ma20_distance_pct >= add_extreme_ma20_distance_pct
+            )
+        )
         reasons: list[str] = []
         if not allow_pyramiding:
             reasons.append("策略阈值不允许加仓")
         if not capacity_gate_passed:
             reasons.append("当前持仓已达到目标或上限")
+        if divergence_probe_blocked:
+            reasons.append("背离试探不允许加仓")
+        if hot_zone_blocked:
+            if rsi12 is not None and ma20_distance_pct is not None:
+                reasons.append(
+                    f"RSI12 {rsi12:.2f} 热区且高于MA20 {ma20_distance_pct:.2f}% ，不允许加仓"
+                )
+            elif rsi12 is not None:
+                reasons.append(f"RSI12 {rsi12:.2f} 极热区，不允许加仓")
         if not (profit_gate_passed or trend_gate_passed):
             reasons.append(
                 "未满足已有浮盈或强趋势确认："
@@ -308,7 +336,13 @@ class SignalCenterService:
         if trend_gate_passed:
             reasons.append(f"趋势确认 技术分 {tech_score:.4f} >= {min_tech_score:.4f}")
 
-        passed = allow_pyramiding and capacity_gate_passed and (profit_gate_passed or trend_gate_passed)
+        passed = (
+            allow_pyramiding
+            and capacity_gate_passed
+            and not divergence_probe_blocked
+            and not hot_zone_blocked
+            and (profit_gate_passed or trend_gate_passed)
+        )
         gate = {
             "intent": "position_add",
             "status": "passed" if passed else "blocked",
@@ -327,6 +361,13 @@ class SignalCenterService:
             "profit_gate_passed": profit_gate_passed,
             "trend_gate_passed": trend_gate_passed,
             "capacity_gate_passed": capacity_gate_passed,
+            "divergence_probe_blocked": divergence_probe_blocked,
+            "hot_zone_blocked": hot_zone_blocked,
+            "rsi12": round(rsi12, 4) if rsi12 is not None else None,
+            "add_hot_rsi": round(add_hot_rsi, 4),
+            "add_very_hot_rsi": round(add_very_hot_rsi, 4),
+            "ma20_distance_pct": round(ma20_distance_pct, 4) if ma20_distance_pct is not None else None,
+            "add_extreme_ma20_distance_pct": round(add_extreme_ma20_distance_pct, 4),
             "reasons": reasons,
         }
         strategy_profile["position_add_gate"] = gate
@@ -334,6 +375,9 @@ class SignalCenterService:
         thresholds.setdefault("add_min_unrealized_pnl_pct", round(min_unrealized_pnl_pct, 4))
         thresholds.setdefault("add_min_tech_score", round(min_tech_score, 6))
         thresholds.setdefault("add_min_fusion_confidence", round(float(min_fusion_confidence), 6))
+        thresholds.setdefault("add_hot_rsi", round(add_hot_rsi, 4))
+        thresholds.setdefault("add_very_hot_rsi", round(add_very_hot_rsi, 4))
+        thresholds.setdefault("add_extreme_ma20_distance_pct", round(add_extreme_ma20_distance_pct, 4))
 
         base_reasoning = str(normalized.get("reasoning") or "").strip()
         if passed:
@@ -353,6 +397,69 @@ class SignalCenterService:
             f"{base_reasoning} 持仓加仓门控未通过：{'；'.join(reasons)}，转为HOLD。"
         ).strip()
         return normalized
+
+    def _apply_divergence_probe_guard(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        action = str(normalized.get("action") or "HOLD").upper()
+        if action != "BUY":
+            return normalized
+        stock_code = str(candidate.get("stock_code") or "").strip()
+        if stock_code and self._current_position(stock_code):
+            return normalized
+
+        strategy_profile = normalized.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            strategy_profile = {}
+        if not self._is_divergence_probe_signal(normalized, strategy_profile):
+            return normalized
+
+        strategy_profile = dict(strategy_profile)
+        gate = {
+            "intent": "divergence_probe",
+            "status": "blocked",
+            "has_position": False,
+            "reasons": ["背离试探不新开仓"],
+        }
+        strategy_profile["divergence_probe_gate"] = gate
+        normalized["strategy_profile"] = strategy_profile
+        normalized["action"] = "HOLD"
+        normalized["position_size_pct"] = 0.0
+        normalized["decision_type"] = "divergence_probe_blocked"
+        normalized["confidence"] = round(
+            self._clamp((self._safe_float(normalized.get("confidence"), 0.0) or 0.0) * 0.65, 0.0, 100.0)
+        )
+        base_reasoning = str(normalized.get("reasoning") or "").strip()
+        normalized["reasoning"] = f"{base_reasoning} 背离试探门控阻断：背离试探不新开仓，转为HOLD。".strip()
+        return normalized
+
+    def _is_divergence_probe_signal(self, payload: dict[str, Any], strategy_profile: dict[str, Any]) -> bool:
+        reasoning = str(payload.get("reasoning") or "")
+        if "背离试探" in reasoning:
+            return True
+
+        explainability = strategy_profile.get("explainability")
+        if not isinstance(explainability, dict):
+            return False
+
+        dual_track = explainability.get("dual_track")
+        if isinstance(dual_track, dict):
+            resonance_type = str(dual_track.get("resonance_type") or "").strip().lower()
+            rule_hit = str(dual_track.get("rule_hit") or "").strip().lower()
+            if resonance_type in {"light_divergence", "divergence_light"}:
+                return True
+            if rule_hit in {"divergence_light", "light_divergence"}:
+                return True
+
+        resonance = explainability.get("resonance")
+        if isinstance(resonance, dict):
+            rule_hit = str(resonance.get("rule_hit") or "").strip().lower()
+            if rule_hit in {"divergence_light", "light_divergence"}:
+                return True
+            quality_ratio = self._safe_float(resonance.get("quality_adjusted_position_ratio"), None)
+            if quality_ratio is not None and 0.3 <= quality_ratio < 0.5:
+                return True
+
+        return False
 
     def _apply_lifecycle_exit_only_guard(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
@@ -712,14 +819,10 @@ class SignalCenterService:
         action = str(normalized.get("action") or "HOLD").upper()
         if action != "BUY":
             return normalized
-        if str(normalized.get("decision_type") or "").strip() == "position_add":
-            return normalized
 
         strategy_profile = normalized.get("strategy_profile")
         if not isinstance(strategy_profile, dict):
             strategy_profile = {}
-        if str(strategy_profile.get("execution_intent") or "").strip() == "position_add":
-            return normalized
         policy = self._portfolio_execution_guard_policy(strategy_profile)
         if not bool(policy.get("enabled", True)):
             return normalized
