@@ -967,6 +967,9 @@ def test_live_quant_drill_historical_candidate_events_promote_inactive_stock(tmp
     assert candidate_events["total"] >= 1
     assert candidate_events["items"][0]["source_type"] == "low_price"
     assert candidate_events["items"][0]["status"] == "consumed"
+    lifecycle = candidate_events["items"][0]["evidence_json"]["lifecycle_evaluation"]
+    assert lifecycle["entry_gate"]["passed"] is True
+    assert lifecycle["entry_gate"]["result"] == "passed"
     assert any(event["to_status"] == "trial" for event in quant_events["items"])
     assert replay_signals
 

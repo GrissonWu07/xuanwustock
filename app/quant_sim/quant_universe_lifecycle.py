@@ -899,6 +899,14 @@ class QuantUniverseManager:
                 "reason_code": entry_gate["reason_code"],
             }
         evaluation = self.evaluate_candidate(event["stock_code"])
+        evaluation = {
+            **evaluation,
+            "entry_gate": entry_gate,
+            "breakdown": {
+                **(evaluation.get("breakdown") if isinstance(evaluation.get("breakdown"), dict) else {}),
+                "entry_gate": entry_gate,
+            },
+        }
         settings = self.db.get_quant_universe_settings()
         stock = self._load_stock(event["stock_code"])
         state = self.db.get_quant_universe_state(event["stock_code"])
