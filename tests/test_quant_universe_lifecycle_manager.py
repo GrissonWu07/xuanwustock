@@ -124,7 +124,7 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "recovery_probe_confirmed_max_position_pct": 10.0,
             "recovery_probe_failed_max_position_pct": 2.5,
             "recovery_probe_failure_threshold": 2,
-            "recovery_probe_failure_lookback_days": 20,
+            "recovery_probe_failure_lookback_days": 30,
             "recovery_probe_attempt_fatigue_threshold": 4,
             "recovery_probe_cooldown_days": 15,
             "cooling_supplemental_buy_threshold_delta": 0.12,
@@ -166,7 +166,7 @@ def test_profile_defaults_match_lifecycle_spec_19_9():
             "recovery_probe_confirmed_max_position_pct": 7.0,
             "recovery_probe_failed_max_position_pct": 2.0,
             "recovery_probe_failure_threshold": 2,
-            "recovery_probe_failure_lookback_days": 25,
+            "recovery_probe_failure_lookback_days": 30,
             "recovery_probe_attempt_fatigue_threshold": 3,
             "recovery_probe_cooldown_days": 20,
             "cooling_supplemental_buy_threshold_delta": 0.15,
@@ -1692,6 +1692,54 @@ def test_manager_update_after_signal_restores_cooling_from_executable_normal_buy
     assert state["recovery_probe_until"] == "2026-01-06T10:00:00Z"
 
 
+def test_manager_blocks_cooling_normal_buy_after_two_recent_probe_losses(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "cooling",
+            "health_score": policy.cooling_threshold - 5,
+            "cooling_until": "2026-01-01T00:00:00Z",
+            "recent_probe_loss_count": 2,
+            "last_recovery_probe_failure_at": "2026-01-02T10:00:00Z",
+        },
+    )
+
+    signal = {
+        "action": "BUY",
+        "decision_time": "2026-01-20T10:00:00Z",
+        "tech_score": 0.3,
+        "context_score": 0.1,
+        "price": 12.8,
+        "ma20": 12.0,
+        "ma20_slope": 0.02,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.39, "fusion_score_delta": 0.04}},
+            "portfolio_execution_guard": {
+                "status": "normal_buy",
+                "buy_tier": "normal_buy",
+                "buy_strength_score": 0.71,
+            },
+            "execution_sizing_plan": {
+                "effective_position_pct": 6.0,
+                "final_budget": 24000.0,
+                "skip_reason": None,
+            },
+        },
+    }
+
+    result = manager.update_after_signal("600000", latest_signal=signal, recent_signals=[signal], position=None)
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["status_changed"] is False
+    assert result["new_status"] == "cooling"
+    assert result["reason_code"] == "recovery_probe_recent_loss_requires_strong_confirmation"
+    assert state["quant_status"] == "cooling"
+    assert state["recovery_probe_until"] is None
+
+
 def test_manager_update_after_signal_resets_streaks_when_cooling_buy_recovers(tmp_path):
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
     manager = _manager(tmp_path, policy)
@@ -1810,6 +1858,8 @@ def test_manager_cooling_strong_trend_recovery_upgrades_directly_to_active(tmp_p
             "quant_status": "cooling",
             "health_score": policy.cooling_threshold - 5,
             "cooling_until": "2026-01-01T00:00:00Z",
+            "recent_probe_loss_count": 2,
+            "last_recovery_probe_failure_at": "2026-01-02T10:00:00Z",
         },
     )
     signal = {

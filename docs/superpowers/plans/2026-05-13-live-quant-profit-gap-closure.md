@@ -629,7 +629,7 @@ Defaults:
 ```python
 # aggressive
 recovery_probe_failure_threshold=2
-recovery_probe_failure_lookback_days=20
+recovery_probe_failure_lookback_days=30
 recovery_probe_attempt_fatigue_threshold=4
 recovery_probe_cooldown_days=15
 ```

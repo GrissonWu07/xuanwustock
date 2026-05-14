@@ -320,7 +320,7 @@
 | `strong_recovery_confirmed_cap_pct` | 10.0 | 8.0 | 6.0 | strong recovery confirmed 单笔仓位上限。 |
 | `normal_recovery_cap_pct` | 6.0 | 5.0 | 4.0 | normal recovery 单笔仓位上限。 |
 | `failed_probe_cap_pct` | 2.5 | 2.0 | 1.5 | probe 失败后的轻仓上限。 |
-| `probe_lookback_days` | 20 | 25 | 30 | probe strict / cooldown 回看窗口。 |
+| `probe_lookback_days` | 30 | 30 | 30 | probe strict / cooldown 回看窗口。 |
 | `probe_attempt_fatigue_threshold` | 4 | 3 | 2 | 回看窗口内 probe 尝试过多阈值。 |
 | `probe_loss_cooldown_threshold` | 2 | 2 | 2 | 回看窗口内 probe 亏损触发 cooldown 的次数。 |
 | `probe_cooldown_days` | 15 | 20 | 30 | probe cooldown 时长。 |

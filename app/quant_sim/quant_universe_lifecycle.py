@@ -176,7 +176,7 @@ class QuantUniverseLifecyclePolicy:
             recovery_probe_confirmed_max_position_pct=10.0,
             recovery_probe_failed_max_position_pct=2.5,
             recovery_probe_failure_threshold=2,
-            recovery_probe_failure_lookback_days=20,
+            recovery_probe_failure_lookback_days=30,
             recovery_probe_attempt_fatigue_threshold=4,
             recovery_probe_cooldown_days=15,
             cooling_supplemental_buy_threshold_delta=0.12,
@@ -251,7 +251,7 @@ class QuantUniverseLifecyclePolicy:
             recovery_probe_confirmed_max_position_pct=7.0,
             recovery_probe_failed_max_position_pct=2.0,
             recovery_probe_failure_threshold=2,
-            recovery_probe_failure_lookback_days=25,
+            recovery_probe_failure_lookback_days=30,
             recovery_probe_attempt_fatigue_threshold=3,
             recovery_probe_cooldown_days=20,
             cooling_supplemental_buy_threshold_delta=0.15,
@@ -706,6 +706,7 @@ def resolve_next_status(
     active_trend_confirm_checkpoints: int = 0,
     cooling_min_dwell_active: bool = False,
     cooling_recovery_buy: bool = False,
+    recovery_probe_recent_loss_requires_strong_confirmation: bool = False,
     recovery_probe_active: bool = False,
     recovery_probe_strong_confirmed: bool = False,
     recovery_probe_exit_grace_active: bool = False,
@@ -823,6 +824,12 @@ def resolve_next_status(
                 QuantStatus.ACTIVE,
                 "cooling_strong_recovered_to_active",
                 "冷却复评出现 strong BUY 且趋势确认，直接恢复 active",
+            )
+        if recovery_probe_recent_loss_requires_strong_confirmation:
+            return _blocked(
+                current,
+                "recovery_probe_recent_loss_requires_strong_confirmation",
+                "近 30 天 recovery probe 两次止损后，仅允许 strong confirmation 恢复",
             )
         if cooling_recovery_buy:
             return _transition(current, QuantStatus.TRIAL, "cooling_recovered_by_executable_buy", "冷却复评出现可执行买入信号，回到 trial")
@@ -1275,6 +1282,11 @@ class QuantUniverseManager:
                 trend_confirmed = False
                 trend_confirmed_streak = 0
             cooling_recovery_buy = current == QuantStatus.COOLING and _signal_cooling_recovery_buy(latest_signal)
+            recovery_probe_recent_loss_requires_strong_confirmation = (
+                current == QuantStatus.COOLING
+                and int(self.policy.recovery_probe_failure_threshold or 0) > 0
+                and recent_probe_loss_count >= int(self.policy.recovery_probe_failure_threshold or 0)
+            )
             recovery_probe_strong_confirmed = bool(
                 _signal_strong_buy(latest_signal)
                 and trend_confirmed
@@ -1312,6 +1324,7 @@ class QuantUniverseManager:
                 active_trend_confirm_checkpoints=trend_confirmed_streak,
                 cooling_min_dwell_active=cooling_min_dwell_active,
                 cooling_recovery_buy=cooling_recovery_buy,
+                recovery_probe_recent_loss_requires_strong_confirmation=recovery_probe_recent_loss_requires_strong_confirmation,
                 recovery_probe_active=recovery_probe_active,
                 recovery_probe_strong_confirmed=recovery_probe_strong_confirmed,
                 recovery_probe_exit_grace_active=has_position
