@@ -30,6 +30,12 @@ DEFAULT_PORTFOLIO_EXECUTION_GUARD_POLICY: dict[str, Any] = {
     "max_risk_penalty": 0.50,
     "late_rebound_penalty": 0.20,
     "t1_risk_penalty": 0.15,
+    "hot_zone_penalty": 0.30,
+    "hot_zone_rsi_threshold": 75.0,
+    "hot_zone_extreme_rsi_threshold": 85.0,
+    "hot_zone_recent_5d_return_threshold": 0.08,
+    "hot_zone_extreme_recent_5d_return_threshold": 0.15,
+    "hot_zone_volume_ratio_threshold": 2.0,
     "stock_failure_penalty": 0.20,
     "portfolio_cooldown_penalty": 0.25,
     "portfolio_drawdown_penalty": 0.18,
@@ -74,6 +80,7 @@ PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_risk_penalty": 0.45,
         "late_rebound_penalty": 0.18,
         "t1_risk_penalty": 0.12,
+        "hot_zone_penalty": 0.28,
         "stock_failure_penalty": 0.18,
         "portfolio_cooldown_penalty": 0.20,
         "portfolio_drawdown_penalty": 0.15,
@@ -114,6 +121,7 @@ PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_risk_penalty": 0.55,
         "late_rebound_penalty": 0.22,
         "t1_risk_penalty": 0.18,
+        "hot_zone_penalty": 0.34,
         "stock_failure_penalty": 0.22,
         "portfolio_cooldown_penalty": 0.30,
         "portfolio_drawdown_penalty": 0.20,
@@ -184,6 +192,7 @@ def normalize_portfolio_execution_guard_policy(
         "max_risk_penalty",
         "late_rebound_penalty",
         "t1_risk_penalty",
+        "hot_zone_penalty",
         "stock_failure_penalty",
         "portfolio_cooldown_penalty",
         "portfolio_drawdown_penalty",
@@ -200,6 +209,11 @@ def normalize_portfolio_execution_guard_policy(
         "normal_volume_ratio",
         "strong_volume_ratio",
         "retest_tolerance_pct",
+        "hot_zone_rsi_threshold",
+        "hot_zone_extreme_rsi_threshold",
+        "hot_zone_recent_5d_return_threshold",
+        "hot_zone_extreme_recent_5d_return_threshold",
+        "hot_zone_volume_ratio_threshold",
         "candidate_below_ma20_guard_ratio",
         "position_below_ma20_guard_ratio",
     ):
@@ -253,6 +267,7 @@ def evaluate_portfolio_execution_guard(
     track_alignment = _track_alignment(signal, fusion)
     is_late_rebound, late_reasons = _late_rebound(metrics, trend, resolved)
     t1_active = _t1_risk(signal, trend, resolved)
+    hot_zone_penalty, hot_zone_reasons = _hot_zone_risk(metrics, resolved)
     portfolio = _portfolio_state(portfolio_summary or {}, resolved)
     if not has_signal_context:
         status = "passed"
@@ -292,6 +307,7 @@ def evaluate_portfolio_execution_guard(
     penalties = {
         "late_rebound": float(resolved["late_rebound_penalty"]) if is_late_rebound else 0.0,
         "t1": float(resolved["t1_risk_penalty"]) if t1_active else 0.0,
+        "hot_zone": hot_zone_penalty,
         "stock_failure": _stock_failure_penalty(profile, resolved),
         "portfolio_cooldown": float(resolved["portfolio_cooldown_penalty"]) if portfolio["cooldown_active"] else 0.0,
         "portfolio_drawdown": float(resolved["portfolio_drawdown_penalty"]) if portfolio["drawdown_guard_triggered"] else 0.0,
@@ -316,6 +332,7 @@ def evaluate_portfolio_execution_guard(
         trend=trend,
         is_late_rebound=is_late_rebound,
         t1_active=t1_active,
+        hot_zone_active=bool(hot_zone_reasons),
         policy=resolved,
     )
     initial_tier = tier
@@ -325,6 +342,7 @@ def evaluate_portfolio_execution_guard(
     reasons.extend(late_reasons)
     if t1_active:
         reasons.append("t1_new_buy_unconfirmed")
+    reasons.extend(hot_zone_reasons)
 
     status = "passed"
     multiplier = float(resolved[f"{tier.split('_')[0]}_multiplier"])
@@ -447,6 +465,17 @@ def _metrics(signal: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
         "ma20": _maybe_float(market.get("ma20")),
         "ma20_slope": _float(market.get("ma20_slope"), 0.0),
         "volume_ratio": _maybe_float(market.get("volume_ratio")),
+        "rsi": _first_maybe_float(market.get("rsi12"), market.get("rsi14"), market.get("rsi")),
+        "recent_5d_return": _return_ratio(
+            _first_maybe_float(
+                market.get("recent_5d_return"),
+                market.get("recent5d_return"),
+                market.get("recent_5d_change"),
+                market.get("recent_5d_pct"),
+                market.get("recent_return_5d"),
+                market.get("five_day_return"),
+            )
+        ),
     }
 
 
@@ -534,14 +563,55 @@ def _late_rebound(metrics: dict[str, Any], trend: dict[str, Any], policy: dict[s
     return bool(reasons), reasons
 
 
+def _hot_zone_risk(metrics: dict[str, Any], policy: dict[str, Any]) -> tuple[float, list[str]]:
+    rsi = metrics.get("rsi")
+    recent_5d_return = metrics.get("recent_5d_return")
+    volume_ratio = metrics.get("volume_ratio")
+    rsi_hot = rsi is not None and rsi >= float(policy["hot_zone_rsi_threshold"])
+    rsi_extreme = rsi is not None and rsi >= float(policy["hot_zone_extreme_rsi_threshold"])
+    return_hot = (
+        recent_5d_return is not None
+        and recent_5d_return >= float(policy["hot_zone_recent_5d_return_threshold"])
+    )
+    return_extreme = (
+        recent_5d_return is not None
+        and recent_5d_return >= float(policy["hot_zone_extreme_recent_5d_return_threshold"])
+    )
+    volume_hot = volume_ratio is not None and volume_ratio >= float(policy["hot_zone_volume_ratio_threshold"])
+
+    active = bool(rsi_extreme or return_extreme or ((rsi_hot or return_hot) and volume_hot) or (rsi_hot and return_hot))
+    if not active:
+        return 0.0, []
+
+    reasons = ["hot_zone_extended"]
+    if rsi_extreme:
+        reasons.append("hot_zone_rsi_extreme")
+    elif rsi_hot:
+        reasons.append("hot_zone_rsi_overbought")
+    if return_extreme:
+        reasons.append("hot_zone_recent_return_extreme")
+    elif return_hot:
+        reasons.append("hot_zone_recent_return_elevated")
+    if volume_hot:
+        reasons.append("hot_zone_volume_amplified")
+    return float(policy["hot_zone_penalty"]), reasons
+
+
 def _t1_risk(signal: dict[str, Any], trend: dict[str, Any], policy: dict[str, Any]) -> bool:
     market = str(signal.get("market") or "A").strip().upper()
     timeframe = str(signal.get("timeframe") or signal.get("analysis_timeframe") or "30m").strip().lower()
     if market not in {"A", "ASHARE", "CN", "CHINA"} or timeframe not in {"30m", "15m", "5m", "1m"}:
         return False
-    if trend.get("retest_confirmed"):
+    if _strong_t1_confirmation(trend, policy):
         return False
-    return int(trend.get("above_ma20_checkpoints") or 0) < int(policy["t1_confirm_checkpoints"])
+    return True
+
+
+def _strong_t1_confirmation(trend: dict[str, Any], policy: dict[str, Any]) -> bool:
+    required = int(policy["t1_confirm_checkpoints"])
+    above_ma20 = int(trend.get("above_ma20_checkpoints") or 0)
+    has_structure = bool(trend.get("ma_stack") or trend.get("retest_confirmed"))
+    return bool(trend.get("ma20_rising")) and above_ma20 >= required and has_structure
 
 
 def _stock_failure_penalty(profile: dict[str, Any], policy: dict[str, Any]) -> float:
@@ -599,6 +669,7 @@ def _apply_hard_tier_requirements(
     trend: dict[str, Any],
     is_late_rebound: bool,
     t1_active: bool,
+    hot_zone_active: bool,
     policy: dict[str, Any],
 ) -> str:
     if t1_active:
@@ -608,6 +679,8 @@ def _apply_hard_tier_requirements(
         or trend.get("ma_stack")
         or trend.get("retest_confirmed")
     )
+    if tier == "normal_buy" and hot_zone_active:
+        return "weak_buy"
     if tier == "normal_buy" and (not trend_confirmed or is_late_rebound):
         return "weak_buy"
     strong_ok = (
@@ -616,6 +689,8 @@ def _apply_hard_tier_requirements(
         and trend.get("ma20_rising")
         and (not is_late_rebound or buy_edge >= float(policy["strong_edge_abs"]))
     )
+    if tier == "strong_buy" and hot_zone_active and buy_edge < float(policy["strong_edge_abs"]):
+        return "normal_buy" if trend_confirmed else "weak_buy"
     if tier == "strong_buy" and not strong_ok:
         return "normal_buy" if trend_confirmed else "weak_buy"
     if buy_edge < float(policy["weak_edge_abs"]):
@@ -697,6 +772,23 @@ def _maybe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _first_maybe_float(*values: Any) -> float | None:
+    for value in values:
+        maybe = _maybe_float(value)
+        if maybe is not None:
+            return maybe
+    return None
+
+
+def _return_ratio(value: Any) -> float | None:
+    maybe = _maybe_float(value)
+    if maybe is None:
+        return None
+    if abs(maybe) > 2.0:
+        return maybe / 100.0
+    return maybe
 
 
 def _float(value: Any, default: float) -> float:

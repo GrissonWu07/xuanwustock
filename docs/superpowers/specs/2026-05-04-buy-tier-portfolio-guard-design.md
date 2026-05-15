@@ -43,9 +43,9 @@
 
 1. 读取当前信号的 fusion/tech/context 分数、BUY 阈值、confidence、volume_ratio、MA5/MA10/MA20/MA20 slope、RSI、最近 checkpoint 快照、个股执行摘要、组合执行摘要。
 2. 计算趋势确认指标：`ma_stack`、`ma20_rising`、`above_ma20_checkpoints`、`retest_confirmed`。
-3. 计算风险识别指标：`is_late_rebound`、`t1_new_buy_risk`、`stock_failure_state`、`portfolio_guard_state`。
+3. 计算风险识别指标：`is_late_rebound`、`t1_new_buy_risk`、`hot_zone_risk`、`stock_failure_state`、`portfolio_guard_state`。
 4. 计算 `buy_strength_score`，映射初始 `buy_tier`。
-5. 依次应用 T+1 风险、冷启动、个股执行反馈、止盈后再入场、组合防守、BUY 数量上限。
+5. 依次应用 T+1 风险、过热追高风险、冷启动、个股执行反馈、止盈后再入场、组合防守、BUY 数量上限。
 6. 输出最终 `status`、`buy_tier`、`size_multiplier`、`reasons`，资金槽只读取最终 gate 倍率。
 
 ### 派生指标定义
@@ -83,9 +83,15 @@
 `t1_new_buy_risk`：
 
 1. 市场为 A 股，当前信号周期为 30m 或更短。
-2. 当前 checkpoint 是该股在本运行域内最近 `t1_confirm_checkpoints` 个 checkpoint 的首次 BUY。
-3. `above_ma20_checkpoints < confirm_checkpoints` 或 `ma20_rising = false`。
-4. 同时满足以上条件时为 true，并写入 reason `t1_new_buy_unconfirmed`。
+2. 当前趋势没有达到强 T+1 确认：`ma20_rising = true`、`above_ma20_checkpoints >= t1_confirm_checkpoints`，并且 `ma_stack = true` 或 `retest_confirmed = true`。
+3. `retest_confirmed = true` 不能单独绕过 T+1；它必须和连续站稳 checkpoint 数一起满足。
+4. 满足以上风险条件时为 true，并写入 reason `t1_new_buy_unconfirmed`。
+
+`hot_zone_risk`：
+
+1. 使用 `rsi12/rsi14/rsi`、`recent_5d_return`、`volume_ratio` 识别过热追高。
+2. RSI 极端过热、5 日涨幅极端过热，或 RSI/5 日涨幅偏热且量比放大时，写入 reason `hot_zone_extended`。
+3. 该风险计入 `hot_zone_penalty`；候选 `normal_buy` 必须降为 `weak_buy`，候选 `strong_buy` 在 BUY edge 未达到 strong 硬阈值时降为 `normal_buy`。
 
 `stock_failure_state`：
 
@@ -132,16 +138,17 @@ buy_strength_score = clamp(raw_buy_strength_score, 0, 1)
 6. `confirmation_score = clamp(above_ma20_checkpoints / confirm_checkpoints, 0, 1)`；`retest_confirmed` 时至少为 `0.75`。
 7. `volume_score = 1.0`：强量能确认；`0.6`：普通量能确认；`0.3`：量能缺失或未确认。
 8. `track_alignment_score = clamp(1 - abs(tech_score - context_score) / 2, 0, 1)`；缺失时取 `0.5`。
-9. `risk_penalty` 由反弹尾段、T+1、个股失败、组合失败叠加，最大不超过 `max_risk_penalty`。
+9. `risk_penalty` 由反弹尾段、T+1、过热追高、个股失败、组合失败叠加，最大不超过 `max_risk_penalty`。
 
 `risk_penalty` 取值：
 
 1. `is_late_rebound = true`：加 `late_rebound_penalty`。
 2. `t1_new_buy_risk = true`：加 `t1_risk_penalty`。
-3. `stock_execution_feedback_gate.status = downgraded`：加 `stock_failure_penalty`。
-4. `portfolio_guard_state.cooldown_active = true`：加 `portfolio_cooldown_penalty`。
-5. `portfolio_guard_state.drawdown_guard_triggered = true`：加 `portfolio_drawdown_penalty`。
-6. 最终 `risk_penalty = min(sum(penalties), max_risk_penalty)`。
+3. `hot_zone_risk = true`：加 `hot_zone_penalty`。
+4. `stock_execution_feedback_gate.status = downgraded`：加 `stock_failure_penalty`。
+5. `portfolio_guard_state.cooldown_active = true`：加 `portfolio_cooldown_penalty`。
+6. `portfolio_guard_state.drawdown_guard_triggered = true`：加 `portfolio_drawdown_penalty`。
+7. 最终 `risk_penalty = min(sum(penalties), max_risk_penalty)`。
 
 BUY 分层先由 `buy_strength_score` 映射，再由硬性门槛校正：
 
@@ -149,7 +156,8 @@ BUY 分层先由 `buy_strength_score` 映射，再由硬性门槛校正：
 2. `weak_buy_max_score <= buy_strength_score < strong_buy_min_score`：候选 `normal_buy`。
 3. `buy_strength_score >= strong_buy_min_score`：候选 `strong_buy`。
 4. 如果缺少 `normal_buy` 必需趋势确认，候选 `normal_buy` 降为 `weak_buy`。
-5. 如果缺少 `strong_buy` 全部硬性条件，候选 `strong_buy` 降为 `normal_buy` 或 `weak_buy`。
+5. 如果命中过热追高风险，候选 `normal_buy` 降为 `weak_buy`。
+6. 如果缺少 `strong_buy` 全部硬性条件，候选 `strong_buy` 降为 `normal_buy` 或 `weak_buy`；过热追高且 BUY edge 未达到 strong 硬阈值时不能保持 `strong_buy`。
 
 ## BUY 分层
 
@@ -166,6 +174,7 @@ BUY 分层先由 `buy_strength_score` 映射，再由硬性门槛校正：
 5. `ma_stack = false`，且没有其他趋势确认。
 6. `is_late_rebound = true`。
 7. A 股 30m 信号当前 checkpoint 刚转 BUY，且缺少多 checkpoint 确认。
+8. RSI/5 日涨幅过热且量比放大，或 RSI/5 日涨幅达到极端过热。
 
 处理：
 
@@ -189,8 +198,9 @@ BUY 分层先由 `buy_strength_score` 映射，再由硬性门槛校正：
 降级条件：
 
 1. `is_late_rebound = true` 且不满足 strong_buy 硬性条件时，降为 `weak_buy`。
-2. A 股 30m 刚转 BUY 且缺少多 checkpoint 确认时，降为 `weak_buy`。
-3. 组合冷却时降为 `weak_buy`，或按 `cooldown_size_multiplier` 降仓。
+2. A 股 30m 刚转 BUY 且缺少强 T+1 确认时，降为 `weak_buy`。
+3. 命中过热追高风险时，降为 `weak_buy`。
+4. 组合冷却时降为 `weak_buy`，或按 `cooldown_size_multiplier` 降仓。
 
 处理：
 
@@ -251,11 +261,19 @@ fusion/tech 只比 BUY 阈值高一点时，不再等同普通 BUY。系统必�
 
 ### T+1 风险处理
 
-A 股 30m BUY 如果是当天或当前 checkpoint 刚转强，且缺少多 checkpoint 确认，不能归类为 `normal_buy` 或 `strong_buy`。此类信号必须：
+A 股 30m BUY 如果缺少强 T+1 确认，不能归类为 `normal_buy` 或 `strong_buy`。强 T+1 确认必须同时满足：MA20 上行、连续站稳 MA20 达到 `t1_confirm_checkpoints`，并且具备 MA 多头排列或有效 MA20 回踩确认。`retest_confirmed` 不能单独绕过 T+1。此类信号必须：
 
 1. 默认归类为 `weak_buy`。
 2. 冷启动时继续套用 `cold_start_weak_multiplier`。
 3. 在交易明细或信号详情中写入 T+1 风险原因。
+
+### 过热追高处理
+
+RSI、5 日涨幅和量比都不能只作为说明文本。满足过热追高风险时必须写入 `hot_zone_extended` 并进入 `risk_penalties.hot_zone`：
+
+1. RSI 达到极端过热，或 5 日涨幅达到极端过热。
+2. RSI 或 5 日涨幅偏热，同时 `volume_ratio` 达到放大阈值。
+3. 候选 `normal_buy` 降为 `weak_buy`；候选 `strong_buy` 如果 BUY edge 不够强，降为 `normal_buy`。
 
 ### 入场确认强度
 
@@ -401,6 +419,15 @@ derived_loss_budget_amount = -abs(reference_equity * loss_budget_pct / 100)
 1. aggressive：允许更早捕捉趋势，权重更偏 `edge_strength` 和 `volume_score`，确认 checkpoint 更少，BUY 上限更宽，但仍要受组合亏损和 T+1 风险约束。
 2. stable / neutral：作为基线，权重在 edge、趋势结构、确认持续性之间均衡，减少边缘信号足额开仓。
 3. conservative：偏确认后行动，权重更偏 `trend_structure_score` 和 `confirmation_score`，风险惩罚更高，BUY 阈值、更强量能、更严格市场环境门控都更保守。
+
+过热追高阈值所有 profile 共用，惩罚值按 profile 区分：
+
+- `hot_zone_rsi_threshold = 75.0`
+- `hot_zone_extreme_rsi_threshold = 85.0`
+- `hot_zone_recent_5d_return_threshold = 0.08`
+- `hot_zone_extreme_recent_5d_return_threshold = 0.15`
+- `hot_zone_volume_ratio_threshold = 2.0`
+- `hot_zone_penalty`：aggressive `0.28`，stable/neutral `0.30`，conservative `0.34`
 
 实现要求：
 
@@ -575,6 +602,7 @@ derived_loss_budget_amount = -abs(reference_equity * loss_budget_pct / 100)
     "risk_penalties": {
       "late_rebound": 0.18,
       "t1": 0.0,
+      "hot_zone": 0.0,
       "stock_failure": 0.0,
       "portfolio_cooldown": 0.0,
       "portfolio_drawdown": 0.02

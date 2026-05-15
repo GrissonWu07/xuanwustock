@@ -193,7 +193,7 @@ def test_t1_unconfirmed_a_share_buy_downgrades_to_weak_buy():
     assert "t1_new_buy_unconfirmed" in gate["reasons"]
 
 
-def test_retest_confirmation_can_remain_normal_buy_without_full_checkpoint_count():
+def test_retest_confirmation_does_not_bypass_t1_checkpoint_confirmation():
     signal = _signal()
     signal["market"] = "A"
     signal["timeframe"] = "30m"
@@ -220,9 +220,43 @@ def test_retest_confirmation_can_remain_normal_buy_without_full_checkpoint_count
     assert gate["trend_confirmation"]["retest_confirmed"] is True
     assert gate["trend_confirmation"]["above_ma20_checkpoints"] == 2
     assert gate["score_components"]["confirmation_score"] == 0.75
-    assert gate["t1_risk"]["active"] is False
+    assert gate["t1_risk"]["active"] is True
+    assert "t1_new_buy_unconfirmed" in gate["reasons"]
     assert gate["is_late_rebound"] is False
-    assert gate["buy_tier"] == "normal_buy"
+    assert gate["buy_tier"] == "weak_buy"
+
+
+def test_hot_zone_extension_downgrades_normal_buy_to_weak_buy():
+    signal = _signal()
+    signal["market"] = "A"
+    signal["timeframe"] = "30m"
+    signal["strategy_profile"]["market_snapshot"].update(
+        {
+            "current_price": 36.08,
+            "ma5": 34.6,
+            "ma10": 33.9,
+            "ma20": 32.1,
+            "ma20_slope": 0.02,
+            "volume_ratio": 3.5,
+            "rsi12": 78.5,
+            "recent_5d_return": 0.325,
+            "recent_checkpoints": [
+                {"close": 32.4, "ma20": 31.9, "ma20_slope": 0.01},
+                {"close": 33.2, "ma20": 32.0, "ma20_slope": 0.01},
+                {"close": 36.08, "ma20": 32.1, "ma20_slope": 0.02},
+            ],
+        }
+    )
+    signal["strategy_profile"]["explainability"]["fusion_breakdown"]["fusion_score"] = 0.40
+    policy = default_portfolio_execution_guard_policy("stable")
+    policy["strong_buy_min_score"] = 0.99
+
+    gate = evaluate_portfolio_execution_guard(signal=signal, policy=policy, portfolio_summary={})
+
+    assert gate["buy_tier"] == "weak_buy"
+    assert gate["status"] == "downgraded"
+    assert gate["score_components"]["risk_penalties"]["hot_zone"] > 0
+    assert "hot_zone_extended" in gate["reasons"]
 
 
 def test_portfolio_loss_budget_blocks_new_buy_and_exposes_portfolio_reasons():
