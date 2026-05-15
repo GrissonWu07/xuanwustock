@@ -19,7 +19,16 @@ const fieldText = (row: TableRow, key: string) => {
   return typeof value === "string" ? value.trim() : "";
 };
 
+const fieldNumber = (row: TableRow, key: string) => {
+  const value = (row as EntryRow)[key];
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+
 const fieldBool = (row: TableRow, key: string) => Boolean((row as EntryRow)[key]);
+
+const formatDiagnosticNumber = (value: number) => value.toFixed(2);
 
 export const entryStatusOf = (row: TableRow, override?: EntryStatusOverride) => {
   if (override?.status) return override.status;
@@ -38,10 +47,14 @@ export const isEligibleEntry = (row: TableRow, override?: EntryStatusOverride) =
 export function EligibleBadge({ row, override }: { row: TableRow; override?: EntryStatusOverride }) {
   const status = entryStatusOf(row, override);
   const reason = entryReasonOf(row, override);
+  const score = fieldNumber(row, "candidate_score") ?? fieldNumber(row, "source_score") ?? fieldNumber(row, "score");
+  const confidence = fieldNumber(row, "candidate_confidence") ?? fieldNumber(row, "confidence") ?? fieldNumber(row, "source_confidence");
   const tone = status === "eligible" ? "badge--success" : status === "already_in_quant" ? "badge--accent" : "badge--neutral";
   return (
     <span className="chip-row" style={{ gap: "6px" }}>
       <span className={`badge ${tone}`}>{status}</span>
+      {score !== null ? <span className="badge badge--neutral">{t("Score")} {formatDiagnosticNumber(score)}</span> : null}
+      {confidence !== null ? <span className="badge badge--neutral">{t("Confidence")} {formatDiagnosticNumber(confidence)}</span> : null}
       {reason ? <span className="badge badge--neutral">{reason}</span> : null}
     </span>
   );

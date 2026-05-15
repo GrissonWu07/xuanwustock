@@ -89,7 +89,16 @@ def enrich_lifecycle_entry_rows(context: Any, rows: list[dict[str, Any]]) -> lis
         if not isinstance(row, dict):
             continue
         code = normalize_stock_code(row.get("code") or row.get("stock_code") or row.get("id"))
-        row.update(_lifecycle_entry_fields(db, code))
+        fields = _lifecycle_entry_fields(db, code)
+        if _float(fields.get("candidate_score")) <= 0:
+            score = _first_number(row.get("candidate_score"), row.get("source_score"), row.get("score"))
+            if score is not None and score > 0:
+                fields["candidate_score"] = round(_normalized_unit_score(score), 4)
+        if _float(fields.get("candidate_confidence")) <= 0:
+            confidence = _first_number(row.get("candidate_confidence"), row.get("confidence"), row.get("source_confidence"))
+            if confidence is not None and confidence > 0:
+                fields["candidate_confidence"] = round(_normalized_unit_score(confidence), 4)
+        row.update(fields)
     return rows
 
 
@@ -110,6 +119,7 @@ def _lifecycle_entry_fields(db: Any, stock_code: str) -> dict[str, Any]:
     quant_status = str(state.get("quant_status") or "inactive").strip() or "inactive"
     manual_override = str(state.get("quant_manual_override") or "").strip()
     candidate_score = _score_from_state_or_event(state, best_event)
+    candidate_confidence = _confidence_from_event(best_event)
     blocking_reason = _blocking_reason(state, quant_status, manual_override)
     already_in_quant = quant_status in ENTRY_QUANT_STATUSES
 
@@ -137,6 +147,7 @@ def _lifecycle_entry_fields(db: Any, stock_code: str) -> dict[str, Any]:
     return {
         "eligible_status": eligible_status,
         "candidate_score": candidate_score,
+        "candidate_confidence": candidate_confidence,
         "blocking_reason": blocking_reason,
         "already_in_quant": already_in_quant,
     }
@@ -146,6 +157,7 @@ def _empty_entry_fields() -> dict[str, Any]:
     return {
         "eligible_status": "skipped",
         "candidate_score": 0.0,
+        "candidate_confidence": 0.0,
         "blocking_reason": "not_evaluated",
         "already_in_quant": False,
     }
@@ -157,6 +169,12 @@ def _score_from_state_or_event(state: dict[str, Any], event: dict[str, Any] | No
         return round(state_score, 4)
     if isinstance(event, dict):
         return round(_float(event.get("source_score")), 4)
+    return 0.0
+
+
+def _confidence_from_event(event: dict[str, Any] | None) -> float:
+    if isinstance(event, dict):
+        return round(_float(event.get("confidence")), 4)
     return 0.0
 
 
@@ -217,14 +235,17 @@ def _candidate_event_payload(row: dict[str, Any], *, source_type: str) -> dict[s
     code = normalize_stock_code(row.get("code") or row.get("stock_code") or row.get("id"))
     source_key = _source_key(row, source_type=source_type)
     name = str(row.get("name") or row.get("stock_name") or code).strip() or code
+    source_score = _source_score(row, source_type=source_type, source_key=source_key)
+    confidence = _confidence(row, source_type=source_type)
+    trend = _trend(row)
     return {
         "stock_code": code,
         "stock_name": name,
         "source_type": source_type,
         "source_key": source_key,
-        "source_score": _source_score(row, source_type=source_type, source_key=source_key),
-        "confidence": _confidence(row, source_type=source_type),
-        "trend": _trend(row),
+        "source_score": source_score,
+        "confidence": confidence,
+        "trend": trend,
         "event_weight": 1.0,
         "reason_text": str(row.get("reason") or row.get("summary") or row.get("source") or "").strip(),
         "payload": {
@@ -243,6 +264,11 @@ def _candidate_event_payload(row: dict[str, Any], *, source_type: str) -> dict[s
             "rsi": row.get("rsi") or row.get("rsi12") or row.get("RSI"),
             "macd": row.get("macd") or row.get("MACD"),
             "technical_confirmation_count": row.get("technical_confirmation_count"),
+            "technical_reasons": row.get("technical_reasons"),
+            "source_score": source_score,
+            "confidence": confidence,
+            "trend": trend,
+            "lifecycle_score_diagnostics": row.get("lifecycle_score_diagnostics"),
             "eligible_status_before": row.get("eligible_status"),
         },
     }

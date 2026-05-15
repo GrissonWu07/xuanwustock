@@ -11,6 +11,7 @@ from fastapi import HTTPException
 import pandas as pd
 
 from app.discover.ai_stock_scanner import AIStockScanner, AIStockScannerConfig
+from app.discover.lifecycle_scoring import normalize_discovery_lifecycle_row
 from app.async_task_base import AsyncTaskManagerBase
 from app.gateway.common import (
     code_from_payload as _code_from_payload,
@@ -188,7 +189,8 @@ def _first_metric_value(row: dict[str, Any], aliases: list[str], key_needles: li
     return None
 
 
-def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at: str | None) -> dict[str, Any] | None:
+def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at: str | None, strategy_key: str = "", rank: int = 1, total: int = 1) -> dict[str, Any] | None:
+    lifecycle_row = normalize_discovery_lifecycle_row(row, strategy_key=strategy_key or source, strategy_name=source, rank=rank, total=total)
     code = _discover_code(
         _first_non_empty(
             row,
@@ -286,7 +288,7 @@ def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at:
         )
     )
     cells = [code, name, industry, source, latest_price, market_cap, pe, pb]
-    return {
+    result = {
         "id": code,
         "cells": cells,
         "actions": [{"label": t("Add to watchlist"), "icon": "⭐", "tone": "accent", "action": "item-watchlist"}],
@@ -298,9 +300,11 @@ def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at:
         "marketCap": market_cap,
         "peRatio": pe,
         "pbRatio": pb,
-        "score": _first_non_empty(row, ["score", "scanner_score", "confidence_score", "candidate_score"]),
-        "confidence": _first_non_empty(row, ["confidence", "confidence_score"]),
-        "trend": _first_non_empty(row, ["trend", "trend_direction", "direction"]),
+        "score": lifecycle_row.get("score"),
+        "source_score": lifecycle_row.get("source_score"),
+        "confidence": lifecycle_row.get("confidence"),
+        "candidate_confidence": lifecycle_row.get("candidate_confidence"),
+        "trend": lifecycle_row.get("trend"),
         "ma5": _first_non_empty(row, ["ma5", "MA5"]),
         "ma10": _first_non_empty(row, ["ma10", "MA10"]),
         "ma20": _first_non_empty(row, ["ma20", "MA20"]),
@@ -310,15 +314,22 @@ def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at:
         "volume_ratio": _first_non_empty(row, ["volume_ratio", "量比"]),
         "rsi": _first_non_empty(row, ["rsi", "rsi12", "RSI"]),
         "macd": _first_non_empty(row, ["macd", "MACD"]),
+        "technical_confirmation_count": lifecycle_row.get("technical_confirmation_count"),
+        "lifecycle_score_diagnostics": lifecycle_row.get("lifecycle_score_diagnostics"),
         "reason": reason,
         "selectedAt": _system_time(selected_at, ""),
     }
+    for key in ("scanner_score", "theme_score", "technical_score", "technical_reasons", "sector_score", "rank_score", "price_change_score"):
+        if lifecycle_row.get(key) not in (None, ""):
+            result[key] = lifecycle_row.get(key)
+    return result
 
 
 def _discover_rows_from_main_force(result: dict[str, Any], selected_at: str | None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     recommendations = result.get("final_recommendations", []) if isinstance(result, dict) else []
-    for item in recommendations or []:
+    total = len(recommendations or [])
+    for rank, item in enumerate(recommendations or [], start=1):
         if not isinstance(item, dict):
             continue
         stock = item.get("stock_data", {}) if isinstance(item.get("stock_data"), dict) else {}
@@ -332,11 +343,7 @@ def _discover_rows_from_main_force(result: dict[str, Any], selected_at: str | No
                 "reason": item.get("highlights") or item.get("reason") or ", ".join(item.get("reasons", [])),
             }
         )
-        row = _discover_row_from_mapping(
-            source_row,
-            source=_txt(item.get("source") or t("Main force selection")),
-            selected_at=selected_at,
-        )
+        row = _discover_row_from_mapping(source_row, source=_txt(item.get("source") or t("Main force selection")), selected_at=selected_at, strategy_key="main_force", rank=rank, total=total)
         if row:
             rows.append(row)
     return rows
@@ -357,10 +364,11 @@ def _discover_rows_from_simple_selector(
     except Exception:
         return []
     rows: list[dict[str, Any]] = []
-    for item in rows_iter or []:
+    total = len(rows_iter or [])
+    for rank, item in enumerate(rows_iter or [], start=1):
         if not isinstance(item, dict):
             continue
-        row = _discover_row_from_mapping(item, source=strategy_name, selected_at=selected_at)
+        row = _discover_row_from_mapping(item, source=strategy_name, selected_at=selected_at, strategy_key=strategy_key, rank=rank, total=total)
         if not row:
             continue
         row["strategyKey"] = strategy_key
@@ -407,18 +415,18 @@ def _run_ai_scanner_strategy(context: Any, payload: dict[str, Any], *, top_n: in
         if not reason_parts:
             reason_parts.append(t("AI scanner selected candidate"))
 
-        rows.append(
-            {
-                "股票代码": code,
-                "股票简称": _txt(item.get("股票简称") or item.get("name"), code),
-                "所属行业": _txt(item.get("所属行业") or item.get("sector")),
-                "最新价": _first_non_empty(item, ["最新价", "latest_price", "current_price", "price"]),
-                "总市值": _first_non_empty(item, ["总市值", "market_cap", "total_market_value", "marketCap"]),
-                "市盈率": _first_non_empty(item, ["市盈率", "pe", "pe_ratio", "pe_ttm"]),
-                "市净率": _first_non_empty(item, ["市净率", "pb", "pb_ratio"]),
-                "reason": " | ".join(reason_parts),
-            }
-        )
+        normalized = dict(item)
+        normalized.update({
+            "股票代码": code,
+            "股票简称": _txt(item.get("股票简称") or item.get("name"), code),
+            "所属行业": _txt(item.get("所属行业") or item.get("sector")),
+            "最新价": _first_non_empty(item, ["最新价", "latest_price", "current_price", "price"]),
+            "总市值": _first_non_empty(item, ["总市值", "market_cap", "total_market_value", "marketCap"]),
+            "市盈率": _first_non_empty(item, ["市盈率", "pe", "pe_ratio", "pe_ttm"]),
+            "市净率": _first_non_empty(item, ["市净率", "pb", "pb_ratio"]),
+            "reason": " | ".join(reason_parts),
+        })
+        rows.append(normalize_discovery_lifecycle_row(normalized, strategy_key="ai_scanner", strategy_name=t("AI stock selection"), rank=len(rows) + 1, total=len(selected_stocks)))
 
     if not rows:
         raise RuntimeError(t("AI scanner returned no selected stocks"))

@@ -115,6 +115,18 @@ const localizeDecisionText = (value: string) => {
   return output;
 };
 
+const quantAutoEntrySummary = (job: DiscoverSnapshot["taskJob"]) => {
+  const entry = job?.result?.quantAutoEntry;
+  if (!entry) return "";
+  const skippedCount = Array.isArray(entry.skipped) ? entry.skipped.length : 0;
+  return t("Auto-entry: attempted {attempted}, promoted {promoted}, eligible {eligible}, skipped {skipped}", {
+    attempted: Number(entry.attempted ?? 0),
+    promoted: Number(entry.promoted ?? 0),
+    eligible: Number(entry.eligible ?? 0),
+    skipped: skippedCount,
+  });
+};
+
 export function DiscoverPage({ client }: DiscoverPageProps) {
   const taskClient = client ?? apiClient;
   const resource = usePageData("discover", client);
@@ -349,7 +361,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
       if (taskId) {
         const finished = await pollTask(taskId);
         if (finished?.status === "completed") {
-          setRunFeedback((finished.message ? t(finished.message) : "") || t("Discover result updated. Candidates and summary refreshed."));
+          setRunFeedback(quantAutoEntrySummary(finished) || (finished.message ? t(finished.message) : "") || t("Discover result updated. Candidates and summary refreshed."));
         } else if (finished?.status === "failed") {
           setRunFeedback(t("Discover task failed: {message}", { message: finished.message ? t(finished.message) : t("Please check task logs") }));
         } else {

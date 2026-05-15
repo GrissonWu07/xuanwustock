@@ -66,6 +66,17 @@ export type TableRow = {
   workflowBadges?: string[];
   dataStatus?: string;
   updatedAt?: string;
+  score?: number;
+  source_score?: number;
+  confidence?: number;
+  source_confidence?: number;
+  candidate_score?: number;
+  candidate_confidence?: number;
+  eligible_status?: string;
+  blocking_reason?: string;
+  already_in_quant?: boolean;
+  technical_confirmation_count?: number;
+  lifecycle_score_diagnostics?: Record<string, unknown>;
 };
 
 export type TableSection = {
@@ -105,6 +116,14 @@ export type ActionTile = {
 
 export type TaskStatus = "idle" | "queued" | "running" | "completed" | "failed";
 
+export type QuantAutoEntrySummary = {
+  attempted?: number;
+  events?: number;
+  eligible?: number;
+  promoted?: number;
+  skipped?: { stock_code?: string; reason?: string; reason_code?: string; reason_text?: string }[];
+};
+
 export type TaskJob = {
   id: string;
   status: TaskStatus;
@@ -129,6 +148,10 @@ export type TaskJob = {
     stage: string;
     message: string;
   }[];
+  result?: {
+    quantAutoEntry?: QuantAutoEntrySummary;
+    [key: string]: unknown;
+  };
 };
 
 export type WorkbenchAnalysisResult = {

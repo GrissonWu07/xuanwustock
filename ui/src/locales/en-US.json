@@ -79,6 +79,8 @@
   "Holding period": "Holding period",
   "Position sizing": "Position sizing",
   "Confidence": "Confidence",
+  "Score": "Score",
+  "Auto-entry: attempted {attempted}, promoted {promoted}, eligible {eligible}, skipped {skipped}": "Auto-entry: attempted {attempted}, promoted {promoted}, eligible {eligible}, skipped {skipped}",
   "Focus on symbols you care about first. Outputs from discover and research are merged here before analysis and quant.": "Focus on symbols you care about first. Outputs from discover and research are merged here before analysis and quant.",
   "Full analysis expanded. See thematic details below.": "Full analysis expanded. See thematic details below.",
   "Generate time: {time}": "Generate time: {time}",

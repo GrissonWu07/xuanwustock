@@ -1,8 +1,28 @@
+// @ts-nocheck
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import process from "node:process";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../lib/api-client";
 import { DiscoverPage } from "../features/discover/discover-page";
+
+const loadDiagnosticsParams = () => {
+  const root = process.cwd().endsWith("ui") ? join(process.cwd(), "..") : process.cwd();
+  const candidates = [
+    join(root, "openspec", "changes", "fix-discover-lifecycle-scoring", "test-params", "discover-api-ui-diagnostics.md"),
+    join(root, "openspec", "changes", "archive", "2026-05-15-fix-discover-lifecycle-scoring", "test-params", "discover-api-ui-diagnostics.md"),
+  ];
+  const paramsPath = candidates.find((path) => existsSync(path));
+  if (!paramsPath) throw new Error("missing diagnostics test parameters");
+  const text = readFileSync(paramsPath, "utf8");
+  const match = text.match(/```json\s*([\s\S]*?)\s*```/);
+  if (!match) throw new Error("missing diagnostics test parameters");
+  return JSON.parse(match[1]);
+};
+
+const diagnosticsParams = loadDiagnosticsParams();
 
 const discoverSnapshot = {
   updatedAt: "2026-04-24 00:10:00",
@@ -47,14 +67,7 @@ const lifecycleDiscoverSnapshot = {
     ...discoverSnapshot.candidateTable,
     rows: [
       {
-        id: "600001",
-        cells: ["600001", "eligible 股", "行业A", "main_force", "10.00", "100", "20", "2"],
-        code: "600001",
-        name: "eligible 股",
-        eligible_status: "eligible",
-        blocking_reason: "",
-        candidate_score: 0.82,
-        already_in_quant: false,
+        ...diagnosticsParams.ui_candidate_diagnostics.row,
         actions: [{ label: "Add to watchlist", icon: "⭐", tone: "accent", action: "item-watchlist" }],
       },
       {
@@ -173,6 +186,8 @@ describe("DiscoverPage", () => {
     renderDiscoverPage(client);
 
     expect(await screen.findByText("eligible")).toBeInTheDocument();
+    expect(screen.getByText(diagnosticsParams.ui_candidate_diagnostics.expected.score_text)).toBeInTheDocument();
+    expect(screen.getByText(diagnosticsParams.ui_candidate_diagnostics.expected.confidence_text)).toBeInTheDocument();
     expect(screen.getByText("already_in_quant")).toBeInTheDocument();
     expect(screen.getByText("skipped")).toBeInTheDocument();
     expect(screen.getByText("cooling_blocked")).toBeInTheDocument();
@@ -203,6 +218,40 @@ describe("DiscoverPage", () => {
     expect(screen.getByText("基础信息缺失")).toBeInTheDocument();
     expect(screen.getByText("600001")).toBeInTheDocument();
     expect(screen.getByText("600003")).toBeInTheDocument();
+  });
+
+  it("shows discovery task auto-entry diagnostics after strategy completion", async () => {
+    const expected = diagnosticsParams.task_quant_auto_entry.expected;
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(discoverSnapshot),
+      runPageAction: vi.fn().mockResolvedValue({ ...discoverSnapshot, taskId: "discover-test" }),
+      getTaskStatus: vi.fn().mockResolvedValue({
+        id: "discover-test",
+        status: "completed",
+        title: "Stock discovery task",
+        message: "Discovery task completed.",
+        stage: "completed",
+        progress: 100,
+        result: {
+          quantAutoEntry: {
+            attempted: expected.attempted,
+            events: expected.events,
+            promoted: expected.promoted,
+            eligible: expected.eligible,
+            skipped: [],
+          },
+        },
+      }),
+    } as unknown as ApiClient;
+
+    renderDiscoverPage(client);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(client.getTaskStatus).toHaveBeenCalledWith("discover-test");
+    });
+    expect(await screen.findByText(expected.ui_summary)).toBeInTheDocument();
   });
 
   it("supports row click selection and keeps candidate operations batch-only", async () => {
