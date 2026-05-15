@@ -36,6 +36,9 @@ DEFAULT_PORTFOLIO_EXECUTION_GUARD_POLICY: dict[str, Any] = {
     "hot_zone_recent_5d_return_threshold": 0.08,
     "hot_zone_extreme_recent_5d_return_threshold": 0.15,
     "hot_zone_volume_ratio_threshold": 2.0,
+    "failed_volume_confirmation_penalty": 0.22,
+    "failed_volume_confirmation_ratio": 3.0,
+    "failed_volume_confirmation_macd_max": 0.0,
     "stock_failure_penalty": 0.20,
     "portfolio_cooldown_penalty": 0.25,
     "portfolio_drawdown_penalty": 0.18,
@@ -81,6 +84,7 @@ PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "late_rebound_penalty": 0.18,
         "t1_risk_penalty": 0.12,
         "hot_zone_penalty": 0.28,
+        "failed_volume_confirmation_penalty": 0.20,
         "stock_failure_penalty": 0.18,
         "portfolio_cooldown_penalty": 0.20,
         "portfolio_drawdown_penalty": 0.15,
@@ -122,6 +126,7 @@ PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "late_rebound_penalty": 0.22,
         "t1_risk_penalty": 0.18,
         "hot_zone_penalty": 0.34,
+        "failed_volume_confirmation_penalty": 0.26,
         "stock_failure_penalty": 0.22,
         "portfolio_cooldown_penalty": 0.30,
         "portfolio_drawdown_penalty": 0.20,
@@ -193,6 +198,7 @@ def normalize_portfolio_execution_guard_policy(
         "late_rebound_penalty",
         "t1_risk_penalty",
         "hot_zone_penalty",
+        "failed_volume_confirmation_penalty",
         "stock_failure_penalty",
         "portfolio_cooldown_penalty",
         "portfolio_drawdown_penalty",
@@ -214,6 +220,7 @@ def normalize_portfolio_execution_guard_policy(
         "hot_zone_recent_5d_return_threshold",
         "hot_zone_extreme_recent_5d_return_threshold",
         "hot_zone_volume_ratio_threshold",
+        "failed_volume_confirmation_ratio",
         "candidate_below_ma20_guard_ratio",
         "position_below_ma20_guard_ratio",
     ):
@@ -234,6 +241,7 @@ def normalize_portfolio_execution_guard_policy(
     ):
         policy[key] = max(int(_float(policy.get(key), DEFAULT_PORTFOLIO_EXECUTION_GUARD_POLICY.get(key, 1))), 1)
     policy["min_ma20_slope"] = _float(policy.get("min_ma20_slope"), 0.0)
+    policy["failed_volume_confirmation_macd_max"] = _float(policy.get("failed_volume_confirmation_macd_max"), 0.0)
     policy["stop_loss_pnl_pct_threshold"] = min(_float(policy.get("stop_loss_pnl_pct_threshold"), -4.0), 0.0)
     policy["loss_budget_pct"] = min(_float(policy.get("loss_budget_pct"), -2.0), 0.0)
     policy["drawdown_guard_pct"] = max(_float(policy.get("drawdown_guard_pct"), 3.0), 0.0)
@@ -268,6 +276,7 @@ def evaluate_portfolio_execution_guard(
     is_late_rebound, late_reasons = _late_rebound(metrics, trend, resolved)
     t1_active = _t1_risk(signal, trend, resolved)
     hot_zone_penalty, hot_zone_reasons = _hot_zone_risk(metrics, resolved)
+    failed_volume_penalty, failed_volume_reasons = _failed_volume_confirmation_risk(metrics, resolved)
     portfolio = _portfolio_state(portfolio_summary or {}, resolved)
     if not has_signal_context:
         status = "passed"
@@ -308,6 +317,7 @@ def evaluate_portfolio_execution_guard(
         "late_rebound": float(resolved["late_rebound_penalty"]) if is_late_rebound else 0.0,
         "t1": float(resolved["t1_risk_penalty"]) if t1_active else 0.0,
         "hot_zone": hot_zone_penalty,
+        "failed_volume_confirmation": failed_volume_penalty,
         "stock_failure": _stock_failure_penalty(profile, resolved),
         "portfolio_cooldown": float(resolved["portfolio_cooldown_penalty"]) if portfolio["cooldown_active"] else 0.0,
         "portfolio_drawdown": float(resolved["portfolio_drawdown_penalty"]) if portfolio["drawdown_guard_triggered"] else 0.0,
@@ -343,6 +353,7 @@ def evaluate_portfolio_execution_guard(
     if t1_active:
         reasons.append("t1_new_buy_unconfirmed")
     reasons.extend(hot_zone_reasons)
+    reasons.extend(failed_volume_reasons)
 
     status = "passed"
     multiplier = float(resolved[f"{tier.split('_')[0]}_multiplier"])
@@ -377,6 +388,9 @@ def evaluate_portfolio_execution_guard(
             multiplier = 0.0
         else:
             multiplier = min(multiplier, float(resolved["cooldown_size_multiplier"]))
+    if failed_volume_reasons and tier != "strong_buy":
+        status = "blocked"
+        multiplier = 0.0
 
     stock_gate = _dict(profile.get("stock_execution_feedback_gate"))
     weak_buy_loss_reentry_active = (
@@ -465,6 +479,7 @@ def _metrics(signal: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
         "ma20": _maybe_float(market.get("ma20")),
         "ma20_slope": _float(market.get("ma20_slope"), 0.0),
         "volume_ratio": _maybe_float(market.get("volume_ratio")),
+        "macd": _maybe_float(market.get("macd")),
         "rsi": _first_maybe_float(market.get("rsi12"), market.get("rsi14"), market.get("rsi")),
         "recent_5d_return": _return_ratio(
             _first_maybe_float(
@@ -595,6 +610,18 @@ def _hot_zone_risk(metrics: dict[str, Any], policy: dict[str, Any]) -> tuple[flo
     if volume_hot:
         reasons.append("hot_zone_volume_amplified")
     return float(policy["hot_zone_penalty"]), reasons
+
+
+def _failed_volume_confirmation_risk(metrics: dict[str, Any], policy: dict[str, Any]) -> tuple[float, list[str]]:
+    volume_ratio = metrics.get("volume_ratio")
+    macd = metrics.get("macd")
+    if volume_ratio is None or macd is None:
+        return 0.0, []
+    if volume_ratio < float(policy["failed_volume_confirmation_ratio"]):
+        return 0.0, []
+    if macd > float(policy["failed_volume_confirmation_macd_max"]):
+        return 0.0, []
+    return float(policy["failed_volume_confirmation_penalty"]), ["failed_volume_confirmation"]
 
 
 def _t1_risk(signal: dict[str, Any], trend: dict[str, Any], policy: dict[str, Any]) -> bool:

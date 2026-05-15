@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from app.gateway.deps import *
 from app.gateway.context import UIApiContext
 from app.gateway.scheduler_config import _enabled_strategy_profile_id, _fee_rate_pct_text, _latest_replay_defaults, _normalize_dynamic_lookback, _normalize_dynamic_strength, _normalize_fee_rate, _payload_fee_rate
@@ -260,34 +262,7 @@ def _drill_distinct_stock_count(events: list[dict[str, Any]], statuses: set[str]
     return len({_txt(event.get("stock_code")) for event in events if _txt(event.get("to_status")) in statuses and _txt(event.get("stock_code"))})
 
 
-def _build_live_quant_drill_payload(db: QuantSimDB, run: dict[str, Any], run_id: int) -> dict[str, Any]:
-    metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
-    summary_rows = db.list_sim_run_quant_summary(run_id)
-    last_summary = summary_rows[-1] if summary_rows else {}
-    candidate_events = db.list_sim_run_candidate_events(run_id, page_size=1)
-    promoted_candidate_events = db.list_sim_run_candidate_events(run_id, status="consumed", page_size=20)
-    quant_events = db.list_sim_run_quant_events(run_id, page_size=10000)
-    quant_event_items = quant_events.get("items", [])
-    exit_event_items = [
-        event
-        for event in quant_event_items
-        if _txt(event.get("to_status")) in {"exit_only", "cooling", "retired"}
-    ]
-    auto_promoted_count = (
-        sum(int(row.get("auto_promoted_count") or 0) for row in summary_rows)
-        if summary_rows
-        else sum(1 for event in quant_event_items if _txt(event.get("to_status")) == "trial")
-    )
-    auto_exited_count = (
-        sum(int(row.get("auto_exited_count") or 0) for row in summary_rows)
-        if summary_rows
-        else sum(1 for event in quant_event_items if _txt(event.get("to_status")) in {"cooling", "retired"})
-    )
-    final_states_response = (
-        db.list_sim_run_quant_states(run_id, checkpoint_at=last_summary.get("checkpoint_at_utc"), page_size=50)
-        if last_summary.get("checkpoint_at_utc")
-        else {"items": [], "total": 0, "page": 1, "pageSize": 50}
-    )
+def _live_quant_drill_data_risk_items(metadata: dict[str, Any]) -> list[dict[str, Any]]:
     data_warnings = metadata.get("data_warnings") if isinstance(metadata.get("data_warnings"), list) else []
     disabled_sources = metadata.get("disabled_candidate_sources") if isinstance(metadata.get("disabled_candidate_sources"), list) else []
     data_risk_items: list[dict[str, Any]] = []
@@ -305,6 +280,88 @@ def _build_live_quant_drill_payload(db: QuantSimDB, run: dict[str, Any], run_id:
             data_risk_items.append({"stockCode": "", "domain": "data_warning", "provider": "", "reason": _txt(warning)})
     for source in disabled_sources:
         data_risk_items.append({"stockCode": "", "domain": "candidate_source", "provider": _txt(source), "reason": "source_not_historical"})
+    return data_risk_items
+
+
+def _build_live_quant_drill_partial_payload(metadata: dict[str, Any], data_risk_items: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "runType": "live_quant_drill",
+        "typeLabel": "实时量化演练",
+        "title": "实时量化演练",
+        "lifecycleSummary": {
+            "initialQuantCount": len(metadata.get("initial_quant_universe_snapshot") or metadata.get("stock_codes") or []),
+            "candidateEventCount": 0,
+            "autoPromotedCount": 0,
+            "autoExitedCount": 0,
+            "exitOnlyCount": 0,
+            "coolingCount": 0,
+            "retiredCount": 0,
+            "dataWarningCount": len(data_risk_items),
+        },
+        "lifecycleSeries": [],
+        "candidateEventsTable": _drill_table_payload([], total=0, page=1, page_size=20),
+        "exitEventsTable": _drill_table_payload([], total=0, page=1, page_size=20),
+        "finalStatesTable": _drill_table_payload([], total=0, page=1, page_size=50),
+        "dataRisksTable": _drill_table_payload(data_risk_items, total=len(data_risk_items), page=1, page_size=max(1, len(data_risk_items) or 20)),
+    }
+
+
+def _build_live_quant_drill_payload(db: QuantSimDB, run: dict[str, Any], run_id: int) -> dict[str, Any]:
+    metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
+    data_risk_items = _live_quant_drill_data_risk_items(metadata)
+    status_text = _txt(run.get("status")).lower()
+    if status_text in {"queued", "running", "failed", "cancelled", "cancel_request", "cancel_requested"}:
+        return _build_live_quant_drill_partial_payload(metadata, data_risk_items)
+
+    try:
+        summary_rows = db.list_sim_run_quant_summary(run_id)
+        last_summary = summary_rows[-1] if summary_rows else {}
+        candidate_events = db.list_sim_run_candidate_events(run_id, page_size=1)
+        promoted_candidate_events = db.list_sim_run_candidate_events(run_id, status="consumed", page_size=20)
+        quant_events = db.list_sim_run_quant_events(run_id, page_size=10000)
+    except sqlite3.DatabaseError as exc:
+        data_risk_items.append(
+            {
+                "stockCode": "",
+                "domain": "live_quant_drill_lifecycle",
+                "provider": "replay_db",
+                "reason": _txt(exc),
+            }
+        )
+        return _build_live_quant_drill_partial_payload(metadata, data_risk_items)
+
+    quant_event_items = quant_events.get("items", [])
+    exit_event_items = [
+        event
+        for event in quant_event_items
+        if _txt(event.get("to_status")) in {"exit_only", "cooling", "retired"}
+    ]
+    auto_promoted_count = (
+        sum(int(row.get("auto_promoted_count") or 0) for row in summary_rows)
+        if summary_rows
+        else sum(1 for event in quant_event_items if _txt(event.get("to_status")) == "trial")
+    )
+    auto_exited_count = (
+        sum(int(row.get("auto_exited_count") or 0) for row in summary_rows)
+        if summary_rows
+        else sum(1 for event in quant_event_items if _txt(event.get("to_status")) in {"cooling", "retired"})
+    )
+    try:
+        final_states_response = (
+            db.list_sim_run_quant_states(run_id, checkpoint_at=last_summary.get("checkpoint_at_utc"), page_size=50)
+            if last_summary.get("checkpoint_at_utc")
+            else {"items": [], "total": 0, "page": 1, "pageSize": 50}
+        )
+    except sqlite3.DatabaseError as exc:
+        data_risk_items.append(
+            {
+                "stockCode": "",
+                "domain": "live_quant_drill_final_states",
+                "provider": "replay_db",
+                "reason": _txt(exc),
+            }
+        )
+        final_states_response = {"items": [], "total": 0, "page": 1, "pageSize": 50}
 
     return {
         "runType": "live_quant_drill",
@@ -393,14 +450,33 @@ def _build_his_replay_task_items(
     include_positions: bool = True,
     include_terminal_limit: int = 0,
     terminal_run_id: int | None = None,
+    detail_run_id: int | None = None,
 ) -> list[dict[str, Any]]:
     task_items: list[dict[str, Any]] = []
+    has_active_live_drill = any(
+        (
+            item.get("mode") == "live_quant_drill"
+            or ((item.get("metadata") if isinstance(item.get("metadata"), dict) else {}).get("run_type") == "live_quant_drill")
+        )
+        and _txt(item.get("status")).lower() in {"queued", "running"}
+        for item in runs[:10]
+    )
     for task_index, item in enumerate(runs[:10]):
         run_id = int(item.get("id") or 0)
-        trade_count = db.count_sim_run_trades(run_id) if run_id else int(_float(item.get("trade_count"), 0.0) or 0.0)
-        latest_snapshot = db.get_latest_sim_run_snapshot(run_id) if run_id else None
-        trade_quality = db.get_sim_run_trade_quality(run_id) if run_id else {}
-        signal_summary = db.get_sim_run_signal_execution_summary(run_id) if run_id else {}
+        run_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        status_text = _txt(item.get("status"), "completed")
+        is_live_drill = item.get("mode") == "live_quant_drill" or run_metadata.get("run_type") == "live_quant_drill"
+        use_lightweight_task_metrics = bool(is_live_drill and status_text in {"queued", "running", "failed", "cancelled", "cancel_request", "cancel_requested"}) or has_active_live_drill
+        if use_lightweight_task_metrics:
+            trade_count = int(_float(item.get("trade_count"), 0.0) or 0.0)
+            latest_snapshot = None
+            trade_quality = {}
+            signal_summary = {}
+        else:
+            trade_count = db.count_sim_run_trades(run_id) if run_id else int(_float(item.get("trade_count"), 0.0) or 0.0)
+            latest_snapshot = db.get_latest_sim_run_snapshot(run_id) if run_id else None
+            trade_quality = db.get_sim_run_trade_quality(run_id) if run_id else {}
+            signal_summary = db.get_sim_run_signal_execution_summary(run_id) if run_id else {}
         buy_trade_count = int(_float(trade_quality.get("buy_count"), 0.0) or 0.0)
         sell_trade_count = int(_float(trade_quality.get("sell_count"), 0.0) or 0.0)
         winning_sell_count = int(_float(trade_quality.get("winning_sell_count"), 0.0) or 0.0)
@@ -414,7 +490,6 @@ def _build_his_replay_task_items(
         final_equity = _first_non_empty(latest_snapshot or {}, ["total_equity"]) if latest_snapshot else None
         if final_equity is None:
             final_equity = item.get("final_equity")
-        status_text = _txt(item.get("status"), "completed")
         progress_total = int(_float(item.get("progress_total"), 0.0) or 0.0)
         progress_current = int(_float(item.get("progress_current"), 0.0) or 0.0)
         if progress_total > 0:
@@ -470,9 +545,17 @@ def _build_his_replay_task_items(
             "strategyProfileVersionId": _txt(item.get("selected_strategy_profile_version_id")),
             "stockScope": _run_stock_scope_rows_from_metadata(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
         }
-        run_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        if item.get("mode") == "live_quant_drill" or run_metadata.get("run_type") == "live_quant_drill":
-            task.update(_build_live_quant_drill_payload(db, item, run_id))
+        if is_live_drill:
+            include_live_drill_details = detail_run_id is not None and run_id == int(detail_run_id) and status_text == "completed" and not has_active_live_drill
+            if include_live_drill_details:
+                task.update(_build_live_quant_drill_payload(db, item, run_id))
+            else:
+                task.update(
+                    _build_live_quant_drill_partial_payload(
+                        run_metadata,
+                        _live_quant_drill_data_risk_items(run_metadata),
+                    )
+                )
 
         terminal_liquidation_items: list[dict[str, Any]] = []
         if include_positions:
@@ -501,8 +584,8 @@ def _build_his_replay_task_items(
             task["holdings"] = position_rows
             task["capitalPool"] = build_his_replay_capital_pool(db, item, latest_snapshot)
 
-        include_terminal_liquidation = task_index < include_terminal_limit or (
-            terminal_run_id is not None and run_id == int(terminal_run_id)
+        include_terminal_liquidation = not use_lightweight_task_metrics and (
+            task_index < include_terminal_limit or (terminal_run_id is not None and run_id == int(terminal_run_id))
         )
         if include_terminal_liquidation:
             run_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
@@ -516,20 +599,24 @@ def _build_his_replay_task_items(
             task["terminalLiquidation"] = terminal_liquidation.get("summary", {})
             terminal_liquidation_items = terminal_liquidation.get("items", [])
 
-        task["topWinningTrades"] = _build_his_replay_ranked_trade_rows(
-            db,
-            run_id,
-            profitable=True,
-            limit=5,
-            extra_items=terminal_liquidation_items,
-        )
-        task["topLosingTrades"] = _build_his_replay_ranked_trade_rows(
-            db,
-            run_id,
-            profitable=False,
-            limit=5,
-            extra_items=terminal_liquidation_items,
-        )
+        if use_lightweight_task_metrics:
+            task["topWinningTrades"] = []
+            task["topLosingTrades"] = []
+        else:
+            task["topWinningTrades"] = _build_his_replay_ranked_trade_rows(
+                db,
+                run_id,
+                profitable=True,
+                limit=5,
+                extra_items=terminal_liquidation_items,
+            )
+            task["topLosingTrades"] = _build_his_replay_ranked_trade_rows(
+                db,
+                run_id,
+                profitable=False,
+                limit=5,
+                extra_items=terminal_liquidation_items,
+            )
         if include_terminal_liquidation:
             task["profitLossByStock"] = _build_his_replay_profit_loss_by_stock_rows(db, run_id)
 
@@ -826,19 +913,38 @@ def _snapshot_his_replay_progress(context: UIApiContext, table_query: dict[str, 
             runs,
             include_positions=False,
             terminal_run_id=selected_run_id or None,
+            detail_run_id=selected_run_id or None,
         ),
     }
     if selected_run_id:
         run_id = selected_run_id
-        payload.update(
-            {
-                "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], _build_his_replay_holdings_rows(db, run_id), "暂无持仓"),
-                "trades": _build_his_replay_trade_table(db, run_id, table_query),
-                "signals": _build_his_replay_signal_table(db, run_id, table_query),
-                "tradeCostSummary": _trade_cost_summary_metrics(db.get_sim_run_trade_cost_summary_lightweight(run_id))
-                + _replay_signal_execution_metrics(db.get_sim_run_signal_execution_summary(run_id)),
-            }
-        )
+        selected_metadata = selected_run.get("metadata") if isinstance(selected_run.get("metadata"), dict) else {}
+        selected_is_active_live_drill = (
+            selected_run.get("mode") == "live_quant_drill" or selected_metadata.get("run_type") == "live_quant_drill"
+        ) and _txt(selected_run.get("status")).lower() in {"queued", "running"}
+        if selected_is_active_live_drill:
+            payload.update(
+                {
+                    "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], [], "任务运行中，持仓明细完成后加载"),
+                    "trades": _table(
+                        ["时间", "信号ID", "代码", "动作", "类型", "数量", "价格", "成交毛额", "手续费", "印花税", "总费用", "现金影响", "盈亏", "盈亏率", "执行明细"],
+                        [],
+                        "任务运行中，交易明细完成后加载",
+                    ),
+                    "signals": build_signal_summary_table([], "任务运行中，信号明细完成后加载"),
+                    "tradeCostSummary": _trade_cost_summary_metrics({}) + _replay_signal_execution_metrics({}),
+                }
+            )
+        else:
+            payload.update(
+                {
+                    "holdings": _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], _build_his_replay_holdings_rows(db, run_id), "暂无持仓"),
+                    "trades": _build_his_replay_trade_table(db, run_id, table_query),
+                    "signals": _build_his_replay_signal_table(db, run_id, table_query),
+                    "tradeCostSummary": _trade_cost_summary_metrics(db.get_sim_run_trade_cost_summary_lightweight(run_id))
+                    + _replay_signal_execution_metrics(db.get_sim_run_signal_execution_summary(run_id)),
+                }
+            )
     return payload
 
 
@@ -1029,14 +1135,26 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
         }
 
     rid = int(run["id"])
-
-    signal_table = _build_his_replay_signal_table(db, rid, table_query)
-    trade_table = _build_his_replay_trade_table(db, rid, table_query)
-    trade_count = db.count_sim_run_trades(rid)
-
-    task_items = _build_his_replay_task_items(db, runs, include_positions=False, terminal_run_id=rid)
-
     run_metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
+    selected_is_active_live_drill = (
+        run.get("mode") == "live_quant_drill" or run_metadata.get("run_type") == "live_quant_drill"
+    ) and _txt(run.get("status")).lower() in {"queued", "running"}
+
+    if selected_is_active_live_drill:
+        signal_table = build_signal_summary_table([], "任务运行中，信号明细完成后加载")
+        trade_table = _table(
+            ["时间", "信号ID", "代码", "动作", "类型", "数量", "价格", "成交毛额", "手续费", "印花税", "总费用", "现金影响", "盈亏", "盈亏率", "执行明细"],
+            [],
+            "任务运行中，交易明细完成后加载",
+        )
+        trade_count = int(_float(run.get("trade_count"), 0.0) or 0.0)
+    else:
+        signal_table = _build_his_replay_signal_table(db, rid, table_query)
+        trade_table = _build_his_replay_trade_table(db, rid, table_query)
+        trade_count = db.count_sim_run_trades(rid)
+
+    task_items = _build_his_replay_task_items(db, runs, include_positions=False, terminal_run_id=rid, detail_run_id=rid)
+
     replay_commission_rate = _normalize_fee_rate(
         run_metadata.get("commission_rate"),
         _normalize_fee_rate(scheduler_status.get("commission_rate"), DEFAULT_COMMISSION_RATE),
@@ -1057,14 +1175,55 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
         run_metadata.get("ai_dynamic_lookback"),
         _txt(scheduler_status.get("ai_dynamic_lookback"), str(DEFAULT_AI_DYNAMIC_LOOKBACK)),
     )
-    latest_snapshot = db.get_latest_sim_run_snapshot(rid)
-    terminal_liquidation = build_terminal_liquidation(
-        db,
-        run,
-        latest_snapshot,
-        commission_rate=replay_commission_rate,
-        sell_tax_rate=replay_sell_tax_rate,
-    )
+    if selected_is_active_live_drill:
+        latest_snapshot = None
+        terminal_liquidation = {"summary": {}, "items": []}
+        holdings_table = _table(["代码", "名称", "数量", "成本", "现价", "浮盈亏"], [], "任务运行中，持仓明细完成后加载")
+        trade_cost_summary = _replay_execution_summary_metrics(run, latest_snapshot, {}, scheduler_status) + _replay_signal_execution_metrics({})
+        curve = []
+    else:
+        latest_snapshot = db.get_latest_sim_run_snapshot(rid)
+        terminal_liquidation = build_terminal_liquidation(
+            db,
+            run,
+            latest_snapshot,
+            commission_rate=replay_commission_rate,
+            sell_tax_rate=replay_sell_tax_rate,
+        )
+        holdings_table = _table(
+            ["代码", "名称", "数量", "成本", "现价", "浮盈亏"],
+            [
+                {
+                    "id": _txt(item.get("stock_code"), str(i)),
+                    "cells": [
+                        _txt(item.get("stock_code")),
+                        _txt(item.get("stock_name")),
+                        _txt(item.get("quantity"), "0"),
+                        _num(item.get("avg_price")),
+                        _num(item.get("latest_price")),
+                        _pct(item.get("unrealized_pnl")),
+                    ],
+                    "code": _txt(item.get("stock_code")),
+                    "name": _txt(item.get("stock_name")),
+                }
+                for i, item in enumerate(db.get_sim_run_positions(rid))
+            ],
+            "暂无持仓",
+        )
+        trade_cost_summary = (
+            _replay_execution_summary_metrics(
+                run,
+                latest_snapshot,
+                db.get_sim_run_trade_cost_summary(rid),
+                scheduler_status,
+            )
+            + _replay_signal_execution_metrics(db.get_sim_run_signal_execution_summary(rid))
+            + terminal_liquidation_metrics(terminal_liquidation)
+        )
+        curve = [
+            {"label": _system_time_text(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
+            for i, item in enumerate(db.get_sim_run_snapshots(rid))
+        ]
 
     return {
         "updatedAt": _now(),
@@ -1099,40 +1258,11 @@ def _snapshot_his_replay(context: UIApiContext, table_query: dict[str, Any] | No
             "body": "回放页会把交易分析拆成“人话结论 + 策略解释 + 量化证据”三层。",
             "chips": [],
         },
-        "holdings": _table(
-            ["代码", "名称", "数量", "成本", "现价", "浮盈亏"],
-            [
-                {
-                    "id": _txt(item.get("stock_code"), str(i)),
-                    "cells": [
-                        _txt(item.get("stock_code")),
-                        _txt(item.get("stock_name")),
-                        _txt(item.get("quantity"), "0"),
-                        _num(item.get("avg_price")),
-                        _num(item.get("latest_price")),
-                        _pct(item.get("unrealized_pnl")),
-                    ],
-                    "code": _txt(item.get("stock_code")),
-                    "name": _txt(item.get("stock_name")),
-                }
-                for i, item in enumerate(db.get_sim_run_positions(rid))
-            ],
-            "暂无持仓",
-        ),
+        "holdings": holdings_table,
         "trades": trade_table,
         "signals": signal_table,
-        "tradeCostSummary": _replay_execution_summary_metrics(
-            run,
-            latest_snapshot,
-            db.get_sim_run_trade_cost_summary(rid),
-            scheduler_status,
-        )
-        + _replay_signal_execution_metrics(db.get_sim_run_signal_execution_summary(rid))
-        + terminal_liquidation_metrics(terminal_liquidation),
-        "curve": [
-            {"label": _system_time_text(item.get("created_at"), str(i)), "value": float(item.get("total_equity") or 0)}
-            for i, item in enumerate(db.get_sim_run_snapshots(rid))
-        ],
+        "tradeCostSummary": trade_cost_summary,
+        "curve": curve,
     }
 def _action_his_replay_start(context: UIApiContext, payload: Any) -> dict[str, Any]:
     defaults = _latest_replay_defaults(context)

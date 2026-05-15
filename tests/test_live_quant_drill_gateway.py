@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi.testclient import TestClient
 
+from app.gateway.his_replay import _build_his_replay_task_items, _build_live_quant_drill_payload, _snapshot_his_replay_progress
 from app.gateway.live_sim import _action_live_sim_start_drill
 
 
@@ -246,3 +249,167 @@ def test_profit_gap_endpoint_passes_v2_filters():
         "min_abs_gap": 500.0,
         "stock": "301666",
     }
+
+
+def test_running_live_quant_drill_payload_skips_heavy_lifecycle_reads():
+    class ExplodingReplayDB(FakeReplayDB):
+        def list_sim_run_quant_summary(self, run_id):
+            raise AssertionError("running drill progress should not scan quant summary")
+
+        def list_sim_run_candidate_events(self, run_id, **kwargs):
+            raise AssertionError("running drill progress should not scan candidate events")
+
+        def list_sim_run_quant_events(self, run_id, **kwargs):
+            raise AssertionError("running drill progress should not scan quant events")
+
+        def list_sim_run_quant_states(self, run_id, **kwargs):
+            raise AssertionError("running drill progress should not scan quant states")
+
+    payload = _build_live_quant_drill_payload(
+        ExplodingReplayDB(None),
+        {
+            "id": 7,
+            "mode": "live_quant_drill",
+            "status": "running",
+            "metadata": {
+                "run_type": "live_quant_drill",
+                "initial_quant_universe_snapshot": [{"stock_code": "600519"}, {"stock_code": "000001"}],
+                "data_warnings": [{"stock_code": "600519", "domain": "quote", "provider": "tdx", "reason": "missing"}],
+            },
+        },
+        7,
+    )
+
+    assert payload["runType"] == "live_quant_drill"
+    assert payload["lifecycleSummary"]["initialQuantCount"] == 2
+    assert payload["lifecycleSummary"]["candidateEventCount"] == 0
+    assert payload["lifecycleSummary"]["dataWarningCount"] == 1
+    assert payload["lifecycleSeries"] == []
+    assert payload["candidateEventsTable"]["items"] == []
+    assert payload["exitEventsTable"]["items"] == []
+    assert payload["finalStatesTable"]["items"] == []
+
+
+def test_live_quant_drill_payload_returns_partial_when_lifecycle_read_fails():
+    class FailingSummaryReplayDB(FakeReplayDB):
+        def list_sim_run_quant_summary(self, run_id):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+    payload = _build_live_quant_drill_payload(
+        FailingSummaryReplayDB(None),
+        {
+            "id": 8,
+            "mode": "live_quant_drill",
+            "status": "completed",
+            "metadata": {"run_type": "live_quant_drill", "stock_codes": ["600519"]},
+        },
+        8,
+    )
+
+    assert payload["runType"] == "live_quant_drill"
+    assert payload["lifecycleSummary"]["initialQuantCount"] == 1
+    assert payload["lifecycleSeries"] == []
+    assert payload["dataRisksTable"]["total"] == 1
+    assert payload["dataRisksTable"]["items"][0]["domain"] == "live_quant_drill_lifecycle"
+    assert "database disk image is malformed" in payload["dataRisksTable"]["items"][0]["reason"]
+
+
+def test_live_quant_drill_task_list_keeps_failed_and_unselected_runs_lightweight():
+    class TaskListReplayDB:
+        def count_sim_run_trades(self, run_id):
+            return 0
+
+        def get_latest_sim_run_snapshot(self, run_id):
+            return None
+
+        def get_sim_run_trade_quality(self, run_id):
+            return {}
+
+        def get_sim_run_signal_execution_summary(self, run_id):
+            return {}
+
+        def get_sim_run_ranked_trades(self, run_id, *, profitable, limit):
+            return []
+
+        def list_sim_run_quant_summary(self, run_id):
+            raise AssertionError(f"task list should not scan live drill lifecycle summary for run {run_id}")
+
+        def list_sim_run_candidate_events(self, run_id, **kwargs):
+            raise AssertionError(f"task list should not scan candidate events for run {run_id}")
+
+        def list_sim_run_quant_events(self, run_id, **kwargs):
+            raise AssertionError(f"task list should not scan quant events for run {run_id}")
+
+        def list_sim_run_quant_states(self, run_id, **kwargs):
+            raise AssertionError(f"task list should not scan quant states for run {run_id}")
+
+    tasks = _build_his_replay_task_items(
+        TaskListReplayDB(),
+        [
+            {"id": 5, "mode": "live_quant_drill", "status": "failed", "metadata": {"run_type": "live_quant_drill", "stock_codes": ["600519"]}},
+            {"id": 4, "mode": "live_quant_drill", "status": "completed", "metadata": {"run_type": "live_quant_drill", "stock_codes": ["000001"]}},
+        ],
+        include_positions=False,
+        terminal_run_id=None,
+        detail_run_id=5,
+    )
+
+    assert [task["runId"] for task in tasks] == ["5", "4"]
+    assert tasks[0]["lifecycleSeries"] == []
+    assert tasks[1]["lifecycleSeries"] == []
+
+
+def test_running_live_quant_drill_progress_snapshot_skips_trade_and_signal_reads():
+    run = {
+        "id": 6,
+        "mode": "live_quant_drill",
+        "status": "running",
+        "progress_current": 148,
+        "progress_total": 1808,
+        "metadata": {"run_type": "live_quant_drill", "stock_codes": ["600519"]},
+    }
+
+    class RunningReplayDB:
+        def get_sim_runs(self, limit=20):
+            return [run]
+
+        def get_sim_run(self, run_id):
+            return run
+
+        def count_sim_run_trades(self, run_id, **kwargs):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def get_latest_sim_run_snapshot(self, run_id):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def get_sim_run_trade_quality(self, run_id):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def get_sim_run_signal_execution_summary(self, run_id):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def get_sim_run_ranked_trades(self, run_id, *, profitable, limit):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def get_sim_run_positions(self, run_id):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def get_sim_run_trades(self, run_id, **kwargs):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def count_sim_run_signals(self, run_id, **kwargs):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+    class RunningContext:
+        def __init__(self):
+            self.db = RunningReplayDB()
+
+        def replay_db(self):
+            return self.db
+
+    payload = _snapshot_his_replay_progress(RunningContext(), {"run_id": 6})
+
+    assert payload["tasks"][0]["runId"] == "6"
+    assert payload["tasks"][0]["status"] == "running"
+    assert payload["trades"]["rows"] == []
+    assert payload["signals"]["rows"] == []

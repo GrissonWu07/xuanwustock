@@ -259,6 +259,45 @@ def test_hot_zone_extension_downgrades_normal_buy_to_weak_buy():
     assert "hot_zone_extended" in gate["reasons"]
 
 
+def test_failed_volume_confirmation_blocks_non_strong_buy():
+    signal = _signal()
+    signal["market"] = "A"
+    signal["timeframe"] = "30m"
+    signal["strategy_profile"]["market_snapshot"].update(
+        {
+            "current_price": 22.91,
+            "ma5": 22.17,
+            "ma10": 22.0,
+            "ma20": 21.92,
+            "ma20_slope": 0.01,
+            "volume_ratio": 3.22,
+            "macd": -0.011,
+            "rsi12": 56.55,
+            "recent_checkpoints": [
+                {"close": 22.1, "ma20": 21.8, "ma20_slope": 0.01},
+                {"close": 22.4, "ma20": 21.86, "ma20_slope": 0.01},
+                {"close": 22.91, "ma20": 21.92, "ma20_slope": 0.01},
+            ],
+        }
+    )
+    signal["strategy_profile"]["explainability"]["fusion_breakdown"].update(
+        {
+            "fusion_score": 0.43,
+            "tech_score": 0.63,
+            "context_score": 0.45,
+        }
+    )
+    policy = default_portfolio_execution_guard_policy("aggressive")
+    policy["strong_buy_min_score"] = 0.99
+
+    gate = evaluate_portfolio_execution_guard(signal=signal, policy=policy, portfolio_summary={})
+
+    assert gate["status"] == "blocked"
+    assert gate["size_multiplier"] == 0.0
+    assert gate["score_components"]["risk_penalties"]["failed_volume_confirmation"] > 0
+    assert "failed_volume_confirmation" in gate["reasons"]
+
+
 def test_portfolio_loss_budget_blocks_new_buy_and_exposes_portfolio_reasons():
     gate = evaluate_portfolio_execution_guard(
         signal=_signal(),

@@ -41,9 +41,9 @@
 
 每个 BUY 先计算一组派生指标，再计算强度分，再按风险门控降级或阻断。计算顺序固定如下：
 
-1. 读取当前信号的 fusion/tech/context 分数、BUY 阈值、confidence、volume_ratio、MA5/MA10/MA20/MA20 slope、RSI、最近 checkpoint 快照、个股执行摘要、组合执行摘要。
+1. 读取当前信号的 fusion/tech/context 分数、BUY 阈值、confidence、volume_ratio、MACD、MA5/MA10/MA20/MA20 slope、RSI、最近 checkpoint 快照、个股执行摘要、组合执行摘要。
 2. 计算趋势确认指标：`ma_stack`、`ma20_rising`、`above_ma20_checkpoints`、`retest_confirmed`。
-3. 计算风险识别指标：`is_late_rebound`、`t1_new_buy_risk`、`hot_zone_risk`、`stock_failure_state`、`portfolio_guard_state`。
+3. 计算风险识别指标：`is_late_rebound`、`t1_new_buy_risk`、`hot_zone_risk`、`failed_volume_confirmation`、`stock_failure_state`、`portfolio_guard_state`。
 4. 计算 `buy_strength_score`，映射初始 `buy_tier`。
 5. 依次应用 T+1 风险、过热追高风险、冷启动、个股执行反馈、止盈后再入场、组合防守、BUY 数量上限。
 6. 输出最终 `status`、`buy_tier`、`size_multiplier`、`reasons`，资金槽只读取最终 gate 倍率。
@@ -93,6 +93,12 @@
 2. RSI 极端过热、5 日涨幅极端过热，或 RSI/5 日涨幅偏热且量比放大时，写入 reason `hot_zone_extended`。
 3. 该风险计入 `hot_zone_penalty`；候选 `normal_buy` 必须降为 `weak_buy`，候选 `strong_buy` 在 BUY edge 未达到 strong 硬阈值时降为 `normal_buy`。
 
+`failed_volume_confirmation`：
+
+1. 使用 `volume_ratio` 和 MACD 识别“放量但动量未确认”的 BUY。
+2. 当 `volume_ratio >= failed_volume_confirmation_ratio` 且 `macd <= failed_volume_confirmation_macd_max` 时，写入 reason `failed_volume_confirmation`。
+3. 该风险计入 `failed_volume_confirmation_penalty`；最终不是 `strong_buy` 的信号必须阻断自动执行。强 BUY 可以继续执行，但仍会承担风险惩罚。
+
 `stock_failure_state`：
 
 1. 直接读取 `stock_execution_feedback_gate.status`。
@@ -138,17 +144,18 @@ buy_strength_score = clamp(raw_buy_strength_score, 0, 1)
 6. `confirmation_score = clamp(above_ma20_checkpoints / confirm_checkpoints, 0, 1)`；`retest_confirmed` 时至少为 `0.75`。
 7. `volume_score = 1.0`：强量能确认；`0.6`：普通量能确认；`0.3`：量能缺失或未确认。
 8. `track_alignment_score = clamp(1 - abs(tech_score - context_score) / 2, 0, 1)`；缺失时取 `0.5`。
-9. `risk_penalty` 由反弹尾段、T+1、过热追高、个股失败、组合失败叠加，最大不超过 `max_risk_penalty`。
+9. `risk_penalty` 由反弹尾段、T+1、过热追高、放量但 MACD 未确认、个股失败、组合失败叠加，最大不超过 `max_risk_penalty`。
 
 `risk_penalty` 取值：
 
 1. `is_late_rebound = true`：加 `late_rebound_penalty`。
 2. `t1_new_buy_risk = true`：加 `t1_risk_penalty`。
 3. `hot_zone_risk = true`：加 `hot_zone_penalty`。
-4. `stock_execution_feedback_gate.status = downgraded`：加 `stock_failure_penalty`。
-5. `portfolio_guard_state.cooldown_active = true`：加 `portfolio_cooldown_penalty`。
-6. `portfolio_guard_state.drawdown_guard_triggered = true`：加 `portfolio_drawdown_penalty`。
-7. 最终 `risk_penalty = min(sum(penalties), max_risk_penalty)`。
+4. `failed_volume_confirmation = true`：加 `failed_volume_confirmation_penalty`。
+5. `stock_execution_feedback_gate.status = downgraded`：加 `stock_failure_penalty`。
+6. `portfolio_guard_state.cooldown_active = true`：加 `portfolio_cooldown_penalty`。
+7. `portfolio_guard_state.drawdown_guard_triggered = true`：加 `portfolio_drawdown_penalty`。
+8. 最终 `risk_penalty = min(sum(penalties), max_risk_penalty)`。
 
 BUY 分层先由 `buy_strength_score` 映射，再由硬性门槛校正：
 
@@ -157,7 +164,8 @@ BUY 分层先由 `buy_strength_score` 映射，再由硬性门槛校正：
 3. `buy_strength_score >= strong_buy_min_score`：候选 `strong_buy`。
 4. 如果缺少 `normal_buy` 必需趋势确认，候选 `normal_buy` 降为 `weak_buy`。
 5. 如果命中过热追高风险，候选 `normal_buy` 降为 `weak_buy`。
-6. 如果缺少 `strong_buy` 全部硬性条件，候选 `strong_buy` 降为 `normal_buy` 或 `weak_buy`；过热追高且 BUY edge 未达到 strong 硬阈值时不能保持 `strong_buy`。
+6. 如果命中放量但 MACD 未确认，最终不是 `strong_buy` 的信号转为 blocked，不执行自动买入。
+7. 如果缺少 `strong_buy` 全部硬性条件，候选 `strong_buy` 降为 `normal_buy` 或 `weak_buy`；过热追高且 BUY edge 未达到 strong 硬阈值时不能保持 `strong_buy`。
 
 ## BUY 分层
 
@@ -428,6 +436,9 @@ derived_loss_budget_amount = -abs(reference_equity * loss_budget_pct / 100)
 - `hot_zone_extreme_recent_5d_return_threshold = 0.15`
 - `hot_zone_volume_ratio_threshold = 2.0`
 - `hot_zone_penalty`：aggressive `0.28`，stable/neutral `0.30`，conservative `0.34`
+- `failed_volume_confirmation_ratio = 3.0`
+- `failed_volume_confirmation_macd_max = 0.0`
+- `failed_volume_confirmation_penalty`：aggressive `0.20`，stable/neutral `0.22`，conservative `0.26`
 
 实现要求：
 
