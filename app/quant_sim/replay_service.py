@@ -1095,7 +1095,6 @@ class QuantSimReplayService:
         account_summary = context["account_summary"]
         temp_dir = Path(tempfile.mkdtemp(prefix="quant_live_drill_"))
         temp_db_file = temp_dir / "quant_live_drill.db"
-        replay_signals: list[dict] = []
         last_checkpoint_index = 0
         last_checkpoint_text = ""
         try:
@@ -1169,7 +1168,6 @@ class QuantSimReplayService:
                     manager=manager,
                 )
                 checkpoint_signals = checkpoint_summary.get("signals") or []
-                replay_signals.extend(checkpoint_signals)
                 if checkpoint_signals:
                     self.db.upsert_sim_run_signals(run_id, checkpoint_signals)
                 self.db.add_sim_run_checkpoint(
@@ -1207,12 +1205,11 @@ class QuantSimReplayService:
             positions = temp_portfolio.list_positions()
             metrics = self._calculate_run_metrics(float(account_summary["initial_cash"]), trades, snapshots)
             with self.db.write_batch():
-                self.db.replace_sim_run_results(
+                self.db.replace_sim_run_runtime_results(
                     run_id,
                     trades=trades,
                     snapshots=snapshots,
                     positions=positions,
-                    signals=replay_signals,
                 )
                 self.db.finalize_sim_run(
                     run_id,
@@ -2167,7 +2164,6 @@ class QuantSimReplayService:
             )
 
             cancelled = False
-            replay_signals: list[dict] = []
 
             for checkpoint_index, checkpoint in enumerate(checkpoints, start=1):
                 last_checkpoint_index = checkpoint_index
@@ -2217,7 +2213,6 @@ class QuantSimReplayService:
                         )
                         break
                     checkpoint_signals = checkpoint_summary.get("signals") or []
-                    replay_signals.extend(checkpoint_signals)
                     if checkpoint_signals:
                         self.db.upsert_sim_run_signals(run_id, checkpoint_signals)
                     if int(checkpoint_summary.get("auto_executed") or 0) > 0:
@@ -2344,7 +2339,6 @@ class QuantSimReplayService:
             partial_trades: list[dict] = []
             partial_snapshots: list[dict] = []
             partial_positions: list[dict] = []
-            partial_signals: list[dict] = list(locals().get("replay_signals", []))
             partial_slot_summary: dict = {}
             if "temp_db" in locals() and "temp_portfolio" in locals():
                 partial_trades = temp_db.get_trade_history(limit=10000)
@@ -2367,13 +2361,12 @@ class QuantSimReplayService:
                 failure_context = f"{failure_context} 失败："
             status_message = f"{failure_context}{exc}" if failure_context else f"回放任务失败：{exc}"
             with self.db.write_batch():
-                if partial_trades or partial_snapshots or partial_positions or partial_signals:
-                    self.db.replace_sim_run_results(
+                if partial_trades or partial_snapshots or partial_positions:
+                    self.db.replace_sim_run_runtime_results(
                         run_id,
                         trades=partial_trades,
                         snapshots=partial_snapshots,
                         positions=partial_positions,
-                        signals=partial_signals,
                     )
                 self.db.finalize_sim_run(
                     run_id,

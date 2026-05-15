@@ -16,6 +16,11 @@ except ImportError:  # pragma: no cover - optional dependency
 class ReplayTimepointGenerator:
     """Generate trading checkpoints for historical replay runs."""
 
+    MARKET_TRADING_HOURS = {
+        "CN": [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))],
+        "HK": [(time(9, 30), time(12, 0)), (time(13, 0), time(16, 0))],
+        "US": [(time(9, 30), time(16, 0))],
+    }
     MORNING_OPEN = time(9, 30)
     MORNING_CLOSE = time(11, 30)
     AFTERNOON_OPEN = time(13, 0)
@@ -74,22 +79,31 @@ class ReplayTimepointGenerator:
             current_date += timedelta(days=1)
         return sorted(points)
 
-    def is_trading_day(self, dt: datetime) -> bool:
+    def is_trading_day(self, dt: datetime, market: str = "CN") -> bool:
         if self.skip_weekends and dt.weekday() >= 5:
             return False
-        if self.skip_holidays and HAS_CHINESE_CALENDAR:
+        normalized_market = str(market or "CN").upper()
+        if self.skip_holidays and normalized_market == "CN" and HAS_CHINESE_CALENDAR:
             return bool(chinese_calendar.is_workday(dt.date()))
         return True
 
-    def is_trading_hour(self, dt: datetime) -> bool:
+    def is_trading_hour(self, dt: datetime, market: str = "CN") -> bool:
+        normalized_market = str(market or "CN").upper()
         current = dt.time()
-        if self.MORNING_OPEN <= current <= self.MORNING_CLOSE:
-            return True
-        return self.AFTERNOON_OPEN <= current <= self.AFTERNOON_CLOSE
+        for start, end in self.MARKET_TRADING_HOURS.get(normalized_market, self.MARKET_TRADING_HOURS["CN"]):
+            if start <= end:
+                if start <= current <= end:
+                    return True
+            elif current >= start or current <= end:
+                return True
+        return False
 
-    def next_trading_day(self, value: date | datetime) -> date:
+    def is_trading_time(self, dt: datetime, market: str = "CN") -> bool:
+        return self.is_trading_day(dt, market=market) and self.is_trading_hour(dt, market=market)
+
+    def next_trading_day(self, value: date | datetime, market: str = "CN") -> date:
         current_date = value.date() if isinstance(value, datetime) else value
         next_date = current_date + timedelta(days=1)
-        while not self.is_trading_day(datetime.combine(next_date, self.DAILY_POINT)):
+        while not self.is_trading_day(datetime.combine(next_date, self.DAILY_POINT), market=market):
             next_date += timedelta(days=1)
         return next_date

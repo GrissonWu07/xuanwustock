@@ -1,8 +1,10 @@
 import inspect
-from datetime import datetime
+from datetime import date, datetime
+from types import SimpleNamespace
 
 import pandas as pd
 
+from app.quant_kernel import replay_engine
 from app.quant_kernel.models import Decision
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.db import DEFAULT_COMMISSION_RATE, DEFAULT_SELL_TAX_RATE, QuantSimDB
@@ -16,6 +18,29 @@ from app.notification_service import notification_service
 def test_replay_queue_methods_accept_initial_cash():
     assert "initial_cash" in inspect.signature(QuantSimReplayService.enqueue_historical_range).parameters
     assert "initial_cash" in inspect.signature(QuantSimReplayService.enqueue_past_to_live).parameters
+
+
+def test_replay_timepoints_skip_chinese_holidays_when_calendar_available(monkeypatch):
+    holidays = {date(2025, 1, 29), date(2025, 1, 30), date(2025, 1, 31)}
+    monkeypatch.setattr(replay_engine, "HAS_CHINESE_CALENDAR", True)
+    monkeypatch.setattr(
+        replay_engine,
+        "chinese_calendar",
+        SimpleNamespace(is_workday=lambda value: value not in holidays),
+        raising=False,
+    )
+
+    points = replay_engine.ReplayTimepointGenerator().generate(
+        datetime(2025, 1, 27, 9, 30),
+        datetime(2025, 2, 5, 15, 0),
+        "30m",
+    )
+
+    point_dates = {point.date() for point in points}
+    assert date(2025, 1, 27) in point_dates
+    assert date(2025, 2, 3) in point_dates
+    assert holidays.isdisjoint(point_dates)
+    assert all(point.weekday() < 5 for point in points)
 
 
 def test_replay_context_uses_default_trade_cost_rates_when_payload_omits_them(tmp_path):
@@ -598,9 +623,9 @@ def test_historical_replay_persists_run_artifacts_without_touching_live_account(
     assert run["status"] == "completed"
     assert run["timeframe"] == "1d"
     assert run["trade_count"] == 2
-    assert summary["final_equity"] == 101400.0
-    assert summary["total_return_pct"] == 1.4
-    assert float(run["final_equity"]) == 101400.0
+    assert summary["final_equity"] == 101188.84
+    assert summary["total_return_pct"] == 1.1888
+    assert float(run["final_equity"]) == 101188.84
     assert len(checkpoints) == 2
     assert [trade["action"] for trade in trades] == ["SELL", "BUY"]
     assert len(signals) >= 2

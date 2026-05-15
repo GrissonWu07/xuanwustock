@@ -10,6 +10,7 @@ from pathlib import Path
 import schedule
 
 from app.db.runtime.registry import DatabaseRuntime
+from app.quant_kernel import ReplayTimepointGenerator
 from app.quant_sim.db import DEFAULT_DB_FILE, QuantSimDB
 from app.quant_sim.dynamic_strategy import (
     DEFAULT_AI_DYNAMIC_LOOKBACK,
@@ -22,12 +23,7 @@ from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy,
 from app.quant_sim.quant_universe_notifications import build_quant_universe_retired_notification
 from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
 from app.notification_service import notification_service
-TRADING_HOURS = {
-    "CN": [("09:30", "11:30"), ("13:00", "15:00")],
-    "HK": [("09:30", "12:00"), ("13:00", "16:00")],
-    "US": [("09:30", "16:00")],
-}
-TRADING_DAYS = {1, 2, 3, 4, 5}
+TRADING_TIME_CALENDAR = ReplayTimepointGenerator()
 _SCHEDULER_INSTANCES: dict[str, "QuantSimScheduler"] = {}
 logger = logging.getLogger(__name__)
 
@@ -487,21 +483,7 @@ class QuantSimScheduler:
     @classmethod
     def _is_trading_time(cls, market: str, *, now_utc: datetime | None = None) -> bool:
         now = cls._market_now(market, now_utc)
-        weekday = now.weekday() + 1
-        if weekday not in TRADING_DAYS:
-            return False
-
-        current_time = now.time()
-        for start_str, end_str in TRADING_HOURS.get(market or "CN", TRADING_HOURS["CN"]):
-            start_time = datetime.strptime(start_str, "%H:%M").time()
-            end_time = datetime.strptime(end_str, "%H:%M").time()
-            if start_time <= end_time:
-                if start_time <= current_time <= end_time:
-                    return True
-            else:
-                if current_time >= start_time or current_time <= end_time:
-                    return True
-        return False
+        return TRADING_TIME_CALENDAR.is_trading_time(now, market=market)
 
     @staticmethod
     def _decision_time() -> datetime:

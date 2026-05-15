@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import schedule
 
-from app.quant_sim.scheduler import TRADING_DAYS, TRADING_HOURS
+from app.quant_kernel import ReplayTimepointGenerator
 from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
 from app.selector_result_store import DEFAULT_SELECTOR_RESULT_DIR, load_latest_result, save_latest_result
 from app.watchlist_selector_integration import normalize_stock_code
@@ -24,6 +24,7 @@ QUOTE_REALTIME_TTL_SECONDS = 120
 BASIC_INFO_TTL_SECONDS = 24 * 60 * 60
 REMOTE_FAILURE_COOLDOWN_SECONDS = 600
 _SCHEDULER_INSTANCE: "UnifiedStockRefreshScheduler | None" = None
+TRADING_TIME_CALENDAR = ReplayTimepointGenerator()
 
 
 def _txt(value: Any, default: str = "") -> str:
@@ -539,22 +540,7 @@ class UnifiedStockRefreshScheduler:
         if base.tzinfo is None:
             base = base.replace(tzinfo=timezone.utc)
         now = base.astimezone(market_timezone(market))
-        weekday = now.weekday() + 1
-        if weekday not in TRADING_DAYS:
-            return False
-
-        current_time = now.time()
-        periods = TRADING_HOURS.get((market or "CN").upper(), TRADING_HOURS["CN"])
-        for start_str, end_str in periods:
-            start_time = datetime.strptime(start_str, "%H:%M").time()
-            end_time = datetime.strptime(end_str, "%H:%M").time()
-            if start_time <= end_time:
-                if start_time <= current_time <= end_time:
-                    return True
-            else:
-                if current_time >= start_time or current_time <= end_time:
-                    return True
-        return False
+        return TRADING_TIME_CALENDAR.is_trading_time(now, market=market)
 
     @staticmethod
     def _fetch_runtime_entry(

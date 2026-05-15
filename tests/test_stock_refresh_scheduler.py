@@ -2,6 +2,7 @@ import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from app.quant_kernel import replay_engine
 from app.stock_refresh_scheduler import UnifiedStockRefreshScheduler, load_stock_runtime_entries, save_stock_runtime_entries
 
 
@@ -13,6 +14,21 @@ def test_stock_refresh_scheduler_trading_time_uses_market_timezone():
     assert not UnifiedStockRefreshScheduler._is_trading_time(
         "US",
         now_utc=datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc),
+    )
+
+
+def test_stock_refresh_scheduler_reuses_cn_calendar_for_holidays(monkeypatch):
+    monkeypatch.setattr(replay_engine, "HAS_CHINESE_CALENDAR", True)
+    monkeypatch.setattr(
+        replay_engine,
+        "chinese_calendar",
+        SimpleNamespace(is_workday=lambda value: False),
+        raising=False,
+    )
+
+    assert not UnifiedStockRefreshScheduler._is_trading_time(
+        "CN",
+        now_utc=datetime(2026, 5, 4, 2, 0, tzinfo=timezone.utc),
     )
 
 

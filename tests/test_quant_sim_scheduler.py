@@ -1,7 +1,9 @@
 from datetime import date, datetime, timezone
 import sqlite3
+from types import SimpleNamespace
 from unittest.mock import Mock
 
+from app.quant_kernel import replay_engine
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.signal_center_service import SignalCenterService
@@ -12,7 +14,7 @@ from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy,
 def test_scheduler_trading_time_uses_market_timezone_for_cn_hk_and_us():
     assert QuantSimScheduler._is_trading_time(
         "CN",
-        now_utc=datetime(2026, 5, 4, 2, 0, tzinfo=timezone.utc),
+        now_utc=datetime(2026, 5, 6, 2, 0, tzinfo=timezone.utc),
     )
     assert QuantSimScheduler._is_trading_time(
         "HK",
@@ -25,6 +27,21 @@ def test_scheduler_trading_time_uses_market_timezone_for_cn_hk_and_us():
     assert not QuantSimScheduler._is_trading_time(
         "US",
         now_utc=datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc),
+    )
+
+
+def test_scheduler_trading_time_reuses_cn_calendar_for_holidays(monkeypatch):
+    monkeypatch.setattr(replay_engine, "HAS_CHINESE_CALENDAR", True)
+    monkeypatch.setattr(
+        replay_engine,
+        "chinese_calendar",
+        SimpleNamespace(is_workday=lambda value: False),
+        raising=False,
+    )
+
+    assert not QuantSimScheduler._is_trading_time(
+        "CN",
+        now_utc=datetime(2026, 5, 4, 2, 0, tzinfo=timezone.utc),
     )
 
 
@@ -544,6 +561,17 @@ def test_scheduler_forces_cooling_review_when_candidate_event_is_queued(tmp_path
             "confidence": 0.9,
             "trend": "up",
             "occurred_at": "2026-05-08T00:10:00Z",
+            "payload_json": {
+                "price": 8.8,
+                "ma5": 9.2,
+                "ma10": 9.0,
+                "ma20": 8.6,
+                "ma20_slope": 0.02,
+                "amount": 80_000_000,
+                "volume_ratio": 1.5,
+                "rsi": 62,
+                "macd": 0.05,
+            },
         }
     )
     assert decision["decision"] == "cooling_review_queued"
