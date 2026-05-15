@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from app.quant_kernel import replay_engine
+from app.quant_kernel import trading_time_utils
 from app.quant_kernel.models import Decision
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.db import DEFAULT_COMMISSION_RATE, DEFAULT_SELL_TAX_RATE, QuantSimDB
@@ -22,15 +22,15 @@ def test_replay_queue_methods_accept_initial_cash():
 
 def test_replay_timepoints_skip_chinese_holidays_when_calendar_available(monkeypatch):
     holidays = {date(2025, 1, 29), date(2025, 1, 30), date(2025, 1, 31)}
-    monkeypatch.setattr(replay_engine, "HAS_CHINESE_CALENDAR", True)
+    monkeypatch.setattr(trading_time_utils, "HAS_CHINESE_CALENDAR", True)
     monkeypatch.setattr(
-        replay_engine,
+        trading_time_utils,
         "chinese_calendar",
         SimpleNamespace(is_workday=lambda value: value not in holidays),
         raising=False,
     )
 
-    points = replay_engine.ReplayTimepointGenerator().generate(
+    points = trading_time_utils.TradingTimeUtils().generate(
         datetime(2025, 1, 27, 9, 30),
         datetime(2025, 2, 5, 15, 0),
         "30m",

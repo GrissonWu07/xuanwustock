@@ -3,7 +3,7 @@ import sqlite3
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from app.quant_kernel import replay_engine
+from app.quant_kernel import trading_time_utils
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.signal_center_service import SignalCenterService
@@ -31,9 +31,9 @@ def test_scheduler_trading_time_uses_market_timezone_for_cn_hk_and_us():
 
 
 def test_scheduler_trading_time_reuses_cn_calendar_for_holidays(monkeypatch):
-    monkeypatch.setattr(replay_engine, "HAS_CHINESE_CALENDAR", True)
+    monkeypatch.setattr(trading_time_utils, "HAS_CHINESE_CALENDAR", True)
     monkeypatch.setattr(
-        replay_engine,
+        trading_time_utils,
         "chinese_calendar",
         SimpleNamespace(is_workday=lambda value: False),
         raising=False,

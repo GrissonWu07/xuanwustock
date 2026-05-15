@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import schedule
 
-from app.quant_kernel import ReplayTimepointGenerator
+from app.quant_kernel import TradingTimeUtils
 from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
 from app.selector_result_store import DEFAULT_SELECTOR_RESULT_DIR, load_latest_result, save_latest_result
 from app.watchlist_selector_integration import normalize_stock_code
@@ -24,7 +24,7 @@ QUOTE_REALTIME_TTL_SECONDS = 120
 BASIC_INFO_TTL_SECONDS = 24 * 60 * 60
 REMOTE_FAILURE_COOLDOWN_SECONDS = 600
 _SCHEDULER_INSTANCE: "UnifiedStockRefreshScheduler | None" = None
-TRADING_TIME_CALENDAR = ReplayTimepointGenerator()
+TRADING_TIME_CALENDAR = TradingTimeUtils()
 
 
 def _txt(value: Any, default: str = "") -> str:

@@ -10,7 +10,7 @@ from pathlib import Path
 import schedule
 
 from app.db.runtime.registry import DatabaseRuntime
-from app.quant_kernel import ReplayTimepointGenerator
+from app.quant_kernel import TradingTimeUtils
 from app.quant_sim.db import DEFAULT_DB_FILE, QuantSimDB
 from app.quant_sim.dynamic_strategy import (
     DEFAULT_AI_DYNAMIC_LOOKBACK,
@@ -23,7 +23,7 @@ from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy,
 from app.quant_sim.quant_universe_notifications import build_quant_universe_retired_notification
 from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
 from app.notification_service import notification_service
-TRADING_TIME_CALENDAR = ReplayTimepointGenerator()
+TRADING_TIME_CALENDAR = TradingTimeUtils()
 _SCHEDULER_INSTANCES: dict[str, "QuantSimScheduler"] = {}
 logger = logging.getLogger(__name__)
 

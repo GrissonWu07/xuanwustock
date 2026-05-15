@@ -1,4 +1,4 @@
-"""Historical replay clocking adapted from stockpolicy trading-hours logic."""
+"""Shared market trading-day and trading-hour utilities."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ except ImportError:  # pragma: no cover - optional dependency
     HAS_CHINESE_CALENDAR = False
 
 
-class ReplayTimepointGenerator:
-    """Generate trading checkpoints for historical replay runs."""
+class TradingTimeUtils:
+    """Generate and evaluate market trading checkpoints."""
 
     MARKET_TRADING_HOURS = {
         "CN": [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))],

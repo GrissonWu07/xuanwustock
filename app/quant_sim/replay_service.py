@@ -13,7 +13,7 @@ import pandas as pd
 
 from app.db.runtime.registry import DatabaseRuntime
 from app.data_source_manager import data_source_manager
-from app.quant_kernel import ReplayTimepointGenerator
+from app.quant_kernel import TradingTimeUtils
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.capital_slots import DEFAULT_CAPITAL_SLOT_CONFIG
 from app.quant_sim.corporate_actions import AkshareCorporateActionProvider
@@ -287,7 +287,7 @@ class QuantSimReplayService:
         replay_db_file: str | Path | None = None,
         snapshot_provider: Optional[MainProjectHistoricalSnapshotProvider] = None,
         adapter: Optional[StockPolicyAdapter] = None,
-        timepoint_generator: Optional[ReplayTimepointGenerator] = None,
+        timepoint_generator: Optional[TradingTimeUtils] = None,
         corporate_action_provider: Optional[AkshareCorporateActionProvider] = None,
     ):
         self.db_runtime = db_runtime
@@ -299,7 +299,7 @@ class QuantSimReplayService:
         self.replay_db_file = self.db.db_file
         self.snapshot_provider = snapshot_provider or MainProjectHistoricalSnapshotProvider()
         self.adapter = adapter or StockPolicyAdapter()
-        self.timepoint_generator = timepoint_generator or ReplayTimepointGenerator()
+        self.timepoint_generator = timepoint_generator or TradingTimeUtils()
         self.corporate_action_provider = corporate_action_provider or AkshareCorporateActionProvider()
 
     def run_historical_range(

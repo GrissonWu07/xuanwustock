@@ -17,7 +17,7 @@ from app.db.runtime.legacy_sqlite import resolve_legacy_sqlite_db_path
 from app.db.runtime.registry import DatabaseRuntime
 from app.db.runtime.types import AccessMode
 from app.quant_kernel.config import StrategyScoringConfig
-from app.quant_kernel.replay_engine import ReplayTimepointGenerator
+from app.quant_kernel import TradingTimeUtils
 from app.quant_kernel.portfolio_engine import LotStatus, PositionLot
 from app.quant_sim.capital_slots import (
     DEFAULT_CAPITAL_SLOT_CONFIG,
@@ -34,7 +34,7 @@ from app.runtime_paths import default_db_path
 
 DEFAULT_DB_FILE = str(default_db_path("xuanwu_stock.db"))
 DEFAULT_REPLAY_DB_FILE = str(default_db_path("xuanwu_stock_replay.db"))
-TRADING_DAY_CALENDAR = ReplayTimepointGenerator()
+TRADING_DAY_CALENDAR = TradingTimeUtils()
 DEFAULT_ANALYSIS_TIMEFRAME = "30m"
 SUPPORTED_ANALYSIS_TIMEFRAMES = {"30m", "1d", "1d+30m"}
 DEFAULT_STRATEGY_MODE = "auto"
