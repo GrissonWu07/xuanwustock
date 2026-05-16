@@ -34,7 +34,7 @@ class MarketDataService:
                 kline_type=period,
                 start_datetime=start_date,
                 end_datetime=end_date,
-                remote_fetcher=lambda: pd.DataFrame(),
+                remote_fetcher=lambda: self._fetch_tdx_remote_ohlcv(symbol, period, start_date, end_date),
             )
         else:
             frame = self.source.get_stock_hist_data(
@@ -65,7 +65,20 @@ class MarketDataService:
 
     def get_latest_snapshot(self, symbol: str, **kwargs: Any) -> dict[str, Any]:
         indicators = self.get_indicators(symbol, **kwargs)
-        return self.indicator_engine.latest_dict(indicators)
+        snapshot = self.indicator_engine.latest_dict(indicators)
+        if snapshot and isinstance(indicators, pd.DataFrame):
+            snapshot.setdefault("row_count", len(indicators))
+        return snapshot
+
+    def _fetch_tdx_remote_ohlcv(self, symbol: str, period: str, start_date: Any, end_date: Any) -> pd.DataFrame | None:
+        from app.smart_monitor_tdx_data import SmartMonitorTDXDataFetcher
+
+        return SmartMonitorTDXDataFetcher().get_kline_data_range(
+            symbol,
+            kline_type=period,
+            start_datetime=start_date,
+            end_datetime=end_date,
+        )
 
 
 __all__ = ["MarketDataService"]

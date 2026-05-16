@@ -77,6 +77,15 @@ export type TableRow = {
   already_in_quant?: boolean;
   technical_confirmation_count?: number;
   lifecycle_score_diagnostics?: Record<string, unknown>;
+  technical_snapshot_ready?: boolean;
+  technical_snapshot_status?: string;
+  technical_snapshot_missing_fields?: string[];
+  technical_snapshot_timeframe?: string;
+  technical_snapshot_provider?: string;
+  technical_snapshot_at?: string;
+  technical_snapshot_prepared_at?: string;
+  technical_snapshot_row_count?: number;
+  technical_snapshot_indicator_version?: string;
 };
 
 export type TableSection = {
@@ -124,6 +133,16 @@ export type QuantAutoEntrySummary = {
   skipped?: { stock_code?: string; reason?: string; reason_code?: string; reason_text?: string }[];
 };
 
+export type TechnicalSnapshotPreparationSummary = {
+  uniqueStocks?: number;
+  prepared?: number;
+  complete?: number;
+  incomplete?: number;
+  failed?: number;
+  blocked?: number;
+  items?: Array<Record<string, unknown>>;
+};
+
 export type TaskJob = {
   id: string;
   status: TaskStatus;
@@ -150,6 +169,7 @@ export type TaskJob = {
   }[];
   result?: {
     quantAutoEntry?: QuantAutoEntrySummary;
+    technicalSnapshotPreparation?: TechnicalSnapshotPreparationSummary;
     [key: string]: unknown;
   };
 };

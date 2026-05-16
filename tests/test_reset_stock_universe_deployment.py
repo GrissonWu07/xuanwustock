@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -7,6 +9,25 @@ from app.quant_sim.db import QuantSimDB
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CHANGE_ID = "discover-market-data-snapshot-gate"
+ARCHIVED_CHANGE_ID = "2026-05-16-discover-market-data-snapshot-gate"
+
+
+def _reset_cache_params_path() -> Path:
+    candidates = [
+        PROJECT_ROOT / "openspec" / "changes" / CHANGE_ID / "test-params" / "reset-preserves-market-cache.md",
+        PROJECT_ROOT
+        / "openspec"
+        / "changes"
+        / "archive"
+        / ARCHIVED_CHANGE_ID
+        / "test-params"
+        / "reset-preserves-market-cache.md",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    raise AssertionError(f"missing OpenSpec test parameters for {CHANGE_ID}")
 
 
 def _load_reset_script():
@@ -17,6 +38,14 @@ def _load_reset_script():
     sys.modules["reset_stock_universe_deployment"] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _load_cache_reset_params() -> dict:
+    params_path = _reset_cache_params_path()
+    text = params_path.read_text(encoding="utf-8")
+    match = re.search(r"```json\s*([\s\S]*?)\s*```", text)
+    assert match, f"missing JSON block in {params_path}"
+    return json.loads(match.group(1))
 
 
 def _table_names(db_file: Path) -> set[str]:
@@ -138,6 +167,37 @@ def test_reset_script_recreate_creates_missing_data_directory(tmp_path, monkeypa
     assert reset_script.main() == 0
 
     assert data_dir.exists()
+    assert (data_dir / "xuanwu_stock.db").exists()
+    assert (data_dir / "xuanwu_stock_replay.db").exists()
+
+
+def test_reset_script_preserves_market_data_cache(tmp_path, monkeypatch):
+    reset_script = _load_reset_script()
+    params = _load_cache_reset_params()
+    data_dir = tmp_path / params["data_dir"]
+    data_dir.mkdir()
+    cache_file = data_dir / params["cache_file"]
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text("cached market data", encoding="utf-8")
+    for name in params["db_files"]:
+        (data_dir / name).write_text("db", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "reset_stock_universe_deployment.py",
+            "--data-dir",
+            str(data_dir),
+            "--yes",
+            "--recreate",
+        ],
+    )
+
+    assert reset_script.main() == 0
+
+    assert cache_file.exists()
+    assert cache_file.read_text(encoding="utf-8") == "cached market data"
     assert (data_dir / "xuanwu_stock.db").exists()
     assert (data_dir / "xuanwu_stock_replay.db").exists()
 

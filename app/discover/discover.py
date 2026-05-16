@@ -12,6 +12,7 @@ import pandas as pd
 
 from app.discover.ai_stock_scanner import AIStockScanner, AIStockScannerConfig
 from app.discover.lifecycle_scoring import normalize_discovery_lifecycle_row
+from app.discover.market_snapshot import prepare_discovery_market_snapshots
 from app.async_task_base import AsyncTaskManagerBase
 from app.gateway.common import (
     code_from_payload as _code_from_payload,
@@ -319,6 +320,21 @@ def _discover_row_from_mapping(row: dict[str, Any], *, source: str, selected_at:
         "reason": reason,
         "selectedAt": _system_time(selected_at, ""),
     }
+    for key in (
+        "technical_snapshot_ready",
+        "technical_snapshot_status",
+        "technical_snapshot_missing_fields",
+        "technical_snapshot_timeframe",
+        "technical_snapshot_provider",
+        "technical_snapshot_prepared_at",
+        "technical_snapshot_row_count",
+        "technical_snapshot_indicator_version",
+    ):
+        if key in row:
+            result[key] = row.get(key)
+    snapshot_at = _first_non_empty(row, ["technical_snapshot_at", "snapshot_at", "datetime"])
+    if snapshot_at not in (None, ""):
+        result["technical_snapshot_at"] = _system_time(snapshot_at, str(snapshot_at))
     for key in ("scanner_score", "theme_score", "technical_score", "technical_reasons", "sector_score", "rank_score", "price_change_score"):
         if lifecycle_row.get(key) not in (None, ""):
             result[key] = lifecycle_row.get(key)
@@ -757,8 +773,10 @@ def _run_discover_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
     )
     try:
         run_result = _run_discover_strategies(context, payload)
-        ingest_summary = ingest_lifecycle_entry_rows(context, _discover_rows(context), source_type="discover")
         rows = _discover_rows(context)
+        snapshot_preparation = prepare_discovery_market_snapshots(rows)
+        rows = snapshot_preparation.rows
+        ingest_summary = ingest_lifecycle_entry_rows(context, rows, source_type="discover")
         failed_items = run_result.get("failed") if isinstance(run_result, dict) and isinstance(run_result.get("failed"), list) else []
         completed_items = run_result.get("completed") if isinstance(run_result, dict) and isinstance(run_result.get("completed"), list) else []
         message = t("Discovery task completed. Current candidates: {count}.", count=len(rows))
@@ -788,6 +806,7 @@ def _run_discover_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
                 "updatedAt": _now(),
                 "completedStrategies": completed_items,
                 "failedStrategies": failed_items,
+                "technicalSnapshotPreparation": snapshot_preparation.summary,
                 "quantAutoEntry": ingest_summary,
             },
         )

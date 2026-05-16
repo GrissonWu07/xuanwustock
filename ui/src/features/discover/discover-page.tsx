@@ -127,6 +127,21 @@ const quantAutoEntrySummary = (job: DiscoverSnapshot["taskJob"]) => {
   });
 };
 
+const technicalSnapshotSummary = (job: DiscoverSnapshot["taskJob"]) => {
+  const summary = job?.result?.technicalSnapshotPreparation;
+  if (!summary) return "";
+  return t("Technical snapshot: checked {checked}, ready {ready}, incomplete {incomplete}, failed {failed}, blocked {blocked}", {
+    checked: Number(summary.uniqueStocks ?? 0),
+    ready: Number(summary.complete ?? 0),
+    incomplete: Number(summary.incomplete ?? 0),
+    failed: Number(summary.failed ?? 0),
+    blocked: Number(summary.blocked ?? 0),
+  });
+};
+
+const discoverTaskCompletionSummary = (job: DiscoverSnapshot["taskJob"]) =>
+  [technicalSnapshotSummary(job), quantAutoEntrySummary(job)].filter(Boolean).join(" · ");
+
 export function DiscoverPage({ client }: DiscoverPageProps) {
   const taskClient = client ?? apiClient;
   const resource = usePageData("discover", client);
@@ -361,7 +376,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
       if (taskId) {
         const finished = await pollTask(taskId);
         if (finished?.status === "completed") {
-          setRunFeedback(quantAutoEntrySummary(finished) || (finished.message ? t(finished.message) : "") || t("Discover result updated. Candidates and summary refreshed."));
+          setRunFeedback(discoverTaskCompletionSummary(finished) || (finished.message ? t(finished.message) : "") || t("Discover result updated. Candidates and summary refreshed."));
         } else if (finished?.status === "failed") {
           setRunFeedback(t("Discover task failed: {message}", { message: finished.message ? t(finished.message) : t("Please check task logs") }));
         } else {

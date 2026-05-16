@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -39,6 +40,50 @@ def _params_dir() -> Path:
 PARAMS_DIR = _params_dir()
 PARAMS_PATH = PARAMS_DIR / "discovery-lifecycle-normalization.md"
 UTC_TABLE_TIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})")
+COMPLETE_WEAK_TECHNICAL_SNAPSHOT = {
+    "price": 10.0,
+    "latestPrice": 10.0,
+    "ma5": 10.5,
+    "ma10": 10.6,
+    "ma20": 10.8,
+    "ma20_slope": 0.0,
+    "ma60": 11.0,
+    "amount": 120_000_000,
+    "volume_ratio": 1.2,
+    "rsi": 45.0,
+    "macd": 0.0,
+    "trend": "sideways",
+    "technical_snapshot_ready": True,
+    "technical_snapshot_status": "ready",
+    "technical_snapshot_missing_fields": [],
+    "technical_snapshot_timeframe": "30m",
+    "technical_snapshot_provider": "fixture",
+    "technical_snapshot_at": "2026-05-15 14:30:00",
+    "technical_snapshot_prepared_at": "2026-05-16 10:00:00",
+    "technical_snapshot_indicator_version": "fixture-v1",
+}
+COMPLETE_STRONG_TECHNICAL_SNAPSHOT = {
+    "price": 12.34,
+    "latestPrice": 12.34,
+    "ma5": 12.1,
+    "ma10": 11.9,
+    "ma20": 11.5,
+    "ma20_slope": 0.05,
+    "ma60": 10.8,
+    "amount": 120_000_000,
+    "volume_ratio": 1.35,
+    "rsi": 58.2,
+    "macd": 0.18,
+    "trend": "up",
+    "technical_snapshot_ready": True,
+    "technical_snapshot_status": "ready",
+    "technical_snapshot_missing_fields": [],
+    "technical_snapshot_timeframe": "30m",
+    "technical_snapshot_provider": "fixture",
+    "technical_snapshot_at": "2026-05-15 14:30:00",
+    "technical_snapshot_prepared_at": "2026-05-16 10:00:00",
+    "technical_snapshot_indicator_version": "fixture-v1",
+}
 
 
 def _load_params() -> dict[str, Any]:
@@ -206,15 +251,16 @@ def test_lifecycle_ingest_keeps_weak_ai_candidate_recommended_only(tmp_path):
     )
     context.quant_db().update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
 
-    summary = ingest_lifecycle_entry_rows(context, [params["row"]], source_type="discover")
+    row = {**params["row"], **COMPLETE_WEAK_TECHNICAL_SNAPSHOT}
+    summary = ingest_lifecycle_entry_rows(context, [row], source_type="discover")
 
     expected = params["expected"]
     events = context.quant_db().list_candidate_events(
-        stock_code=params["row"]["code"],
+        stock_code=row["code"],
         status=expected["event_status"],
         limit=10,
     )
-    state = context.quant_db().get_quant_universe_state(params["row"]["code"]) or {}
+    state = context.quant_db().get_quant_universe_state(row["code"]) or {}
     assert summary["attempted"] == expected["attempted"]
     assert summary["events"] == expected["events"]
     assert summary["promoted"] == expected["promoted"]
@@ -287,7 +333,23 @@ def test_discover_task_status_reports_quant_auto_entry_diagnostics(tmp_path, mon
         def get_low_price_stocks(self, top_n=5):
             return True, pd.DataFrame([selector_row]), "ok"
 
+    def fake_prepare(rows):
+        prepared = [{**row, **COMPLETE_STRONG_TECHNICAL_SNAPSHOT} for row in rows]
+        return SimpleNamespace(
+            rows=prepared,
+            summary={
+                "uniqueStocks": len(prepared),
+                "prepared": len(prepared),
+                "complete": len(prepared),
+                "incomplete": 0,
+                "failed": 0,
+                "blocked": 0,
+                "items": [],
+            },
+        )
+
     monkeypatch.setattr(gateway_api, "LowPriceBullSelector", FakeLowPriceBullSelector)
+    monkeypatch.setattr(discover_gateway, "prepare_discovery_market_snapshots", fake_prepare)
     client = TestClient(create_app(context=context))
 
     response = client.post(

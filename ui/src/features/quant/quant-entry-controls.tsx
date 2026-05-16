@@ -30,6 +30,15 @@ const fieldBool = (row: TableRow, key: string) => Boolean((row as EntryRow)[key]
 
 const formatDiagnosticNumber = (value: number) => value.toFixed(2);
 
+const fieldList = (row: TableRow, key: string) => {
+  const value = (row as EntryRow)[key];
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value === "string" && value.trim()) {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+};
+
 export const entryStatusOf = (row: TableRow, override?: EntryStatusOverride) => {
   if (override?.status) return override.status;
   if (fieldBool(row, "already_in_quant")) return "already_in_quant";
@@ -49,6 +58,8 @@ export function EligibleBadge({ row, override }: { row: TableRow; override?: Ent
   const reason = entryReasonOf(row, override);
   const score = fieldNumber(row, "candidate_score") ?? fieldNumber(row, "source_score") ?? fieldNumber(row, "score");
   const confidence = fieldNumber(row, "candidate_confidence") ?? fieldNumber(row, "confidence") ?? fieldNumber(row, "source_confidence");
+  const snapshotStatus = fieldText(row, "technical_snapshot_status") || fieldText(row, "technicalSnapshotStatus");
+  const missingFields = fieldList(row, "technical_snapshot_missing_fields");
   const tone = status === "eligible" ? "badge--success" : status === "already_in_quant" ? "badge--accent" : "badge--neutral";
   return (
     <span className="chip-row" style={{ gap: "6px" }}>
@@ -56,6 +67,8 @@ export function EligibleBadge({ row, override }: { row: TableRow; override?: Ent
       {score !== null ? <span className="badge badge--neutral">{t("Score")} {formatDiagnosticNumber(score)}</span> : null}
       {confidence !== null ? <span className="badge badge--neutral">{t("Confidence")} {formatDiagnosticNumber(confidence)}</span> : null}
       {reason ? <span className="badge badge--neutral">{reason}</span> : null}
+      {snapshotStatus ? <span className="badge badge--neutral">技术快照 {snapshotStatus}</span> : null}
+      {missingFields.length > 0 ? <span className="badge badge--neutral">{missingFields.join(", ")}</span> : null}
     </span>
   );
 }

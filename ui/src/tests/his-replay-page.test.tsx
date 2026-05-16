@@ -349,7 +349,7 @@ function renderHisReplayPage(client: ApiClient) {
 }
 
 describe("HisReplayPage", () => {
-  it("shows live quant drill lifecycle results", async () => {
+  it("hides live quant drill lifecycle details from the replay page", async () => {
     const drillSnapshot = {
       ...initialSnapshot,
       tasks: [
@@ -414,18 +414,14 @@ describe("HisReplayPage", () => {
 
     renderHisReplayPage(client);
 
-    expect(await screen.findByText("实时量化演练")).toBeInTheDocument();
-    expect(screen.getByText("历史候选事件")).toBeInTheDocument();
-    expect(screen.getByText("15")).toBeInTheDocument();
-    expect(screen.getByText("自动入池")).toBeInTheDocument();
-    const autoPromotedMetric = screen.getByText("自动入池").closest(".mini-metric");
-    expect(autoPromotedMetric).not.toBeNull();
-    expect(within(autoPromotedMetric as HTMLElement).getByText("4")).toBeInTheDocument();
-    expect(screen.getByText("生命周期趋势")).toBeInTheDocument();
-    expect(screen.getByText("入池事件")).toBeInTheDocument();
-    expect(screen.getByText("出池与降级事件")).toBeInTheDocument();
-    expect(screen.getByText("股票最终状态")).toBeInTheDocument();
-    expect(screen.getAllByText("数据风险").length).toBeGreaterThan(0);
+    expect(await screen.findByLabelText("已选回放任务详情")).toBeInTheDocument();
+    expect(screen.queryByText("生命周期趋势")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("生命周期趋势图")).not.toBeInTheDocument();
+    expect(screen.queryByText("入池事件")).not.toBeInTheDocument();
+    expect(screen.queryByText("出池与降级事件")).not.toBeInTheDocument();
+    expect(screen.queryByText("股票最终状态")).not.toBeInTheDocument();
+    expect(screen.queryByText("数据风险")).not.toBeInTheDocument();
+    expect(screen.queryByText("实时量化演练")).not.toBeInTheDocument();
   });
 
   it("loads the initial signal table as BUY/SELL with a ten-row page size", async () => {

@@ -1,0 +1,97 @@
+# Tasks: Discover Market Data Snapshot Gate
+
+- [x] 1.1 Create OpenSpec test parameter files
+  - Related requirement: `Discovery Prepares Technical Snapshot Before Lifecycle Eligibility`, `Complete Snapshot Defines Automatic Entry Readiness`, `Discovery Results Expose Technical Readiness`, `Normal DB Cleanup Preserves Market Data Cache`
+  - Applicable rules: `TEST-002`, `TEST-003`, `CFG-009`
+  - Change: Add explicit test parameter files for complete snapshot, missing snapshot, duplicate discovery rows, provider failure, discovery UI diagnostics, and DB reset preserving cache.
+  - Validation: Confirm each planned backend/UI test references one of the parameter files and asserts meaningful behavior from the spec.
+  - Test parameters: `openspec/changes/discover-market-data-snapshot-gate/test-params/discovery-snapshot-readiness.md`, `openspec/changes/discover-market-data-snapshot-gate/test-params/lifecycle-gate-missing-snapshot.md`, `openspec/changes/discover-market-data-snapshot-gate/test-params/discover-ui-snapshot-readiness.md`, `openspec/changes/discover-market-data-snapshot-gate/test-params/reset-preserves-market-cache.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 2.1 Implement discovery 30m technical snapshot preparation
+  - Related requirement: `Discovery Prepares Technical Snapshot Before Lifecycle Eligibility`, `Complete Snapshot Defines Automatic Entry Readiness`
+  - Applicable rules: `PIR-001`, `PIR-002`, `PIR-005`, `PY-001`, `PY-003`, `PY-005`, `PY-007`, `TEST-001`, `TEST-003`, `TEST-008`
+  - Change: Add a focused snapshot preparation module under `app/discover/` that batches unique discovery stock codes, prepares 30m market/indicator snapshots through the existing market-data and indicator services, classifies readiness, normalizes required fields, and returns per-row diagnostics without writing lifecycle state.
+  - Validation: Run focused pytest coverage for complete snapshot, missing local data with mocked fetch success, provider empty result, insufficient MA60 readiness, and duplicate rows sharing one prepared result.
+  - Test parameters: `openspec/changes/discover-market-data-snapshot-gate/test-params/discovery-snapshot-readiness.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 2.2 Wire snapshot preparation into discovery task lifecycle ingestion
+  - Related requirement: `Discovery Prepares Technical Snapshot Before Lifecycle Eligibility`, `Discovery Task Reports Snapshot Preparation Diagnostics`
+  - Applicable rules: `PIR-001`, `PIR-004`, `PIR-005`, `PY-003`, `PY-007`, `TEST-001`, `TEST-003`, `TEST-008`
+  - Change: Update `app/discover/discover.py` so `run-strategy` builds discovery rows once, prepares technical snapshots before lifecycle ingestion, passes enriched rows into lifecycle ingestion, and returns `technicalSnapshotPreparation` counts and item diagnostics in the task result.
+  - Validation: Run API/task tests proving an empty-cache candidate gets preparation attempted before ingestion, duplicate rows are prepared once per unique code, and provider failures produce task diagnostics without promoting candidates.
+  - Test parameters: `openspec/changes/discover-market-data-snapshot-gate/test-params/discovery-snapshot-readiness.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 2.3 Persist and hydrate technical snapshot diagnostics in lifecycle rows
+  - Related requirement: `Complete Snapshot Defines Automatic Entry Readiness`, `Discovery Results Expose Technical Readiness`, `Discovery Task Reports Snapshot Preparation Diagnostics`
+  - Applicable rules: `PIR-001`, `PIR-003`, `PIR-004`, `PY-003`, `PY-007`, `TEST-001`, `TEST-003`
+  - Change: Update `app/gateway/quant_universe_entry.py` so candidate event payloads preserve normalized technical snapshot fields and readiness diagnostics, and discovery row enrichment exposes latest readiness fields from persisted candidate events for UI/API consumers.
+  - Validation: Run pytest tests proving `_candidate_event_payload` preserves readiness metadata, `enrich_lifecycle_entry_rows` hydrates readiness fields from candidate events, and old events without readiness metadata do not break row rendering.
+  - Test parameters: `openspec/changes/discover-market-data-snapshot-gate/test-params/lifecycle-gate-missing-snapshot.md`, `openspec/changes/discover-market-data-snapshot-gate/test-params/discover-ui-snapshot-readiness.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 2.4 Harden automatic lifecycle entry gate for incomplete discovery snapshots
+  - Related requirement: `Lifecycle Gate Defends Against Incomplete Discovery Inputs`, `Complete Snapshot Defines Automatic Entry Readiness`
+  - Applicable rules: `PIR-001`, `PIR-003`, `PY-003`, `PY-007`, `TEST-001`, `TEST-003`
+  - Change: Update `app/quant_sim/candidate_entry_gate.py` and related lifecycle tests so discovery candidate events with incomplete technical snapshots are blocked with `missing_technical_snapshot`, even when score/confidence or text-only technical explanations are present. Keep non-discovery/manual semantics unchanged unless already covered by existing rules.
+  - Validation: Run pytest tests proving score/confidence-only discovery candidates are blocked, text-only technical explanations do not count as readiness, complete snapshots continue through existing threshold gates, and the persisted entry gate includes missing field names.
+  - Test parameters: `openspec/changes/discover-market-data-snapshot-gate/test-params/lifecycle-gate-missing-snapshot.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 3.1 Expose snapshot readiness in discovery API and UI
+  - Related requirement: `Discovery Results Expose Technical Readiness`, `Discovery Task Reports Snapshot Preparation Diagnostics`
+  - Applicable rules: `PIR-004`, `PIR-005`, `TEST-001`, `TEST-003`, `TEST-007`
+  - Change: Update `ui/src/lib/page-models.ts`, `ui/src/features/discover/discover-page.tsx`, and `ui/src/features/quant/quant-entry-controls.tsx` as needed so discovery rows show readiness status, missing fields, and technical preparation counts without displaying UTC ISO timestamps in table text.
+  - Validation: Run UI tests proving ready and incomplete badges render, missing fields are visible, task feedback includes technical preparation counts, and existing quant status controls still render.
+  - Test parameters: `openspec/changes/discover-market-data-snapshot-gate/test-params/discover-ui-snapshot-readiness.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 4.1 Lock DB reset behavior to preserve market-data cache
+  - Related requirement: `Normal DB Cleanup Preserves Market Data Cache`
+  - Applicable rules: `PIR-001`, `PIR-003`, `PY-010`, `TEST-001`, `TEST-003`
+  - Change: Update or confirm `scripts/reset_stock_universe_deployment.py` and its tests so normal DB reset removes only configured database files, backups, and SQLite sidecars, while preserving `local_sources` market-data cache directories and files.
+  - Validation: Run reset script tests proving a populated `local_sources` directory remains untouched after `--yes` and `--recreate` DB reset.
+  - Test parameters: `openspec/changes/discover-market-data-snapshot-gate/test-params/reset-preserves-market-cache.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 5.1 Run final validation and reviews
+  - Related requirement: `Discovery Prepares Technical Snapshot Before Lifecycle Eligibility`, `Complete Snapshot Defines Automatic Entry Readiness`, `Lifecycle Gate Defends Against Incomplete Discovery Inputs`, `Discovery Results Expose Technical Readiness`, `Discovery Task Reports Snapshot Preparation Diagnostics`, `Normal DB Cleanup Preserves Market Data Cache`
+  - Applicable rules: `TEST-001`, `TEST-002`, `TEST-003`, `TEST-010`, `PIR-002`, `PIR-005`
+  - Change: Run the targeted backend tests, targeted UI tests, coverage command, OpenSpec validation, and a final implementation review pass. Confirm changed files remain under the file-length rule and discovery market-data work is still task-asynchronous.
+  - Validation: `openspec validate discover-market-data-snapshot-gate --strict`; targeted `pytest`; targeted UI test command; coverage output meeting the 90% affected-code target; final review artifacts with no remaining findings.
+  - Test parameters: `openspec/changes/discover-market-data-snapshot-gate/test-params/discovery-snapshot-readiness.md`, `openspec/changes/discover-market-data-snapshot-gate/test-params/lifecycle-gate-missing-snapshot.md`, `openspec/changes/discover-market-data-snapshot-gate/test-params/discover-ui-snapshot-readiness.md`, `openspec/changes/discover-market-data-snapshot-gate/test-params/reset-preserves-market-cache.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before the change is marked complete

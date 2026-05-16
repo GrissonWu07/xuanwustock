@@ -3,11 +3,23 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from app.gateway.deps import normalize_stock_code
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, QuantUniverseManager
 
 
 ENTRY_QUANT_STATUSES = {"trial", "active", "exit_only"}
+TECHNICAL_SNAPSHOT_PAYLOAD_KEYS = (
+    "technical_snapshot_ready",
+    "technical_snapshot_status",
+    "technical_snapshot_missing_fields",
+    "technical_snapshot_timeframe",
+    "technical_snapshot_provider",
+    "technical_snapshot_at",
+    "technical_snapshot_prepared_at",
+    "technical_snapshot_row_count",
+    "technical_snapshot_indicator_version",
+)
+
+
 def ingest_lifecycle_entry_rows(
     context: Any,
     rows: list[dict[str, Any]],
@@ -79,6 +91,14 @@ def ingest_lifecycle_entry_rows(
     return summary
 
 
+def normalize_stock_code(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    for delimiter in (".", " "):
+        if delimiter in text:
+            text = text.split(delimiter)[0]
+    return text
+
+
 def enrich_lifecycle_entry_rows(context: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Append read-only quant lifecycle entry fields to stock-linked UI rows."""
     try:
@@ -112,16 +132,20 @@ def _lifecycle_entry_fields(db: Any, stock_code: str) -> dict[str, Any]:
         blocked_events = db.list_candidate_events(stock_code=stock_code, status="blocked", limit=20)
         recommended_events = db.list_candidate_events(stock_code=stock_code, status="recommended_only", limit=20)
         rejected_events = db.list_candidate_events(stock_code=stock_code, status="rejected", limit=20)
+        consumed_events = db.list_candidate_events(stock_code=stock_code, status="consumed", limit=20)
     except Exception:
         return _empty_entry_fields()
 
-    best_event = _best_event(eligible_events + active_events + blocked_events + recommended_events + rejected_events)
+    best_event = _best_event(
+        eligible_events + active_events + blocked_events + recommended_events + rejected_events + consumed_events
+    )
     quant_status = str(state.get("quant_status") or "inactive").strip() or "inactive"
     manual_override = str(state.get("quant_manual_override") or "").strip()
     candidate_score = _score_from_state_or_event(state, best_event)
     candidate_confidence = _confidence_from_event(best_event)
     blocking_reason = _blocking_reason(state, quant_status, manual_override)
     already_in_quant = quant_status in ENTRY_QUANT_STATUSES
+    technical_snapshot_fields = _technical_snapshot_fields(best_event)
 
     if quant_status == "cooling" or blocking_reason == "cooling_blocked":
         eligible_status = "cooling_blocked"
@@ -150,6 +174,7 @@ def _lifecycle_entry_fields(db: Any, stock_code: str) -> dict[str, Any]:
         "candidate_confidence": candidate_confidence,
         "blocking_reason": blocking_reason,
         "already_in_quant": already_in_quant,
+        **technical_snapshot_fields,
     }
 
 
@@ -252,17 +277,18 @@ def _candidate_event_payload(row: dict[str, Any], *, source_type: str) -> dict[s
             "name": name,
             "industry": row.get("industry") or row.get("sector") or "",
             "source": row.get("source") or row.get("strategyName") or "",
-            "latest_price": row.get("latestPrice") or row.get("latest_price") or row.get("price"),
-            "price": row.get("price") or row.get("latestPrice") or row.get("latest_price"),
-            "ma5": row.get("ma5") or row.get("MA5"),
-            "ma10": row.get("ma10") or row.get("MA10"),
-            "ma20": row.get("ma20") or row.get("MA20"),
-            "ma20_slope": row.get("ma20_slope") or row.get("MA20_slope") or row.get("ma20Slope"),
-            "ma60": row.get("ma60") or row.get("MA60"),
-            "amount": row.get("amount") or row.get("turnover") or row.get("成交额"),
-            "volume_ratio": row.get("volume_ratio") or row.get("量比"),
-            "rsi": row.get("rsi") or row.get("rsi12") or row.get("RSI"),
-            "macd": row.get("macd") or row.get("MACD"),
+            "latest_price": _first_present(row, "latestPrice", "latest_price", "price"),
+            "price": _first_present(row, "price", "latestPrice", "latest_price"),
+            "ma5": _first_present(row, "ma5", "MA5"),
+            "ma10": _first_present(row, "ma10", "MA10"),
+            "ma20": _first_present(row, "ma20", "MA20"),
+            "ma20_slope": _first_present(row, "ma20_slope", "MA20_slope", "ma20Slope"),
+            "ma60": _first_present(row, "ma60", "MA60"),
+            "amount": _first_present(row, "amount", "turnover", "成交额"),
+            "volume_ratio": _first_present(row, "volume_ratio", "量比"),
+            "rsi": _first_present(row, "rsi", "rsi12", "RSI"),
+            "macd": _first_present(row, "macd", "MACD"),
+            **_row_technical_snapshot_payload(row),
             "technical_confirmation_count": row.get("technical_confirmation_count"),
             "technical_reasons": row.get("technical_reasons"),
             "source_score": source_score,
@@ -272,6 +298,30 @@ def _candidate_event_payload(row: dict[str, Any], *, source_type: str) -> dict[s
             "eligible_status_before": row.get("eligible_status"),
         },
     }
+
+
+def _row_technical_snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key in TECHNICAL_SNAPSHOT_PAYLOAD_KEYS:
+        if key in row:
+            payload[key] = row.get(key)
+    return payload
+
+
+def _first_present(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in row and row.get(key) not in (None, ""):
+            return row.get(key)
+    return None
+
+
+def _technical_snapshot_fields(event: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(event, dict):
+        return {}
+    payload = event.get("payload_json")
+    if not isinstance(payload, dict):
+        return {}
+    return {key: payload.get(key) for key in TECHNICAL_SNAPSHOT_PAYLOAD_KEYS if key in payload}
 
 
 def _source_key(row: dict[str, Any], *, source_type: str) -> str:

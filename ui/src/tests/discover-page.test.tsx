@@ -24,6 +24,53 @@ const loadDiagnosticsParams = () => {
 
 const diagnosticsParams = loadDiagnosticsParams();
 
+const loadSnapshotReadinessParams = () => {
+  const root = process.cwd().endsWith("ui") ? join(process.cwd(), "..") : process.cwd();
+  const candidates = [
+    join(root, "openspec", "changes", "discover-market-data-snapshot-gate", "test-params", "discover-ui-snapshot-readiness.md"),
+    join(
+      root,
+      "openspec",
+      "changes",
+      "archive",
+      "2026-05-16-discover-market-data-snapshot-gate",
+      "test-params",
+      "discover-ui-snapshot-readiness.md",
+    ),
+  ];
+  const paramsPath = candidates.find((path) => existsSync(path));
+  if (!paramsPath) throw new Error("missing snapshot readiness test parameters");
+  const text = readFileSync(paramsPath, "utf8");
+  const cases: Record<string, unknown> = {};
+  const pattern = /##\s+([a-zA-Z0-9_-]+)\s+```json\s*([\s\S]*?)\s*```/g;
+  for (const match of text.matchAll(pattern)) {
+    cases[match[1]] = JSON.parse(match[2]);
+  }
+  return cases as {
+    discover_ui_rows: {
+      rows: typeof discoverSnapshot.candidateTable.rows;
+      task_result: {
+        technicalSnapshotPreparation: {
+          uniqueStocks: number;
+          prepared: number;
+          complete: number;
+          incomplete: number;
+          failed: number;
+          blocked: number;
+        };
+      };
+      expected: {
+        ready_text: string;
+        incomplete_text: string;
+        missing_field_text: string;
+        task_summary: string;
+      };
+    };
+  };
+};
+
+const snapshotReadinessParams = loadSnapshotReadinessParams();
+
 const discoverSnapshot = {
   updatedAt: "2026-04-24 00:10:00",
   metrics: [],
@@ -104,6 +151,14 @@ const lifecycleDiscoverSnapshot = {
         actions: [{ label: "Add to watchlist", icon: "⭐", tone: "accent", action: "item-watchlist" }],
       },
     ],
+  },
+};
+
+const technicalSnapshotDiscoverSnapshot = {
+  ...discoverSnapshot,
+  candidateTable: {
+    ...discoverSnapshot.candidateTable,
+    rows: snapshotReadinessParams.discover_ui_rows.rows,
   },
 };
 
@@ -252,6 +307,47 @@ describe("DiscoverPage", () => {
       expect(client.getTaskStatus).toHaveBeenCalledWith("discover-test");
     });
     expect(await screen.findByText(expected.ui_summary)).toBeInTheDocument();
+  });
+
+  it("shows technical snapshot readiness and missing fields", async () => {
+    const expected = snapshotReadinessParams.discover_ui_rows.expected;
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(technicalSnapshotDiscoverSnapshot),
+      runPageAction: vi.fn().mockResolvedValue(technicalSnapshotDiscoverSnapshot),
+      getTaskStatus: vi.fn(),
+    } as unknown as ApiClient;
+
+    renderDiscoverPage(client);
+
+    expect(await screen.findByText(expected.ready_text)).toBeInTheDocument();
+    expect(screen.getByText(expected.incomplete_text)).toBeInTheDocument();
+    expect(screen.getByText(expected.missing_field_text)).toBeInTheDocument();
+  });
+
+  it("shows technical snapshot preparation counts after strategy completion", async () => {
+    const expected = snapshotReadinessParams.discover_ui_rows.expected;
+    const client = {
+      getPageSnapshot: vi.fn().mockResolvedValue(discoverSnapshot),
+      runPageAction: vi.fn().mockResolvedValue({ ...discoverSnapshot, taskId: "discover-snapshot-test" }),
+      getTaskStatus: vi.fn().mockResolvedValue({
+        id: "discover-snapshot-test",
+        status: "completed",
+        title: "Stock discovery task",
+        message: "Discovery task completed.",
+        stage: "completed",
+        progress: 100,
+        result: snapshotReadinessParams.discover_ui_rows.task_result,
+      }),
+    } as unknown as ApiClient;
+
+    renderDiscoverPage(client);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(client.getTaskStatus).toHaveBeenCalledWith("discover-snapshot-test");
+    });
+    expect(await screen.findByText(expected.task_summary)).toBeInTheDocument();
   });
 
   it("supports row click selection and keeps candidate operations batch-only", async () => {
