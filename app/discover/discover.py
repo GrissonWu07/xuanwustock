@@ -11,8 +11,16 @@ from fastapi import HTTPException
 import pandas as pd
 
 from app.discover.ai_stock_scanner import AIStockScanner, AIStockScannerConfig
+from app.discover.ai_strategy import run_ai_scanner_strategy
+from app.discover.candidate_artifact import (
+    hydrate_discovery_candidate_rows,
+    load_discovery_candidate_artifact,
+    mark_rows_stale_unprepared,
+    renormalize_hydrated_discovery_rows,
+    save_discovery_candidate_artifact,
+    technical_summary_from_rows,
+)
 from app.discover.lifecycle_scoring import normalize_discovery_lifecycle_row
-from app.discover.market_snapshot import prepare_discovery_market_snapshots
 from app.async_task_base import AsyncTaskManagerBase
 from app.gateway.common import (
     code_from_payload as _code_from_payload,
@@ -35,7 +43,7 @@ from app.selector_ui_state import (
     save_main_force_state,
     save_simple_selector_state,
 )
-from app.stock_refresh_scheduler import load_stock_runtime_entries
+from app.stock_refresh_scheduler import get_unified_stock_refresh_scheduler, load_stock_runtime_entries
 from app.ui_table_cache_db import UITableCacheDB
 from app.watchlist_selector_integration import add_stock_to_watchlist, normalize_stock_code
 
@@ -393,61 +401,7 @@ def _discover_rows_from_simple_selector(
 
 
 def _run_ai_scanner_strategy(context: Any, payload: dict[str, Any], *, top_n: int) -> pd.DataFrame:
-    top_k_sectors = max(_int(payload.get("topKSectors"), 5) or 5, 1)
-    max_stocks = max(_int(payload.get("maxStocks"), top_n) or top_n, 1)
-    lookback_days = max(_int(payload.get("lookbackDays"), 180) or 180, 1)
-    max_candidates_per_sector = max(_int(payload.get("maxCandidatesPerSector"), 5) or 5, 1)
-
-    config = AIStockScannerConfig(
-        top_k_sectors=top_k_sectors,
-        max_stocks=max_stocks,
-        max_candidates_per_sector=max_candidates_per_sector,
-        lookback_days=lookback_days,
-    )
-    scanner_df = AIStockScanner(config).scan()
-
-    if scanner_df is None or getattr(scanner_df, "empty", False):
-        raise RuntimeError(t("AI scanner returned no selected stocks"))
-
-    rows: list[dict[str, Any]] = []
-    try:
-        selected_stocks = scanner_df.to_dict(orient="records")
-    except Exception:
-        selected_stocks = []
-    for item in selected_stocks:
-        if not isinstance(item, dict):
-            continue
-        code = _discover_code(item.get("股票代码") or item.get("code") or item.get("symbol"))
-        if not code:
-            continue
-        reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
-        reason_text = _txt(item.get("reason")) or "；".join(_txt(reason) for reason in reasons if _txt(reason))
-        score_raw = item.get("scanner_score")
-        reason_parts: list[str] = []
-        if score_raw not in (None, ""):
-            reason_parts.append(t("Scanner score: {score}", score=_num(score_raw)))
-        if reason_text:
-            reason_parts.append(reason_text)
-        if not reason_parts:
-            reason_parts.append(t("AI scanner selected candidate"))
-
-        normalized = dict(item)
-        normalized.update({
-            "股票代码": code,
-            "股票简称": _txt(item.get("股票简称") or item.get("name"), code),
-            "所属行业": _txt(item.get("所属行业") or item.get("sector")),
-            "最新价": _first_non_empty(item, ["最新价", "latest_price", "current_price", "price"]),
-            "总市值": _first_non_empty(item, ["总市值", "market_cap", "total_market_value", "marketCap"]),
-            "市盈率": _first_non_empty(item, ["市盈率", "pe", "pe_ratio", "pe_ttm"]),
-            "市净率": _first_non_empty(item, ["市净率", "pb", "pb_ratio"]),
-            "reason": " | ".join(reason_parts),
-        })
-        rows.append(normalize_discovery_lifecycle_row(normalized, strategy_key="ai_scanner", strategy_name=t("AI stock selection"), rank=len(rows) + 1, total=len(selected_stocks)))
-
-    if not rows:
-        raise RuntimeError(t("AI scanner returned no selected stocks"))
-
-    return pd.DataFrame(rows)
+    return run_ai_scanner_strategy(payload, top_n=top_n, scanner_cls=AIStockScanner, config_cls=AIStockScannerConfig)
 
 
 def _discover_strategy_snapshots(context: Any) -> list[dict[str, Any]]:
@@ -491,9 +445,11 @@ def _discover_strategy_snapshots(context: Any) -> list[dict[str, Any]]:
     return snapshots
 
 
-def _discover_rows(context: Any) -> list[dict[str, Any]]:
+def _raw_discover_rows(context: Any, strategy_keys: set[str] | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for snapshot in _discover_strategy_snapshots(context):
+        if strategy_keys and _txt(snapshot.get("key")) not in strategy_keys:
+            continue
         for row in snapshot.get("rows", []):
             row = dict(row)
             row["source"] = _txt(row.get("source") or snapshot.get("name"))
@@ -502,6 +458,7 @@ def _discover_rows(context: Any) -> list[dict[str, Any]]:
             selected_at_raw = snapshot.get("selected_at") or row.get("selectedAt")
             row["selectedAt"] = _system_time(selected_at_raw, "")
             row["_selected_dt"] = _parse_selector_timestamp(selected_at_raw) or datetime.min
+            strategy_key = _txt(snapshot.get("key"))
             row["_strategy_priority"] = {
                 "ai_scanner": 6,
                 "main_force": 5,
@@ -509,7 +466,7 @@ def _discover_rows(context: Any) -> list[dict[str, Any]]:
                 "small_cap": 3,
                 "profit_growth": 2,
                 "value_stock": 1,
-            }.get(_txt(snapshot.get("key")), 0)
+            }.get(strategy_key, 0)
             rows.append(row)
     rows.sort(
         key=lambda item: (
@@ -522,32 +479,27 @@ def _discover_rows(context: Any) -> list[dict[str, Any]]:
     for row in rows:
         row.pop("_selected_dt", None)
         row.pop("_strategy_priority", None)
+    return rows
+
+
+def _hydrated_discovery_rows(context: Any) -> list[dict[str, Any]]:
+    artifact = load_discovery_candidate_artifact(base_dir=context.selector_result_dir)
+    artifact_rows = artifact.get("rows") if isinstance(artifact, dict) else None
     runtime_entries = load_stock_runtime_entries(base_dir=context.selector_result_dir)
-    if runtime_entries:
-        for row in rows:
-            runtime = runtime_entries.get(_discover_code(row.get("code")))
-            if not isinstance(runtime, dict):
-                continue
-            runtime_name = _txt(runtime.get("stock_name"))
-            runtime_sector = _txt(runtime.get("sector"))
-            runtime_price = runtime.get("latest_price")
+    if isinstance(artifact_rows, list) and artifact_rows:
+        rows = hydrate_discovery_candidate_rows(
+            artifact_rows,
+            runtime_entries,
+            run_id=_txt(artifact.get("runId")),
+            artifact_status="current",
+        )
+        return renormalize_hydrated_discovery_rows(rows)
+    return renormalize_hydrated_discovery_rows(mark_rows_stale_unprepared(_raw_discover_rows(context)))
 
-            if runtime_name:
-                row["name"] = runtime_name
-                if len(row.get("cells", [])) > 1:
-                    row["cells"][1] = runtime_name
 
-            if runtime_sector:
-                row["industry"] = runtime_sector
-                if len(row.get("cells", [])) > 2:
-                    row["cells"][2] = runtime_sector
-
-            if runtime_price not in (None, ""):
-                row["latestPrice"] = _num(runtime_price)
-                if len(row.get("cells", [])) > 4:
-                    row["cells"][4] = row["latestPrice"]
+def _discover_rows(context: Any) -> list[dict[str, Any]]:
+    rows = _hydrated_discovery_rows(context)
     return enrich_lifecycle_entry_rows(context, rows)
-
 
 def _strategy_filter_value(table_query: dict[str, Any] | None) -> str:
     raw = _query_value(table_query, "strategy_key") or _query_value(table_query, "strategyKey") or _query_value(table_query, "strategy")
@@ -604,7 +556,7 @@ def _add_discover_row_to_watchlist(context: Any, row: dict[str, Any]) -> None:
 def _normalize_discover_strategy_selection(payload: dict[str, Any]) -> list[str]:
     raw = payload.get("strategies") or payload.get("strategy") or payload.get("strategyKey")
     if raw is None or raw == "":
-        return ["main_force", "low_price_bull", "small_cap", "profit_growth", "value_stock"]
+        return ["main_force", "low_price_bull", "small_cap", "profit_growth", "value_stock", "ai_scanner"]
 
     values: list[str]
     if isinstance(raw, list):
@@ -625,7 +577,7 @@ def _normalize_discover_strategy_selection(payload: dict[str, Any]) -> list[str]
     for key, synonyms in aliases.items():
         if any(value in synonyms for value in values):
             selected.append(key)
-    return selected or ["main_force", "low_price_bull", "small_cap", "profit_growth", "value_stock"]
+    return selected or ["main_force", "low_price_bull", "small_cap", "profit_growth", "value_stock", "ai_scanner"]
 
 
 def _build_main_force_discover_result(stocks_df: Any, top_n: int) -> dict[str, Any]:
@@ -749,7 +701,22 @@ def _run_discover_strategies(context: Any, payload: dict[str, Any]) -> dict[str,
         except Exception as exc:
             failed.append({"strategy": strategy_key, "reason": str(exc) or t("Strategy execution failed")})
 
-    return {"completed": completed, "failed": failed}
+    return {"completed": completed, "failed": failed, "selected_at": selected_at}
+
+
+def _run_discovery_refresh(context: Any) -> dict[str, Any]:
+    try:
+        scheduler = get_unified_stock_refresh_scheduler(context)
+        return scheduler.run_once(context=context, run_reason="discover")
+    except Exception as exc:
+        return {
+            "reason": "discover",
+            "updated": 0,
+            "failed": 1,
+            "totalCodes": 0,
+            "error": str(exc) or type(exc).__name__,
+            "updatedAt": _now(),
+        }
 
 
 class DiscoverTaskManager(AsyncTaskManagerBase):
@@ -773,9 +740,26 @@ def _run_discover_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
     )
     try:
         run_result = _run_discover_strategies(context, payload)
-        rows = _discover_rows(context)
-        snapshot_preparation = prepare_discovery_market_snapshots(rows)
-        rows = snapshot_preparation.rows
+        completed_keys = {_txt(item) for item in run_result.get("completed", []) if _txt(item)}
+        raw_rows = _raw_discover_rows(context, completed_keys)
+        selected_at = _txt(run_result.get("selected_at"), _now()) if isinstance(run_result, dict) else _now()
+        save_discovery_candidate_artifact(
+            raw_rows,
+            run_id=task_id,
+            selected_at=selected_at,
+            base_dir=context.selector_result_dir,
+        )
+        refresh_summary = _run_discovery_refresh(context)
+        rows = _hydrated_discovery_rows(context)
+        snapshot_summary = technical_summary_from_rows(rows)
+        save_discovery_candidate_artifact(
+            raw_rows,
+            run_id=task_id,
+            selected_at=selected_at,
+            summary=snapshot_summary,
+            refresh_summary=refresh_summary,
+            base_dir=context.selector_result_dir,
+        )
         ingest_summary = ingest_lifecycle_entry_rows(context, rows, source_type="discover")
         failed_items = run_result.get("failed") if isinstance(run_result, dict) and isinstance(run_result.get("failed"), list) else []
         completed_items = run_result.get("completed") if isinstance(run_result, dict) and isinstance(run_result.get("completed"), list) else []
@@ -806,7 +790,8 @@ def _run_discover_task(context: Any, task_id: str, payload: dict[str, Any]) -> N
                 "updatedAt": _now(),
                 "completedStrategies": completed_items,
                 "failedStrategies": failed_items,
-                "technicalSnapshotPreparation": snapshot_preparation.summary,
+                "technicalSnapshotPreparation": snapshot_summary,
+                "stockRefresh": refresh_summary,
                 "quantAutoEntry": ingest_summary,
             },
         )

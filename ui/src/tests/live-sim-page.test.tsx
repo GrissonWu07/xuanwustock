@@ -296,6 +296,12 @@ describe("LiveSimPage", () => {
 
     renderLiveSimPage(client);
 
+    expect(await screen.findByText("当前显示 1 只")).toBeInTheDocument();
+    expect(screen.getByText("量化池总数 3 只")).toBeInTheDocument();
+    expect(screen.queryByText("表内 1 只")).not.toBeInTheDocument();
+    expect(screen.queryByText("待量化 3")).not.toBeInTheDocument();
+    expect(client.getPageSnapshot).toHaveBeenCalledWith("live-sim", undefined);
+
     fireEvent.click(await screen.findByRole("button", { name: /历史演练|Historical drill/ }));
     expect(screen.getByText(/实时量化历史演练|Live quant historical drill/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /开始演练|Start drill/ }));

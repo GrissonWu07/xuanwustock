@@ -90,6 +90,19 @@ def prepare_discovery_market_snapshots(
     return DiscoveryMarketSnapshotResult(rows=prepared_rows, summary=summary)
 
 
+def prepare_discovery_market_snapshot(
+    code: str,
+    *,
+    market_data_service: Any | None = None,
+    now_fn: Callable[[], datetime] | None = None,
+) -> dict[str, Any]:
+    """Prepare a single 30m technical snapshot for shared refresh paths."""
+
+    current_time = (now_fn or datetime.now)()
+    service = market_data_service or _default_market_data_service()
+    return _prepare_code_snapshot(service, _normalize_stock_code(code), current_time=current_time)
+
+
 def _prepare_code_snapshot(service: Any, code: str, *, current_time: datetime) -> dict[str, Any]:
     try:
         start_date = current_time - timedelta(days=120)
@@ -313,5 +326,6 @@ __all__ = [
     "MISSING_TECHNICAL_SNAPSHOT_REASON",
     "REQUIRED_TECHNICAL_SNAPSHOT_FIELDS",
     "DiscoveryMarketSnapshotResult",
+    "prepare_discovery_market_snapshot",
     "prepare_discovery_market_snapshots",
 ]

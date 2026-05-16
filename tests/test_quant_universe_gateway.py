@@ -19,6 +19,31 @@ def _context(tmp_path):
     )
 
 
+def _strong_entry_payload():
+    return {
+        "price": 12.8,
+        "ma5": 12.7,
+        "ma10": 12.2,
+        "ma20": 11.8,
+        "ma20_slope": 0.035,
+        "ma60": 10.6,
+        "amount": 130_000_000,
+        "volume_ratio": 1.45,
+        "rsi": 61.0,
+        "macd": 0.22,
+        "trend": "up",
+        "technical_snapshot_ready": True,
+        "technical_snapshot_status": "ready",
+        "technical_snapshot_timeframe": "30m",
+        "technical_snapshot_provider": "unit-test",
+        "technical_snapshot_at": "2026-05-16 14:30:00",
+        "technical_snapshot_row_count": 180,
+        "technical_snapshot_indicator_version": "technical-entry-v1",
+        "consecutive_checkpoint_score": 1.0,
+        "ma20_breakout_retest_score": 1.0,
+    }
+
+
 def test_candidate_event_payload_does_not_default_score_from_source_identity():
     payload = _candidate_event_payload(
         {
@@ -107,6 +132,7 @@ def test_quant_universe_action_endpoints(tmp_path):
             "trend": "up",
             "reason_text": "候选达标",
             "status": "eligible",
+            "payload_json": _strong_entry_payload(),
         }
     )
     db.add_watch(stock_code="600001", stock_name="邯郸钢铁", source="discover")
@@ -118,6 +144,7 @@ def test_quant_universe_action_endpoints(tmp_path):
             "confidence": 0.8,
             "trend": "up",
             "status": "eligible",
+            "payload_json": _strong_entry_payload(),
         }
     )
     client = TestClient(create_app(context=context))
@@ -210,3 +237,31 @@ def test_live_sim_candidate_pool_supports_quant_status_filter_and_lifecycle_fiel
     assert candidate["lifecycle"]["candidate_score"] == 0.7
     assert candidate["lifecycle"]["latest_reason"] == "用户纳入试运行"
     assert payload["quant_status_filters"]["selected"] == ["trial", "active"]
+
+
+def test_live_sim_candidate_pool_returns_all_matching_quant_stocks_without_paging(tmp_path):
+    context = _context(tmp_path)
+    db = context.quant_db()
+    for index in range(25):
+        code = f"60{index:04d}"
+        context.candidate_pool().add_manual_candidate(code, f"量化股{index}", "manual", latest_price=10 + index)
+        db.upsert_quant_universe_state(
+            code,
+            {
+                "quant_status": "trial",
+                "candidate_score": 0.7,
+                "candidate_confidence": 0.8,
+                "health_score": 60,
+            },
+        )
+    client = TestClient(create_app(context=context))
+
+    payload = client.get("/api/v1/quant/live-sim").json()
+
+    assert len(payload["candidatePool"]["rows"]) == 25
+    assert payload["candidatePool"]["pagination"] == {
+        "page": 1,
+        "pageSize": 25,
+        "totalRows": 25,
+        "totalPages": 1,
+    }

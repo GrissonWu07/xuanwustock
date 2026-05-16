@@ -134,7 +134,7 @@ def test_research_snapshot_exposes_read_only_lifecycle_entry_fields(tmp_path):
         assert field in rows["002824"]
     assert rows["301291"]["eligible_status"] == "eligible"
     assert rows["301291"]["already_in_quant"] is False
-    assert rows["301291"]["candidate_score"] == 0.83
+    assert rows["301291"]["candidate_score"] == 0.0
     assert rows["002824"]["eligible_status"] == "already_in_quant"
     assert rows["002824"]["already_in_quant"] is True
     assert rows["002824"]["candidate_score"] == 0.66

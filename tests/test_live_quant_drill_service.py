@@ -35,11 +35,14 @@ class DrillSnapshotProvider:
             "ma5": 10.2,
             "ma10": 10.1,
             "ma20": 10.0,
+            "ma20_slope": 0.03,
             "ma60": 9.8,
+            "amount": 80_000_000,
             "macd": 0.1,
             "rsi12": 50.0,
             "volume_ratio": 1.2,
             "trend": "up",
+            "row_count": 180,
         }
 
 
@@ -50,10 +53,21 @@ def _passing_low_price_evidence() -> dict:
         "ma10": 9.0,
         "ma20": 8.6,
         "ma20_slope": 0.02,
+        "ma60": 8.0,
         "amount": 80_000_000,
         "volume_ratio": 1.5,
         "rsi": 62,
         "macd": 0.05,
+        "trend": "up",
+        "technical_snapshot_ready": True,
+        "technical_snapshot_status": "ready",
+        "technical_snapshot_timeframe": "30m",
+        "technical_snapshot_provider": "unit-test",
+        "technical_snapshot_at": "2026-01-05 10:00:00",
+        "technical_snapshot_row_count": 180,
+        "technical_snapshot_indicator_version": "technical-entry-v1",
+        "consecutive_checkpoint_score": 1.0,
+        "ma20_breakout_retest_score": 1.0,
     }
 
 

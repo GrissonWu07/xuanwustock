@@ -79,8 +79,6 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
     )
     account = db.get_account_summary()
     trade_cost_summary = db.get_trade_cost_summary()
-    page_size = _normalize_replay_table_page_size((table_query or {}).get("pageSize"), default=20)
-    page = _normalize_replay_table_page((table_query or {}).get("page"))
     search = _txt((table_query or {}).get("search"))
     quant_status_filters = _live_sim_quant_status_filters((table_query or {}).get("quant_status"))
     candidate_total = context.candidate_pool().count_candidates(
@@ -88,6 +86,8 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
         search=search,
         quant_statuses=quant_status_filters,
     )
+    page = 1
+    page_size = max(1, candidate_total)
     candidate_pagination = _replay_table_pagination(page, page_size, candidate_total)
     candidate_page_rows = _live_sim_candidate_rows(
         context,
@@ -95,7 +95,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
         quant_statuses=quant_status_filters,
         include_actions=True,
         limit=page_size,
-        offset=(candidate_pagination["page"] - 1) * page_size,
+        offset=0,
         search=search,
     )
     candidate_table = _table(["股票代码", "股票名称", "来源", "最新价格"], candidate_page_rows, "暂无候选股票")

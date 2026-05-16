@@ -306,6 +306,7 @@ def test_run_once_repairs_quant_candidate_name_when_refresh_resolves_it(monkeypa
 def test_run_once_uses_fresh_runtime_cache_without_remote_fetch(monkeypatch, tmp_path):
     quote_calls: list[str] = []
     updates: list[dict[str, object]] = []
+    now_text = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     save_stock_runtime_entries(
         {
             "000001": {
@@ -316,11 +317,31 @@ def test_run_once_uses_fresh_runtime_cache_without_remote_fetch(monkeypatch, tmp
                 "pe_ratio": 6.5,
                 "pb_ratio": 0.8,
                 "sector": "银行",
-                "price_as_of": "2026-05-05T01:00:00Z",
+                "price_as_of": now_text,
                 "data_source": "tdx_realtime",
+                "ma5": 12.6,
+                "ma10": 12.5,
+                "ma20": 12.2,
+                "ma20_slope": 0.02,
+                "ma60": 11.8,
+                "amount": 100_000_000,
+                "volume_ratio": 1.4,
+                "rsi": 58.0,
+                "macd": 0.04,
+                "trend": "up",
+                "technical_snapshot_ready": True,
+                "technical_snapshot_status": "ready",
+                "technical_snapshot_missing_fields": [],
+                "technical_snapshot_timeframe": "30m",
+                "technical_snapshot_provider": "fixture",
+                "technical_snapshot_at": now_text,
+                "technical_snapshot_prepared_at": now_text,
+                "technical_snapshot_row_count": 120,
+                "technical_snapshot_indicator_version": "fixture-v1",
             }
         },
         base_dir=tmp_path,
+        updated_at=now_text,
     )
 
     class FakeWatchlistService:

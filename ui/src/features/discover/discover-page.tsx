@@ -12,9 +12,9 @@ import { t } from "../../lib/i18n";
 import {
   BatchPromoteDialog,
   EligibleBadge,
+  QuantEntryResultDialog,
   ignoreResultOverrides,
   postQuantEntryAction,
-  promoteResultOverrides,
   type EntryStatusOverride,
   type QuantEntryActionResult,
 } from "../quant/quant-entry-controls";
@@ -150,6 +150,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
   const [promotingToTrial, setPromotingToTrial] = useState(false);
   const [promoteDialogOpen, setPromoteDialogOpen] = useState(false);
   const [promoteTargetCodes, setPromoteTargetCodes] = useState<string[]>([]);
+  const [promoteResult, setPromoteResult] = useState<QuantEntryActionResult | null>(null);
   const [entryOverrides, setEntryOverrides] = useState<Record<string, EntryStatusOverride>>({});
   const [runningStrategy, setRunningStrategy] = useState(false);
   const [resettingList, setResettingList] = useState(false);
@@ -317,9 +318,8 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
           source_type: "discover",
         },
       );
-      const updates = promoteResultOverrides(result);
-      setEntryOverrides((current) => ({ ...current, ...updates }));
-      setRunFeedback(t("Quant trial entry result updated."));
+      setPromoteResult(result);
+      setRunFeedback("");
       setPromoteDialogOpen(false);
       setPromoteTargetCodes([]);
     } catch (error) {
@@ -709,6 +709,7 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
             }}
             onConfirm={() => void handleBatchPromoteToTrial()}
           />
+          <QuantEntryResultDialog result={promoteResult} onClose={() => setPromoteResult(null)} />
         </WorkbenchCard>
 
         <WorkbenchCard className="discover-analysis-panel discover-summary-panel" ref={analysisPanelRef}>

@@ -10,6 +10,8 @@ from typing import Any, Callable
 
 import schedule
 
+from app.discover.candidate_artifact import TECHNICAL_RUNTIME_KEYS, discovery_candidate_codes
+from app.discover.market_snapshot import REQUIRED_TECHNICAL_SNAPSHOT_FIELDS, prepare_discovery_market_snapshot
 from app.quant_kernel import TradingTimeUtils
 from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
 from app.selector_result_store import DEFAULT_SELECTOR_RESULT_DIR, load_latest_result, save_latest_result
@@ -23,6 +25,7 @@ MAX_FETCH_WORKERS = max(1, int(os.getenv("UNIFIED_STOCK_REFRESH_WORKERS", "6")))
 QUOTE_REALTIME_TTL_SECONDS = 120
 BASIC_INFO_TTL_SECONDS = 24 * 60 * 60
 REMOTE_FAILURE_COOLDOWN_SECONDS = 600
+TECHNICAL_SNAPSHOT_TTL_SECONDS = max(60, int(os.getenv("UNIFIED_STOCK_TECHNICAL_TTL_SECONDS", "1800")))
 _SCHEDULER_INSTANCE: "UnifiedStockRefreshScheduler | None" = None
 TRADING_TIME_CALENDAR = TradingTimeUtils()
 
@@ -169,6 +172,7 @@ def save_stock_runtime_entries(
             "stock_code": code,
             "stock_name": _valid_name(item.get("stock_name")) or code,
             "latest_price": _price(item.get("latest_price")),
+            "price": _price(item.get("price")) or _price(item.get("latest_price")),
             "market_cap": _metric_float(item.get("market_cap")),
             "pe_ratio": _metric_float(item.get("pe_ratio")),
             "pb_ratio": _metric_float(item.get("pb_ratio")),
@@ -179,6 +183,9 @@ def save_stock_runtime_entries(
             "basic_info_checked_at": _txt(item.get("basic_info_checked_at")),
         }
         for key in ("refresh_status", "failure_at", "failure_reason", "failure_count"):
+            if item.get(key) not in (None, ""):
+                normalized[code][key] = item.get(key)
+        for key in TECHNICAL_RUNTIME_KEYS:
             if item.get(key) not in (None, ""):
                 normalized[code][key] = item.get(key)
     save_latest_result(
@@ -343,8 +350,10 @@ class UnifiedStockRefreshScheduler:
                         next_entries[code] = {**existing_entry, "cache_status": "negative_hit"}
                     cooldown_skipped += 1
                     continue
-                if self._is_runtime_entry_fresh(existing_entry) and (
-                    _has_basic_metrics(existing_entry) or _is_basic_info_check_recent(existing_entry)
+                if (
+                    self._is_runtime_entry_fresh(existing_entry)
+                    and (_has_basic_metrics(existing_entry) or _is_basic_info_check_recent(existing_entry))
+                    and self._has_fresh_technical_snapshot(existing_entry)
                 ):
                     fetched[code] = {**existing_entry, "cache_status": "hit"}
                     cache_hits += 1
@@ -514,6 +523,32 @@ class UnifiedStockRefreshScheduler:
         return (base.astimezone(timezone.utc) - updated_at).total_seconds() < QUOTE_REALTIME_TTL_SECONDS
 
     @staticmethod
+    def _has_fresh_technical_snapshot(entry: dict[str, Any] | None, *, now_utc: datetime | None = None) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        if not bool(entry.get("technical_snapshot_ready")):
+            return False
+        if _txt(entry.get("technical_snapshot_status")) != "ready":
+            return False
+        aliases = {
+            "snapshot_at": ("snapshot_at", "technical_snapshot_at"),
+            "provider": ("provider", "technical_snapshot_provider"),
+            "timeframe": ("timeframe", "technical_snapshot_timeframe"),
+            "indicator_version": ("indicator_version", "technical_snapshot_indicator_version"),
+        }
+        for key in REQUIRED_TECHNICAL_SNAPSHOT_FIELDS:
+            runtime_keys = aliases.get(key) or (("price",) if key == "price" else (key,))
+            if all(entry.get(runtime_key) in (None, "") for runtime_key in runtime_keys):
+                return False
+        updated_at = _parse_utc_timestamp(entry.get("updated_at"))
+        if updated_at is None:
+            return False
+        base = now_utc or datetime.now(timezone.utc)
+        if base.tzinfo is None:
+            base = base.replace(tzinfo=timezone.utc)
+        return (base.astimezone(timezone.utc) - updated_at).total_seconds() < TECHNICAL_SNAPSHOT_TTL_SECONDS
+
+    @staticmethod
     def _is_failure_cooldown_active(entry: dict[str, Any] | None, *, now_utc: datetime | None = None) -> bool:
         if not isinstance(entry, dict):
             return False
@@ -575,6 +610,10 @@ class UnifiedStockRefreshScheduler:
             basic_info = UnifiedStockRefreshScheduler._fetch_basic_info(stock_code)
         basic_info_checked_at = _now() if need_basic_info else _txt(existing_entry.get("basic_info_checked_at"))
 
+        technical_snapshot: dict[str, Any] = {}
+        if not (stop_event and stop_event.is_set()):
+            technical_snapshot = UnifiedStockRefreshScheduler._fetch_technical_snapshot(stock_code)
+
         quote_name = _valid_name(quote.get("name"))
         if quote_name.upper() == stock_code.upper():
             quote_name = ""
@@ -604,16 +643,19 @@ class UnifiedStockRefreshScheduler:
             or _price(quote.get("current_price"))
             or _price(quote.get("price"))
             or _price(basic_info.get("current_price"))
+            or _price(technical_snapshot.get("price"))
             or existing_price
         )
         price_as_of = (
             _txt(last_trading_snapshot.get("update_time"))
             or _txt(quote.get("update_time"))
+            or _txt(technical_snapshot.get("technical_snapshot_at"))
             or existing_price_as_of
         )
         data_source = (
             _txt(last_trading_snapshot.get("data_source"))
             or _txt(quote.get("data_source"))
+            or _txt(technical_snapshot.get("technical_snapshot_provider"))
             or _txt(existing_entry.get("data_source"))
         )
         market_cap = (
@@ -632,10 +674,11 @@ class UnifiedStockRefreshScheduler:
             or _metric_float(existing_entry.get("pb_ratio"))
         )
 
-        return {
+        entry = {
             "stock_code": stock_code,
             "stock_name": stock_name,
             "latest_price": latest_price,
+            "price": _price(technical_snapshot.get("price")) or latest_price,
             "market_cap": market_cap,
             "pe_ratio": pe_ratio,
             "pb_ratio": pb_ratio,
@@ -645,6 +688,26 @@ class UnifiedStockRefreshScheduler:
             "basic_info_checked_at": basic_info_checked_at,
             "updated_at": _now(),
         }
+        for key in TECHNICAL_RUNTIME_KEYS:
+            if technical_snapshot.get(key) not in (None, ""):
+                entry[key] = technical_snapshot.get(key)
+        return entry
+
+    @staticmethod
+    def _fetch_technical_snapshot(stock_code: str) -> dict[str, Any]:
+        try:
+            return prepare_discovery_market_snapshot(stock_code)
+        except Exception as exc:
+            return {
+                "stock_code": normalize_stock_code(stock_code),
+                "technical_snapshot_ready": False,
+                "technical_snapshot_status": "failed",
+                "technical_snapshot_missing_fields": list(REQUIRED_TECHNICAL_SNAPSHOT_FIELDS),
+                "technical_snapshot_timeframe": "30m",
+                "technical_snapshot_provider": "tdx",
+                "technical_snapshot_prepared_at": _now(),
+                "technical_snapshot_error": str(exc) or type(exc).__name__,
+            }
 
     @staticmethod
     def _fetch_realtime_quote(stock_code: str, preferred_name: str | None = None) -> dict[str, Any]:
@@ -758,6 +821,11 @@ class UnifiedStockRefreshScheduler:
                 code = normalize_stock_code(item.get("stock_code"))
                 if code:
                     codes.add(code)
+        except Exception:
+            pass
+
+        try:
+            codes.update(discovery_candidate_codes(base_dir=context.selector_result_dir))
         except Exception:
             pass
 

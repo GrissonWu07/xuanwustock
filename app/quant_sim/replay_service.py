@@ -1539,6 +1539,7 @@ class QuantSimReplayService:
         ma10 = self._snapshot_float(snapshot, "ma10", "MA10")
         ma20 = self._snapshot_float(snapshot, "ma20", "MA20")
         ma20_slope = self._snapshot_float(snapshot, "ma20_slope", "MA20_slope", "ma20Slope")
+        ma60 = self._snapshot_float(snapshot, "ma60", "MA60")
         macd = self._snapshot_float(snapshot, "macd", "MACD")
         rsi = self._snapshot_float(snapshot, "rsi12", "rsi", "RSI")
         volume_ratio = self._snapshot_float(snapshot, "volume_ratio", "量比")
@@ -1578,10 +1579,20 @@ class QuantSimReplayService:
                 "ma10": ma10,
                 "ma20": ma20,
                 "ma20_slope": ma20_slope,
+                "ma60": ma60,
                 "macd": macd,
                 "rsi": rsi,
                 "volume_ratio": volume_ratio,
                 "amount": amount,
+                "trend": "up" if (ma20 > 0 and price >= ma20) or (ma5 > 0 and ma10 > 0 and ma5 >= ma10) else "neutral",
+                "technical_snapshot_ready": True,
+                "technical_snapshot_status": "ready",
+                "technical_snapshot_timeframe": str(candidate.get("timeframe") or "30m"),
+                "technical_snapshot_provider": "historical_snapshot",
+                "technical_snapshot_at": self._format_datetime(checkpoint),
+                "technical_snapshot_prepared_at": self._format_datetime(checkpoint),
+                "technical_snapshot_row_count": snapshot.get("row_count") or snapshot.get("technical_snapshot_row_count") or 120,
+                "technical_snapshot_indicator_version": "live-quant-drill-v1",
                 "score_basis": "as_of_price_volume_trend",
             },
         }

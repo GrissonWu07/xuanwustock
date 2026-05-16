@@ -227,8 +227,8 @@ describe("DiscoverPage", () => {
       ok: true,
       json: async () => ({
         success: [{ stock_code: "600001", new_status: "trial" }],
-        skipped: [{ stock_code: "600003", reason_text: "基础信息缺失" }],
-        failed: [],
+        skipped: [{ stock_code: "600003", reason_text: "strategy_batch_capacity_exceeded" }],
+        failed: [{ stock_code: "600004", reason_text: "server rejected" }],
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -255,6 +255,7 @@ describe("DiscoverPage", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Select eligible 股" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select 跳过股" }));
+    const alreadyInQuantCountBefore = screen.getAllByText("already_in_quant").length;
     fireEvent.click(screen.getAllByRole("button", { name: "纳入量化" })[0]);
     expect(screen.getByRole("dialog", { name: "确认纳入量化" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认纳入" }));
@@ -268,11 +269,14 @@ describe("DiscoverPage", () => {
         }),
       );
     });
-    expect(screen.getByText("600001")).toBeInTheDocument();
-    expect(screen.getAllByText("already_in_quant").length).toBeGreaterThan(0);
-    expect(screen.getByText("基础信息缺失")).toBeInTheDocument();
-    expect(screen.getByText("600001")).toBeInTheDocument();
-    expect(screen.getByText("600003")).toBeInTheDocument();
+    const resultDialog = await screen.findByRole("dialog", { name: "纳入量化结果" });
+    expect(within(resultDialog).getByText("成功 1 只")).toBeInTheDocument();
+    expect(within(resultDialog).getByText("跳过 1 只")).toBeInTheDocument();
+    expect(within(resultDialog).getByText("失败 1 只")).toBeInTheDocument();
+    expect(within(resultDialog).getByText("600003 - strategy_batch_capacity_exceeded")).toBeInTheDocument();
+    expect(within(resultDialog).getByText("600004 - server rejected")).toBeInTheDocument();
+    expect(screen.getAllByText("already_in_quant")).toHaveLength(alreadyInQuantCountBefore);
+    expect(screen.getByText("eligible")).toBeInTheDocument();
   });
 
   it("shows discovery task auto-entry diagnostics after strategy completion", async () => {

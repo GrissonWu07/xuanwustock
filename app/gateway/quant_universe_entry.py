@@ -109,16 +109,18 @@ def enrich_lifecycle_entry_rows(context: Any, rows: list[dict[str, Any]]) -> lis
         if not isinstance(row, dict):
             continue
         code = normalize_stock_code(row.get("code") or row.get("stock_code") or row.get("id"))
+        existing_status = row.get("eligible_status")
+        existing_blocking_reason = row.get("blocking_reason")
         fields = _lifecycle_entry_fields(db, code)
-        if _float(fields.get("candidate_score")) <= 0:
-            score = _first_number(row.get("candidate_score"), row.get("source_score"), row.get("score"))
-            if score is not None and score > 0:
-                fields["candidate_score"] = round(_normalized_unit_score(score), 4)
-        if _float(fields.get("candidate_confidence")) <= 0:
-            confidence = _first_number(row.get("candidate_confidence"), row.get("confidence"), row.get("source_confidence"))
-            if confidence is not None and confidence > 0:
-                fields["candidate_confidence"] = round(_normalized_unit_score(confidence), 4)
         row.update(fields)
+        if (
+            existing_blocking_reason
+            and fields.get("eligible_status") == "skipped"
+            and fields.get("blocking_reason") in {"", "not_evaluated"}
+        ):
+            row["blocking_reason"] = existing_blocking_reason
+            if existing_status:
+                row["eligible_status"] = existing_status
     return rows
 
 
@@ -193,20 +195,24 @@ def _score_from_state_or_event(state: dict[str, Any], event: dict[str, Any] | No
     if state_score > 0:
         return round(state_score, 4)
     if isinstance(event, dict):
-        return round(_float(event.get("source_score")), 4)
+        payload = event.get("payload_json")
+        if isinstance(payload, dict):
+            return round(_float(payload.get("candidate_score") or payload.get("technical_entry_score")), 4)
     return 0.0
 
 
 def _confidence_from_event(event: dict[str, Any] | None) -> float:
     if isinstance(event, dict):
-        return round(_float(event.get("confidence")), 4)
+        payload = event.get("payload_json")
+        if isinstance(payload, dict):
+            return round(_float(payload.get("candidate_confidence") or payload.get("technical_confidence")), 4)
     return 0.0
 
 
 def _best_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not events:
         return None
-    return max(events, key=lambda event: (_float(event.get("source_score")), _float(event.get("confidence"))))
+    return max(events, key=lambda event: (_score_from_state_or_event({}, event), _confidence_from_event(event), _float(event.get("id"))))
 
 
 def _event_gate_reason(event: dict[str, Any] | None) -> str:

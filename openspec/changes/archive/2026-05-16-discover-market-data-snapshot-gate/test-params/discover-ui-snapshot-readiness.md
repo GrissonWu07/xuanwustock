@@ -81,7 +81,7 @@
     }
   },
   "expected": {
-    "ready_text": "技术快照 ready",
+    "ready_text": "Technical snapshot ready",
     "incomplete_text": "missing_technical_snapshot",
     "missing_field_text": "ma10, ma60, rsi, macd",
     "task_summary": "Technical snapshot: checked 2, ready 1, incomplete 1, failed 0, blocked 1"

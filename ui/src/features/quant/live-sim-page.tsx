@@ -535,7 +535,10 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
     return <PageEmptyState title={t("实时量化暂无数据")} description={t("后台尚未返回实时量化快照。")} actionLabel={t("刷新")} onAction={resource.refresh} />;
   }
 
-  const candidateCount = toDisplayCount(snapshot.status.candidateCount, snapshot.candidatePool.rows.length);
+  const candidateTotal = toDisplayCount(
+    snapshot.candidatePool.pagination?.totalRows ?? snapshot.status.candidateCount,
+    snapshot.candidatePool.rows.length,
+  );
   const runningState = toDisplayText(snapshot.status.running, t("未知"));
   const runningNormalized = String(snapshot.status.running ?? "").trim().toLowerCase();
   const isRunning = runningNormalized.includes(t("运行中")) || runningNormalized.includes("running");
@@ -758,7 +761,7 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           <div className="chip-row">
             <span className="badge badge--neutral">{t("快照")}{snapshotTimeLabel}</span>
             <span className="badge badge--neutral">{t("系统时区")}{systemTimezone}</span>
-            <span className="badge badge--accent">{t("候选")}{candidateCount}</span>
+            <span className="badge badge--accent">{t("候选")}{candidateTotal}</span>
             <span className={isRunning ? "badge badge--success" : "badge badge--neutral"}>{runningState}</span>
           </div>
         }
@@ -1078,7 +1081,10 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
             table={candidatePoolTable}
             emptyTitle={candidatePoolTable.emptyLabel ?? t("暂无实时量化股票")}
             emptyDescription={candidatePoolTable.emptyMessage ?? t("先在股票池中批量启用实时量化，再启动实时量化。")}
-            meta={[t("表内 {v0} 只", { v0: candidatePoolTable.rows.length }), t("待量化 {v0}", { v0: candidateCount })]}
+            meta={[
+              t("当前显示 {v0} 只", { v0: candidatePoolTable.rows.length }),
+              t("量化池总数 {v0} 只", { v0: candidateTotal }),
+            ]}
             toolbar={<StatusFilterChips available={availableQuantStatuses} selected={selectedQuantStatuses} onToggle={toggleQuantStatus} />}
           />
         </div>

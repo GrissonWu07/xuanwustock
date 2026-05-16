@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 from app.quant_sim.candidate_entry_gate import evaluate_candidate_entry_gate
+from app.quant_sim.technical_entry_score import calculate_technical_entry_score
 
 
 class QuantStatus(str, Enum):
@@ -59,6 +60,7 @@ class QuantUniverseLifecyclePolicy:
     trial_threshold: float
     strong_candidate_threshold: float
     high_reentry_threshold: float
+    min_candidate_confidence: float
     active_upgrade_threshold: float
     active_upgrade_confirm_checkpoints: int
     max_auto_entries_per_batch: int
@@ -133,6 +135,7 @@ class QuantUniverseLifecyclePolicy:
             trial_threshold=0.50,
             strong_candidate_threshold=0.70,
             high_reentry_threshold=0.85,
+            min_candidate_confidence=0.70,
             active_upgrade_threshold=60,
             active_upgrade_confirm_checkpoints=2,
             max_auto_entries_per_batch=6,
@@ -208,6 +211,7 @@ class QuantUniverseLifecyclePolicy:
             trial_threshold=0.55,
             strong_candidate_threshold=0.75,
             high_reentry_threshold=0.88,
+            min_candidate_confidence=0.75,
             active_upgrade_threshold=68,
             active_upgrade_confirm_checkpoints=3,
             max_auto_entries_per_batch=4,
@@ -283,6 +287,7 @@ class QuantUniverseLifecyclePolicy:
             trial_threshold=0.65,
             strong_candidate_threshold=0.82,
             high_reentry_threshold=0.92,
+            min_candidate_confidence=0.80,
             active_upgrade_threshold=75,
             active_upgrade_confirm_checkpoints=4,
             max_auto_entries_per_batch=2,
@@ -507,40 +512,7 @@ def calculate_candidate_score(
     *,
     drill_mode: bool = False,
 ) -> dict[str, Any]:
-    if not events:
-        return {"candidate_score": 0.0, "breakdown": {}}
-    recommendation_score_component = max(_recommendation_score(event) for event in events)
-    confidence_component = max(_float(event.get("confidence"), 0.0) for event in events)
-    trend_component = max(_trend_score(event.get("trend")) for event in events)
-    strong_recommendation_bonus = _strong_recommendation_bonus(
-        recommendation_score_component,
-        confidence_component,
-        trend_component,
-    )
-    multi_source_bonus = 0.0
-    liquidity_penalty = 0.0 if stock_snapshot.get("is_liquid", True) else 0.10 * policy.liquidity_penalty_multiplier
-    cooldown_penalty = 0.15 * policy.cooldown_penalty_multiplier if stock_snapshot.get("in_cooldown") else 0.0
-    manual_priority_bonus = 0.08 * policy.manual_priority_bonus_multiplier if stock_snapshot.get("manual_priority") else 0.0
-    weighted_sum = (
-        recommendation_score_component * policy.recommendation_score_weight
-        + confidence_component * policy.confidence_weight
-        + trend_component * policy.trend_weight
-        + strong_recommendation_bonus * policy.strong_recommendation_weight
-    )
-    candidate_score = _clamp(weighted_sum + manual_priority_bonus - liquidity_penalty - cooldown_penalty, 0.0, 1.0)
-    return {
-        "candidate_score": round(candidate_score, 4),
-        "breakdown": {
-            "recommendation_score_component": round(recommendation_score_component, 4),
-            "confidence_component": round(confidence_component, 4),
-            "trend_component": round(trend_component, 4),
-            "strong_recommendation_bonus": round(strong_recommendation_bonus, 4),
-            "multi_source_bonus": round(multi_source_bonus, 4),
-            "liquidity_penalty": round(liquidity_penalty, 4),
-            "cooldown_penalty": round(cooldown_penalty, 4),
-            "manual_priority_bonus": round(manual_priority_bonus, 4),
-        },
-    }
+    return calculate_technical_entry_score(events, stock_snapshot, profile_id=policy.profile_id)
 
 
 def _recommendation_score(event: dict[str, Any]) -> float:
@@ -895,10 +867,18 @@ class QuantUniverseManager:
         entry_gate = evaluate_candidate_entry_gate(event, profile_id=self.profile_id)
         self._persist_candidate_event_entry_gate(event, entry_gate)
         if not entry_gate["passed"]:
+            self._persist_candidate_event_evaluation(
+                event,
+                {
+                    "candidate_score": 0.0,
+                    "candidate_confidence": 0.0,
+                    "breakdown": {"entry_gate": entry_gate},
+                },
+            )
             return {
                 "stock_code": event["stock_code"],
                 "candidate_score": 0.0,
-                "candidate_confidence": _float(event.get("confidence"), 0.0),
+                "candidate_confidence": 0.0,
                 "breakdown": {"entry_gate": entry_gate},
                 "entry_gate": entry_gate,
                 "decision": "skipped",
@@ -914,6 +894,7 @@ class QuantUniverseManager:
                 "entry_gate": entry_gate,
             },
         }
+        self._persist_candidate_event_evaluation(event, evaluation)
         settings = self.db.get_quant_universe_settings()
         stock = self._load_stock(event["stock_code"])
         state = self.db.get_quant_universe_state(event["stock_code"])
@@ -953,6 +934,8 @@ class QuantUniverseManager:
             reason_code="auto_trial",
             reason_text=event.get("reason_text") or "候选事件自动纳入量化",
             candidate_score=evaluation["candidate_score"],
+            candidate_confidence=evaluation.get("candidate_confidence", 0.0),
+            score_breakdown=evaluation.get("breakdown") if isinstance(evaluation.get("breakdown"), dict) else {},
         )
         self._record_drill_auto_promotion(capacity_at)
         return {**evaluation, "decision": "promoted_to_trial", **promoted}
@@ -975,7 +958,7 @@ class QuantUniverseManager:
                 {
                     "quant_status": stock.get("quant_status") if stock else state.get("quant_status"),
                     "candidate_score": score["candidate_score"],
-                    "candidate_confidence": max((_float(event.get("confidence"), 0.0) for event in events), default=0.0),
+                    "candidate_confidence": score.get("candidate_confidence", 0.0),
                     "health_score": state.get("health_score", 100),
                     "downtrend_streak": state.get("downtrend_streak", 0),
                     "weakening_warning_streak": state.get("weakening_warning_streak", 0),
@@ -993,7 +976,7 @@ class QuantUniverseManager:
         return {
             "stock_code": code,
             "candidate_score": score["candidate_score"],
-            "candidate_confidence": max((_float(event.get("confidence"), 0.0) for event in events), default=0.0),
+            "candidate_confidence": score.get("candidate_confidence", 0.0),
             "breakdown": score["breakdown"],
         }
 
@@ -1047,6 +1030,8 @@ class QuantUniverseManager:
                 reason_code="manual_promote_to_trial",
                 reason_text="用户批量纳入量化",
                 candidate_score=evaluation["candidate_score"],
+                candidate_confidence=evaluation.get("candidate_confidence", 0.0),
+                score_breakdown=evaluation.get("breakdown") if isinstance(evaluation.get("breakdown"), dict) else {},
             )
             success.append(code)
             if strategy_key:
@@ -1199,6 +1184,8 @@ class QuantUniverseManager:
             reason_code=transition.reason_code,
             reason_text=transition.reason,
             candidate_score=0.0,
+            candidate_confidence=0.0,
+            score_breakdown={},
         )
         return {"stock_code": code, "old_status": current.value, "new_status": QuantStatus.TRIAL.value}
 
@@ -1512,6 +1499,8 @@ class QuantUniverseManager:
             return "retired_reentry_below_threshold"
         if bool(stock.get("basic_info_missing")):
             return "basic_info_missing"
+        if _float(evaluation.get("candidate_confidence"), 0.0) < self.policy.min_candidate_confidence:
+            return "technical_confidence_below_min"
         return ""
 
     def _promote_stock_to_trial(
@@ -1523,6 +1512,8 @@ class QuantUniverseManager:
         reason_code: str,
         reason_text: str,
         candidate_score: float,
+        candidate_confidence: float = 0.0,
+        score_breakdown: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         code = str(stock_code or "").strip().upper()
         previous = self._load_stock(code) or {}
@@ -1533,11 +1524,15 @@ class QuantUniverseManager:
                 "quant_status": QuantStatus.TRIAL.value,
                 "quant_entry_source": source_type,
                 "candidate_score": candidate_score,
-                "candidate_confidence": 0,
+                "candidate_confidence": candidate_confidence,
                 "health_score": (self.db.get_quant_universe_state(code) or {}).get("health_score", 100),
                 "retired_at": None,
                 "retire_reason": None,
-                "snapshot_json": {"source_type": source_type, "source_key": source_key},
+                "snapshot_json": {
+                    "source_type": source_type,
+                    "source_key": source_key,
+                    "candidate_score_breakdown": score_breakdown or {},
+                },
             },
         )
         self.db.record_quant_universe_event(
@@ -1593,6 +1588,38 @@ class QuantUniverseManager:
             WHERE id = ?
             """,
             (status, self.db._dumps_metadata(payload), now_text, event_id),
+        )
+        conn.commit()
+        conn.close()
+
+    def _persist_candidate_event_evaluation(self, event: dict[str, Any], evaluation: dict[str, Any]) -> None:
+        event_id = int(_float(event.get("id"), 0.0) or 0)
+        if event_id <= 0:
+            return
+        payload = event.get("payload_json") if isinstance(event.get("payload_json"), dict) else {}
+        payload = dict(payload)
+        candidate_score = _float(evaluation.get("candidate_score"), 0.0)
+        candidate_confidence = _float(evaluation.get("candidate_confidence"), 0.0)
+        breakdown = evaluation.get("breakdown") if isinstance(evaluation.get("breakdown"), dict) else {}
+        payload["candidate_score"] = round(candidate_score, 4)
+        payload["candidate_confidence"] = round(candidate_confidence, 4)
+        payload["candidate_score_breakdown"] = breakdown
+        entry_gate = breakdown.get("entry_gate") if isinstance(breakdown, dict) else None
+        if isinstance(entry_gate, dict):
+            payload["entry_gate"] = entry_gate
+        if "technical_confidence" not in payload:
+            payload["technical_confidence"] = round(candidate_confidence, 4)
+        conn = self.db._connect()
+        cursor = conn.cursor()
+        now_text = self.db._now()
+        cursor.execute(
+            """
+            UPDATE stock_universe_candidate_events
+            SET payload_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (self.db._dumps_metadata(payload), now_text, event_id),
         )
         conn.commit()
         conn.close()

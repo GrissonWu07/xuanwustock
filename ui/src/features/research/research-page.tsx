@@ -13,9 +13,9 @@ import { t } from "../../lib/i18n";
 import {
   BatchPromoteDialog,
   EligibleBadge,
+  QuantEntryResultDialog,
   ignoreResultOverrides,
   postQuantEntryAction,
-  promoteResultOverrides,
   type EntryStatusOverride,
   type QuantEntryActionResult,
 } from "../quant/quant-entry-controls";
@@ -227,6 +227,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
   const [promotingToTrial, setPromotingToTrial] = useState(false);
   const [promoteDialogOpen, setPromoteDialogOpen] = useState(false);
   const [promoteTargetCodes, setPromoteTargetCodes] = useState<string[]>([]);
+  const [promoteResult, setPromoteResult] = useState<QuantEntryActionResult | null>(null);
   const [entryOverrides, setEntryOverrides] = useState<Record<string, EntryStatusOverride>>({});
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [resettingList, setResettingList] = useState(false);
@@ -365,9 +366,8 @@ export function ResearchPage({ client }: ResearchPageProps) {
           source_type: "research",
         },
       );
-      const updates = promoteResultOverrides(result);
-      setEntryOverrides((current) => ({ ...current, ...updates }));
-      setRunFeedback(t("Quant trial entry result updated."));
+      setPromoteResult(result);
+      setRunFeedback("");
       setPromoteDialogOpen(false);
       setPromoteTargetCodes([]);
     } catch (error) {
@@ -779,6 +779,7 @@ export function ResearchPage({ client }: ResearchPageProps) {
             }}
             onConfirm={() => void handleBatchPromoteToTrial()}
           />
+          <QuantEntryResultDialog result={promoteResult} onClose={() => setPromoteResult(null)} />
         </WorkbenchCard>
 
         <WorkbenchCard>

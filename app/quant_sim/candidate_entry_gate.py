@@ -53,9 +53,6 @@ def evaluate_candidate_entry_gate(event: dict[str, Any], *, profile_id: str | No
     profile = _profile(profile_id)
     source_family = _source_family(event)
     evidence = _evidence(event)
-    score = _num(event.get("candidate_score"), _num(event.get("source_score"), _num(event.get("score"), 0.0)))
-    confidence = _num(event.get("confidence"), 0.0)
-
     if _is_discovery_event(event):
         technical_snapshot = _discovery_technical_snapshot_gate(evidence)
         if not technical_snapshot["passed"]:
@@ -68,9 +65,9 @@ def evaluate_candidate_entry_gate(event: dict[str, Any], *, profile_id: str | No
             )
 
     if source_family == "low_price":
-        return _low_price_gate(evidence, score=score, confidence=confidence, profile=profile)
+        return _low_price_gate(evidence, profile=profile)
     if source_family in {"research", "ai"}:
-        return _research_gate(evidence, score=score, confidence=confidence, profile=profile)
+        return _research_gate(evidence, profile=profile)
     if source_family == "small_cap":
         common = _common_gate(evidence, profile=profile, liquidity_multiplier=1.5)
         return common if not common["passed"] else _pass_result(evidence)
@@ -80,11 +77,7 @@ def evaluate_candidate_entry_gate(event: dict[str, Any], *, profile_id: str | No
     return _pass_result(evidence)
 
 
-def _low_price_gate(evidence: dict[str, Any], *, score: float, confidence: float, profile: str) -> dict[str, Any]:
-    thresholds = LOW_PRICE_THRESHOLDS[profile]
-    if score < thresholds["score"] or confidence < thresholds["confidence"]:
-        return _pass_result(evidence)
-
+def _low_price_gate(evidence: dict[str, Any], *, profile: str) -> dict[str, Any]:
     common = _common_gate(evidence, profile=profile)
     if not common["passed"]:
         if common["reason_code"] == "liquidity_weak":
@@ -118,24 +111,14 @@ def _low_price_gate(evidence: dict[str, Any], *, score: float, confidence: float
     return _pass_result(evidence)
 
 
-def _research_gate(evidence: dict[str, Any], *, score: float, confidence: float, profile: str) -> dict[str, Any]:
+def _research_gate(evidence: dict[str, Any], *, profile: str) -> dict[str, Any]:
+    if not _has_quant_technical_evidence(evidence):
+        return _block_result(evidence, result="recommended_only", status="recommended_only", reason_code="ai_requires_technical_confirmation")
     common = _common_gate(evidence, profile=profile, allow_missing_market_data=True)
     if not common["passed"]:
         if common["reason_code"] == "persistent_downtrend":
             return _block_result(evidence, result="recommended_only", status="recommended_only", reason_code="ai_requires_technical_confirmation")
         return common
-
-    thresholds = RESEARCH_THRESHOLDS[profile]
-    if score <= 0 or confidence <= 0:
-        return _block_result(evidence, result="recommended_only", status="recommended_only", reason_code="ai_requires_technical_confirmation")
-    if score < thresholds["score"] or confidence < thresholds["confidence"]:
-        return _pass_result(evidence)
-
-    confirmations = _technical_confirmation_count(evidence)
-    explicit_confirmations = _num(_pick(evidence, "technical_confirmation_count", "confirmations"), 0.0)
-    confirmations = max(confirmations, int(explicit_confirmations))
-    if confirmations < int(thresholds["confirmations"]):
-        return _block_result(evidence, result="recommended_only", status="recommended_only", reason_code="ai_requires_technical_confirmation")
     return _pass_result(evidence)
 
 
@@ -268,6 +251,11 @@ def _technical_snapshot_field_present(evidence: dict[str, Any], field: str) -> b
     if field in {"ma20_slope", "macd", "rsi"}:
         return True
     return number > 0
+
+
+def _has_quant_technical_evidence(evidence: dict[str, Any]) -> bool:
+    required = ("price", "ma20", "ma60", "amount", "volume_ratio", "rsi", "macd")
+    return all(_technical_snapshot_field_present(evidence, field) for field in required)
 
 
 def _source_family(event: dict[str, Any]) -> str:

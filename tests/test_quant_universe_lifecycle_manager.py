@@ -19,6 +19,34 @@ from app.quant_sim.quant_universe_lifecycle import (
 from app.quant_sim.db import QuantSimDB
 
 
+def _strong_entry_payload(**overrides):
+    payload = {
+        "price": 12.8,
+        "ma5": 12.7,
+        "ma10": 12.2,
+        "ma20": 11.8,
+        "ma20_slope": 0.035,
+        "ma60": 10.6,
+        "amount": 130_000_000,
+        "volume_ratio": 1.45,
+        "rsi": 61.0,
+        "macd": 0.22,
+        "trend": "up",
+        "technical_snapshot_ready": True,
+        "technical_snapshot_status": "ready",
+        "technical_snapshot_timeframe": "30m",
+        "technical_snapshot_provider": "unit-test",
+        "technical_snapshot_at": "2026-05-16 14:30:00",
+        "technical_snapshot_row_count": 180,
+        "technical_snapshot_indicator_version": "technical-entry-v1",
+        "consecutive_checkpoint_score": 1.0,
+        "ma20_breakout_retest_score": 1.0,
+        "technical_confirmation_count": 5,
+    }
+    payload.update(overrides)
+    return payload
+
+
 def test_health_score_uses_kernel_score_normalization():
     inputs = HealthInputs(
         avg_tech_score=0.0,
@@ -389,12 +417,12 @@ def test_downtrend_warning_streak_does_not_self_perpetuate_after_recovery():
 def test_candidate_score_uses_explicit_recommendation_not_source_identity():
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
     events = [
-        {"source_type": "discover", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
-        {"source_type": "research", "source_score": 0.6, "confidence": 0.6, "trend": "up"},
+        {"source_type": "discover", "source_score": 0.8, "confidence": 0.7, "trend": "up", "payload_json": _strong_entry_payload()},
+        {"source_type": "research", "source_score": 0.6, "confidence": 0.6, "trend": "up", "payload_json": _strong_entry_payload()},
     ]
     same_quality_different_sources = [
-        {"source_type": "low_price", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
-        {"source_type": "main_force", "source_score": 0.6, "confidence": 0.6, "trend": "up"},
+        {"source_type": "low_price", "source_score": 0.1, "confidence": 0.1, "trend": "up", "payload_json": _strong_entry_payload()},
+        {"source_type": "main_force", "source_score": 0.99, "confidence": 0.99, "trend": "up", "payload_json": _strong_entry_payload()},
     ]
 
     result = calculate_candidate_score(events, {"is_liquid": True}, policy)
@@ -402,20 +430,21 @@ def test_candidate_score_uses_explicit_recommendation_not_source_identity():
 
     assert 0 <= result["candidate_score"] <= 1
     assert result["candidate_score"] == same_quality_result["candidate_score"]
-    assert result["candidate_score"] == 0.6986
-    assert result["breakdown"]["recommendation_score_component"] == 0.8
+    assert result["candidate_score"] >= policy.strong_candidate_threshold
+    assert result["candidate_confidence"] >= policy.min_candidate_confidence
+    assert "recommendation_score_component" not in result["breakdown"]
     assert "source_score_component" not in result["breakdown"]
-    assert result["breakdown"]["multi_source_bonus"] == 0.0
+    assert "multi_source_bonus" not in result["breakdown"]
 
 
 def test_candidate_score_does_not_use_source_count_bonus():
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
     single_source = [
-        {"source_type": "discover", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
+        {"source_type": "discover", "source_score": 0.8, "confidence": 0.7, "trend": "up", "payload_json": _strong_entry_payload()},
     ]
     multi_source = [
-        {"source_type": "discover", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
-        {"source_type": "research", "source_score": 0.8, "confidence": 0.7, "trend": "up"},
+        {"source_type": "discover", "source_score": 0.8, "confidence": 0.7, "trend": "up", "payload_json": _strong_entry_payload()},
+        {"source_type": "research", "source_score": 0.8, "confidence": 0.7, "trend": "up", "payload_json": _strong_entry_payload()},
     ]
 
     single_result = calculate_candidate_score(single_source, {"is_liquid": True}, policy)
@@ -424,9 +453,9 @@ def test_candidate_score_does_not_use_source_count_bonus():
 
     assert single_result["candidate_score"] == multi_result["candidate_score"]
     assert multi_result["candidate_score"] == drill_result["candidate_score"]
-    assert single_result["breakdown"]["multi_source_bonus"] == 0.0
-    assert multi_result["breakdown"]["multi_source_bonus"] == 0.0
-    assert drill_result["breakdown"]["multi_source_bonus"] == 0.0
+    assert "multi_source_bonus" not in single_result["breakdown"]
+    assert "multi_source_bonus" not in multi_result["breakdown"]
+    assert "multi_source_bonus" not in drill_result["breakdown"]
 
 
 def test_resolve_active_to_exit_only_requires_holding_health_break_and_downtrend_confirmation():
@@ -889,6 +918,7 @@ def test_manager_confirm_first_marks_eligible_without_promoting(tmp_path):
             "confidence": 0.8,
             "trend": "up",
             "reason_text": "主力与趋势共振",
+            "payload_json": _strong_entry_payload(),
         }
     )
 
@@ -898,6 +928,9 @@ def test_manager_confirm_first_marks_eligible_without_promoting(tmp_path):
     assert result["candidate_score"] >= manager.policy.trial_threshold
     assert state is None or state["quant_status"] == "inactive"
     assert events[0]["status"] == "eligible"
+    assert events[0]["payload_json"]["candidate_score"] == result["candidate_score"]
+    assert events[0]["payload_json"]["candidate_confidence"] == result["candidate_confidence"]
+    assert "trend_structure_score" in events[0]["payload_json"]["candidate_score_breakdown"]
 
 
 def test_manager_auto_trial_promotes_eligible_candidate(tmp_path):
@@ -914,6 +947,7 @@ def test_manager_auto_trial_promotes_eligible_candidate(tmp_path):
             "confidence": 0.8,
             "trend": "up",
             "reason_text": "自动纳入",
+            "payload_json": _strong_entry_payload(),
         }
     )
 
@@ -921,6 +955,12 @@ def test_manager_auto_trial_promotes_eligible_candidate(tmp_path):
     assert result["decision"] == "promoted_to_trial"
     assert state["quant_status"] == "trial"
     assert state["quant_enabled"] is True
+    assert state["candidate_confidence"] >= manager.policy.min_candidate_confidence
+    assert "trend_structure_score" in state["snapshot_json"]["candidate_score_breakdown"]
+    events = manager.db.list_candidate_events(stock_code="600000", status="consumed")
+    assert events[0]["payload_json"]["candidate_score"] == state["candidate_score"]
+    assert events[0]["payload_json"]["candidate_confidence"] == state["candidate_confidence"]
+    assert "source_score_component" not in events[0]["payload_json"]["candidate_score_breakdown"]
 
 
 def test_low_price_event_requires_trend_repair_before_auto_entry(tmp_path):
@@ -955,6 +995,8 @@ def test_low_price_event_requires_trend_repair_before_auto_entry(tmp_path):
     assert manager.db.get_quant_universe_state("600000")["quant_status"] == "inactive"
     blocked_events = manager.db.list_candidate_events(stock_code="600000", status="blocked")
     assert blocked_events[0]["payload_json"]["entry_gate"]["result"] == "eligible_blocked"
+    assert blocked_events[0]["payload_json"]["candidate_score"] == 0.0
+    assert blocked_events[0]["payload_json"]["candidate_confidence"] == 0.0
 
 
 def test_research_event_requires_technical_confirmation_for_auto_entry(tmp_path):
@@ -1144,7 +1186,7 @@ def test_manager_drill_mode_does_not_promote_by_source_count_bonus(tmp_path):
     assert first["decision"] == "skipped"
     assert second["decision"] == "skipped"
     assert second["candidate_score"] < manager.policy.trial_threshold
-    assert second["breakdown"]["multi_source_bonus"] == 0.0
+    assert "multi_source_bonus" not in second["breakdown"]
     assert state is None or state["quant_status"] == "inactive"
 
 
@@ -1156,7 +1198,14 @@ def test_manager_lifecycle_disabled_records_event_without_auto_promoting(tmp_pat
     manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
 
     result = manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        }
     )
 
     assert result["decision"] == "eligible"
@@ -1215,6 +1264,7 @@ def test_manager_basic_info_missing_blocks_auto_trial_but_keeps_eligible(tmp_pat
             "source_score": 0.95,
             "confidence": 0.9,
             "trend": "up",
+            "payload_json": _strong_entry_payload(),
         }
     )
 
@@ -1235,10 +1285,24 @@ def test_manager_manual_ban_and_cooling_window_block_entry(tmp_path):
     )
 
     banned = manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        }
     )
     cooling = manager.ingest_candidate_event(
-        {"stock_code": "000001", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+        {
+            "stock_code": "000001",
+            "source_type": "discover",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        }
     )
 
     assert banned["decision"] == "skipped"
@@ -1263,17 +1327,18 @@ def test_manager_candidate_event_does_not_restore_expired_cooling_stock(tmp_path
             "source_score": 0.95,
             "confidence": 0.9,
             "trend": "up",
-            "payload_json": {
-                "price": 8.8,
-                "ma5": 9.2,
-                "ma10": 9.0,
-                "ma20": 8.6,
-                "ma20_slope": 0.02,
-                "amount": 80_000_000,
-                "volume_ratio": 1.5,
-                "rsi": 62,
-                "macd": 0.05,
-            },
+            "payload_json": _strong_entry_payload(
+                price=8.8,
+                ma5=9.2,
+                ma10=9.0,
+                ma20=8.6,
+                ma20_slope=0.02,
+                ma60=8.0,
+                amount=80_000_000,
+                volume_ratio=1.5,
+                rsi=62,
+                macd=0.05,
+            ),
         },
         capacity_at=datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc),
     )
@@ -1294,7 +1359,14 @@ def test_manager_non_tradable_blocks_auto_entry(tmp_path):
     )
 
     result = manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        }
     )
 
     assert result["decision"] == "skipped"
@@ -1308,7 +1380,14 @@ def test_manager_daily_capacity_keeps_candidate_eligible_without_auto_promoting(
     manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
 
     result = manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        }
     )
 
     assert result["decision"] == "eligible"
@@ -1324,10 +1403,24 @@ def test_manager_drill_capacity_uses_checkpoint_day_without_changing_live_defaul
         live_manager.db.add_watch(stock_code=code, stock_name=code, source="discover")
 
     first_live = live_manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        }
     )
     second_live = live_manager.ingest_candidate_event(
-        {"stock_code": "000001", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"}
+        {
+            "stock_code": "000001",
+            "source_type": "discover",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        }
     )
 
     drill_manager = _manager(tmp_path / "drill", policy, drill_mode=True)
@@ -1336,11 +1429,25 @@ def test_manager_drill_capacity_uses_checkpoint_day_without_changing_live_defaul
         drill_manager.db.add_watch(stock_code=code, stock_name=code, source="discover")
 
     first_drill = drill_manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"},
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        },
         capacity_at=datetime(2026, 1, 5, 10, 0),
     )
     second_drill = drill_manager.ingest_candidate_event(
-        {"stock_code": "000001", "source_type": "discover", "source_score": 0.95, "confidence": 0.9, "trend": "up"},
+        {
+            "stock_code": "000001",
+            "source_type": "discover",
+            "source_score": 0.95,
+            "confidence": 0.9,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        },
         capacity_at=datetime(2026, 1, 6, 10, 0),
     )
 
@@ -1365,6 +1472,9 @@ def test_manager_promote_to_trial_respects_batch_capacity(tmp_path):
                 "confidence": 0.9,
                 "trend": "up",
                 "status": "eligible",
+                "payload_json": _strong_entry_payload()
+                if code == "600000"
+                else _strong_entry_payload(consecutive_checkpoint_score=0.0, ma20_breakout_retest_score=0.0),
             }
         )
 
@@ -1400,6 +1510,9 @@ def test_manager_promote_to_trial_respects_strategy_and_industry_capacity(tmp_pa
                 "confidence": 0.9,
                 "trend": "up",
                 "status": "eligible",
+                "payload_json": _strong_entry_payload()
+                if code == "600000"
+                else _strong_entry_payload(consecutive_checkpoint_score=0.0, ma20_breakout_retest_score=0.0),
             }
         )
 
@@ -1433,6 +1546,9 @@ def test_manager_promote_to_trial_respects_same_concept_capacity(tmp_path):
                 "confidence": 0.9,
                 "trend": "up",
                 "status": "eligible",
+                "payload_json": _strong_entry_payload()
+                if code == "600000"
+                else _strong_entry_payload(consecutive_checkpoint_score=0.0, ma20_breakout_retest_score=0.0),
             }
         )
 
@@ -1449,7 +1565,14 @@ def test_manager_retired_reactivation_requires_high_threshold(tmp_path):
     manager.db.upsert_quant_universe_state("600000", {"quant_status": "retired", "health_score": 20})
 
     weak = manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "discover", "source_score": 0.7, "confidence": 0.6, "trend": "up"}
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 0.7,
+            "confidence": 0.6,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(consecutive_checkpoint_score=0.0, ma20_breakout_retest_score=0.0),
+        }
     )
     strong = manager.ingest_candidate_event(
         {
@@ -1458,17 +1581,7 @@ def test_manager_retired_reactivation_requires_high_threshold(tmp_path):
             "source_score": 0.98,
             "confidence": 0.95,
             "trend": "up",
-            "payload_json": {
-                "price": 10.8,
-                "ma5": 10.9,
-                "ma10": 10.6,
-                "ma20": 10.1,
-                "ma20_slope": 0.02,
-                "amount": 120_000_000,
-                "volume_ratio": 1.4,
-                "rsi": 61,
-                "macd": 0.06,
-            },
+            "payload_json": _strong_entry_payload(),
         }
     )
 
@@ -1498,11 +1611,19 @@ def test_manager_retired_min_dwell_blocks_high_score_reactivation(tmp_path):
             "confidence": 0.95,
             "trend": "up",
             "status": "active",
+            "payload_json": _strong_entry_payload(),
         }
     )
 
     result = manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "discover", "source_score": 1.0, "confidence": 1.0, "trend": "up"},
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 1.0,
+            "confidence": 1.0,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        },
         capacity_at=datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc),
     )
 
@@ -1533,11 +1654,19 @@ def test_manager_retired_reactivation_allowed_after_min_dwell(tmp_path):
             "confidence": 0.95,
             "trend": "up",
             "status": "active",
+            "payload_json": _strong_entry_payload(),
         }
     )
 
     result = manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "discover", "source_score": 1.0, "confidence": 1.0, "trend": "up"},
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 1.0,
+            "confidence": 1.0,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        },
         capacity_at=datetime(2026, 1, 25, 10, 0, tzinfo=timezone.utc),
     )
 
@@ -1553,7 +1682,14 @@ def test_manager_retired_reactivation_can_be_disabled(tmp_path):
     manager.db.upsert_quant_universe_state("600000", {"quant_status": "retired", "health_score": 20})
 
     result = manager.ingest_candidate_event(
-        {"stock_code": "600000", "source_type": "discover", "source_score": 1.0, "confidence": 1.0, "trend": "up"}
+        {
+            "stock_code": "600000",
+            "source_type": "discover",
+            "source_score": 1.0,
+            "confidence": 1.0,
+            "trend": "up",
+            "payload_json": _strong_entry_payload(),
+        }
     )
 
     assert result["decision"] == "skipped"

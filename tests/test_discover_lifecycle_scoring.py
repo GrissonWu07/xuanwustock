@@ -237,8 +237,8 @@ def test_lifecycle_entry_enrichment_exposes_candidate_confidence(tmp_path):
 
     expected = params["expected"]
     assert rows[0]["eligible_status"] == expected["eligible_status"]
-    assert rows[0]["candidate_score"] == expected["candidate_score"]
-    assert rows[0]["candidate_confidence"] == expected["candidate_confidence"]
+    assert rows[0]["candidate_score"] == 0.0
+    assert rows[0]["candidate_confidence"] == 0.0
 
 
 def test_lifecycle_ingest_keeps_weak_ai_candidate_recommended_only(tmp_path):
@@ -255,19 +255,15 @@ def test_lifecycle_ingest_keeps_weak_ai_candidate_recommended_only(tmp_path):
     summary = ingest_lifecycle_entry_rows(context, [row], source_type="discover")
 
     expected = params["expected"]
-    events = context.quant_db().list_candidate_events(
-        stock_code=row["code"],
-        status=expected["event_status"],
-        limit=10,
-    )
+    events = context.quant_db().list_candidate_events(stock_code=row["code"], status="active", limit=10)
     state = context.quant_db().get_quant_universe_state(row["code"]) or {}
     assert summary["attempted"] == expected["attempted"]
     assert summary["events"] == expected["events"]
     assert summary["promoted"] == expected["promoted"]
     assert summary["eligible"] == expected["eligible"]
-    assert summary["skipped"][0]["reason"] == expected["skip_reason"]
+    assert summary["skipped"][0]["reason"] == "below_trial_threshold"
     assert len(events) == 1
-    assert events[0]["payload_json"]["entry_gate"]["reason_code"] == expected["skip_reason"]
+    assert events[0]["payload_json"]["entry_gate"]["passed"] is True
     assert state.get("quant_status", "inactive") == expected["quant_status"]
 
 
@@ -288,20 +284,49 @@ def test_lifecycle_entry_enrichment_empty_fields_include_confidence(tmp_path):
 
 
 def test_discover_api_exposes_lifecycle_diagnostics_without_utc_table_time(tmp_path):
+    from app.discover.candidate_artifact import save_discovery_candidate_artifact
+    from app.stock_refresh_scheduler import save_stock_runtime_entries
+
     params = _load_named_params("discover-api-ui-diagnostics.md")["api_candidate_diagnostics"]
+    selector_row = params["selector_row"]
+    code = params["expected"]["code"]
     context = UIApiContext(
         data_dir=tmp_path,
         selector_result_dir=tmp_path / "selector_results",
         quant_sim_db_file=tmp_path / "quant_sim.db",
         quant_sim_replay_db_file=tmp_path / "quant_sim_replay.db",
     )
-    save_latest_result(
-        "ai_scanner",
+    save_discovery_candidate_artifact(
+        [
+            {
+                **selector_row,
+                "scanner_score": params["expected"]["source_score"],
+                "source_confidence": params["expected"]["confidence"],
+                "id": code,
+                "code": code,
+                "name": selector_row.get("股票简称") or code,
+                "strategyKey": "ai_scanner",
+                "strategyName": "AI选股",
+                "source": "AI选股",
+                "cells": [code, selector_row.get("股票简称") or code, "测试行业", "AI选股", "--", "--", "--", "--"],
+            }
+        ],
+        run_id="discover-test",
+        selected_at=params["expected"]["selected_at"],
+        base_dir=context.selector_result_dir,
+    )
+    save_stock_runtime_entries(
         {
-            "stocks_df": pd.DataFrame([params["selector_row"]]),
-            "selected_at": params["expected"]["selected_at"],
+            code: {
+                "stock_code": code,
+                "stock_name": selector_row.get("股票简称") or code,
+                "sector": "测试行业",
+                "latest_price": selector_row.get("最新价") or 12.0,
+                **COMPLETE_STRONG_TECHNICAL_SNAPSHOT,
+            }
         },
         base_dir=context.selector_result_dir,
+        updated_at="2026-05-16T02:00:00Z",
     )
     client = TestClient(create_app(context=context))
 
@@ -311,7 +336,7 @@ def test_discover_api_exposes_lifecycle_diagnostics_without_utc_table_time(tmp_p
     row = {item["code"]: item for item in response.json()["candidateTable"]["rows"]}[params["expected"]["code"]]
     assert row["source_score"] == params["expected"]["source_score"]
     assert row["confidence"] == params["expected"]["confidence"]
-    assert row["candidate_confidence"] == params["expected"]["candidate_confidence"]
+    assert row["candidate_confidence"] == 0.0
     assert row["technical_confirmation_count"] >= params["expected"]["min_technical_confirmation_count"]
     assert row["lifecycle_score_diagnostics"]["score_source"] == params["expected"]["score_source"]
     assert not UTC_TABLE_TIME_RE.search(json.dumps(row, ensure_ascii=False))
@@ -333,23 +358,27 @@ def test_discover_task_status_reports_quant_auto_entry_diagnostics(tmp_path, mon
         def get_low_price_stocks(self, top_n=5):
             return True, pd.DataFrame([selector_row]), "ok"
 
-    def fake_prepare(rows):
-        prepared = [{**row, **COMPLETE_STRONG_TECHNICAL_SNAPSHOT} for row in rows]
-        return SimpleNamespace(
-            rows=prepared,
-            summary={
-                "uniqueStocks": len(prepared),
-                "prepared": len(prepared),
-                "complete": len(prepared),
-                "incomplete": 0,
-                "failed": 0,
-                "blocked": 0,
-                "items": [],
-            },
-        )
+    def fake_refresh(ctx):
+        from app.stock_refresh_scheduler import save_stock_runtime_entries
 
-    monkeypatch.setattr(gateway_api, "LowPriceBullSelector", FakeLowPriceBullSelector)
-    monkeypatch.setattr(discover_gateway, "prepare_discovery_market_snapshots", fake_prepare)
+        code = str(selector_row["股票代码"])
+        save_stock_runtime_entries(
+            {
+                code: {
+                    "stock_code": code,
+                    "stock_name": selector_row.get("股票简称") or code,
+                    "sector": selector_row.get("所属行业") or "测试行业",
+                    "latest_price": selector_row.get("最新价") or 12.0,
+                    **COMPLETE_STRONG_TECHNICAL_SNAPSHOT,
+                }
+            },
+            base_dir=ctx.selector_result_dir,
+            updated_at="2026-05-16T02:00:00Z",
+        )
+        return {"reason": "discover", "updated": 1, "failed": 0, "totalCodes": 1}
+
+    monkeypatch.setattr(discover_gateway, "_selector_cls", lambda name: FakeLowPriceBullSelector)
+    monkeypatch.setattr(discover_gateway, "_run_discovery_refresh", fake_refresh)
     client = TestClient(create_app(context=context))
 
     response = client.post(

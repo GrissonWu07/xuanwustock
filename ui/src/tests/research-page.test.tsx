@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../lib/api-client";
@@ -149,6 +149,7 @@ describe("ResearchPage", () => {
     expect(screen.getAllByRole("button", { name: "纳入量化" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "忽略自动纳入" })).toHaveLength(1);
     fireEvent.click(screen.getByRole("checkbox", { name: "Select 平安银行" }));
+    const alreadyInQuantCountBefore = screen.getAllByText("already_in_quant").length;
     fireEvent.click(screen.getAllByRole("button", { name: "纳入量化" })[0]);
     expect(screen.getByRole("dialog", { name: "确认纳入量化" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认纳入" }));
@@ -162,7 +163,12 @@ describe("ResearchPage", () => {
         }),
       );
     });
-    expect(screen.getAllByText("already_in_quant").length).toBeGreaterThan(0);
+    const resultDialog = await screen.findByRole("dialog", { name: "纳入量化结果" });
+    expect(within(resultDialog).getByText("成功 1 只")).toBeInTheDocument();
+    expect(within(resultDialog).getByText("跳过 0 只")).toBeInTheDocument();
+    expect(within(resultDialog).getByText("失败 0 只")).toBeInTheDocument();
+    expect(screen.getAllByText("already_in_quant")).toHaveLength(alreadyInQuantCountBefore);
+    expect(screen.getByText("eligible")).toBeInTheDocument();
   });
 
   it("supports row click selection and keeps stock output operations batch-only", async () => {

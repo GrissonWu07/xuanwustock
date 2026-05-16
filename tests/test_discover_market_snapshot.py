@@ -298,59 +298,82 @@ def test_market_data_service_latest_snapshot_reports_indicator_row_count():
     assert snapshot["row_count"] == 3
 
 
-def test_discover_task_prepares_snapshots_before_lifecycle_ingest(monkeypatch):
+def test_discover_task_prepares_snapshots_before_lifecycle_ingest(tmp_path, monkeypatch):
     import app.discover.discover as discover_gateway
+    from app.stock_refresh_scheduler import save_stock_runtime_entries
 
-    rows = [{"code": "600020", "name": "准备完成股", "source": "main_force"}]
+    context = SimpleNamespace(selector_result_dir=tmp_path / "selector_results")
+    rows = [{"id": "600020", "code": "600020", "name": "准备完成股", "source": "main_force"}]
     prepared_rows = [
         {
             **rows[0],
+            "price": 12.34,
+            "ma5": 12.1,
+            "ma10": 11.9,
+            "ma20": 11.5,
+            "ma20_slope": 0.05,
+            "ma60": 10.8,
+            "amount": 120000000,
+            "volume_ratio": 1.35,
+            "rsi": 58.2,
+            "macd": 0.18,
+            "trend": "up",
             "technical_snapshot_ready": True,
             "technical_snapshot_status": "ready",
+            "technical_snapshot_missing_fields": [],
+            "technical_snapshot_timeframe": "30m",
+            "technical_snapshot_provider": "fixture",
+            "technical_snapshot_at": "2026-05-15 14:30:00",
         }
     ]
-    summary = {
-        "uniqueStocks": 1,
-        "prepared": 1,
-        "complete": 1,
-        "incomplete": 0,
-        "failed": 0,
-        "blocked": 0,
-        "items": [],
-    }
     calls: list[str] = []
 
     monkeypatch.setattr(
         discover_gateway,
         "_run_discover_strategies",
-        lambda context, payload: {"completed": [{"strategy": "main_force"}], "failed": []},
+        lambda context, payload: {"completed": ["main_force"], "failed": [], "selected_at": "2026-05-16 10:00:00"},
     )
-    monkeypatch.setattr(discover_gateway, "_discover_rows", lambda context: [dict(row) for row in rows])
+    def fake_raw_rows(context: Any, strategy_keys: set[str] | None = None) -> list[dict[str, Any]]:
+        assert strategy_keys == {"main_force"}
+        return [dict(row) for row in rows]
 
-    def fake_prepare(input_rows: list[dict[str, Any]]) -> SimpleNamespace:
-        calls.append("prepare")
-        assert input_rows == rows
-        return SimpleNamespace(rows=prepared_rows, summary=summary)
+    monkeypatch.setattr(discover_gateway, "_raw_discover_rows", fake_raw_rows)
+
+    def fake_refresh(input_context: Any) -> dict[str, Any]:
+        calls.append("refresh")
+        save_stock_runtime_entries(
+            {
+                "600020": {
+                    "stock_code": "600020",
+                    "stock_name": "准备完成股",
+                    "latest_price": 12.34,
+                    **prepared_rows[0],
+                }
+            },
+            base_dir=input_context.selector_result_dir,
+            updated_at="2026-05-16T02:01:00Z",
+        )
+        return {"reason": "discover", "updated": 1, "failed": 0, "totalCodes": 1}
 
     def fake_ingest(context: Any, input_rows: list[dict[str, Any]], *, source_type: str) -> dict[str, Any]:
         calls.append("ingest")
         assert source_type == "discover"
-        assert input_rows == prepared_rows
+        assert input_rows[0]["technical_snapshot_status"] == "ready"
         return {"attempted": 1, "events": 1, "eligible": 1, "promoted": 0, "skipped": []}
 
-    monkeypatch.setattr(discover_gateway, "prepare_discovery_market_snapshots", fake_prepare, raising=False)
+    monkeypatch.setattr(discover_gateway, "_run_discovery_refresh", fake_refresh)
     monkeypatch.setattr(discover_gateway, "ingest_lifecycle_entry_rows", fake_ingest)
 
     task_id = discover_gateway.discover_task_manager.create_task(now=discover_gateway._now)
 
-    discover_gateway._run_discover_task(object(), task_id, {"strategy": "main_force"})
+    discover_gateway._run_discover_task(context, task_id, {"strategy": "main_force"})
 
     task = discover_gateway.discover_task_manager.get_task(task_id)
-    assert calls == ["prepare", "ingest"]
+    assert calls == ["refresh", "ingest"]
     assert task is not None
     assert task["status"] == "completed"
     assert task["result"]["candidateCount"] == 1
-    assert task["result"]["technicalSnapshotPreparation"] == summary
+    assert task["result"]["technicalSnapshotPreparation"]["complete"] == 1
     assert task["result"]["quantAutoEntry"]["attempted"] == 1
 
 
@@ -478,24 +501,50 @@ def test_lifecycle_enrichment_hydrates_consumed_event_snapshot_for_quant_member(
 
 
 def test_discover_api_exposes_technical_snapshot_readiness_fields(tmp_path):
-    import pandas as pd
     from fastapi.testclient import TestClient
 
     from app.gateway_api import UIApiContext, create_app
-    from app.selector_ui_state import save_simple_selector_state
+    from app.discover.candidate_artifact import save_discovery_candidate_artifact
+    from app.stock_refresh_scheduler import save_stock_runtime_entries
 
     params = _load_case_from(UI_PARAMS_PATH, "discover_api_row")
+    selector_row = params["selector_row"]
+    code = str(selector_row["股票代码"])
     context = UIApiContext(
         data_dir=tmp_path,
         selector_result_dir=tmp_path / "selector_results",
         quant_sim_db_file=tmp_path / "quant_sim.db",
         quant_sim_replay_db_file=tmp_path / "quant_sim_replay.db",
     )
-    save_simple_selector_state(
-        "low_price_bull",
-        pd.DataFrame([params["selector_row"]]),
-        "2026-05-16 10:00:00",
+    save_discovery_candidate_artifact(
+        [
+            {
+                "id": code,
+                "code": code,
+                "name": selector_row["股票简称"],
+                "strategyKey": "low_price_bull",
+                "strategyName": "低价擒牛",
+                "source": "低价擒牛",
+                "cells": [code, selector_row["股票简称"], selector_row["所属行业"], "低价擒牛", "--", "--", "--", "--"],
+            }
+        ],
+        run_id="discover-test",
+        selected_at="2026-05-16 10:00:00",
         base_dir=context.selector_result_dir,
+    )
+    save_stock_runtime_entries(
+        {
+            code: {
+                "stock_code": code,
+                "stock_name": selector_row["股票简称"],
+                "sector": selector_row["所属行业"],
+                "latest_price": selector_row["最新价"],
+                "price": selector_row["最新价"],
+                **selector_row,
+            }
+        },
+        base_dir=context.selector_result_dir,
+        updated_at="2026-05-16T02:00:00Z",
     )
     client = TestClient(create_app(context=context))
 

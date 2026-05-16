@@ -79,6 +79,60 @@ def _seed_simple_selector_result(base_dir: Path, strategy_key: str, rows: list[d
     )
 
 
+def _ready_runtime_entry(code: str, name: str | None = None, sector: str | None = None, price: float = 10.0) -> dict[str, Any]:
+    return {
+        "stock_code": code,
+        "stock_name": name or code,
+        "sector": sector or "测试行业",
+        "latest_price": price,
+        "price": price,
+        "ma5": price + 0.4,
+        "ma10": price + 0.3,
+        "ma20": price,
+        "ma20_slope": 0.02,
+        "ma60": max(price - 1.0, 1.0),
+        "amount": 120_000_000,
+        "volume_ratio": 1.5,
+        "rsi": 60,
+        "macd": 0.05,
+        "trend": "up",
+        "technical_snapshot_ready": True,
+        "technical_snapshot_status": "ready",
+        "technical_snapshot_missing_fields": [],
+        "technical_snapshot_timeframe": "30m",
+        "technical_snapshot_provider": "fixture",
+        "technical_snapshot_at": "2026-05-16 10:00:00",
+        "technical_snapshot_prepared_at": "2026-05-16 10:01:00",
+        "technical_snapshot_row_count": 120,
+        "technical_snapshot_indicator_version": "fixture-v1",
+    }
+
+
+def _patch_discovery_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.discover.candidate_artifact import load_discovery_candidate_artifact
+    from app.stock_refresh_scheduler import save_stock_runtime_entries
+
+    def fake_refresh(context: UIApiContext) -> dict[str, Any]:
+        artifact = load_discovery_candidate_artifact(base_dir=context.selector_result_dir)
+        entries: dict[str, dict[str, Any]] = {}
+        for row in artifact.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            code = str(row.get("code") or row.get("id") or "").strip()
+            if not code:
+                continue
+            entries[code] = _ready_runtime_entry(
+                code,
+                name=str(row.get("name") or code),
+                sector=str(row.get("industry") or "测试行业"),
+                price=float(row.get("latestPrice") or row.get("price") or 10.0),
+            )
+        save_stock_runtime_entries(entries, base_dir=context.selector_result_dir, updated_at="2026-05-16T02:01:00Z")
+        return {"reason": "discover", "updated": len(entries), "failed": 0, "totalCodes": len(entries)}
+
+    monkeypatch.setattr(discover_gateway, "_run_discovery_refresh", fake_refresh)
+
+
 def _iter_table_row_values(node: Any, path: str = "$"):
     if isinstance(node, dict):
         rows = node.get("rows")
@@ -1455,7 +1509,7 @@ def test_discover_snapshot_exposes_read_only_lifecycle_entry_fields(tmp_path):
     assert rows["000001"]["candidate_score"] == 0.71
     assert rows["600519"]["eligible_status"] == "eligible"
     assert rows["600519"]["already_in_quant"] is False
-    assert rows["600519"]["candidate_score"] == 0.88
+    assert rows["600519"]["candidate_score"] == 0.0
     assert rows["300001"]["eligible_status"] == "skipped"
     assert rows["300001"]["blocking_reason"] == "basic_info_missing"
     assert db.list_candidate_events(stock_code="600519", limit=20) == before_events
@@ -1573,15 +1627,22 @@ def test_discover_run_strategy_executes_real_selector_runners_and_persists_resul
                 ]
             ), "ok"
 
-    monkeypatch.setattr(gateway_api, "MainForceStockSelector", FakeMainForceSelector)
-    monkeypatch.setattr(gateway_api, "LowPriceBullSelector", FakeLowPriceBullSelector)
-    monkeypatch.setattr(gateway_api, "SmallCapSelector", FakeSmallCapSelector)
-    monkeypatch.setattr(gateway_api, "ProfitGrowthSelector", FakeProfitGrowthSelector)
-    monkeypatch.setattr(gateway_api, "ValueStockSelector", FakeValueStockSelector)
+    selector_map = {
+        "MainForceStockSelector": FakeMainForceSelector,
+        "LowPriceBullSelector": FakeLowPriceBullSelector,
+        "SmallCapSelector": FakeSmallCapSelector,
+        "ProfitGrowthSelector": FakeProfitGrowthSelector,
+        "ValueStockSelector": FakeValueStockSelector,
+    }
+    monkeypatch.setattr(discover_gateway, "_selector_cls", lambda name: selector_map[name])
+    _patch_discovery_refresh(monkeypatch)
 
     client = TestClient(create_app(context=context))
 
-    response = client.post("/api/v1/discover/actions/run-strategy", json={})
+    response = client.post(
+        "/api/v1/discover/actions/run-strategy",
+        json={"strategies": ["main_force", "low_price_bull", "small_cap", "profit_growth", "value_stock"], "waitMs": 5000},
+    )
     assert response.status_code == 200
     payload = response.json()
     codes = {row["code"] for row in payload["candidateTable"]["rows"]}
@@ -1628,7 +1689,8 @@ def test_discover_run_strategy_auto_trial_promotes_discovered_stocks(tmp_path, m
                 ]
             ), "ok"
 
-    monkeypatch.setattr(gateway_api, "LowPriceBullSelector", FakeLowPriceBullSelector)
+    monkeypatch.setattr(discover_gateway, "_selector_cls", lambda name: FakeLowPriceBullSelector)
+    _patch_discovery_refresh(monkeypatch)
     client = TestClient(create_app(context=context))
 
     response = client.post("/api/v1/discover/actions/run-strategy", json={"strategies": ["low_price_bull"]})
@@ -2265,7 +2327,7 @@ def test_his_replay_progress_endpoint_reports_database_busy(tmp_path, monkeypatc
     assert response.json()["detail"] == "历史回放正在写入数据库，请稍后刷新。"
 
 
-def test_his_replay_progress_endpoint_is_read_only_for_terminal_reconciliation(tmp_path):
+def test_his_replay_progress_endpoint_reconciles_terminal_run(tmp_path):
     context = _make_context(tmp_path)
     db = context.replay_db()
     run_id = db.create_sim_run(
@@ -2299,7 +2361,9 @@ def test_his_replay_progress_endpoint_is_read_only_for_terminal_reconciliation(t
     assert response.status_code == 200
     refreshed = context.replay_db().get_sim_run(run_id)
     assert refreshed is not None
-    assert refreshed["status"] == "running"
+    assert refreshed["status"] == "completed"
+    assert refreshed["worker_pid"] is None
+    assert refreshed["final_equity"] == 100000.0
 
 
 def test_live_sim_snapshot_exposes_trade_cost_ledger(tmp_path):
@@ -3385,7 +3449,7 @@ def test_his_replay_snapshot_counts_ignored_trade_signals(tmp_path):
     assert progress_summary_by_label["忽略SELL"] == "1"
 
 
-def test_his_replay_snapshot_keeps_stale_completed_run_read_only(tmp_path):
+def test_his_replay_snapshot_marks_completed_run_with_missing_trade_summary_failed(tmp_path):
     context = _make_context(tmp_path)
     db = context.replay_db()
     run_id = db.create_sim_run(
@@ -3437,15 +3501,17 @@ def test_his_replay_snapshot_keeps_stale_completed_run_read_only(tmp_path):
 
     task = payload["tasks"][0]
     assert task["runId"] == str(run_id)
-    assert task["status"] == "running"
-    assert "10/10" in task["stage"]
-    assert task["finalEquity"] == "0"
+    assert task["status"] == "failed"
+    assert "最终成交汇总未落库" in task["stage"]
+    assert task["finalEquity"] == "51000"
     assert task["tradeCount"] == "0"
     stored_run = db.get_sim_run(run_id)
-    assert stored_run["status"] == "running"
+    assert stored_run["status"] == "failed"
+    assert stored_run["worker_pid"] is None
+    assert stored_run["metadata"]["auto_executed"] == 1
 
 
-def test_his_replay_snapshot_keeps_stale_incomplete_worker_read_only(tmp_path):
+def test_his_replay_snapshot_marks_stale_incomplete_worker_failed(tmp_path):
     context = _make_context(tmp_path)
     db = context.replay_db()
     run_id = db.create_sim_run(
@@ -3483,10 +3549,14 @@ def test_his_replay_snapshot_keeps_stale_incomplete_worker_read_only(tmp_path):
 
     task = payload["tasks"][0]
     assert task["runId"] == str(run_id)
-    assert task["status"] == "running"
-    assert "13/30" in task["stage"]
+    assert task["status"] == "failed"
+    assert "12/30" in task["stage"]
+    assert task["progressCurrent"] == 12
+    assert task["progressTotal"] == 30
     stored_run = db.get_sim_run(run_id)
-    assert stored_run["worker_pid"] == 99999999
+    assert stored_run["status"] == "failed"
+    assert stored_run["worker_pid"] is None
+    assert stored_run["metadata"]["worker_pid"] == 99999999
 
 
 def test_his_replay_start_returns_400_when_active_replay_exists(tmp_path):
