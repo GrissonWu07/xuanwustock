@@ -70,6 +70,11 @@ def calculate_technical_entry_score(
 
 def _score_event(event: dict[str, Any], stock_snapshot: dict[str, Any], profile: str) -> TechnicalEntryScoreResult:
     evidence = _evidence(event)
+    snapshot_block = _required_snapshot_blocking_reason(evidence)
+    if snapshot_block:
+        result = _zero_result(snapshot_block, evidence, profile)
+        result.breakdown["snapshot_status"] = str(_pick(evidence, "technical_snapshot_status", "snapshot_status") or "").strip()
+        return result
     missing = _missing_technical_fields(evidence)
     if missing:
         result = _zero_result("missing_technical_snapshot", evidence, profile)
@@ -153,7 +158,7 @@ def _zero_result(reason: str, evidence: dict[str, Any], profile_id: str | None) 
     profile = _profile(profile_id)
     return TechnicalEntryScoreResult(
         0.0,
-        round(_technical_confidence(evidence, profile), 4),
+        0.0,
         {
             "blocking_reason": reason,
             "trend_structure_score": 0.0,
@@ -171,6 +176,36 @@ def _zero_result(reason: str, evidence: dict[str, Any], profile_id: str | None) 
             "min_candidate_confidence": PROFILE_MIN_CONFIDENCE[profile],
         },
     )
+
+
+def _required_snapshot_blocking_reason(evidence: dict[str, Any]) -> str:
+    readiness_declared = any(
+        key in evidence
+        for key in (
+            "technical_snapshot_ready",
+            "technical_snapshot_status",
+            "snapshot_status",
+            "technical_snapshot_at",
+            "snapshot_at",
+        )
+    )
+    if not readiness_declared:
+        return ""
+
+    ready_flag = evidence.get("technical_snapshot_ready")
+    if ready_flag is False:
+        return "missing_required_snapshot"
+
+    status = str(_pick(evidence, "technical_snapshot_status", "snapshot_status") or "").strip().lower()
+    if status and status != "ready":
+        if status in {"stale", "stale_unprepared"}:
+            return "stale_required_snapshot"
+        return "missing_required_snapshot"
+
+    if ready_flag is True or status == "ready":
+        if not _pick(evidence, "technical_snapshot_at", "snapshot_at", "checkpoint_at", "datetime", "time"):
+            return "missing_required_snapshot"
+    return ""
 
 
 def _technical_confidence(evidence: dict[str, Any], profile: str) -> float:

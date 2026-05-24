@@ -963,7 +963,7 @@ def test_manager_auto_trial_promotes_eligible_candidate(tmp_path):
     assert "source_score_component" not in events[0]["payload_json"]["candidate_score_breakdown"]
 
 
-def test_low_price_event_requires_trend_repair_before_auto_entry(tmp_path):
+def test_low_price_event_uses_source_agnostic_downtrend_gate(tmp_path):
     manager = _manager(tmp_path, policy=QuantUniverseLifecyclePolicy.aggressive_defaults())
     manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
     manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="low_price")
@@ -991,7 +991,7 @@ def test_low_price_event_requires_trend_repair_before_auto_entry(tmp_path):
     )
 
     assert result["decision"] == "skipped"
-    assert result["reason_code"] == "low_price_below_falling_ma20"
+    assert result["reason_code"] == "persistent_downtrend"
     assert manager.db.get_quant_universe_state("600000")["quant_status"] == "inactive"
     blocked_events = manager.db.list_candidate_events(stock_code="600000", status="blocked")
     assert blocked_events[0]["payload_json"]["entry_gate"]["result"] == "eligible_blocked"
@@ -999,7 +999,7 @@ def test_low_price_event_requires_trend_repair_before_auto_entry(tmp_path):
     assert blocked_events[0]["payload_json"]["candidate_confidence"] == 0.0
 
 
-def test_research_event_requires_technical_confirmation_for_auto_entry(tmp_path):
+def test_research_event_uses_source_agnostic_downtrend_gate(tmp_path):
     manager = _manager(tmp_path, policy=QuantUniverseLifecyclePolicy.aggressive_defaults())
     manager.db.update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
     manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="research")
@@ -1027,10 +1027,10 @@ def test_research_event_requires_technical_confirmation_for_auto_entry(tmp_path)
     )
 
     assert result["decision"] == "skipped"
-    assert result["reason_code"] == "ai_requires_technical_confirmation"
+    assert result["reason_code"] == "persistent_downtrend"
     assert manager.db.get_quant_universe_state("600000")["quant_status"] == "inactive"
-    recommended_events = manager.db.list_candidate_events(stock_code="600000", status="recommended_only")
-    assert recommended_events[0]["payload_json"]["entry_gate"]["result"] == "recommended_only"
+    blocked_events = manager.db.list_candidate_events(stock_code="600000", status="blocked")
+    assert blocked_events[0]["payload_json"]["entry_gate"]["result"] == "eligible_blocked"
 
 
 def test_quant_universe_state_persists_recovery_probe_diagnostics(tmp_path):

@@ -1,0 +1,87 @@
+# Tasks: 完整股票发现数据就绪
+
+## 1. Implementation
+
+- [x] 1.1 修复 AI Scanner 测试隔离和排序稳定性
+  - Related requirement: `AI Scanner 必须测试稳定且不触发非预期外部 IO`
+  - Applicable rules: `PIR-001`, `PIR-002`, `PY-005`, `PY-007`, `TEST-001`, `TEST-002`, `TEST-003`, `TEST-008`
+  - Target code paths: `tests/test_ai_stock_scanner.py`
+  - Multi-lens review: product 保证发现排序可信；engineering 避免单元测试真实 IO；security 不暴露外部凭据；QA 验证全量测试稳定
+  - Reuse/common logic impact: 复用现有 `history_provider` 测试注入点，不新增 fake 网络层
+  - Requirement scope / fallback: 单元测试必须显式 fake history；不得添加生产 fallback 行为
+  - Method/function parameter plan: 不新增生产函数；测试使用现有构造参数
+  - File size guardrail: each generated/modified code file must stay <= 1000 lines; split plan: none
+  - Database impact: none
+  - Backend logic confirmation: confirmed, 用户 2026-05-24 触发 `sp-goal`
+  - API contract/layers: none
+  - API path/parameters confirmation: not-applicable
+  - API IO / async: none
+  - UI mockup/function confirmation: not-applicable
+  - Browser/UI QA: not-applicable
+  - Config parameter confirmation: not-applicable
+  - Change: 更新 AI Scanner 单元测试 fixture，显式使用 fake history provider，并验证排序稳定
+  - Standalone verification: `python -m pytest -q tests/test_ai_stock_scanner.py`
+  - Real E2E test: not-applicable for isolated unit IO boundary; full change E2E covered by task 1.3
+  - Validation: AI Scanner 测试不触发真实 AkShare/TDX 历史行情请求
+  - Test parameters: `openspec/changes/complete-discovery-data-readiness/test-params/ai-scanner-stable-order.md`
+  - Coverage target: at least 85% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against concrete authentication, authorization, tenant/user isolation, validation, data exposure, logging, dependency, configuration, database/API IO, async, and external-service risks when relevant
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 1.2 统一 non-ready/stale 快照门禁和评分行为
+  - Related requirement: `发现候选必须使用完整数据快照 ready 口径`, `自动入池不得按发现来源改变门禁语义`
+  - Applicable rules: `PIR-001`, `PIR-002`, `PY-001`, `PY-003`, `PY-007`, `TEST-001`, `TEST-002`, `TEST-003`
+  - Target code paths: `app/quant_sim/technical_entry_score.py`, `app/quant_sim/candidate_entry_gate.py`, `tests/test_quant_technical_entry_score.py`, `tests/test_quant_universe_lifecycle_manager.py`
+  - Multi-lens review: product 防止缺数据伪装 ready；engineering 保持评分内核输入契约；security 无敏感输出；QA 覆盖 missing/stale/source-agnostic
+  - Reuse/common logic impact: 复用现有 `_discovery_technical_snapshot_gate` 和 `_common_gate`
+  - Requirement scope / fallback: non-ready/stale 不得继续扣分评分；不得按 source family 添加特殊门禁
+  - Method/function parameter plan: 不新增 >5 参数函数
+  - File size guardrail: each generated/modified code file must stay <= 1000 lines; split plan: none
+  - Database impact: none
+  - Backend logic confirmation: confirmed, 用户 2026-05-24 触发 `sp-goal`
+  - API contract/layers: existing API response semantics only; controller unchanged, domain gate/scorer changed
+  - API path/parameters confirmation: confirmed not changed
+  - API IO / async: no new IO
+  - UI mockup/function confirmation: not-applicable
+  - Browser/UI QA: not-applicable
+  - Config parameter confirmation: not-applicable
+  - Change: 让 stale/non-ready 快照返回 blocking zero result；让 discovery entry gate 来源无关
+  - Standalone verification: focused pytest for scorer/gate/lifecycle manager
+  - Real E2E test: required in task 1.3 through discover API boundary
+  - Validation: missing/stale/source-agnostic 断言通过
+  - Test parameters: `openspec/changes/complete-discovery-data-readiness/test-params/non-ready-snapshot-gate.md`
+  - Coverage target: at least 85% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against concrete authentication, authorization, tenant/user isolation, validation, data exposure, logging, dependency, configuration, database/API IO, async, and external-service risks when relevant
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 1.3 验证发现 API E2E 和全量回归
+  - Related requirement: `发现候选必须使用完整数据快照 ready 口径`, `AI Scanner 必须测试稳定且不触发非预期外部 IO`
+  - Applicable rules: `PIR-001`, `PIR-004`, `PIR-005`, `TEST-001`, `TEST-002`, `TEST-003`, `TEST-010`
+  - Target code paths: `tests/test_ui_backend_api_actions.py`, `openspec/changes/complete-discovery-data-readiness/task-reviews.md`, `openspec/changes/complete-discovery-data-readiness/review.md`
+  - Multi-lens review: product 验证发现任务外部入口；engineering/API 验证现有路由；QA 记录全量回归
+  - Reuse/common logic impact: 复用现有 FastAPI TestClient 和 discover action tests
+  - Requirement scope / fallback: 不新增 API，不替代真实 API 边界为纯单元测试
+  - Method/function parameter plan: 不新增生产函数
+  - File size guardrail: each generated/modified code file must stay <= 1000 lines; split plan: avoid expanding oversized files unless already existing test path requires narrow edit
+  - Database impact: existing sqlite test DB only
+  - Backend logic confirmation: confirmed
+  - API contract/layers: `POST /api/v1/discover/actions/run-strategy`, `GET /api/v1/tasks/{task_id}`, `GET /api/v1/discover`
+  - API path/parameters confirmation: confirmed no new path or parameter
+  - API IO / async: discover action remains async task; tests use bounded wait/fake services
+  - UI mockup/function confirmation: not-applicable
+  - Browser/UI QA: not-applicable; no UI code changed
+  - Config parameter confirmation: not-applicable
+  - Change: 增加或更新 API E2E 断言，运行全量后端和相关前端回归
+  - Standalone verification: FastAPI TestClient discover flow
+  - Real E2E test: required; TestClient against `create_app` with real route boundary and fake providers
+  - Validation: `python -m pytest -q`, focused coverage, and `npm test -- --run` if frontend unaffected verification is needed
+  - Test parameters: `openspec/changes/complete-discovery-data-readiness/test-params/discover-api-data-readiness-e2e.md`
+  - Coverage target: at least 85% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against concrete authentication, authorization, tenant/user isolation, validation, data exposure, logging, dependency, configuration, database/API IO, async, and external-service risks when relevant
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts

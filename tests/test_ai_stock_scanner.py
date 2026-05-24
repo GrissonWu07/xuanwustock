@@ -71,11 +71,14 @@ def test_ai_stock_scanner_selects_candidates_from_hot_sector_constituents():
     scanner = AIStockScanner(
         AIStockScannerConfig(top_k_sectors=1, max_stocks=2, max_candidates_per_sector=2, enable_llm_themes=False),
         ak_api=FakeAkForSectors(),
+        history_provider=lambda code: pd.DataFrame(),
     )
 
     result = scanner.scan()
+    repeated = scanner.scan()
 
     assert list(result["股票代码"]) == ["688111", "000001"]
+    assert list(repeated["股票代码"]) == ["688111", "000001"]
     assert result.iloc[0]["股票简称"] == "金山办公"
     assert result.iloc[0]["所属行业"] == "人工智能"
     assert "sector=人工智能" in result.iloc[0]["reason"]

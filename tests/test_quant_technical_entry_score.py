@@ -139,7 +139,7 @@ def test_empty_events_and_profile_confidence_thresholds():
     assert min_candidate_confidence("conservative") == 0.80
 
 
-def test_technical_score_applies_liquidity_stale_and_heat_penalties():
+def test_technical_score_blocks_stale_snapshot_instead_of_penalizing_it():
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
     payload = _strong_technical_payload(
         price=13.7,
@@ -154,10 +154,10 @@ def test_technical_score_applies_liquidity_stale_and_heat_penalties():
 
     result = calculate_candidate_score([_event(payload=payload)], {"is_liquid": False}, policy)
 
-    assert result["candidate_score"] < 0.90
-    assert result["breakdown"]["overextension_penalty"] == 0.1
-    assert result["breakdown"]["overheated_penalty"] == 0.05
-    assert result["breakdown"]["stale_data_penalty"] == 0.1
+    assert result["candidate_score"] == 0.0
+    assert result["candidate_confidence"] == 0.0
+    assert result["breakdown"]["blocking_reason"] == "stale_required_snapshot"
+    assert result["breakdown"]["trend_structure_score"] == 0.0
 
 
 def test_technical_score_handles_mid_quality_boundaries_and_payload_json():
@@ -210,7 +210,6 @@ def test_technical_score_penalizes_contradictory_and_thin_evidence():
 
     result = calculate_candidate_score([_event(payload=payload)], {}, policy)
 
-    assert result["candidate_score"] < policy.trial_threshold
-    assert result["breakdown"]["volume_liquidity_score"] < 0.2
-    assert result["breakdown"]["indicator_consistency"] < 1.0
-    assert result["breakdown"]["history_depth"] == 0.3
+    assert result["candidate_score"] == 0.0
+    assert result["candidate_confidence"] == 0.0
+    assert result["breakdown"]["blocking_reason"] == "missing_required_snapshot"
