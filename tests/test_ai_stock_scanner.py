@@ -4,7 +4,21 @@ import os
 
 import pandas as pd
 
-from app.discover.ai_stock_scanner import AIStockScanner, AIStockScannerConfig
+from app.discover.ai_stock_scanner import (
+    AIStockScanner,
+    AIStockScannerConfig,
+    _SectorCandidate,
+    _clamp,
+    _first_matching,
+    _news_items_from_payload,
+    _normalize,
+    _number,
+    _parse_theme_response,
+    _score_indicator_frame,
+    _stock_code,
+    _text,
+    _to_frame,
+)
 
 
 class FakeAkForSectors:
@@ -84,6 +98,157 @@ def test_ai_stock_scanner_selects_candidates_from_hot_sector_constituents():
     assert "sector=人工智能" in result.iloc[0]["reason"]
 
 
+def test_ai_stock_scanner_injected_history_provider_blocks_market_client_access():
+    class FailingMarketClient:
+        def get_stock_hist_data(self, symbol, **kwargs):
+            raise AssertionError("market client should not be called when history_provider is injected")
+
+    scanner = AIStockScanner(
+        AIStockScannerConfig(top_k_sectors=1, max_stocks=2, max_candidates_per_sector=2, enable_llm_themes=False),
+        ak_api=FakeAkForSectors(),
+        market_client=FailingMarketClient(),
+        history_provider=lambda code: pd.DataFrame(),
+    )
+
+    result = scanner.scan()
+
+    assert list(result["股票代码"]) == ["688111", "000001"]
+    assert set(result["technical_reasons"]) == {"technical_data_unavailable"}
+
+
+def test_ai_stock_scanner_tied_final_scores_keep_original_candidate_order():
+    scanner = AIStockScanner(
+        AIStockScannerConfig(
+            max_stocks=2,
+            enable_llm_themes=False,
+            weight_sector=0,
+            weight_technical=0,
+            weight_theme=1,
+        ),
+        ak_api=FakeAkEmpty(),
+        history_provider=lambda code: pd.DataFrame(),
+    )
+    rows = [
+        {
+            "股票代码": "688111",
+            "股票简称": "金山办公",
+            "所属行业": "人工智能",
+            "sector_score": 0.5,
+            "rank_score": 0.5,
+            "price_change_score": 0.5,
+            "scanner_score": 0.5,
+            "source_reason": "first tied candidate",
+        },
+        {
+            "股票代码": "000001",
+            "股票简称": "平安银行",
+            "所属行业": "银行",
+            "sector_score": 0.5,
+            "rank_score": 0.5,
+            "price_change_score": 0.5,
+            "scanner_score": 0.5,
+            "source_reason": "second tied candidate",
+        },
+    ]
+
+    result = scanner._rank_rows(rows, themes={})
+
+    assert list(result["股票代码"]) == ["688111", "000001"]
+    assert result.iloc[0]["scanner_score"] == result.iloc[1]["scanner_score"]
+    assert result.iloc[0]["sector_score"] == result.iloc[1]["sector_score"]
+    assert result.iloc[0]["technical_score"] == result.iloc[1]["technical_score"]
+    assert result.iloc[0]["preliminary_score"] == result.iloc[1]["preliminary_score"]
+
+
+def test_ai_stock_scanner_tied_final_scores_use_sector_tiebreaker():
+    scanner = AIStockScanner(
+        AIStockScannerConfig(
+            max_stocks=2,
+            enable_llm_themes=False,
+            weight_sector=0,
+            weight_technical=0,
+            weight_theme=1,
+        ),
+        ak_api=FakeAkEmpty(),
+        history_provider=lambda code: pd.DataFrame(),
+    )
+    rows = [
+        {
+            "股票代码": "000001",
+            "股票简称": "平安银行",
+            "所属行业": "银行",
+            "sector_score": 0.1,
+            "scanner_score": 0.5,
+            "source_reason": "low sector score",
+        },
+        {
+            "股票代码": "688111",
+            "股票简称": "金山办公",
+            "所属行业": "人工智能",
+            "sector_score": 0.9,
+            "scanner_score": 0.5,
+            "source_reason": "high sector score",
+        },
+    ]
+
+    result = scanner._rank_rows(rows, themes={})
+
+    assert list(result["股票代码"]) == ["688111", "000001"]
+    assert result.iloc[0]["scanner_score"] == result.iloc[1]["scanner_score"]
+
+
+def test_ai_stock_scanner_top_sectors_filters_errors_duplicates_and_low_scores():
+    class FakeAkNoisySectors:
+        def stock_board_concept_name_em(self):
+            raise RuntimeError("concept unavailable")
+
+        def stock_board_industry_name_em(self):
+            return pd.DataFrame(
+                [
+                    {"行业名称": "", "涨跌幅": 9.0, "成交额": 20_000_000_000},
+                    {"行业名称": "机器人", "涨跌幅": 6.0, "成交额": 20_000_000_000},
+                    {"行业名称": "机器人", "涨跌幅": 5.0, "成交额": 19_000_000_000},
+                    {"行业名称": "低分行业", "涨跌幅": -5.0, "成交额": 0},
+                    {"行业名称": "算力", "涨跌幅": 4.0, "成交额": 10_000_000_000},
+                ]
+            )
+
+    scanner = AIStockScanner(
+        AIStockScannerConfig(top_k_sectors=2, min_sector_score=0.2, enable_llm_themes=False),
+        ak_api=FakeAkNoisySectors(),
+    )
+
+    sectors = scanner._top_sectors()
+
+    assert [sector.name for sector in sectors] == ["机器人", "算力"]
+    assert all(sector.source == "industry" for sector in sectors)
+
+
+def test_ai_stock_scanner_sector_rows_use_industry_fallback_and_skip_bad_rows():
+    class FakeAkIndustryFallback:
+        def stock_board_industry_cons_em(self, symbol):
+            raise RuntimeError("industry constituents unavailable")
+
+        def stock_board_concept_cons_em(self, symbol):
+            return pd.DataFrame(
+                [
+                    {"代码": "", "名称": "坏数据", "涨跌幅": 10.0},
+                    {"代码": "7", "名称": "全新好", "最新价": 8.8, "涨跌幅": 2.0, "总市值": 100.0},
+                ]
+            )
+
+    scanner = AIStockScanner(AIStockScannerConfig(max_candidates_per_sector=2), ak_api=FakeAkIndustryFallback())
+
+    rows = scanner._sector_stock_rows(
+        [_SectorCandidate(name="机器人", source="industry", score=0.8, change_pct=5.0, amount=10_000_000_000)]
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["股票代码"] == "000007"
+    assert rows[0]["股票简称"] == "全新好"
+    assert rows[0]["所属行业"] == "机器人"
+
+
 def test_ai_stock_scanner_falls_back_to_wencai_when_sector_data_is_empty():
     def fake_wencai_get(**kwargs):
         assert "热门题材" in kwargs["query"]
@@ -105,6 +270,7 @@ def test_ai_stock_scanner_falls_back_to_wencai_when_sector_data_is_empty():
         AIStockScannerConfig(top_k_sectors=1, max_stocks=1, enable_llm_themes=False),
         ak_api=FakeAkEmpty(),
         wencai_get=fake_wencai_get,
+        history_provider=lambda code: pd.DataFrame(),
     )
 
     result = scanner.scan()
@@ -239,3 +405,187 @@ def test_ai_stock_scanner_falls_back_to_tdx_history_when_primary_history_fails()
 
     assert result.iloc[0]["technical_score"] > 0.6
     assert "technical_data_unavailable" not in result.iloc[0]["technical_reasons"]
+
+
+def test_ai_stock_scanner_parses_theme_response_variants():
+    themes = _parse_theme_response(
+        """
+        prefix
+        [
+          {"name": "AI算力", "weight": 1.2, "keywords": "算力，大模型, GPU", "sentiment": "invalid"},
+          {"name": "", "weight": 0.4, "keywords": ["忽略"], "sentiment": "bullish"},
+          "bad item"
+        ]
+        suffix
+        """
+    )
+
+    assert set(themes) == {"AI算力"}
+    assert themes["AI算力"].weight == 1.0
+    assert themes["AI算力"].keywords == ("算力", "大模型", "GPU")
+    assert themes["AI算力"].sentiment == "neutral"
+    assert _parse_theme_response("no json here") == {}
+    assert _parse_theme_response("[not-json]") == {}
+
+
+def test_ai_stock_scanner_extracts_news_items_from_nested_payloads():
+    payload = {
+        "hot_topics": [
+            {"topic": "AI应用", "sources": ["算力需求", "模型升级"]},
+            {"title": "新能源", "summary": "产业链新闻"},
+        ]
+    }
+    nested = {
+        "data": [
+            payload,
+            {"title": "直接新闻", "content": "正文", "source": "fixture"},
+            {"ignored": "empty"},
+        ]
+    }
+
+    items = _news_items_from_payload(nested, 3)
+
+    assert [item["title"] for item in items] == ["AI应用", "新能源", "直接新闻"]
+    assert items[0]["content"] == "算力需求 模型升级"
+    assert _news_items_from_payload(None, 3) == []
+    assert _news_items_from_payload({"ignored": "empty"}, 3) == []
+    assert _news_items_from_payload([{"title": "A"}, {"title": "B"}], 1) == [
+        {"title": "A", "content": "", "source": None}
+    ]
+
+
+def test_ai_stock_scanner_scores_indicator_frame_bullish_and_bearish():
+    bullish_rows = []
+    bearish_rows = []
+    for index in range(21):
+        bullish_rows.append(
+            {
+                "close": 10 + index,
+                "ma5": 9 + index,
+                "ma20": 8 + index,
+                "ma60": 7 + index,
+                "ma20_slope": 0.2,
+                "dif": 1.2,
+                "dea": 0.8,
+                "hist": 0.1 + index * 0.01,
+                "rsi12": 62,
+                "volume_ratio": 1.8,
+                "trend": "up",
+            }
+        )
+        bearish_rows.append(
+            {
+                "close": 30 - index,
+                "ma5": 31 - index,
+                "ma20": 32 - index,
+                "ma60": 33 - index,
+                "ma20_slope": -0.2,
+                "dif": -1.2,
+                "dea": -0.8,
+                "hist": -0.1 - index * 0.01,
+                "rsi12": 28,
+                "volume_ratio": 0.4,
+                "trend": "down",
+            }
+        )
+
+    bullish = _score_indicator_frame(pd.DataFrame(bullish_rows))
+    bearish = _score_indicator_frame(pd.DataFrame(bearish_rows))
+
+    assert bullish.score > bearish.score
+    assert {"trend=up", "ma_short_up", "macd_bullish", "rsi_healthy"}.issubset(set(bullish.reasons))
+    assert {"trend=down", "ma_short_down", "macd_bearish", "rsi_weak"}.issubset(set(bearish.reasons))
+
+
+def test_ai_stock_scanner_helper_value_normalization():
+    row = {
+        "总市值[20260507]": "1,234.5",
+        "市盈率(pe)[20260507]": "52.6",
+        "empty": "",
+    }
+
+    assert _first_matching(row, "总市值") == "1,234.5"
+    assert _first_matching(row, "市盈率") == "52.6"
+    assert _first_matching(row, "missing") is None
+    assert _stock_code("1.SZ") == "000001"
+    assert _stock_code("") == ""
+    assert _number("12.5%") == 12.5
+    assert _number("bad", 7.0) == 7.0
+    assert _normalize(5, 0, 10) == 0.5
+    assert _normalize(5, 10, 10) == 0.0
+    assert _clamp("bad") == 0.0
+    assert _text(" nan ", "fallback") == "fallback"
+    assert _to_frame({"data": [{"code": "000001"}]}).iloc[0]["code"] == "000001"
+    assert _to_frame([{"code": "000002"}]).iloc[0]["code"] == "000002"
+    assert _to_frame("bad").empty
+
+
+def test_ai_stock_scanner_uses_injected_tdx_fetcher_for_fallback_history():
+    observed = {}
+
+    class FakeTdxFetcher:
+        def get_kline_data_range(self, code, **kwargs):
+            observed["code"] = code
+            observed["kline_type"] = kwargs["kline_type"]
+            return rising_history_frame(code)
+
+    scanner = AIStockScanner(
+        AIStockScannerConfig(enable_llm_themes=False),
+        ak_api=FakeAkEmpty(),
+        tdx_fetcher=FakeTdxFetcher(),
+    )
+
+    frame = scanner._fallback_history_frame("000001", "20260101", "20260131")
+
+    assert observed == {"code": "000001", "kline_type": "day"}
+    assert frame is not None
+    assert not frame.empty
+
+
+def test_ai_stock_scanner_extracts_themes_with_callable_client_and_unavailable_responses():
+    scanner = AIStockScanner(
+        AIStockScannerConfig(enable_llm_themes=True),
+        ak_api=FakeAkEmpty(),
+        llm_client=lambda prompt: {
+            "content": '[{"name":"机器人","weight":0.8,"keywords":["机器人","自动化"],"sentiment":"bullish"}]'
+        },
+    )
+
+    themes = scanner._extract_themes_with_llm([{"title": "机器人产业", "content": "自动化设备景气"}])
+
+    assert set(themes) == {"机器人"}
+    assert themes["机器人"].sentiment == "bullish"
+
+    scanner._llm_client = object()
+    assert scanner._extract_themes_with_llm([{"title": "bad", "content": "bad"}]) == {}
+
+    scanner._llm_client = lambda prompt: "API调用失败: key missing"
+    assert scanner._extract_themes_with_llm([{"title": "bad", "content": "bad"}]) == {}
+
+
+def test_ai_stock_scanner_theme_alignment_handles_empty_and_bearish_context():
+    scanner = AIStockScanner(AIStockScannerConfig(enable_llm_themes=True), ak_api=FakeAkEmpty())
+    themes = _parse_theme_response(
+        '[{"name":"减持","weight":0.7,"keywords":["风险"],"sentiment":"bearish"}]'
+    )
+
+    assert scanner._calculate_theme_alignment({}, themes).score == 0.5
+    aligned = scanner._calculate_theme_alignment({"股票简称": "风险资产", "所属行业": "测试"}, themes)
+    unmatched = scanner._calculate_theme_alignment({"股票简称": "其他", "所属行业": "测试"}, themes)
+
+    assert aligned.score > unmatched.score
+    assert aligned.names == ("减持",)
+
+
+def test_ai_stock_scanner_fallback_history_returns_none_when_fetcher_fails():
+    class FailingTdxFetcher:
+        def get_kline_data_range(self, code, **kwargs):
+            raise RuntimeError("tdx unavailable")
+
+    scanner = AIStockScanner(
+        AIStockScannerConfig(enable_llm_themes=False),
+        ak_api=FakeAkEmpty(),
+        tdx_fetcher=FailingTdxFetcher(),
+    )
+
+    assert scanner._fallback_history_frame("000001", "20260101", "20260131") is None

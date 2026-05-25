@@ -278,7 +278,8 @@ class AIStockScanner:
         frame = frame.sort_values("preliminary_score", ascending=False)
         frame = frame.drop_duplicates(subset=["股票代码"], keep="first")
         scoring_limit = max(max(self.config.max_stocks, 1) * 3, 1)
-        frame = frame.head(scoring_limit)
+        frame = frame.head(scoring_limit).reset_index(drop=True)
+        frame["_candidate_order"] = range(len(frame))
 
         scored_rows: list[dict[str, Any]] = []
         for _, row in frame.iterrows():
@@ -302,8 +303,21 @@ class AIStockScanner:
         result = pd.DataFrame(scored_rows)
         if result.empty:
             return pd.DataFrame()
-        result = result.sort_values("scanner_score", ascending=False)
-        return result.drop_duplicates(subset=["股票代码"], keep="first").head(max(self.config.max_stocks, 1)).reset_index(drop=True)
+        # Keep tied candidates deterministic without changing the primary score.
+        result = result.sort_values(
+            [
+                "scanner_score",
+                "sector_score",
+                "technical_score",
+                "preliminary_score",
+                "_candidate_order",
+                "股票代码",
+            ],
+            ascending=[False, False, False, False, True, True],
+            kind="mergesort",
+        )
+        result = result.drop_duplicates(subset=["股票代码"], keep="first").head(max(self.config.max_stocks, 1)).reset_index(drop=True)
+        return result.drop(columns=["_candidate_order"], errors="ignore")
 
     def _preliminary_score(self, row: pd.Series) -> float:
         existing = _number(row.get("scanner_score"), None)
