@@ -23,6 +23,7 @@ DISCOVERY_REQUIRED_TECHNICAL_SNAPSHOT_FIELDS = (
     "rsi",
     "macd",
     "trend",
+    "technical_snapshot_status",
     "technical_snapshot_at",
     "technical_snapshot_timeframe",
     "technical_snapshot_provider",
@@ -53,7 +54,18 @@ def evaluate_candidate_entry_gate(event: dict[str, Any], *, profile_id: str | No
             )
 
     common = _common_gate(evidence, profile=profile)
-    return common if not common["passed"] else _pass_result(evidence)
+    if not common["passed"]:
+        return common
+    technical_snapshot = _discovery_technical_snapshot_gate(evidence)
+    if not technical_snapshot["passed"]:
+        return _block_result(
+            evidence,
+            result="eligible_blocked",
+            status="blocked",
+            reason_code=MISSING_TECHNICAL_SNAPSHOT_REASON,
+            missing_fields=technical_snapshot["missing_fields"],
+        )
+    return _pass_result(evidence)
 
 
 def _common_gate(
@@ -146,6 +158,8 @@ def _technical_snapshot_field_present(evidence: dict[str, Any], field: str) -> b
         value = _pick(evidence, "rsi", "rsi14", "rsi12", "rsi6", "RSI")
     elif field == "technical_snapshot_at":
         value = _pick(evidence, "technical_snapshot_at", "snapshot_at", "datetime", "date", "time", "quote_time")
+    elif field == "technical_snapshot_status":
+        value = _pick(evidence, "technical_snapshot_status", "snapshot_status")
     elif field == "technical_snapshot_timeframe":
         value = _pick(evidence, "technical_snapshot_timeframe", "timeframe", "period")
     elif field == "technical_snapshot_provider":
@@ -156,7 +170,14 @@ def _technical_snapshot_field_present(evidence: dict[str, Any], field: str) -> b
         value = _pick(evidence, field, field.upper())
     if value in (None, ""):
         return False
-    if field in {"trend", "technical_snapshot_at", "technical_snapshot_timeframe", "technical_snapshot_provider", "technical_snapshot_indicator_version"}:
+    if field in {
+        "trend",
+        "technical_snapshot_status",
+        "technical_snapshot_at",
+        "technical_snapshot_timeframe",
+        "technical_snapshot_provider",
+        "technical_snapshot_indicator_version",
+    }:
         return bool(str(value).strip())
     number = _num(value, 0.0)
     if field in {"ma20_slope", "macd", "rsi"}:

@@ -780,14 +780,13 @@ def test_backend_api_research_run_module_persists_real_snapshot(tmp_path, monkey
     assert "出口链景气延续" in payload["modules"][3]["note"]
     assert not payload["modules"][3]["note"].endswith("…")
     assert [row["code"] for row in payload["outputTable"]["rows"]] == ["002463", "600519", "300750"]
-    assert all(row["eligible_status"] == "skipped" for row in payload["outputTable"]["rows"])
-    assert all(row["blocking_reason"] == "not_evaluated" for row in payload["outputTable"]["rows"])
+    assert all(row["eligible_status"] == "blocked" for row in payload["outputTable"]["rows"])
+    assert all(row["blocking_reason"] == "missing_technical_snapshot" for row in payload["outputTable"]["rows"])
     assert all(row["source"] in {"智瞰龙虎", "新闻流量", "宏观分析"} for row in payload["outputTable"]["rows"])
     quant_state = context.quant_db().get_quant_universe_state("002463")
     assert quant_state["quant_status"] == "inactive"
     assert quant_state["candidate_score"] == 0.0
     assert quant_state["candidate_confidence"] == 0.0
-    assert quant_state["snapshot_json"]["candidate_score_breakdown"]["blocking_reason"] == "missing_technical_snapshot"
     assert payload["summary"]["body"].startswith("已刷新 5 个研究模块，其中 3 只股票有明确输出")
 
     snapshot = client.get("/api/v1/research").json()

@@ -20,6 +20,13 @@ TECHNICAL_REQUIRED_FIELDS = (
     "trend",
 )
 
+TECHNICAL_REQUIRED_SNAPSHOT_METADATA_FIELDS = (
+    "technical_snapshot_at",
+    "technical_snapshot_timeframe",
+    "technical_snapshot_provider",
+    "technical_snapshot_indicator_version",
+)
+
 PROFILE_MIN_CONFIDENCE = {
     "aggressive": 0.70,
     "stable": 0.75,
@@ -70,15 +77,18 @@ def calculate_technical_entry_score(
 
 def _score_event(event: dict[str, Any], stock_snapshot: dict[str, Any], profile: str) -> TechnicalEntryScoreResult:
     evidence = _evidence(event)
-    snapshot_block = _required_snapshot_blocking_reason(evidence)
-    if snapshot_block:
-        result = _zero_result(snapshot_block, evidence, profile)
-        result.breakdown["snapshot_status"] = str(_pick(evidence, "technical_snapshot_status", "snapshot_status") or "").strip()
-        return result
     missing = _missing_technical_fields(evidence)
     if missing:
         result = _zero_result("missing_technical_snapshot", evidence, profile)
         result.breakdown["missing_fields"] = missing
+        return result
+    snapshot_block = _required_snapshot_blocking_reason(evidence)
+    if snapshot_block:
+        result = _zero_result(snapshot_block, evidence, profile)
+        result.breakdown["snapshot_status"] = str(_pick(evidence, "technical_snapshot_status", "snapshot_status") or "").strip()
+        missing_snapshot_fields = _missing_required_snapshot_metadata(evidence)
+        if missing_snapshot_fields:
+            result.breakdown["missing_snapshot_fields"] = missing_snapshot_fields
         return result
 
     price = _num(_pick(evidence, "price", "current_price", "latest_price", "close"))
@@ -179,19 +189,6 @@ def _zero_result(reason: str, evidence: dict[str, Any], profile_id: str | None) 
 
 
 def _required_snapshot_blocking_reason(evidence: dict[str, Any]) -> str:
-    readiness_declared = any(
-        key in evidence
-        for key in (
-            "technical_snapshot_ready",
-            "technical_snapshot_status",
-            "snapshot_status",
-            "technical_snapshot_at",
-            "snapshot_at",
-        )
-    )
-    if not readiness_declared:
-        return ""
-
     ready_flag = evidence.get("technical_snapshot_ready")
     if ready_flag is False:
         return "missing_required_snapshot"
@@ -202,10 +199,33 @@ def _required_snapshot_blocking_reason(evidence: dict[str, Any]) -> str:
             return "stale_required_snapshot"
         return "missing_required_snapshot"
 
-    if ready_flag is True or status == "ready":
-        if not _pick(evidence, "technical_snapshot_at", "snapshot_at", "checkpoint_at", "datetime", "time"):
-            return "missing_required_snapshot"
+    if not (_truthy(ready_flag) or status == "ready"):
+        return "missing_required_snapshot"
+    if _missing_required_snapshot_metadata(evidence):
+        return "missing_required_snapshot"
     return ""
+
+
+def _missing_required_snapshot_metadata(evidence: dict[str, Any]) -> list[str]:
+    return [
+        field
+        for field in TECHNICAL_REQUIRED_SNAPSHOT_METADATA_FIELDS
+        if not _snapshot_metadata_present(evidence, field)
+    ]
+
+
+def _snapshot_metadata_present(evidence: dict[str, Any], field: str) -> bool:
+    if field == "technical_snapshot_at":
+        value = _pick(evidence, "technical_snapshot_at", "snapshot_at", "checkpoint_at", "datetime", "time")
+    elif field == "technical_snapshot_timeframe":
+        value = _pick(evidence, "technical_snapshot_timeframe", "timeframe", "period")
+    elif field == "technical_snapshot_provider":
+        value = _pick(evidence, "technical_snapshot_provider", "provider", "source")
+    elif field == "technical_snapshot_indicator_version":
+        value = _pick(evidence, "technical_snapshot_indicator_version", "indicator_version")
+    else:
+        value = evidence.get(field)
+    return bool(str(value or "").strip())
 
 
 def _technical_confidence(evidence: dict[str, Any], profile: str) -> float:
