@@ -1,8 +1,10 @@
 import threading
+import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.quant_kernel import trading_time_utils
+from app.selector_result_store import save_latest_result
 from app.stock_refresh_scheduler import UnifiedStockRefreshScheduler, load_stock_runtime_entries, save_stock_runtime_entries
 
 
@@ -32,6 +34,37 @@ def test_stock_refresh_scheduler_reuses_cn_calendar_for_holidays(monkeypatch):
     )
 
 
+def test_stock_refresh_scheduler_first_job_is_due_immediately():
+    scheduler = UnifiedStockRefreshScheduler(lambda: None, interval_minutes=2)
+
+    scheduler._register_jobs()
+    jobs = scheduler.scheduler.get_jobs(scheduler.job_tag)
+
+    assert jobs
+    assert jobs[0].next_run <= datetime.now()
+
+
+def test_stock_runtime_snapshot_persists_basic_info_status(tmp_path):
+    save_stock_runtime_entries(
+        {
+            "600128": {
+                "stock_code": "600128",
+                "stock_name": "苏豪弘业",
+                "latest_price": 9.92,
+                "basic_info_checked_at": "2026-05-17T09:00:00Z",
+                "basic_info_status": "remote_failed",
+                "basic_info_failure_at": "2026-05-17T09:00:00Z",
+            }
+        },
+        base_dir=tmp_path,
+    )
+
+    entry = load_stock_runtime_entries(base_dir=tmp_path)["600128"]
+
+    assert entry["basic_info_status"] == "remote_failed"
+    assert entry["basic_info_failure_at"] == "2026-05-17T09:00:00Z"
+
+
 def test_runtime_entry_fetches_required_basic_info_even_if_legacy_env_disabled(monkeypatch):
     monkeypatch.setenv("UNIFIED_STOCK_REFRESH_BASIC_INFO_ENABLED", "false")
     basic_info_calls: list[str] = []
@@ -52,6 +85,87 @@ def test_runtime_entry_fetches_required_basic_info_even_if_legacy_env_disabled(m
     assert entry["stock_name"] == "慢接口"
     assert entry["latest_price"] == 18.8
     assert entry["sector"] == "半导体"
+
+
+def test_runtime_entry_refetches_basic_info_when_recent_check_left_metrics_missing(monkeypatch):
+    basic_info_calls: list[str] = []
+    monkeypatch.setattr(
+        UnifiedStockRefreshScheduler,
+        "_fetch_realtime_quote",
+        staticmethod(lambda code, preferred_name=None: {"current_price": 9.92, "name": "苏豪弘业"}),
+    )
+    monkeypatch.setattr(
+        UnifiedStockRefreshScheduler,
+        "_fetch_basic_info",
+        staticmethod(
+            lambda code: basic_info_calls.append(code)
+            or {
+                "name": "苏豪弘业",
+                "industry": "商贸零售",
+                "market_cap": 2_450_000_000,
+                "pe_ratio": 18.2,
+                "pb_ratio": 1.1,
+            }
+        ),
+    )
+
+    entry = UnifiedStockRefreshScheduler._fetch_runtime_entry(
+        stock_code="600128",
+        existing={
+            "stock_code": "600128",
+            "stock_name": "苏豪弘业",
+            "latest_price": 9.92,
+            "basic_info_checked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        },
+    )
+
+    assert basic_info_calls == ["600128"]
+    assert entry["sector"] == "商贸零售"
+    assert entry["market_cap"] == 2_450_000_000
+    assert entry["pe_ratio"] == 18.2
+    assert entry["pb_ratio"] == 1.1
+    assert entry["basic_info_status"] == "ready"
+
+
+def test_realtime_quote_backfills_unresolved_tdx_name_from_data_source(monkeypatch):
+    class FakeTdxFetcher:
+        def get_realtime_quote(self, stock_code, preferred_name=None):
+            return {
+                "code": stock_code,
+                "name": stock_code,
+                "current_price": 11.1,
+                "amount": 1000,
+            }
+
+    class FakeDataSourceManager:
+        def get_realtime_quotes(self, stock_code):
+            return {
+                "symbol": stock_code,
+                "name": "欣贺股份",
+                "current_price": 11.2,
+                "market_cap": 1_234_000_000,
+                "pe_ratio": 18.5,
+                "pb_ratio": 1.7,
+            }
+
+    monkeypatch.setitem(
+        sys.modules,
+        "app.smart_monitor_tdx_data",
+        SimpleNamespace(SmartMonitorTDXDataFetcher=FakeTdxFetcher),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.data_source_manager",
+        SimpleNamespace(data_source_manager=FakeDataSourceManager()),
+    )
+
+    quote = UnifiedStockRefreshScheduler._fetch_realtime_quote("003016")
+
+    assert quote["name"] == "欣贺股份"
+    assert quote["current_price"] == 11.1
+    assert quote["market_cap"] == 1_234_000_000
+    assert quote["pe_ratio"] == 18.5
+    assert quote["pb_ratio"] == 1.7
 
 
 def test_runtime_entry_stops_before_basic_info_after_shutdown_signal(monkeypatch):
@@ -364,6 +478,9 @@ def test_run_once_uses_fresh_runtime_cache_without_remote_fetch(monkeypatch, tmp
         def update_position_market_price(self, *args, **kwargs):
             return None
 
+        def list_candidate_events(self, *args, **kwargs):
+            return []
+
     class FakePortfolioManager:
         def get_all_stocks(self):
             return []
@@ -385,6 +502,281 @@ def test_run_once_uses_fresh_runtime_cache_without_remote_fetch(monkeypatch, tmp
     assert summary["cacheHit"] == 1
     assert summary["remoteFetched"] == 0
     assert updates[0]["latest_price"] == 12.34
+
+
+def test_run_once_refetches_fresh_cache_when_stock_name_is_only_code(monkeypatch, tmp_path):
+    quote_calls: list[str] = []
+    basic_info_calls: list[str] = []
+    candidate_updates: list[dict[str, object]] = []
+    now_text = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    ready_snapshot = {
+        "price": 36.88,
+        "ma5": 35.6,
+        "ma10": 35.1,
+        "ma20": 34.8,
+        "ma20_slope": 0.02,
+        "ma60": 33.0,
+        "amount": 88_000_000,
+        "volume_ratio": 1.3,
+        "rsi": 58.0,
+        "macd": 0.04,
+        "trend": "up",
+        "technical_snapshot_ready": True,
+        "technical_snapshot_status": "ready",
+        "technical_snapshot_missing_fields": [],
+        "technical_snapshot_timeframe": "30m",
+        "technical_snapshot_provider": "fixture",
+        "technical_snapshot_at": now_text,
+        "technical_snapshot_prepared_at": now_text,
+        "technical_snapshot_row_count": 120,
+        "technical_snapshot_indicator_version": "fixture-v1",
+    }
+    save_stock_runtime_entries(
+        {
+            "301118": {
+                "stock_code": "301118",
+                "stock_name": "301118",
+                "latest_price": 36.88,
+                "market_cap": 1200.0,
+                "pe_ratio": 32.0,
+                "pb_ratio": 2.8,
+                "sector": "化工",
+                "price_as_of": now_text,
+                "data_source": "fixture",
+                "basic_info_checked_at": now_text,
+                **ready_snapshot,
+            }
+        },
+        base_dir=tmp_path,
+        updated_at=now_text,
+    )
+
+    class FakeWatchlistService:
+        def list_watches(self):
+            return []
+
+    class FakeQuantDB:
+        def get_candidates(self, status=None):
+            return [{"stock_code": "301118", "stock_name": "301118", "latest_price": 36.88}]
+
+        def get_positions(self):
+            return []
+
+        def update_candidate_snapshot(self, code, *, latest_price=None, stock_name=None, metadata=None):
+            candidate_updates.append({"code": code, "latest_price": latest_price, "stock_name": stock_name, "metadata": metadata})
+
+        def update_position_market_price(self, *args, **kwargs):
+            return None
+
+        def list_candidate_events(self, *args, **kwargs):
+            return []
+
+    class FakePortfolioManager:
+        def get_all_stocks(self):
+            return []
+
+    context = SimpleNamespace(
+        selector_result_dir=tmp_path,
+        research_result_key="research",
+        watchlist=lambda: FakeWatchlistService(),
+        portfolio_manager=lambda: FakePortfolioManager(),
+        quant_db=lambda: FakeQuantDB(),
+        scheduler=lambda: SimpleNamespace(get_status=lambda: {"market": "CN"}),
+    )
+    monkeypatch.setattr(UnifiedStockRefreshScheduler, "_is_trading_time", staticmethod(lambda market: True))
+    monkeypatch.setattr(
+        UnifiedStockRefreshScheduler,
+        "_fetch_realtime_quote",
+        staticmethod(lambda code, preferred_name=None: quote_calls.append(code) or {"current_price": 37.12, "name": code}),
+    )
+    monkeypatch.setattr(
+        UnifiedStockRefreshScheduler,
+        "_fetch_basic_info",
+        staticmethod(lambda code: basic_info_calls.append(code) or {"name": "恒光股份", "industry": "化工"}),
+    )
+    monkeypatch.setattr("app.stock_refresh_scheduler.prepare_discovery_market_snapshot_safely", lambda code: ready_snapshot)
+
+    summary = UnifiedStockRefreshScheduler(lambda: context).run_once(context=context, run_reason="scheduled")
+    entries = load_stock_runtime_entries(base_dir=tmp_path)
+
+    assert quote_calls == ["301118"]
+    assert basic_info_calls == ["301118"]
+    assert summary["cacheHit"] == 0
+    assert summary["remoteFetched"] == 1
+    assert entries["301118"]["stock_name"] == "恒光股份"
+    assert candidate_updates[0]["stock_name"] == "恒光股份"
+
+
+def test_run_once_refetches_fresh_cache_when_basic_info_is_incomplete(monkeypatch, tmp_path):
+    quote_calls: list[str] = []
+    basic_info_calls: list[str] = []
+    now_text = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    ready_snapshot = {
+        "price": 9.92,
+        "ma5": 9.8,
+        "ma10": 9.7,
+        "ma20": 9.6,
+        "ma20_slope": 0.01,
+        "ma60": 9.2,
+        "amount": 42_000_000,
+        "volume_ratio": 1.1,
+        "rsi": 55.0,
+        "macd": 0.03,
+        "trend": "up",
+        "technical_snapshot_ready": True,
+        "technical_snapshot_status": "ready",
+        "technical_snapshot_missing_fields": [],
+        "technical_snapshot_timeframe": "30m",
+        "technical_snapshot_provider": "fixture",
+        "technical_snapshot_at": now_text,
+        "technical_snapshot_prepared_at": now_text,
+        "technical_snapshot_row_count": 120,
+        "technical_snapshot_indicator_version": "fixture-v1",
+    }
+    save_stock_runtime_entries(
+        {
+            "600128": {
+                "stock_code": "600128",
+                "stock_name": "苏豪弘业",
+                "latest_price": 9.92,
+                "price_as_of": now_text,
+                "data_source": "fixture",
+                "basic_info_checked_at": now_text,
+                **ready_snapshot,
+            }
+        },
+        base_dir=tmp_path,
+        updated_at=now_text,
+    )
+
+    class FakeWatchlistService:
+        def list_watches(self):
+            return [{"stock_code": "600128", "stock_name": "苏豪弘业"}]
+
+        def update_watch_snapshot(self, *args, **kwargs):
+            return None
+
+    class FakeQuantDB:
+        def get_candidates(self, status=None):
+            return []
+
+        def get_positions(self):
+            return []
+
+        def update_position_market_price(self, *args, **kwargs):
+            return None
+
+        def update_candidate_latest_price(self, *args, **kwargs):
+            return None
+
+    class FakePortfolioManager:
+        def get_all_stocks(self):
+            return []
+
+    context = SimpleNamespace(
+        selector_result_dir=tmp_path,
+        research_result_key="research",
+        watchlist=lambda: FakeWatchlistService(),
+        portfolio_manager=lambda: FakePortfolioManager(),
+        quant_db=lambda: FakeQuantDB(),
+        scheduler=lambda: SimpleNamespace(get_status=lambda: {"market": "CN"}),
+    )
+    monkeypatch.setattr(UnifiedStockRefreshScheduler, "_is_trading_time", staticmethod(lambda market: True))
+    monkeypatch.setattr(
+        UnifiedStockRefreshScheduler,
+        "_fetch_realtime_quote",
+        staticmethod(lambda code, preferred_name=None: quote_calls.append(code) or {"current_price": 9.92, "name": "苏豪弘业"}),
+    )
+    monkeypatch.setattr(
+        UnifiedStockRefreshScheduler,
+        "_fetch_basic_info",
+        staticmethod(lambda code: basic_info_calls.append(code) or {"name": "苏豪弘业", "industry": "商贸零售"}),
+    )
+    monkeypatch.setattr("app.stock_refresh_scheduler.prepare_discovery_market_snapshot_safely", lambda code: ready_snapshot)
+
+    summary = UnifiedStockRefreshScheduler(lambda: context).run_once(context=context, run_reason="scheduled")
+
+    assert summary["cacheHit"] == 0
+    assert summary["remoteFetched"] == 1
+    assert quote_calls == ["600128"]
+    assert basic_info_calls == ["600128"]
+
+
+def test_run_once_uses_discovery_artifact_name_when_remote_name_is_unresolved(monkeypatch, tmp_path):
+    watch_updates: list[dict[str, object]] = []
+    candidate_updates: list[dict[str, object]] = []
+
+    save_latest_result(
+        "discovery_candidate_artifact",
+        {
+            "rows": [
+                {
+                    "code": "300083",
+                    "name": "创世纪",
+                    "industry": "机械设备-通用设备-机床工具",
+                    "latestPrice": "11.93",
+                    "marketCap": "198.62",
+                    "peRatio": "68.82",
+                    "pbRatio": "3.74",
+                }
+            ]
+        },
+        base_dir=tmp_path,
+    )
+
+    class FakeWatchlistService:
+        def list_watches(self):
+            return [{"stock_code": "300083", "stock_name": "300083"}]
+
+        def update_watch_snapshot(self, code, *, latest_price=None, stock_name=None, metadata=None):
+            watch_updates.append({"code": code, "latest_price": latest_price, "stock_name": stock_name, "metadata": metadata})
+
+    class FakeQuantDB:
+        def get_candidates(self, status=None):
+            return [{"stock_code": "300083", "stock_name": "300083"}]
+
+        def get_positions(self):
+            return []
+
+        def update_candidate_snapshot(self, code, *, latest_price=None, stock_name=None, metadata=None):
+            candidate_updates.append({"code": code, "latest_price": latest_price, "stock_name": stock_name, "metadata": metadata})
+
+        def update_position_market_price(self, *args, **kwargs):
+            return None
+
+        def list_candidate_events(self, *args, **kwargs):
+            return []
+
+    class FakePortfolioManager:
+        def get_all_stocks(self):
+            return []
+
+    context = SimpleNamespace(
+        selector_result_dir=tmp_path,
+        research_result_key="research",
+        watchlist=lambda: FakeWatchlistService(),
+        portfolio_manager=lambda: FakePortfolioManager(),
+        quant_db=lambda: FakeQuantDB(),
+        scheduler=lambda: SimpleNamespace(get_status=lambda: {"market": "CN"}),
+    )
+    monkeypatch.setattr(UnifiedStockRefreshScheduler, "_is_trading_time", staticmethod(lambda market: True))
+    monkeypatch.setattr(UnifiedStockRefreshScheduler, "_fetch_realtime_quote", staticmethod(lambda code, preferred_name=None: {"current_price": 12.34, "name": code}))
+    monkeypatch.setattr(UnifiedStockRefreshScheduler, "_fetch_basic_info", staticmethod(lambda code: {}))
+    monkeypatch.setattr(
+        "app.stock_refresh_scheduler.prepare_discovery_market_snapshot_safely",
+        lambda code: {"price": 12.34, "technical_snapshot_ready": True},
+    )
+
+    summary = UnifiedStockRefreshScheduler(lambda: context).run_once(context=context, run_reason="scheduled")
+    entries = load_stock_runtime_entries(base_dir=tmp_path)
+
+    assert summary["remoteFetched"] == 1
+    assert entries["300083"]["stock_name"] == "创世纪"
+    assert entries["300083"]["market_cap"] == 198.62
+    assert entries["300083"]["pe_ratio"] == 68.82
+    assert entries["300083"]["pb_ratio"] == 3.74
+    assert watch_updates[0]["stock_name"] == "创世纪"
+    assert candidate_updates[0]["stock_name"] == "创世纪"
 
 
 def test_run_once_updates_watchlist_metrics_from_basic_info_interface(monkeypatch, tmp_path):

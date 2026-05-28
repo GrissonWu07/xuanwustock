@@ -4,8 +4,10 @@ from datetime import datetime
 from typing import Any
 
 from app.gateway.deps import *
+from app.gateway.artifact_diagnostics import artifact_diagnostics_from_payload
 from app.gateway.constants import REPLAY_TABLE_PAGE_SIZE
 from app.gateway.context import UIApiContext
+from app.gateway.page_market_artifact_projection import PageArtifactProjectionRequest, apply_live_artifact_projection
 from app.gateway.replay_capital_pool import build_live_sim_capital_pool
 from app.gateway.scheduler_config import _fee_rate_pct_text, _normalize_dynamic_lookback, _normalize_dynamic_strength, _scheduler_update_kwargs
 from app.gateway.signal_table import build_signal_summary_row, build_signal_summary_table
@@ -21,8 +23,11 @@ from app.gateway.trades import (
     _trade_realized_pnl_pct,
     _trade_sell_tax_fee,
     _trade_slot_units,
+    build_trade_provenance,
 )
+from app.quant_sim.evidence_service import PAYLOAD_SCORE_SEMANTICS
 from app.quant_sim.time_utils import format_market_iso, market_timezone_name, system_timezone_name, utc_now_iso_z
+from app.stock_refresh_scheduler import load_stock_runtime_entries
 
 LIVE_SIM_DEFAULT_QUANT_STATUS_FILTERS = ["trial", "active", "exit_only"]
 LIVE_SIM_ALL_QUANT_STATUS_FILTERS = ["trial", "active", "exit_only", "cooling", "retired", "manual_paused"]
@@ -194,6 +199,7 @@ def _live_sim_candidate_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     db = context.quant_db()
+    runtime_entries = load_stock_runtime_entries(base_dir=context.selector_result_dir)
     for item in context.candidate_pool().list_candidates(
         status=status,
         limit=limit,
@@ -208,34 +214,55 @@ def _live_sim_candidate_rows(
                 {"label": "分析候选股", "icon": "🔎", "tone": "accent", "action": "analyze-candidate"},
                 {"label": "删除候选股", "icon": "🗑", "tone": "danger", "action": "delete-candidate"},
             ]
-        rows.append(
-            {
-                "id": code,
-                "cells": [
-                    code,
-                    _txt(item.get("stock_name") or code),
-                    _txt(item.get("source") or "watchlist"),
-                    _num(item.get("latest_price")),
-                ],
-                "actions": actions,
-                "code": code,
-                "name": _txt(item.get("stock_name") or code),
-                "source": _txt(item.get("source") or "watchlist"),
-                "latestPrice": _num(item.get("latest_price")),
-                "lifecycle": _live_sim_lifecycle_payload(db, code),
-            }
+        lifecycle = _live_sim_lifecycle_payload(db, code)
+        row = {
+            "id": code,
+            "cells": [
+                code,
+                _txt(item.get("stock_name") or code),
+                _txt(item.get("source") or "watchlist"),
+                _num(item.get("latest_price")),
+            ],
+            "actions": actions,
+            "code": code,
+            "name": _txt(item.get("stock_name") or code),
+            "source": _txt(item.get("source") or "watchlist"),
+            "latestPrice": _num(item.get("latest_price")),
+            "artifact_ref": (lifecycle.get("artifactDiagnostics") or {}).get("artifact_ref"),
+            "lifecycle": lifecycle,
+        }
+        row = apply_live_artifact_projection(
+            PageArtifactProjectionRequest(
+                db_file=context.quant_sim_db_file,
+                row=row,
+                runtime_entries=runtime_entries,
+                price_cell_index=3,
+            )
         )
+        row["lifecycle"] = {**lifecycle, "artifactDiagnostics": row.get("artifactDiagnostics")}
+        rows.append(row)
     return rows
 
 
 def _live_sim_lifecycle_payload(db: Any, stock_code: str) -> dict[str, Any]:
     state = db.get_quant_universe_state(stock_code) or {}
     latest_event = db.get_latest_quant_universe_event(stock_code) or {}
+    list_candidate_events = getattr(db, "list_candidate_events", None)
+    candidate_events = list_candidate_events(stock_code=stock_code, limit=1) if callable(list_candidate_events) else []
+    candidate_payload = (
+        candidate_events[0].get("payload_json")
+        if candidate_events and isinstance(candidate_events[0].get("payload_json"), dict)
+        else {}
+    )
     return {
         "quant_status": _txt(state.get("quant_status"), "inactive"),
         "health_score": float(state.get("health_score") if state.get("health_score") is not None else 100),
         "candidate_score": float(state.get("candidate_score") or 0),
         "candidate_confidence": float(state.get("candidate_confidence") or 0),
+        "last_health_evaluated_at": _system_time_text(state.get("last_health_evaluated_at"), ""),
+        "score_semantics": candidate_payload.get("score_semantics") or dict(PAYLOAD_SCORE_SEMANTICS),
+        "preparedEvidence": candidate_payload.get("prepared_evidence") if isinstance(candidate_payload.get("prepared_evidence"), dict) else {},
+        "artifactDiagnostics": artifact_diagnostics_from_payload(candidate_payload),
         "downtrend_streak": int(state.get("downtrend_streak") or 0),
         "weakening_warning_streak": int(state.get("weakening_warning_streak") or 0),
         "cooling_until": state.get("cooling_until"),
@@ -309,6 +336,7 @@ def _live_trade_table(context: UIApiContext, table_query: dict[str, Any] | None 
             ],
             "code": _txt(item.get("stock_code")),
             "name": _txt(item.get("stock_name")),
+            "tradeProvenance": build_trade_provenance(item),
         }
         for i, item in enumerate(
             db.get_trade_history(

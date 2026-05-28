@@ -1,14 +1,50 @@
 from datetime import date, datetime, timezone
+import json
 import sqlite3
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from app.quant_kernel import trading_time_utils
+from app.quant_sim.market_technical_artifact import ArtifactWriteRequest, MarketTechnicalArtifactData, MarketTechnicalArtifactRef
+from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.scheduler import QuantSimScheduler
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, QuantUniverseManager
+
+
+def _seed_live_artifact(db_file, stock_code: str, *, price: float = 10.0) -> str:
+    artifact = MarketTechnicalArtifactStore(db_file).upsert(
+        ArtifactWriteRequest(
+            ref=MarketTechnicalArtifactRef.live(
+                stock_code=stock_code,
+                market="CN",
+                checkpoint_at="2026-05-08T02:30:00Z",
+                timeframe="30m",
+            ),
+            data=MarketTechnicalArtifactData(
+                latest_price=price,
+                close=price,
+                ma5=price * 1.01,
+                ma10=price,
+                ma20=price * 0.98,
+                ma60=price * 0.9,
+                ma20_slope=0.02,
+                rsi=58.0,
+                macd=0.1,
+                volume_ratio=1.4,
+                amount=120_000_000.0,
+                trend="up",
+                provider="unit-test",
+                indicator_version="v1",
+                source_status="ready",
+                reason_code="ok",
+                computed_at="2026-05-08T02:30:05Z",
+            ),
+        )
+    )
+    return artifact.artifact_ref
 
 
 def test_scheduler_trading_time_uses_market_timezone_for_cn_hk_and_us():
@@ -94,10 +130,12 @@ def test_scheduler_run_once_skips_when_market_is_closed(tmp_path, monkeypatch):
 
 
 def test_scheduler_tracks_positions_and_generates_followup_signals(tmp_path, monkeypatch):
-    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
-    signal_service = SignalCenterService(db_file=tmp_path / "app.quant_sim.db")
-    portfolio_service = PortfolioService(db_file=tmp_path / "app.quant_sim.db")
-    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
+    db_file = tmp_path / "app.quant_sim.db"
+    artifact_ref = _seed_live_artifact(db_file, "600000", price=10.4)
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force", metadata={"artifact_ref": artifact_ref})
     candidate = candidate_service.list_candidates()[0]
     buy_signal = signal_service.create_signal(
         candidate,
@@ -111,7 +149,7 @@ def test_scheduler_tracks_positions_and_generates_followup_signals(tmp_path, mon
         executed_at="2026-04-07 10:00:00",
     )
 
-    scheduler = QuantSimScheduler(db_file=tmp_path / "app.quant_sim.db")
+    scheduler = QuantSimScheduler(db_file=db_file)
     monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
 
     monkeypatch.setattr(
@@ -192,10 +230,12 @@ def test_scheduler_run_once_records_account_snapshot(tmp_path, monkeypatch):
 
 
 def test_scheduler_run_once_uses_configured_analysis_timeframe(tmp_path, monkeypatch):
-    candidate_service = CandidatePoolService(db_file=tmp_path / "app.quant_sim.db")
-    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
+    db_file = tmp_path / "app.quant_sim.db"
+    artifact_ref = _seed_live_artifact(db_file, "600000")
+    candidate_service = CandidatePoolService(db_file=db_file)
+    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force", metadata={"artifact_ref": artifact_ref})
 
-    scheduler = QuantSimScheduler(db_file=tmp_path / "app.quant_sim.db")
+    scheduler = QuantSimScheduler(db_file=db_file)
     scheduler.update_config(enabled=True, analysis_timeframe="1d+30m")
     monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
     captured = {}
@@ -221,8 +261,10 @@ def test_scheduler_run_once_passes_one_live_current_time_to_candidate_and_positi
     candidate_service = CandidatePoolService(db_file=db_file)
     signal_service = SignalCenterService(db_file=db_file)
     portfolio_service = PortfolioService(db_file=db_file)
-    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force")
-    candidate_service.add_manual_candidate("300750", "宁德时代", "main_force")
+    artifact_600000 = _seed_live_artifact(db_file, "600000", price=10.0)
+    artifact_300750 = _seed_live_artifact(db_file, "300750", price=201.5)
+    candidate_service.add_manual_candidate("600000", "浦发银行", "main_force", metadata={"artifact_ref": artifact_600000})
+    candidate_service.add_manual_candidate("300750", "宁德时代", "main_force", metadata={"artifact_ref": artifact_300750})
     held_candidate = next(item for item in candidate_service.list_candidates() if item["stock_code"] == "300750")
     buy_signal = signal_service.create_signal(
         held_candidate,
@@ -273,6 +315,16 @@ def test_scheduler_run_once_passes_one_live_current_time_to_candidate_and_positi
     scheduler.run_once()
 
     assert captured == {"candidate": [current_time], "position": [current_time]}
+    signals = signal_service.db.get_signals(stock_code="600000", limit=1)
+    profile = signals[0]["strategy_profile"]
+    if isinstance(profile, str):
+        profile = json.loads(profile)
+    market_snapshot = profile["market_snapshot"]
+    assert market_snapshot["artifact_ref"] == artifact_600000
+    assert market_snapshot["source_status"] == "ready"
+    assert "current_price" not in market_snapshot
+    assert "ma20" not in market_snapshot
+    assert "rsi" not in market_snapshot
 
 
 def test_scheduled_cycle_skips_before_start_date(tmp_path, monkeypatch):
@@ -533,6 +585,7 @@ def test_scheduler_opportunistic_review_skips_cooling_until_and_recent_reviews(t
 
 def test_scheduler_forces_cooling_review_when_candidate_event_is_queued(tmp_path, monkeypatch):
     db_file = tmp_path / "app.quant_sim.db"
+    artifact_ref = _seed_live_artifact(db_file, "600000", price=8.8)
     candidate_service = CandidatePoolService(db_file=db_file)
     candidate_service.add_manual_candidate("600000", "浦发银行", "manual")
     candidate_service.db.update_quant_universe_settings(
@@ -561,8 +614,11 @@ def test_scheduler_forces_cooling_review_when_candidate_event_is_queued(tmp_path
             "confidence": 0.9,
             "trend": "up",
             "occurred_at": "2026-05-08T00:10:00Z",
-            "payload_json": {
-                "price": 8.8,
+                "payload_json": {
+                    "artifact_ref": artifact_ref,
+                    "source_status": "ready",
+                    "reason_code": "ok",
+                    "price": 8.8,
                 "ma5": 9.2,
                 "ma10": 9.0,
                 "ma20": 8.6,

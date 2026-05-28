@@ -103,6 +103,20 @@ def prepare_discovery_market_snapshot(
     return _prepare_code_snapshot(service, _normalize_stock_code(code), current_time=current_time)
 
 
+def prepare_discovery_market_snapshot_safely(code: str) -> dict[str, Any]:
+    """Return a failed technical snapshot instead of leaking provider exceptions."""
+
+    normalized_code = _normalize_stock_code(code)
+    try:
+        return prepare_discovery_market_snapshot(normalized_code)
+    except Exception as exc:
+        return _failed_snapshot(
+            normalized_code,
+            current_time=datetime.now(),
+            reason=str(exc) or type(exc).__name__,
+        )
+
+
 def _prepare_code_snapshot(service: Any, code: str, *, current_time: datetime) -> dict[str, Any]:
     try:
         start_date = current_time - timedelta(days=120)
@@ -327,5 +341,6 @@ __all__ = [
     "REQUIRED_TECHNICAL_SNAPSHOT_FIELDS",
     "DiscoveryMarketSnapshotResult",
     "prepare_discovery_market_snapshot",
+    "prepare_discovery_market_snapshot_safely",
     "prepare_discovery_market_snapshots",
 ]

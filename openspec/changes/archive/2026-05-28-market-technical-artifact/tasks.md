@@ -1,0 +1,290 @@
+# market-technical-artifact Implementation Tasks
+
+## Global Implementation Constraints
+
+- 已知超限文件不得直接承载新增实现：`app/quant_sim/db.py`、`app/stock_refresh_scheduler.py`、`app/quant_sim/quant_universe_lifecycle.py`、`app/quant_sim/replay_service.py`、`app/gateway/his_replay.py` 当前均超过 1000 行或接近门禁。实现阶段若必须接线这些文件，必须先把相关既有职责抽取到 focused module，使被修改文件在任务完成时 <= 1000 行；否则不得修改这些文件。
+- 新增实现优先落入 focused modules：`app/quant_sim/market_technical_artifact.py`、`app/quant_sim/market_technical_artifact_store.py`、`app/stock_refresh_artifact_writer.py`、`app/quant_sim/lifecycle_artifact_adapter.py`、`app/quant_sim/replay_artifact_adapter.py`、`app/quant_sim/drill_artifact_adapter.py`、`app/gateway/market_technical_artifacts.py`、`app/gateway/artifact_diagnostics.py`、`app/gateway/page_market_artifact_projection.py`。
+- 每个任务完成时，所有新增或修改的代码文件必须 <= 1000 行；不能用“只改几行”作为修改超限文件的例外理由。
+- Real E2E 的执行策略：内部基础任务若尚无外部入口，必须明确“不适用原因”；凡能通过 job/API/page 入口验证的任务，必须给出具体 runtime target、触发方式、测试数据和断言。最终完整 E2E 由 Task 7 阻塞 `/sp-complete`，但不能替代前置任务应有的 standalone/API/job 验证。
+
+## Tasks
+
+- [x] 1.1 建立行情技术 Artifact 身份、数据对象、序列化和存储表
+  - Related requirement: `统一行情技术 Artifact 身份`, `Artifact 字段覆盖`, `Artifact 状态和缺失原因`, `来源评分不得进入 Artifact 事实层`
+  - Design reference: `Architecture Impact`, `Data Impact`, `Database Decision`, `Method / Function Parameter Plan`, `Configuration Parameter Confirmation`
+  - Design review reference: `Task Readiness`, `Customer DB layout clarification`, `Independent Review Thread Round 2`
+  - Applicable rules: `docs/rules/python-code-standards.md`, `docs/rules/configuration-standards.md`, `docs/rules/testing-standards.md`, `docs/rules/logging-standards.md`, `docs/rules/encoding-standards.md`
+  - Target code paths: `app/quant_sim/market_technical_artifact.py`, `app/quant_sim/market_technical_artifact_store.py`, `tests/test_market_technical_artifact.py`; `app/quant_sim/db.py` 仅可作为只读参考或在先完成拆分并降至 <= 1000 行后薄接线。
+  - Multi-lens review: Product verifies one fact layer is addressable by artifact_ref; Engineering verifies live/run identity separation; DevEx verifies named data objects; Security verifies no provider secret/raw response persisted; QA verifies parse/read/write/missing paths.
+  - Reuse/common logic impact: Create the shared artifact module and DB helpers once; all later tasks must reuse it instead of duplicating artifact parsing, status mapping, or row mapping.
+  - Requirement scope / fallback: Implement only artifact identity, storage, status and read/write behavior. Do not add migration fallback that fills old candidate/signal records from current行情.
+  - Method/function parameter plan: Use `MarketTechnicalArtifactRef`, `MarketTechnicalArtifactData`, `ArtifactWriteRequest`, and `ArtifactQuery`; no new function may exceed 5 inputs.
+  - Comments/logging/traceability: Add concise comments for `checkpoint_at` vs `computed_at`, `data_version` vs `indicator_version`, and run-scope isolation. Log artifact upsert/read/missing at INFO/WARN with `trace_id`, domain, run_id, run_type, stock_code, market, checkpoint_at, timeframe, data_version, source_status, missing_fields; exclude secrets and raw provider payloads.
+  - Encoding/no-mojibake: Keep reason codes ASCII; Chinese comments/docs must be UTF-8 and readable; JSON serialization must preserve UTF-8 where text is emitted.
+  - File size guardrail: `app/quant_sim/db.py` 当前超限，不得直接新增 artifact schema/CRUD；必须在 `market_technical_artifact_store.py` 承载 repository/schema/upsert/read，或先完成 db 文件拆分并让被修改文件 <= 1000 行。
+  - Database impact: Add SQLite local tables `market_technical_artifacts` and `sim_run_market_technical_artifacts` with key columns plus JSON extension fields; keep schema compatible with MySQL deployment intent and pool <= 100 rule.
+  - Backend logic confirmation: Confirmed in `design.md` on 2026-05-27: key columns + JSON extension, live/replay/drill isolation, no score behavior changes.
+  - API contract/layers: None in this task beyond repository/service primitives; API endpoint is Task 5.
+  - API path/parameters confirmation: Not applicable for this storage task; confirmed API details are implemented in Task 5.
+  - API IO / async: No long-running API work; DB upsert/read must be deterministic and idempotent.
+  - UI mockup/function confirmation: Not applicable; no UI work in this task.
+  - Browser/UI QA: Not applicable.
+  - Config parameter confirmation: Confirmed fixed enums only: artifact domain, run_type, source_status, reason_code.
+  - Change: Implement artifact ref serialization/parsing, data/status objects, row normalization, idempotent upsert, query by artifact_ref and full identity key, missing/invalid reason mapping, and JSON/column response assembly.
+  - Standalone verification: `python -m pytest -q tests/test_market_technical_artifact.py -k "ref or storage or status"`; verify valid live/run refs, invalid refs, live query without run scope, run query requiring run scope, ready/partial/missing/source_failed/stale/invalid handling.
+  - Real E2E test: 本任务为内部事实层基础设施，尚无设计确认的独立用户/API/job 外部入口；本任务 E2E 不适用。必须完成 service-level integration 和 DB verification，且 Task 5/7 的 API/E2E 会阻塞完整能力验收。
+  - Test target boundary: Project-owned artifact ref, normalization, persistence, and missing behavior only; do not test SQLite internals or third-party provider correctness.
+  - Requirement-to-test mapping: artifact identity scenarios -> ref/query tests; field coverage -> data assembly tests; status/reason scenarios -> missing/invalid/partial tests; source-score exclusion -> artifact payload rejection/assertion tests.
+  - Counterexample matrix: Include malformed refs, live query with illegal run_id, run query without run_id, duplicate upsert, partial artifact with missing_fields, candidate source_score input, empty JSON extension.
+  - Masked-test analysis: Tests must fetch persisted rows and assembled API-shaped data, not only instantiate objects; missing tests must prove no fallback by asserting reason code and absence of synthesized latest price.
+  - Broad-qualifier audit: Spec says all participating quant artifacts; code must not narrow to only live or only replay.
+  - Decision Chain Trace: Required for parse -> validate domain/run scope -> query key -> status/reason resolution.
+  - Evidence Capture Timing Audit: Required for `checkpoint_at`, `computed_at`, `source_status`, `reason_code`, `artifact_ref`, and `missing_fields` capture moment.
+  - Deterministic Sort Audit: Not applicable except deterministic missing_fields ordering; require sorted missing_fields in tests.
+  - Validation: Tests plus direct sqlite row inspection for unique constraints and JSON extension fields.
+  - Test parameters: `.agent/workdir/sp-openspec/market-technical-artifact/test-params/artifact-storage.md`
+  - Coverage target: At least 85% for changed/affected artifact module and DB helper paths.
+  - Required reviews after implementation:
+    - Alignment review against spec, design, design review, task, rules, and changed code
+    - Security review against validation, data exposure, logging, database IO, config enums, and provider diagnostic leakage
+  - Review gate: All findings must be fixed and re-reviewed before Task 2 starts.
+
+- [x] 2.1 接入实时刷新生产 live artifact，并让 runtime snapshot 只做派生展示
+  - Related requirement: `实时量化写入 live artifact`, `所有量化流程通过 Artifact 事实层`, `旧来源角色收敛`
+  - Design reference: `Target Behavior`, `Reuse / Common Logic Plan`, `Standalone Verification Plan`, `Customer flow-source clarification`
+  - Design review reference: `Customer flow-source clarification`, `Independent narrow re-review verdict: Pass`
+  - Applicable rules: `docs/rules/python-code-standards.md`, `docs/rules/logging-standards.md`, `docs/rules/testing-standards.md`
+  - Target code paths: `app/stock_refresh_artifact_writer.py`, `app/discover/market_snapshot.py`, `app/discover/candidate_artifact.py`, `app/quant_sim/market_technical_artifact.py`, `tests/test_market_technical_artifact.py`; `app/stock_refresh_scheduler.py` 当前超限，只允许在先拆分降至 <= 1000 行后做薄接线。
+  - Multi-lens review: Product verifies刷新后有可追踪 artifact; Engineering verifies provider/local cache is producer input only; QA verifies runtime snapshot cannot become decision fact.
+  - Reuse/common logic impact: Reuse `prepare_discovery_market_snapshot()` indicator preparation and Task 1 artifact writer; do not create a parallel refresh artifact writer.
+  - Requirement scope / fallback: Refresh may use provider/local cache to build artifact, but downstream decisions must receive artifact_ref and missing reason. Do not silently bypass artifact on refresh failure.
+  - Method/function parameter plan: Use `ArtifactWriteRequest` from Task 1; if scheduler needs more values, pass a named refresh context object.
+  - Comments/logging/traceability: Log legacy source converted to artifact_ref and artifact write success/failure with `trace_id`; do not log raw TDX/Akshare responses.
+  - Encoding/no-mojibake: Validate Chinese refresh diagnostics and JSON text remain UTF-8.
+  - File size guardrail: 不得直接向 `app/stock_refresh_scheduler.py` 添加逻辑；新增刷新到 artifact 的实现必须在 `app/stock_refresh_artifact_writer.py`，scheduler 接线前必须满足 <= 1000 行门禁。
+  - Database impact: Writes live `market_technical_artifacts`; no replay table writes in this task.
+  - Backend logic confirmation: Confirmed: realtime refresh writes live artifact; runtime snapshot is derived.
+  - API contract/layers: None directly; Task 5 exposes query API.
+  - API path/parameters confirmation: Not applicable.
+  - API IO / async: Refresh remains job-driven; no new synchronous bulk API generation.
+  - UI mockup/function confirmation: Not applicable.
+  - Browser/UI QA: Not applicable.
+  - Config parameter confirmation: No new config; use fixed enum constants.
+  - Change: Convert refreshed行情/technical snapshot to live artifact; persist `artifact_ref`; update runtime snapshot/export from artifact-derived values; expose missing/partial source_status for refresh failures.
+  - Standalone verification: Trigger a small local refresh using deterministic/stubbed project fixture where available, then query DB through artifact service; assert runtime snapshot values match artifact-derived projection.
+  - Real E2E test: Required for this feature point through the system-facing refresh entry. Runtime target: local/test backend or project-supported scheduler invocation. Trigger one deterministic live refresh for a fixture stock, then verify live artifact row exists and runtime projection matches artifact-derived values. If no runnable refresh entry exists, record blocker and still run the service-level conversion test; Task 7 must rerun full API E2E after endpoints exist.
+  - Test target boundary: Project-owned conversion and persistence behavior; provider correctness is mocked/stubbed or fixture-backed.
+  - Requirement-to-test mapping: live refresh scenario -> scheduler/adapter test; runtime snapshot派生 scenario -> projection test; no bypass scenario -> refresh failure test.
+  - Counterexample matrix: Provider returns missing MA20, stale local cache, suspended/limit-up flags, missing indicator_version, duplicate refresh same checkpoint.
+  - Masked-test analysis: Tests must prove artifact write happened before runtime projection; a test passing from pre-existing runtime snapshot is invalid.
+  - Broad-qualifier audit: Applies to refreshed stocks used by quant, not only discovery candidates.
+  - Decision Chain Trace: Required for refresh data -> normalize -> artifact write -> runtime derived projection.
+  - Evidence Capture Timing Audit: Required for checkpoint_at chosen by refresh, computed_at write time, provider/source_status capture.
+  - Deterministic Sort Audit: Not applicable.
+  - Validation: `python -m pytest -q tests/test_market_technical_artifact.py -k "live_refresh or runtime_projection"`.
+  - Test parameters: `.agent/workdir/sp-openspec/market-technical-artifact/test-params/live-refresh-artifact.md`
+  - Coverage target: At least 85% for changed refresh adapter and artifact paths.
+  - Required reviews after implementation:
+    - Alignment review against live artifact producer requirements and no-bypass design
+    - Security review for provider data logging, trace fields, DB write validation, and sensitive-data exclusion
+  - Review gate: All findings must be fixed and re-reviewed before Task 3 starts.
+
+- [x] 3.1 收敛发现、候选入池和实时量化信号消费路径到 artifact reader
+  - Related requirement: `候选与信号引用 Artifact`, `旧来源角色收敛`, `Prepared Discovery Persistence`, `所有量化流程通过 Artifact 事实层`
+  - Design reference: `Backend Logic Confirmation`, `Integration Impact`, `Requirement Scope / Compatibility / Fallback`, `Customer page-source clarification`
+  - Design review reference: `Customer page-source clarification`, `Main Thread Finding Response`
+  - Applicable rules: `docs/rules/python-code-standards.md`, `docs/rules/testing-standards.md`, `docs/rules/logging-standards.md`, `docs/rules/encoding-standards.md`
+  - Target code paths: `app/discover/candidate_artifact.py`, `app/discover/market_snapshot.py`, `app/quant_sim/lifecycle_artifact_adapter.py`, `app/quant_sim/candidate_re_evaluation.py`, `app/quant_sim/candidate_entry_gate.py`, `app/quant_sim/engine.py`, `app/quant_sim/signal_center_service.py`, `app/quant_sim/technical_entry_score.py`, `tests/test_market_technical_artifact.py`; `app/quant_sim/quant_universe_lifecycle.py` 当前超限，只允许在先拆分降至 <= 1000 行后薄接线。
+  - Multi-lens review: Product verifies入池/信号可解释; Engineering verifies one artifact reader is used; QA verifies missing artifact blocks ingestion and signal with explicit reason.
+  - Reuse/common logic impact: Reuse Task 1 reader; candidate, lifecycle, engine, and signal code must not each parse payload technical fields separately.
+  - Requirement scope / fallback: Prepared candidate/candidate event payload may keep artifact_ref and light diagnostics only as authoritative fields. Do not use copied payload technical values, runtime latest snapshot, or provider cache as fallback.
+  - Method/function parameter plan: Pass `ArtifactQuery` or `artifact_ref`, not raw dicts of technical fields; use named decision context objects if more inputs are needed.
+  - Comments/logging/traceability: Log artifact read by candidate/signal with `trace_id`, stock, checkpoint, artifact_ref, source_status, reason_code; comment why missing artifact blocks automatic lifecycle ingestion.
+  - Encoding/no-mojibake: Candidate diagnostics and reason strings must be stable ASCII reason codes with UI/i18n display separate.
+  - File size guardrail: 不得在超限 lifecycle 文件内新增 artifact 读取实现；将消费适配放入 `lifecycle_artifact_adapter.py`，`engine.py`/`signal_center_service.py` 如需修改也必须在任务完成时 <= 1000 行。
+  - Database impact: Candidate/signal records add or populate artifact_ref and light diagnostics; no old-record backfill.
+  - Backend logic confirmation: Confirmed: candidate/signal save artifact_ref; full technical facts are read from artifact.
+  - API contract/layers: Existing candidate/signal diagnostics extended in Task 5; this task prepares backend data.
+  - API path/parameters confirmation: Existing APIs only; new artifact query endpoints in Task 5.
+  - API IO / async: No new async path; ingestion remains in existing jobs.
+  - UI mockup/function confirmation: Existing diagnostics only; no new page.
+  - Browser/UI QA: Not applicable in this backend task; Task 6 covers page API/UI QA.
+  - Config parameter confirmation: No new config.
+  - Change: Persist artifact_ref in prepared candidates and candidate events; lifecycle ingestion reads artifact via reader; signal generation stores artifact_ref and diagnostic status; missing/partial/stale artifacts block according to spec with explicit reason.
+  - Standalone verification: Run tests that build prepared candidates with ready artifact, missing artifact_ref, copied payload fields, and partial artifact; assert lifecycle/signal uses artifact reader and blocks missing references.
+  - Real E2E test: Required for candidate/signal feature point where existing entry exists. Runtime target: local/test backend or project-supported candidate ingestion/signal generation entry. Test data: one prepared candidate with ready artifact, one missing artifact_ref, one payload/artifact conflict. Assertions: automatic lifecycle ingestion reads artifact, missing ref blocks with `missing_artifact_reference`, generated signal diagnostics include artifact_ref/source_status/reason_code. If no runnable external entry exists at this phase, record blocker and run project-owned service integration; Task 7 remains blocking for full API/job E2E.
+  - Test target boundary: Project-owned candidate ingestion, lifecycle entry, signal generation, and diagnostic mapping; no provider behavior tests.
+  - Requirement-to-test mapping: prepared discovery scenarios -> candidate persistence tests; missing artifact reference -> block reason test; signal artifact reference -> signal diagnostic test; old source role -> payload-bypass adversarial test.
+  - Counterexample matrix: Candidate payload has false MA20 but artifact has different MA20; event missing artifact_ref; event artifact partial; live artifact absent; source_score/confidence present in payload.
+  - Masked-test analysis: Tests must assert the artifact reader was called or artifact value affects outcome; simply checking an artifact_ref column exists is insufficient.
+  - Broad-qualifier audit: Applies to discovery, candidate lifecycle, candidate re-evaluation, signal generation, not only one entry path.
+  - Decision Chain Trace: Required for candidate admission and signal generation gate: artifact_ref present -> read -> source_status validation -> decision/diagnostic.
+  - Evidence Capture Timing Audit: Required for candidate effective checkpoint, artifact_ref, technical readiness, source_status, reason_code, signal checkpoint.
+  - Deterministic Sort Audit: Required where candidate ranking/selection uses readiness; sort keys and tie-breaks must remain deterministic.
+  - Validation: `python -m pytest -q tests/test_market_technical_artifact.py -k "candidate or signal or lifecycle"`.
+  - Test parameters: `.agent/workdir/sp-openspec/market-technical-artifact/test-params/candidate-signal-artifact.md`
+  - Coverage target: At least 85% for affected candidate/lifecycle/signal paths.
+  - Required reviews after implementation:
+    - Alignment review against artifact consumer and no-payload-authority requirements
+    - Security review for diagnostic exposure, logs, validation, and sensitive source metadata
+  - Review gate: All findings must be fixed and re-reviewed before Task 4 starts.
+
+- [x] 4.1 接入历史回放和实时量化演练的 run-scoped artifact 生产与消费
+  - Related requirement: `历史回放和实时量化演练写入 run-scoped artifact`, `所有量化流程通过 Artifact 事实层`, `Artifact 状态和缺失原因`
+  - Design reference: `Target Behavior flow matrix`, `Reuse / Common Logic Plan`, `Integration Impact`, `Real E2E Test Design`
+  - Design review reference: `Customer flow-source clarification`, `Independent narrow re-review verdict: Pass`
+  - Applicable rules: `docs/rules/python-code-standards.md`, `docs/rules/testing-standards.md`, `docs/rules/logging-standards.md`, `docs/rules/configuration-standards.md`
+  - Target code paths: `app/quant_sim/replay_artifact_adapter.py`, `app/quant_sim/drill_artifact_adapter.py`, `app/quant_sim/replay_runner.py`, `app/quant_sim/live_quant_drill_candidates.py`, `app/quant_sim/engine.py`, `app/quant_sim/market_technical_artifact.py`, `app/quant_sim/market_technical_artifact_store.py`, `tests/test_market_technical_artifact.py`; `app/quant_sim/replay_service.py` 和 `app/quant_sim/db.py` 当前超限，只允许在先拆分降至 <= 1000 行后薄接线。
+  - Multi-lens review: Product verifies replay/drill are复查able; Engineering verifies run-local isolation and shared reader; QA verifies no live fallback.
+  - Reuse/common logic impact: Reuse the same artifact writer/reader with domain/run parameters; do not duplicate separate replay and drill artifact readers.
+  - Requirement scope / fallback: Replay/drill missing artifact returns run-scoped missing reason. Do not fallback to live latest, runtime snapshot, realtime TTL cache, or current provider cache as decision fact.
+  - Method/function parameter plan: Use `ArtifactWriteRequest` and `ArtifactQuery`; run context must be a named object with run_id/run_type/checkpoint/domain/timeframe.
+  - Comments/logging/traceability: Comment and log the run-scope no-live-fallback rule; log missing run artifacts with run_id/run_type/checkpoint and reason_code.
+  - Encoding/no-mojibake: Replay/drill diagnostics must keep reason codes stable ASCII and display text UTF-8.
+  - File size guardrail: 不得在超限 `replay_service.py` 或 `db.py` 内承载 run artifact 逻辑；新增 run artifact adapter/store 必须在 focused modules，任何薄接线前必须让被修改文件 <= 1000 行。
+  - Database impact: Write `sim_run_market_technical_artifacts` in replay DB; enforce run_id/run_type required for replay/drill rows.
+  - Backend logic confirmation: Confirmed: replay/drill use run-scoped artifact and never live latest.
+  - API contract/layers: No new endpoint here; data used by Task 5 API and diagnostics.
+  - API path/parameters confirmation: Confirmed query endpoint will require run_id/run_type for replay/drill.
+  - API IO / async: Artifact generation follows existing replay/drill jobs; no API request thread bulk generation.
+  - UI mockup/function confirmation: Existing replay/drill diagnostics only.
+  - Browser/UI QA: Not applicable in this backend task.
+  - Config parameter confirmation: No new config; use `run_type` enum `historical_replay`, `live_quant_drill`.
+  - Change: During each replay/drill checkpoint, normalize snapshot provider output to run-scoped artifact before candidate/signal/trade logic consumes it; pass artifact_ref through run signal/candidate diagnostics; enforce missing run artifact behavior.
+  - Standalone verification: Run a short replay/drill fixture with one stock and two checkpoints; query run table and assert signal diagnostics reference replay/drill artifact, not live artifact.
+  - Real E2E test: Required for replay/drill feature point through system-facing run entry. Runtime target: local/test backend or project-supported replay/drill runner. Test data: short run with one stock and two checkpoints plus conflicting live artifact. Assertions: replay/drill writes run-scoped artifact, signals reference run artifact, missing run artifact returns run-scoped reason and does not read live artifact. If drill entry is unavailable, replay E2E plus drill service integration must be recorded, and Task 7 must close the full drill E2E.
+  - Test target boundary: Project-owned replay/drill artifact generation and consumption; snapshot provider correctness is fixture/stubbed.
+  - Requirement-to-test mapping: replay checkpoint scenario -> replay artifact test; drill checkpoint scenario -> drill artifact test; no fallback scenario -> missing run artifact with live artifact present test.
+  - Counterexample matrix: Live artifact exists but run artifact missing; run_id missing; wrong run_type; stale artifact; partial artifact; two runs same stock/checkpoint.
+  - Masked-test analysis: Tests must create conflicting live artifact and missing run artifact to prove no fallback.
+  - Broad-qualifier audit: Applies to both historical replay and live quant drill; code must not implement only one.
+  - Decision Chain Trace: Required for checkpoint snapshot -> run artifact write -> artifact reader -> signal/trade diagnostic.
+  - Evidence Capture Timing Audit: Required for run_id/run_type/checkpoint_at/artifact_ref/source_status capture per checkpoint.
+  - Deterministic Sort Audit: Applicable if checkpoint artifact preparation iterates multiple stocks; require deterministic stock order in tests or documented non-dependence.
+  - Validation: `python -m pytest -q tests/test_market_technical_artifact.py -k "replay or drill or no_live_fallback"`.
+  - Test parameters: `.agent/workdir/sp-openspec/market-technical-artifact/test-params/replay-drill-artifact.md`
+  - Coverage target: At least 85% for affected replay/drill artifact paths.
+  - Required reviews after implementation:
+    - Alignment review against run-scoped artifact and no-live-fallback requirements
+    - Security review for run isolation, DB access, log data, async/job error handling
+  - Review gate: All findings must be fixed and re-reviewed before Task 5 starts.
+
+- [x] 5.1 实现 Artifact 查询 API 与现有诊断响应扩展
+  - Related requirement: `Artifact 查询诊断入口`, `候选与信号引用 Artifact`, `Artifact 状态和缺失原因`
+  - Design reference: `API Impact`, `OpenAPI / Backend Layering`, `API Path / Parameter Confirmation`, `Error Handling`
+  - Design review reference: `API confirmation needed - fixed and confirmed`, `Independent Review Thread Round 1 fixes`
+  - Applicable rules: `docs/rules/python-code-standards.md`, `docs/rules/configuration-standards.md`, `docs/rules/testing-standards.md`, `docs/rules/logging-standards.md`
+  - Target code paths: `app/gateway/market_technical_artifacts.py`, `app/gateway/artifact_diagnostics.py`, `app/gateway_api.py`, `app/gateway/quant_universe.py`, `app/gateway/signal_detail.py`, `app/gateway/signal_table.py`, `app/gateway/signal_market.py`, `app/gateway/live_sim.py`, `app/quant_sim/market_technical_artifact.py`, `tests/test_market_technical_artifact.py`; `app/gateway/his_replay.py` 当前超限，只允许在先拆分降至 <= 1000 行后薄接线或改由 focused diagnostics module 供其引用。
+  - Multi-lens review: Product verifies inspectable artifact diagnostics; Engineering verifies controller/service separation; Security verifies parameter validation and safe response; QA verifies real API request/response.
+  - Reuse/common logic impact: Controller delegates parse/query/reason mapping to artifact service; do not duplicate parsing in gateway modules.
+  - Requirement scope / fallback: API only queries existing artifacts. It must not generate artifacts or fallback to latest行情.
+  - Method/function parameter plan: Controller builds `ArtifactQuery` or passes URL-decoded artifact_ref to service; no vague dict for request schema unless schema keys are explicit.
+  - Comments/logging/traceability: Log invalid artifact_ref, missing run scope, missing artifact and successful diagnostic query with `trace_id` where request context provides it; mask sensitive headers.
+  - Encoding/no-mojibake: API reason codes ASCII; JSON UTF-8; UI-facing text should remain i18n-ready.
+  - File size guardrail: Artifact API 必须放在 focused route module `app/gateway/market_technical_artifacts.py`；诊断映射放在 `app/gateway/artifact_diagnostics.py`；不得向超限 gateway 文件添加主体实现。
+  - Database impact: Read-only API access to artifact tables.
+  - Backend logic confirmation: Confirmed: two API paths and diagnostics extension.
+  - API contract/layers: Implement `GET /api/v1/quant/market-technical-artifacts/{artifact_ref}` and `GET /api/v1/quant/market-technical-artifacts`; controller validates params, service queries artifact, DB layer reads rows.
+  - API path/parameters confirmation: Confirmed on 2026-05-27; live query requires domain/stock_code/market/checkpoint_at/timeframe/data_version and rejects run_id/run_type; replay/drill requires run_id/run_type.
+  - API IO / async: API is read-only and synchronous; must not perform bulk generation.
+  - UI mockup/function confirmation: Confirmed no new page; diagnostics fields are surfaced in existing responses.
+  - Browser/UI QA: API-level verification required now; browser/UI verification in Task 6.
+  - Config parameter confirmation: No new config.
+  - Change: Add artifact query routes and response models; extend signal/replay/drill/live diagnostics to include artifact_ref, source_status, reason_code, missing_fields.
+  - Standalone verification: Start backend/test app and call both artifact endpoints with valid live/run refs, invalid ref, missing run scope, and missing artifact; verify response codes/body reason codes.
+  - Real E2E test: Required; Task 7 will run end-to-end, but this task must include real API request/response verification against a running project server or project test server.
+  - Test target boundary: Project-owned route validation, service mapping, and diagnostics response; not framework internals.
+  - Requirement-to-test mapping: artifact_ref API scenario -> path test; full key live/run scenarios -> query tests; diagnostics extension -> signal/replay response tests.
+  - Counterexample matrix: URL-encoded ref with reserved chars, malformed ref, live with run_id, replay missing run_id, unknown domain, missing artifact, partial artifact.
+  - Masked-test analysis: Tests must use HTTP layer or project test client and assert service response fields, not just unit service return.
+  - Broad-qualifier audit: API must support live, replay, and drill domains exactly as spec.
+  - Decision Chain Trace: Required for request validation -> artifact_ref parse/full-key validation -> domain/run scope enforcement -> response reason.
+  - Evidence Capture Timing Audit: Required for response `source_status`, `reason_code`, `missing_fields`, and diagnostics link fields.
+  - Deterministic Sort Audit: Not applicable.
+  - Validation: `python -m pytest -q tests/test_market_technical_artifact.py -k "api or diagnostics"` plus a documented manual/test-client request sample.
+  - Test parameters: `.agent/workdir/sp-openspec/market-technical-artifact/test-params/artifact-api.md`
+  - Coverage target: At least 85% for changed API/service paths.
+  - Required reviews after implementation:
+    - Alignment review against API contract and diagnostics requirements
+    - Security review against auth context, parameter validation, data exposure, logging, API IO, and no-generation guarantee
+  - Review gate: All findings must be fixed and re-reviewed before Task 6 starts.
+
+- [x] 6.1 更新工作台、发现股票、研究、实时量化页面 API 的 live 行情技术口径与最小诊断展示
+  - Related requirement: `所有量化流程通过 Artifact 事实层`, `旧来源角色收敛`, `候选与信号引用 Artifact`
+  - Design reference: `UI Impact`, `UI Mockup / Functional Description`, `Browser / UI QA Plan`, `Customer page-source clarification`
+  - Design review reference: `Customer page-source clarification`, `UI Mockup / Browser QA Review`
+  - Applicable rules: `docs/rules/python-code-standards.md`, `docs/rules/testing-standards.md`, `docs/rules/encoding-standards.md`, `docs/rules/logging-standards.md`
+  - Target code paths: `app/gateway/page_market_artifact_projection.py`, `app/gateway/workbench.py`, `app/gateway/research.py`, `app/gateway/live_sim.py`, `app/gateway/quant_universe.py`, `app/gateway/quant_universe_entry.py`, `app/discover/discover.py`, `app/discover/candidate_artifact.py`, `tests/test_market_technical_artifact.py`; UI code不默认修改，若实现发现必须展示新字段，具体路径限定为 `ui/src/features/workbench/workbench-page.tsx`, `ui/src/features/discover/discover-page.tsx`, `ui/src/features/research/research-page.tsx`, `ui/src/features/quant/live-sim-page.tsx`, `ui/src/features/quant/signal-detail-page.tsx` 及对应 `ui/src/tests/*`。
+  - Multi-lens review: Product verifies user can trace live page data to artifact; Design verifies no page bloat; Engineering verifies no direct runtime/provider/cache authority; QA verifies page API assertions and browser smoke if UI changed.
+  - Reuse/common logic impact: Use live artifact reader or artifact-derived projection across all page APIs; avoid one-off gateway-specific fetches from runtime snapshot/provider cache.
+  - Requirement scope / fallback: Page live行情/technical facts must come from live artifact/projection. If artifact missing, page API returns traceable missing reason; do not silently fetch provider cache for display authority.
+  - Method/function parameter plan: Use focused hydration/query objects; no broad dict handoff unless response schema is explicit.
+  - Comments/logging/traceability: Add comments only where page projection source may look like legacy runtime snapshot; log artifact missing per API with trace_id and page context.
+  - Encoding/no-mojibake: Existing UI Chinese labels and missing reason display must remain UTF-8/i18n compatible.
+  - File size guardrail: Page projection 必须放入 `app/gateway/page_market_artifact_projection.py`；不得向超限 gateway 文件添加主体实现，任何 UI/后端文件修改后必须 <= 1000 行。
+  - Database impact: Read live artifact table; no run table writes.
+  - Backend logic confirmation: Confirmed: workbench/discovery/research/live quant pages must use live artifact or derived projection.
+  - API contract/layers: Existing page APIs extend payload with artifact_ref or traceable diagnostics; artifact query endpoints from Task 5 remain source for detailed inspection.
+  - API path/parameters confirmation: No new paths in this task beyond confirmed existing diagnostics extension.
+  - API IO / async: Page APIs remain request/response; must not trigger bulk artifact generation.
+  - UI mockup/function confirmation: Confirmed no mockup; minimal line “行情技术数据引用”/diagnostics where existing detail areas exist.
+  - Browser/UI QA: If frontend code changes, run browser/UI QA on affected local pages; otherwise run page API response checks.
+  - Config parameter confirmation: No new config.
+  - Change: Replace live page data hydrators with artifact-derived projection; return artifact_ref/source_status/reason_code/missing_fields in page API payloads where relevant; keep display minimal.
+  - Standalone verification: Call workbench/discover/research/live quant APIs with a known live artifact and assert returned price/technical diagnostics trace to that artifact; call with missing artifact and assert reason code.
+  - Real E2E test: Required for page API feature point. Runtime target: local/test backend plus browser only if UI code changes. Test data: seed live artifact and conflicting runtime snapshot/provider-cache-like fixture. Assertions: workbench/discover/research/live quant APIs return artifact_ref or traceable artifact diagnostics and artifact-derived values win over stale legacy data; missing artifact returns reason. If UI code changes, run browser smoke for affected page(s) and assert minimal diagnostics display without layout regression.
+  - Test target boundary: Project-owned gateway projection behavior; no frontend framework internals or provider correctness.
+  - Requirement-to-test mapping: current business pages scenario -> four page API tests; old source role scenario -> adversarial test with runtime snapshot differing from artifact.
+  - Counterexample matrix: Artifact exists but runtime snapshot stale/different; artifact missing but provider cache exists; partial artifact; page list pagination; candidate payload has copied technical fields.
+  - Masked-test analysis: Tests must seed conflicting legacy/runtime data and artifact data so passing proves artifact wins.
+  - Broad-qualifier audit: Includes workbench, discovery, research, and live quant page APIs; not only one page.
+  - Decision Chain Trace: Required for page hydration source selection: request -> page query -> artifact projection -> response diagnostics.
+  - Evidence Capture Timing Audit: Required for page payload artifact_ref/source_status/reason_code and checkpoint_at provenance.
+  - Deterministic Sort Audit: Required if page tables sort by refreshed technical fields; preserve existing stable sort/tie-break behavior.
+  - Validation: `python -m pytest -q tests/test_market_technical_artifact.py -k "page or workbench or discover or research or live_sim"` and browser smoke if UI changed.
+  - Test parameters: `.agent/workdir/sp-openspec/market-technical-artifact/test-params/page-artifact-hydration.md`
+  - Coverage target: At least 85% for affected gateway/projection paths.
+  - Required reviews after implementation:
+    - Alignment review against page live artifact consumer requirements
+    - Security review for API data exposure, logging, tenant/user context where present, and no provider secret exposure
+  - Review gate: All findings must be fixed and re-reviewed before Task 7 starts.
+
+- [x] 7.1 完成端到端验证、覆盖率、回归和最终实现评审证据
+  - Related requirement: All requirements in `market-technical-artifact` and `quant-technical-entry`
+  - Design reference: `Test Strategy`, `Standalone Verification Plan`, `Real E2E Test Design`, `Project-Code Test Boundary`, `Browser / UI QA Plan`
+  - Design review reference: `Verification and E2E Readiness`, `Finding Closure`
+  - Applicable rules: `docs/rules/testing-standards.md`, `docs/rules/ai-workflow-quality-standards.md`, `docs/rules/logging-standards.md`, `docs/rules/encoding-standards.md`
+  - Target code paths: `tests/test_market_technical_artifact.py`, affected backend/UI test helpers, `.agent/workdir/sp-openspec/market-technical-artifact/test-params/`
+  - Multi-lens review: Product verifies explainability outcome; Engineering verifies no duplicate readers/fallbacks; Security verifies no sensitive exposure; QA verifies scenario and E2E evidence.
+  - Reuse/common logic impact: Consolidate test fixtures around artifact writer/reader; avoid separate live/replay/drill fixtures with duplicated logic unless domain-specific behavior requires it.
+  - Requirement scope / fallback: Verification must reject any fallback to runtime snapshot/provider cache/current live latest where spec forbids it.
+  - Method/function parameter plan: Test helpers use named fixture objects for artifact/run/page contexts; avoid long parameter lists.
+  - Comments/logging/traceability: Capture relevant logs for missing artifact/no-fallback tests; verify trace fields exist without sensitive data.
+  - Encoding/no-mojibake: Run/read test output and generated JSON to confirm no garbled Chinese diagnostics.
+  - File size guardrail: Split tests if test file approaches 1000 lines.
+  - Database impact: Use project-supported local/test DB setup; verify live and run artifact tables separately.
+  - Backend logic confirmation: Confirmed full workflow.
+  - API contract/layers: Real API checks for artifact endpoints and extended diagnostics.
+  - API path/parameters confirmation: Confirmed by design.
+  - API IO / async: Verify artifact generation remains job-driven and API does not batch-generate artifacts.
+  - UI mockup/function confirmation: Confirmed minimal diagnostics only; browser QA when UI code changed.
+  - Browser/UI QA: Required if UI surface changed; otherwise record API-only reason tied to no frontend change.
+  - Config parameter confirmation: Verify no new tunable strategy config introduced.
+  - Change: Create explicit test parameter records; run all artifact unit/integration tests; run real API/E2E sequence; record per-task review and final implementation review evidence in `/sp-impl` phase.
+  - Standalone verification: Minimum commands: `python -m pytest -q tests/test_market_technical_artifact.py`; plus backend service/test-client API calls for live artifact query, artifact_ref query, run-scoped query, signal/candidate diagnostics, and page API traceability.
+  - Real E2E test: Required. Execute the design flow: start backend, trigger live refresh for a selected stock, query live artifact, run short replay or drill, query run artifact, query by artifact_ref, verify diagnostics include artifact_ref/status/reason, verify missing run scope/no-live-fallback reason, verify workbench/discover/research/live quant page APIs trace to artifact.
+  - Test target boundary: Project-owned APIs/jobs/services/UI gateway behavior only; provider calls should use fixtures/stubs unless an approved sandbox is explicitly available.
+  - Requirement-to-test mapping: Every scenario from both spec files must map to at least one test or E2E assertion in the task review evidence.
+  - Counterexample matrix: Include live/run scope confusion, missing ref, invalid ref, partial/stale artifact, provider cache present but artifact missing, candidate payload conflicting with artifact, UI page stale runtime conflict.
+  - Masked-test analysis: For each E2E assertion, record the earlier gate/filter/source that could mask behavior and how the test disambiguates it.
+  - Broad-qualifier audit: Verify “所有量化流程” covers realtime refresh, live quant, live quant drill, replay, and four page APIs.
+  - Decision Chain Trace: Required for artifact producer, consumer, API validation, candidate ingestion, signal generation, page hydration, and run no-fallback chains.
+  - Evidence Capture Timing Audit: Required for all semantic fields: artifact_ref, checkpoint_at, computed_at, source_status, reason_code, missing_fields, run_id/run_type, indicator_version.
+  - Deterministic Sort Audit: Required for any page list/candidate selection impacted by artifact-derived values.
+  - Validation: Complete test suite plus E2E evidence; changed/affected code coverage >= 85%; no no-op/initialization-only tests counted.
+  - Test parameters: `.agent/workdir/sp-openspec/market-technical-artifact/test-params/e2e-artifact-flow.md`
+  - Coverage target: At least 85% for all changed/affected code.
+  - Required reviews after implementation:
+    - Alignment review against every requirement, design decision, task, source mapping, and verification result
+    - Security review against auth/authorization context, validation, data exposure, logging, dependency/config/DB/API/async/external-service risks
+  - Review gate: All findings must be fixed and re-reviewed before `/sp-complete`.

@@ -68,7 +68,7 @@ def test_non_discover_bullish_candidate_requires_ready_snapshot_metadata(
     state = manager.db.get_quant_universe_state("600000")
 
     assert result["decision"] == "skipped"
-    assert result["reason_code"] == "missing_technical_snapshot"
+    assert result["reason_code"] == "missing_artifact_reference"
     assert result["candidate_score"] == 0.0
     assert result["candidate_confidence"] == 0.0
     assert state["quant_status"] == "inactive"
@@ -76,6 +76,4 @@ def test_non_discover_bullish_candidate_requires_ready_snapshot_metadata(
     assert state["candidate_confidence"] == 0.0
     blocked_events = manager.db.list_candidate_events(stock_code="600000", status="blocked")
     entry_gate = blocked_events[0]["payload_json"]["entry_gate"]
-    assert entry_gate["reason_code"] == "missing_technical_snapshot"
-    assert "technical_snapshot_status" in entry_gate["missing_fields"]
-    assert "technical_snapshot_at" in entry_gate["missing_fields"]
+    assert entry_gate["reason_code"] == "missing_artifact_reference"

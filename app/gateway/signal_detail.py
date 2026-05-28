@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.gateway.deps import *
+from app.gateway.artifact_diagnostics import build_signal_artifact_diagnostics
 from app.gateway.context import UIApiContext
 from app.gateway.signal_explanation import _build_explanation_payload, _build_structured_vote_rows, _build_vote_overview, _is_structured_explainability, _score_to_signal
 from app.gateway.signal_indicators import (
@@ -12,8 +13,10 @@ from app.gateway.signal_indicators import (
     _safe_json_load,
     _to_vote_row,
 )
-from app.gateway.signal_market import _build_signal_ai_monitor_payload, _enrich_signal_strategy_profile_with_replay_snapshot, _fetch_signal_market_snapshot
+from app.gateway.signal_market import _build_signal_ai_monitor_payload, _enrich_signal_strategy_profile_with_replay_snapshot
 from app.gateway.signal_parameters import _build_parameter_details
+from app.quant_sim.decision_provenance import build_decision_provenance
+from app.quant_sim.evidence_models import DecisionProvenanceInput
 
 
 def _with_live_position_sizing_preview(
@@ -59,6 +62,12 @@ def _build_signal_detail_payload(
     )
     strategy_profile = _with_live_position_sizing_preview(
         context=context,
+        signal=signal,
+        source=source,
+        strategy_profile=strategy_profile,
+    )
+    artifact_diagnostics = build_signal_artifact_diagnostics(
+        context,
         signal=signal,
         source=source,
         strategy_profile=strategy_profile,
@@ -190,6 +199,9 @@ def _build_signal_detail_payload(
         "aiDynamicStrength": ai_dynamic_strength,
         "aiDynamicLookback": ai_dynamic_lookback,
         "aiProfileSwitched": "是" if ai_profile_switched else "否",
+        "artifactRef": _txt(artifact_diagnostics.get("artifact_ref")),
+        "artifactStatus": _txt(artifact_diagnostics.get("source_status")),
+        "artifactReasonCode": _txt(artifact_diagnostics.get("reason_code")),
     }
 
     technical_indicators = _extract_technical_indicators(
@@ -277,8 +289,19 @@ def _build_signal_detail_payload(
     ai_monitor = _build_signal_ai_monitor_payload(
         context=context,
         signal=signal,
+        strategy_profile=strategy_profile,
         checkpoint_at=decision.get("checkpointAt"),
         fetch_realtime_snapshot=fetch_realtime_snapshot,
+    )
+    decision_provenance = build_decision_provenance(
+        DecisionProvenanceInput(
+            decision=decision,
+            signal=signal,
+            strategy_profile=strategy_profile,
+            source=source,
+            technical_indicators=technical_indicators,
+            replay_run=replay_run,
+        )
     )
 
     return {
@@ -290,11 +313,13 @@ def _build_signal_detail_payload(
         "voteOverview": vote_overview,
         "parameterDetails": parameter_details,
         "decision": decision,
+        "decisionProvenance": decision_provenance,
         "techVotes": tech_votes,
         "contextVotes": context_votes,
         "technicalIndicators": technical_indicators,
         "effectiveThresholds": [{"name": _txt(k), "value": _txt(v)} for k, v in effective_thresholds.items() if _txt(k)],
         "aiMonitor": ai_monitor,
+        "artifactDiagnostics": artifact_diagnostics,
         "strategyProfile": strategy_profile,
     }
 

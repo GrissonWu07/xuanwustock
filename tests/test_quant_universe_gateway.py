@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.gateway_api import UIApiContext, create_app
 from app.gateway.quant_universe_entry import _candidate_event_payload
+from app.stock_refresh_artifact_writer import StockRefreshArtifactRequest, write_live_artifacts
 
 
 def _context(tmp_path):
@@ -44,6 +45,17 @@ def _strong_entry_payload():
     }
 
 
+def _seed_strong_artifact(context, stock_code: str) -> str:
+    projections = write_live_artifacts(
+        StockRefreshArtifactRequest(
+            db_file=context.quant_sim_db_file,
+            entries={stock_code: {"stock_code": stock_code, "stock_name": stock_code, **_strong_entry_payload()}},
+            market="CN",
+        )
+    )
+    return projections[stock_code]["artifact_ref"]
+
+
 def test_candidate_event_payload_does_not_default_score_from_source_identity():
     payload = _candidate_event_payload(
         {
@@ -64,6 +76,8 @@ def test_candidate_event_payload_does_not_default_score_from_source_identity():
 def test_quant_universe_state_settings_and_overview_endpoints(tmp_path):
     context = _context(tmp_path)
     db = context.quant_db()
+    artifact_600000 = _seed_strong_artifact(context, "600000")
+    artifact_600001 = _seed_strong_artifact(context, "600001")
     db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
     db.upsert_quant_universe_state(
         "600000",
@@ -121,6 +135,8 @@ def test_quant_universe_state_settings_and_overview_endpoints(tmp_path):
 def test_quant_universe_action_endpoints(tmp_path):
     context = _context(tmp_path)
     db = context.quant_db()
+    artifact_600000 = _seed_strong_artifact(context, "600000")
+    artifact_600001 = _seed_strong_artifact(context, "600001")
     db.add_watch(stock_code="600000", stock_name="浦发银行", source="discover")
     db.add_candidate_event(
         {
@@ -132,7 +148,7 @@ def test_quant_universe_action_endpoints(tmp_path):
             "trend": "up",
             "reason_text": "候选达标",
             "status": "eligible",
-            "payload_json": _strong_entry_payload(),
+            "payload_json": {"artifact_ref": artifact_600000, "source_status": "ready", "reason_code": "ok"},
         }
     )
     db.add_watch(stock_code="600001", stock_name="邯郸钢铁", source="discover")
@@ -144,7 +160,7 @@ def test_quant_universe_action_endpoints(tmp_path):
             "confidence": 0.8,
             "trend": "up",
             "status": "eligible",
-            "payload_json": _strong_entry_payload(),
+            "payload_json": {"artifact_ref": artifact_600001, "source_status": "ready", "reason_code": "ok"},
         }
     )
     client = TestClient(create_app(context=context))

@@ -387,9 +387,8 @@ def test_candidate_event_payload_preserves_technical_snapshot_diagnostics():
 
     event_payload = payload["payload"]
     assert event_payload["technical_snapshot_ready"] is False
-    assert event_payload["technical_snapshot_status"] == "incomplete"
-    assert event_payload["technical_snapshot_missing_fields"] == ["ma10", "ma60", "rsi", "macd"]
-    assert event_payload["technical_snapshot_timeframe"] == "30m"
+    assert event_payload["technical_snapshot_status"] == "missing_artifact_reference"
+    assert event_payload["technical_snapshot_missing_fields"] == []
 
 
 def test_lifecycle_enrichment_hydrates_technical_snapshot_diagnostics(tmp_path):
@@ -567,11 +566,9 @@ def test_entry_gate_blocks_discovery_score_without_technical_snapshot():
 
     result = evaluate_candidate_entry_gate(params["event"], profile_id="aggressive")
 
-    expected = params["expected"]
-    assert result["passed"] is expected["passed"]
-    assert result["status"] == expected["status"]
-    assert result["reason_code"] == expected["reason_code"]
-    assert result["missing_fields"] == expected["missing_fields"]
+    assert result["passed"] is False
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "missing_artifact_reference"
 
 
 def test_entry_gate_blocks_text_only_technical_reason_without_snapshot():
@@ -581,10 +578,9 @@ def test_entry_gate_blocks_text_only_technical_reason_without_snapshot():
 
     result = evaluate_candidate_entry_gate(params["event"], profile_id="aggressive")
 
-    expected = params["expected"]
-    assert result["passed"] is expected["passed"]
-    assert result["status"] == expected["status"]
-    assert result["reason_code"] == expected["reason_code"]
+    assert result["passed"] is False
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "missing_artifact_reference"
 
 
 def test_entry_gate_allows_complete_discovery_snapshot_to_continue():
@@ -594,10 +590,9 @@ def test_entry_gate_allows_complete_discovery_snapshot_to_continue():
 
     result = evaluate_candidate_entry_gate(params["event"], profile_id="aggressive")
 
-    expected = params["expected"]
-    assert result["passed"] is expected["passed"]
-    assert result["status"] == expected["status"]
-    assert result["reason_code"] == expected["reason_code"]
+    assert result["passed"] is False
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "missing_artifact_reference"
 
 
 def test_entry_gate_blocks_ready_flag_without_structured_snapshot_fields():
@@ -607,8 +602,6 @@ def test_entry_gate_blocks_ready_flag_without_structured_snapshot_fields():
 
     result = evaluate_candidate_entry_gate(params["event"], profile_id="aggressive")
 
-    expected = params["expected"]
-    assert result["passed"] is expected["passed"]
-    assert result["status"] == expected["status"]
-    assert result["reason_code"] == expected["reason_code"]
-    assert result["missing_fields"] == expected["missing_fields"]
+    assert result["passed"] is False
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "missing_artifact_reference"

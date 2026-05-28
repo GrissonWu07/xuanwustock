@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from app.gateway.deps import *
+from app.gateway.artifact_diagnostics import extract_signal_artifact_reference
 from app.gateway.context import UIApiContext
 from app.gateway.signal_indicators import _profile_text, _safe_json_load
+from app.quant_sim.market_technical_artifact import InvalidArtifactRef, parse_artifact_ref
+from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
 from app.quant_sim.time_utils import parse_system_datetime
 
 def _parse_signal_time(raw: Any) -> datetime | None:
@@ -24,18 +27,31 @@ def _format_ai_metric_value(value: Any, *, digits: int = 2, pct: bool = False, s
     return f"{number:+.{digits}f}" if signed else f"{number:.{digits}f}"
 
 
-def _fetch_signal_market_snapshot(stock_code: str) -> dict[str, Any]:
-    code = normalize_stock_code(stock_code)
-    if not code:
+def _fetch_signal_market_snapshot(
+    *,
+    context: UIApiContext,
+    signal: dict[str, Any],
+    strategy_profile: dict[str, Any],
+) -> dict[str, Any]:
+    artifact_ref, _ = extract_signal_artifact_reference(signal, strategy_profile)
+    if not artifact_ref:
         return {}
-    try:
-        from app.smart_monitor_data import SmartMonitorDataFetcher
-
-        fetcher = SmartMonitorDataFetcher()
-        snapshot = fetcher.get_comprehensive_data(code)
-        return snapshot if isinstance(snapshot, dict) else {}
-    except Exception:
+    parsed = parse_artifact_ref(artifact_ref)
+    if isinstance(parsed, InvalidArtifactRef):
         return {}
+    db_file = context.quant_sim_db_file if parsed.domain == "live" else context.quant_sim_replay_db_file
+    result = MarketTechnicalArtifactStore(db_file).get_by_ref(artifact_ref)
+    if result.artifact is None:
+        return {}
+    payload = result.artifact.to_dict()
+    current_price = payload.get("latest_price") or payload.get("close")
+    return {
+        **payload,
+        "current_price": current_price,
+        "rsi12": payload.get("rsi"),
+        "macd_dif": payload.get("macd"),
+        "macd_dea": payload.get("macd_signal"),
+    }
 
 
 def _build_ai_market_rows(market_data: dict[str, Any]) -> list[dict[str, str]]:
@@ -144,6 +160,7 @@ def _build_signal_ai_monitor_payload(
     *,
     context: UIApiContext,
     signal: dict[str, Any],
+    strategy_profile: dict[str, Any],
     checkpoint_at: Any,
     fetch_realtime_snapshot: bool = False,
 ) -> dict[str, Any]:
@@ -173,11 +190,19 @@ def _build_signal_ai_monitor_payload(
         return payload
 
     if not decision_rows:
-        fallback_market_data = _fetch_signal_market_snapshot(stock_code) if fetch_realtime_snapshot else {}
+        fallback_market_data = (
+            _fetch_signal_market_snapshot(
+                context=context,
+                signal=signal,
+                strategy_profile=strategy_profile,
+            )
+            if fetch_realtime_snapshot
+            else {}
+        )
         payload = dict(empty_payload)
         payload["marketData"] = _build_ai_market_rows(fallback_market_data if isinstance(fallback_market_data, dict) else {})
         if payload["marketData"]:
-            payload["message"] = "无 AI 盯盘记录，已使用实时行情快照补全技术指标。"
+            payload["message"] = "无 AI 盯盘记录，已使用行情技术 artifact 补全技术指标。"
         elif not fetch_realtime_snapshot:
             payload["message"] = "无 AI 盯盘记录，点击“刷新行情”可加载实时技术指标。"
         return payload
@@ -194,7 +219,15 @@ def _build_signal_ai_monitor_payload(
                 break
 
     decision_market_data = selected.get("market_data") if isinstance(selected.get("market_data"), dict) else {}
-    fallback_market_data = _fetch_signal_market_snapshot(stock_code) if fetch_realtime_snapshot else {}
+    fallback_market_data = (
+        _fetch_signal_market_snapshot(
+            context=context,
+            signal=signal,
+            strategy_profile=strategy_profile,
+        )
+        if fetch_realtime_snapshot
+        else {}
+    )
     market_data: dict[str, Any] = {}
     if isinstance(decision_market_data, dict):
         market_data.update(decision_market_data)

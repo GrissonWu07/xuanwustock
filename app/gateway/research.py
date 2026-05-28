@@ -22,6 +22,7 @@ from app.gateway.common import (
     table as _table,
     txt as _txt,
 )
+from app.gateway.page_market_artifact_projection import apply_live_artifact_projection_to_rows
 from app.gateway.quant_universe_entry import enrich_lifecycle_entry_rows, ingest_lifecycle_entry_rows
 from app.i18n import t
 from app.notification_service import notification_service
@@ -137,7 +138,14 @@ def _research_rows(context: Any) -> list[dict[str, Any]]:
                 row["industry"] = runtime_sector
                 if len(row.get("cells", [])) > 2:
                     row["cells"][2] = runtime_sector
-    return enrich_lifecycle_entry_rows(context, rows)
+    projected = apply_live_artifact_projection_to_rows(
+        db_file=context.quant_sim_db_file,
+        rows=rows,
+        runtime_entries=runtime_entries,
+        price_cell_index=4,
+        industry_cell_index=2,
+    )
+    return enrich_lifecycle_entry_rows(context, projected)
 
 
 def _research_stock_row(stock: dict[str, Any], source: str, context: Any) -> dict[str, Any] | None:

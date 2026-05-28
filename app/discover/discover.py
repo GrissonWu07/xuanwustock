@@ -21,6 +21,8 @@ from app.discover.candidate_artifact import (
     technical_summary_from_rows,
 )
 from app.discover.lifecycle_scoring import normalize_discovery_lifecycle_row
+from app.discover.row_filters import filter_rows_by_strategy as _filter_rows_by_strategy
+from app.discover.row_filters import strategy_filter_value as _strategy_filter_value
 from app.async_task_base import AsyncTaskManagerBase
 from app.gateway.common import (
     code_from_payload as _code_from_payload,
@@ -35,6 +37,7 @@ from app.gateway.common import (
     txt as _txt,
 )
 from app.gateway.quant_universe_entry import enrich_lifecycle_entry_rows, ingest_lifecycle_entry_rows
+from app.gateway.page_market_artifact_projection import apply_live_artifact_projection_to_rows
 from app.i18n import t
 from app.quant_sim.time_utils import format_system_time, parse_system_datetime
 from app.selector_ui_state import (
@@ -499,28 +502,15 @@ def _hydrated_discovery_rows(context: Any) -> list[dict[str, Any]]:
 
 def _discover_rows(context: Any) -> list[dict[str, Any]]:
     rows = _hydrated_discovery_rows(context)
-    return enrich_lifecycle_entry_rows(context, rows)
-
-def _strategy_filter_value(table_query: dict[str, Any] | None) -> str:
-    raw = _query_value(table_query, "strategy_key") or _query_value(table_query, "strategyKey") or _query_value(table_query, "strategy")
-    value = _txt(raw).strip().lower()
-    return "" if value in {"", "all"} else value
-
-
-def _filter_rows_by_strategy(rows: list[dict[str, Any]], strategy_filter: str) -> list[dict[str, Any]]:
-    if not strategy_filter:
-        return rows
-    return [
-        row
-        for row in rows
-        if strategy_filter
-        in {
-            _txt(row.get("strategyKey")).strip().lower(),
-            _txt(row.get("strategyName")).strip().lower(),
-            _txt(row.get("source")).strip().lower(),
-        }
-    ]
-
+    runtime_entries = load_stock_runtime_entries(base_dir=context.selector_result_dir)
+    projected = apply_live_artifact_projection_to_rows(
+        db_file=context.quant_sim_db_file,
+        rows=rows,
+        runtime_entries=runtime_entries,
+        price_cell_index=4,
+        industry_cell_index=2,
+    )
+    return enrich_lifecycle_entry_rows(context, projected)
 
 def _optional_float(value: Any) -> float | None:
     return _float_or_none(value)

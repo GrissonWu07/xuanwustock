@@ -25,6 +25,7 @@ from app.quant_sim.quant_universe_lifecycle import (
     build_lifecycle_gate,
     is_recovery_probe_active,
 )
+from app.quant_sim.lifecycle_artifact_adapter import artifact_market_snapshot
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.stockpolicy_adapter import StockPolicyAdapter
 from app.watchlist_service import WatchlistService
@@ -437,6 +438,15 @@ class QuantSimEngine:
         strategy_profile_binding: dict | None = None,
         current_time: datetime | None = None,
     ):
+        artifact_snapshot = self._candidate_artifact_market_snapshot(candidate) if market_snapshot is None else market_snapshot
+        if artifact_snapshot:
+            market_snapshot = artifact_snapshot
+        if self._market_artifact_not_ready(market_snapshot):
+            return self._artifact_block_decision(
+                candidate,
+                market_snapshot=market_snapshot or {},
+                current_time=current_time,
+            )
         candidate_payload = self._with_account_context(
             candidate,
             profile_kind="candidate",
@@ -481,7 +491,10 @@ class QuantSimEngine:
         for kwargs in attempts:
             kwargs = {key: value for key, value in kwargs.items() if value is not None}
             try:
-                return self.adapter.analyze_candidate(candidate_payload, **kwargs)
+                return self._attach_market_artifact_to_decision(
+                    self.adapter.analyze_candidate(candidate_payload, **kwargs),
+                    artifact_snapshot,
+                )
             except TypeError as exc:
                 message = str(exc)
                 if "unexpected keyword argument" not in message:
@@ -490,7 +503,87 @@ class QuantSimEngine:
                 continue
         if last_error is not None:
             raise last_error
-        return self.adapter.analyze_candidate(candidate_payload)
+        return self._attach_market_artifact_to_decision(
+            self.adapter.analyze_candidate(candidate_payload),
+            artifact_snapshot,
+        )
+
+    def _candidate_artifact_market_snapshot(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        artifact_row = self._candidate_with_artifact_ref(candidate)
+        return artifact_market_snapshot(artifact_row, db_file=self.db_file)
+
+    def _candidate_with_artifact_ref(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        row = dict(candidate or {})
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        if not row.get("artifact_ref") and metadata.get("artifact_ref"):
+            row["artifact_ref"] = metadata.get("artifact_ref")
+        if row.get("artifact_ref"):
+            return row
+        stock_code = str(row.get("stock_code") or row.get("code") or "").strip()
+        if not stock_code:
+            return row
+        for status in ("consumed", "active", "eligible", "blocked"):
+            events = self.candidate_pool.db.list_candidate_events(stock_code=stock_code, status=status, limit=1)
+            if not events:
+                continue
+            payload = events[0].get("payload_json") if isinstance(events[0].get("payload_json"), dict) else {}
+            if payload.get("artifact_ref"):
+                return {**row, "artifact_ref": payload.get("artifact_ref")}
+        return row
+
+    @staticmethod
+    def _market_artifact_not_ready(market_snapshot: dict[str, Any] | None) -> bool:
+        if not isinstance(market_snapshot, dict):
+            return False
+        if "artifact_ref" not in market_snapshot and "source_status" not in market_snapshot:
+            return False
+        return str(market_snapshot.get("source_status") or "").strip() != "ready" or str(
+            market_snapshot.get("reason_code") or ""
+        ).strip() not in {"", "ok"}
+
+    @staticmethod
+    def _artifact_block_decision(
+        candidate: dict[str, Any],
+        *,
+        market_snapshot: dict[str, Any],
+        current_time: datetime | None,
+    ) -> dict[str, Any]:
+        code = str(candidate.get("stock_code") or candidate.get("code") or "")
+        reason_code = str(market_snapshot.get("reason_code") or "missing_artifact")
+        return {
+            "code": code,
+            "action": "HOLD",
+            "confidence": 0.0,
+            "price": float(candidate.get("latest_price") or 0),
+            "timestamp": current_time or datetime.now(),
+            "reason": f"行情技术 artifact 不可用，保持观察：{reason_code}。",
+            "agent_votes": {},
+            "tech_score": 0.0,
+            "context_score": 0.0,
+            "position_ratio": 0.0,
+            "decision_type": "missing_artifact_hold",
+            "strategy_profile": {"market_snapshot": dict(market_snapshot)},
+        }
+
+    @staticmethod
+    def _attach_market_artifact_to_decision(decision: Any, market_snapshot: dict[str, Any]) -> Any:
+        if not market_snapshot or not isinstance(decision, dict):
+            return decision
+        result = dict(decision)
+        profile = result.get("strategy_profile")
+        profile = dict(profile) if isinstance(profile, dict) else {}
+        profile["market_snapshot"] = {**dict(profile.get("market_snapshot") or {}), **market_snapshot}
+        result["strategy_profile"] = profile
+        artifact_price = (
+            market_snapshot.get("price")
+            or market_snapshot.get("current_price")
+            or market_snapshot.get("latest_price")
+        )
+        if artifact_price and not result.get("price"):
+            result["price"] = artifact_price
+        if market_snapshot.get("latest_price") and not result.get("latest_price"):
+            result["latest_price"] = market_snapshot.get("latest_price")
+        return result
 
     def _evaluate_position_decision(
         self,
@@ -503,6 +596,21 @@ class QuantSimEngine:
         strategy_profile_binding: dict | None = None,
         current_time: datetime | None = None,
     ):
+        artifact_source = self._candidate_with_artifact_ref(candidate)
+        if not artifact_source.get("artifact_ref"):
+            artifact_source = self._candidate_with_artifact_ref(position)
+        artifact_snapshot = self._candidate_artifact_market_snapshot(artifact_source) if market_snapshot is None else market_snapshot
+        if artifact_snapshot:
+            market_snapshot = artifact_snapshot
+        if self._market_artifact_not_ready(artifact_snapshot):
+            return self._artifact_block_decision(
+                {
+                    **candidate,
+                    "latest_price": candidate.get("latest_price") or position.get("latest_price") or position.get("price"),
+                },
+                market_snapshot=artifact_snapshot,
+                current_time=current_time,
+            )
         stock_analysis_policy = self._stock_analysis_policy_from_binding(
             strategy_profile_binding,
             profile_kind="position",
@@ -554,7 +662,10 @@ class QuantSimEngine:
         for kwargs in attempts:
             kwargs = {key: value for key, value in kwargs.items() if value is not None}
             try:
-                return self.adapter.analyze_position(candidate_payload, position_payload, **kwargs)
+                return self._attach_market_artifact_to_decision(
+                    self.adapter.analyze_position(candidate_payload, position_payload, **kwargs),
+                    artifact_snapshot,
+                )
             except TypeError as exc:
                 message = str(exc)
                 if "unexpected keyword argument" not in message:
@@ -563,7 +674,10 @@ class QuantSimEngine:
                 continue
         if last_error is not None:
             raise last_error
-        return self.adapter.analyze_position(candidate_payload, position_payload)
+        return self._attach_market_artifact_to_decision(
+            self.adapter.analyze_position(candidate_payload, position_payload),
+            artifact_snapshot,
+        )
 
     def _with_account_context(
         self,

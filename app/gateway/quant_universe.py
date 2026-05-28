@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.gateway.artifact_diagnostics import latest_candidate_artifact_diagnostics
 from app.gateway.context import UIApiContext
 from app.gateway.deps import _int, _payload_dict
+from app.quant_sim.quant_universe_artifact_db import ArtifactBackedCandidateEventDB
 from app.quant_sim.quant_universe_lifecycle import (
     QuantUniverseDomainError,
     QuantUniverseLifecyclePolicy,
@@ -31,6 +33,11 @@ def quant_universe_state(
     for item in payload.get("items", []):
         if isinstance(item, dict):
             item["latest_reason"] = str(item.get("retire_reason") or "")
+            item["artifactDiagnostics"] = latest_candidate_artifact_diagnostics(
+                context.quant_db(),
+                str(item.get("stock_code") or ""),
+                db_file=context.quant_sim_db_file,
+            )
     return payload
 
 
@@ -93,7 +100,7 @@ def _manager(context: UIApiContext) -> QuantUniverseManager:
     db = context.quant_db()
     profile_id = _selected_profile_id(db)
     return QuantUniverseManager(
-        db=db,
+        db=ArtifactBackedCandidateEventDB(db, artifact_db_file=context.quant_sim_db_file),
         profile_id=profile_id,
         policy=_policy_for_profile(profile_id),
     )

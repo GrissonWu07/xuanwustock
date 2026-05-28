@@ -7,9 +7,11 @@ from typing import Any
 from fastapi import HTTPException
 
 from app import stock_analysis_service
+from app.gateway.page_market_artifact_projection import PageArtifactProjectionRequest, apply_live_artifact_projection
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, QuantUniverseManager
 from app.quant_sim.time_utils import format_system_short_time, format_system_time, parse_system_datetime, system_now_text
 from app.i18n import t
+from app.stock_refresh_scheduler import get_unified_stock_refresh_scheduler, load_stock_runtime_entries
 from app.watchlist_integration import add_watchlist_rows_to_quant_pool
 from app.watchlist_selector_integration import normalize_stock_code
 from app.workbench_analysis_payloads import (
@@ -226,6 +228,50 @@ def _workflow_badges(
     return badges
 
 
+def _hydrate_stock_item_from_runtime(
+    item: dict[str, Any],
+    runtime_entries: dict[str, dict[str, Any]],
+    *,
+    db_file: Any = None,
+) -> dict[str, Any]:
+    code = normalize_stock_code(item.get("stock_code"))
+    runtime = runtime_entries.get(code) if code else None
+    if not isinstance(runtime, dict):
+        if db_file is None:
+            return item
+        return apply_live_artifact_projection(
+            PageArtifactProjectionRequest(db_file=db_file, row=item, runtime_entries={})
+        )
+
+    next_item = dict(item)
+    metadata = next_item.get("metadata") if isinstance(next_item.get("metadata"), dict) else {}
+    next_metadata = dict(metadata)
+
+    runtime_name = _txt(runtime.get("stock_name"))
+    if runtime_name and runtime_name.upper() != code.upper():
+        next_item["stock_name"] = runtime_name
+
+    runtime_sector = _txt(runtime.get("sector"))
+    if runtime_sector:
+        next_metadata["industry"] = runtime_sector
+        next_metadata["sector"] = runtime_sector
+
+    for key in ("market_cap", "pe_ratio", "pb_ratio"):
+        if runtime.get(key) not in (None, ""):
+            next_metadata[key] = runtime.get(key)
+
+    runtime_updated_at = _txt(runtime.get("updated_at"))
+    if runtime_updated_at:
+        next_item["updated_at"] = runtime_updated_at
+
+    next_item["metadata"] = next_metadata
+    if db_file is None:
+        return next_item
+    return apply_live_artifact_projection(
+        PageArtifactProjectionRequest(db_file=db_file, row=next_item, runtime_entries={code: runtime})
+    )
+
+
 def _analyze_stock_with_context(context: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
     try:
         return stock_analysis_service.analyze_single_stock_for_batch(
@@ -271,11 +317,15 @@ def watchlist_rows_from_items(
     *,
     latest_analysis_by_code: dict[str, dict[str, Any]] | None = None,
     position_codes: set[str] | None = None,
+    runtime_entries: dict[str, dict[str, Any]] | None = None,
+    quant_sim_db_file: Any = None,
 ) -> list[dict[str, Any]]:
     latest_analysis_by_code = latest_analysis_by_code or {}
     position_codes = position_codes or set()
+    runtime_entries = runtime_entries or {}
     rows: list[dict[str, Any]] = []
-    for item in items:
+    for raw_item in items:
+        item = _hydrate_stock_item_from_runtime(raw_item, runtime_entries, db_file=quant_sim_db_file)
         code = normalize_stock_code(item.get("stock_code"))
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         sector = _txt(metadata.get("industry") or metadata.get("sector"), "-")
@@ -327,13 +377,20 @@ def watchlist_rows_from_items(
                 "workflowBadges": workflow_badges,
                 "dataStatus": data_status,
                 "updatedAt": updated_at,
+                "artifactDiagnostics": item.get("artifactDiagnostics"),
+                "marketTechnicalBacked": bool(item.get("marketTechnicalBacked")),
             }
         )
     return rows
 
 
 def watchlist_rows(context: Any) -> list[dict[str, Any]]:
-    return watchlist_rows_from_items(context.watchlist().list_stock_universe_page(limit=100000, offset=0))
+    runtime_entries = load_stock_runtime_entries(base_dir=context.selector_result_dir)
+    return watchlist_rows_from_items(
+        context.watchlist().list_stock_universe_page(limit=100000, offset=0),
+        runtime_entries=runtime_entries,
+        quant_sim_db_file=context.quant_sim_db_file,
+    )
 
 
 def build_workbench_snapshot(
@@ -357,6 +414,7 @@ def build_workbench_snapshot(
     page_codes = [normalize_stock_code(item.get("stock_code")) for item in page_items if normalize_stock_code(item.get("stock_code"))]
     stock_analysis_db = context.stock_analysis_db()
     latest_analysis_by_code: dict[str, dict[str, Any]] = stock_analysis_db.get_latest_records_by_symbols(page_codes)
+    runtime_entries = load_stock_runtime_entries(base_dir=context.selector_result_dir)
     try:
         position_codes = {
             normalize_stock_code(position.get("stock_code") or position.get("code"))
@@ -369,6 +427,8 @@ def build_workbench_snapshot(
         page_items,
         latest_analysis_by_code=latest_analysis_by_code,
         position_codes=position_codes,
+        runtime_entries=runtime_entries,
+        quant_sim_db_file=context.quant_sim_db_file,
     )
     quant_count = context.candidate_pool().count_candidates(status="active")
 
@@ -750,7 +810,22 @@ def action_workbench_add_watchlist(context: Any, payload: dict[str, Any]) -> dic
 
 
 def action_workbench_refresh(context: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    raise HTTPException(status_code=400, detail="旧关注池行情刷新已停用，请使用统一数据刷新任务。")
+    codes = _normalize_codes(payload)
+    summary = get_unified_stock_refresh_scheduler(context).run_once(
+        context=context,
+        run_reason="workbench_manual",
+        stock_codes=codes or None,
+    )
+    detail = t(
+        "Unified refresh completed: updated {updated}, failed {failed}, total {total}.",
+        updated=summary.get("updated", 0),
+        failed=summary.get("failed", 0),
+        total=summary.get("totalCodes", 0),
+    )
+    return build_workbench_snapshot(
+        context,
+        activity=[_timeline(_now(), t("Watchlist refresh"), detail)],
+    )
 
 
 def action_workbench_delete(context: Any, payload: dict[str, Any]) -> dict[str, Any]:

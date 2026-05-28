@@ -15,6 +15,7 @@ from app.gateway.deps import _int, _now, _payload_dict, _txt, normalize_stock_co
 from app.gateway.his_replay import _action_his_replay_cancel, _action_his_replay_delete, _action_his_replay_start, _his_replay_database_busy, _snapshot_his_replay, _snapshot_his_replay_capital_pool, _snapshot_his_replay_progress
 from app.gateway.history import _action_history_rerun, _snapshot_history
 from app.gateway.live_sim import _action_live_sim_analyze_candidate, _action_live_sim_bulk_quant, _action_live_sim_delete_candidate, _action_live_sim_delete_position, _action_live_sim_reset, _action_live_sim_save, _action_live_sim_start, _action_live_sim_start_drill, _action_live_sim_stop, _live_signal_table, _live_trade_table, _snapshot_live_sim
+from app.gateway.market_technical_artifacts import ArtifactApiError, artifact_error_response, get_artifact_by_identity as _get_artifact_by_identity, get_artifact_by_ref as _get_artifact_by_ref, trace_id_from_request as _artifact_trace_id
 from app.gateway.monitor import _action_ai_monitor_analyze, _action_ai_monitor_delete, _action_ai_monitor_start, _action_ai_monitor_stop, _action_real_monitor_delete_rule, _action_real_monitor_refresh, _action_real_monitor_start, _action_real_monitor_stop, _action_real_monitor_update_rule, _snapshot_ai_monitor, _snapshot_real_monitor
 from app.gateway.quant_universe import QuantUniverseDomainError, ignore_auto_entry as _quant_universe_ignore_auto_entry, promote_to_trial as _quant_universe_promote_to_trial, quant_universe_overview as _quant_universe_overview, quant_universe_settings as _quant_universe_settings, quant_universe_state as _quant_universe_state, restore_to_trial as _quant_universe_restore_to_trial, set_override as _quant_universe_set_override, update_quant_universe_settings as _quant_universe_update_settings
 import app.gateway.portfolio as _gateway_portfolio_module
@@ -33,6 +34,7 @@ from app.gateway.workbench_analysis import _analysis_options, _hydrate_cached_wo
 from app.portfolio_rebalance_tasks import portfolio_rebalance_task_manager
 from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.db import is_sqlite_locked_error
+from app.quant_sim.replay_coverage import enrich_replay_tasks_with_coverage
 from app.quant_sim.profit_gap_attribution import build_profit_gap_attributions_from_runs
 from app.stock_analysis_daily_scheduler import get_stock_analysis_daily_scheduler
 from app.stock_refresh_scheduler import get_unified_stock_refresh_scheduler
@@ -88,6 +90,11 @@ def _sync_portfolio_compat_hooks() -> None:
 def _snapshot_portfolio(*args: Any, **kwargs: Any) -> dict[str, Any]:
     _sync_portfolio_compat_hooks()
     return _snapshot_portfolio_impl(*args, **kwargs)
+
+
+def _with_replay_task_coverage(context: UIApiContext, payload: dict[str, Any]) -> dict[str, Any]:
+    runs = context.replay_db().get_sim_runs(limit=20)
+    return enrich_replay_tasks_with_coverage(payload, runs)
 
 
 def _profit_gap_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -326,6 +333,41 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
     def get_signal_detail(signal_id: str, source: str = "auto", refresh_market: bool = False) -> dict[str, Any]:
         return _find_signal_detail(api_context, signal_id, source=source, fetch_realtime_snapshot=bool(refresh_market))
 
+    @app.get("/api/v1/quant/market-technical-artifacts")
+    def get_market_technical_artifact_by_identity(
+        request: Request,
+        domain: str,
+        stock_code: str,
+        market: str,
+        checkpoint_at: str,
+        timeframe: str,
+        data_version: str = "mta_v1",
+        run_id: str | None = None,
+        run_type: str | None = None,
+    ):
+        try:
+            return _get_artifact_by_identity(
+                api_context,
+                domain=domain,
+                stock_code=stock_code,
+                market=market,
+                checkpoint_at=checkpoint_at,
+                timeframe=timeframe,
+                data_version=data_version,
+                run_id=run_id,
+                run_type=run_type,
+                trace_id=_artifact_trace_id(request),
+            )
+        except ArtifactApiError as exc:
+            return artifact_error_response(exc)
+
+    @app.get("/api/v1/quant/market-technical-artifacts/{artifact_ref:path}")
+    def get_market_technical_artifact_by_ref(request: Request, artifact_ref: str):
+        try:
+            return _get_artifact_by_ref(api_context, artifact_ref, trace_id=_artifact_trace_id(request))
+        except ArtifactApiError as exc:
+            return artifact_error_response(exc)
+
     @app.get("/api/v1/quant/live-sim/signals")
     def get_live_sim_signals(page: int = 1, pageSize: int = REPLAY_TABLE_PAGE_SIZE, action: str = "ALL", stock: str = "") -> dict[str, Any]:
         return _live_signal_table(api_context, page=page, page_size=pageSize, action=action, stock=stock)
@@ -455,7 +497,8 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
     @app.get("/api/v1/quant/his-replay")
     def get_his_replay_snapshot(request: Request) -> dict[str, Any]:
         try:
-            return _snapshot_his_replay(api_context, _replay_table_query_from_request(request))
+            payload = _snapshot_his_replay(api_context, _replay_table_query_from_request(request))
+            return _with_replay_task_coverage(api_context, payload)
         except Exception as exc:
             if is_sqlite_locked_error(exc):
                 raise _his_replay_database_busy(exc) from exc
@@ -464,7 +507,8 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
     @app.get("/api/v1/quant/his-replay/progress")
     def get_his_replay_progress(request: Request) -> dict[str, Any]:
         try:
-            return _snapshot_his_replay_progress(api_context, _replay_table_query_from_request(request))
+            payload = _snapshot_his_replay_progress(api_context, _replay_table_query_from_request(request))
+            return _with_replay_task_coverage(api_context, payload)
         except Exception as exc:
             if is_sqlite_locked_error(exc):
                 raise _his_replay_database_busy(exc) from exc

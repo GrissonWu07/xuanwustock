@@ -10,6 +10,7 @@ from app.discover.market_snapshot import (
     MISSING_TECHNICAL_SNAPSHOT_REASON,
     REQUIRED_TECHNICAL_SNAPSHOT_FIELDS,
 )
+from app.quant_sim.evidence_service import attach_prepared_evidence
 from app.quant_sim.time_utils import format_utc_iso_z
 from app.selector_result_store import DEFAULT_SELECTOR_RESULT_DIR, load_latest_result, save_latest_result
 from app.watchlist_selector_integration import normalize_stock_code
@@ -18,6 +19,9 @@ from app.watchlist_selector_integration import normalize_stock_code
 DISCOVERY_CANDIDATE_ARTIFACT_KEY = "discovery_candidate_artifact"
 
 TECHNICAL_RUNTIME_KEYS = (
+    "artifact_ref",
+    "source_status",
+    "reason_code",
     "price",
     "ma5",
     "ma10",
@@ -173,6 +177,7 @@ def renormalize_hydrated_discovery_rows(rows: list[dict[str, Any]]) -> list[dict
                 "lifecycle_score_diagnostics": normalized.get("lifecycle_score_diagnostics"),
             }
         )
+        attach_prepared_evidence(row, run_id=str(row.get("discoveryRunId") or ""), source_type="discover")
         normalized_rows.append(row)
     return normalized_rows
 

@@ -294,6 +294,16 @@ def test_discovery_task_hydrates_before_lifecycle_ingest_and_api_readback(tmp_pa
     assert row["ma20"] == 12.0
     assert row["trend"] == "up"
     assert row["technical_confirmation_count"] >= 3
+    evidence = row["preparedEvidence"]
+    assert evidence["id"].startswith(f"{task_id}:600010:")
+    assert evidence["runId"] == task_id
+    assert evidence["stockCode"] == "600010"
+    assert evidence["status"] == "ready"
+    assert evidence["technicalSnapshot"]["status"] == "ready"
+    assert evidence["quantTechnical"]["candidateScore"] > 0
+    assert evidence["quantTechnical"]["candidateConfidence"] > 0
+    assert evidence["scoreSemantics"]["sourceScore"] == "discovery_source_audit_only"
+    assert evidence["scoreSemantics"]["candidateScore"] == "quant_technical_entry_score"
 
     events = context.quant_db().list_candidate_events(stock_code="600010", source_type="discover", limit=5)
     assert events
@@ -301,6 +311,84 @@ def test_discovery_task_hydrates_before_lifecycle_ingest_and_api_readback(tmp_pa
     assert payload["technical_snapshot_status"] == "ready"
     assert payload["ma20"] == 12.0
     assert payload["trend"] == "up"
+    assert payload["prepared_evidence"]["id"] == evidence["id"]
+    assert payload["score_semantics"]["candidate_score"] == "quant_technical_entry_score"
+
+
+def test_refresh_reevaluates_data_blocked_discovery_candidate(tmp_path):
+    from app.discover.candidate_artifact import save_discovery_candidate_artifact
+    from app.quant_sim.candidate_re_evaluation import reevaluate_refreshed_discovery_candidates
+    from app.stock_refresh_scheduler import save_stock_runtime_entries
+
+    context = UIApiContext(
+        data_dir=tmp_path,
+        selector_result_dir=tmp_path / "selector_results",
+        quant_sim_db_file=tmp_path / "quant_sim.db",
+        quant_sim_replay_db_file=tmp_path / "quant_sim_replay.db",
+    )
+    context.quant_db().update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
+    save_discovery_candidate_artifact(
+        [
+            {
+                "id": "600020",
+                "code": "600020",
+                "name": "重评股份",
+                "strategyKey": "low_price_bull",
+                "strategyName": "低价擒牛",
+                "source": "低价擒牛",
+            }
+        ],
+        run_id="discover-refresh-reeval",
+        selected_at="2026-05-16 10:00:00",
+        base_dir=context.selector_result_dir,
+    )
+    context.quant_db().add_candidate_event(
+        {
+            "stock_code": "600020",
+            "stock_name": "重评股份",
+            "source_type": "discover",
+            "source_key": "low_price_bull",
+            "source_score": 0,
+            "confidence": 0,
+            "trend": "neutral",
+            "reason_text": "缺少技术快照",
+            "status": "blocked",
+            "payload": {
+                "technical_snapshot_status": "stale_unprepared",
+                "entry_gate": {
+                    "passed": False,
+                    "status": "blocked",
+                    "reason_code": "missing_technical_snapshot",
+                },
+            },
+        }
+    )
+    save_stock_runtime_entries(
+        {
+            "600020": {
+                "stock_code": "600020",
+                "stock_name": "重评股份",
+                "sector": "测试行业",
+                "latest_price": 9.8,
+                **_ready_snapshot("600020"),
+            }
+        },
+        base_dir=context.selector_result_dir,
+        updated_at="2026-05-16T02:01:00Z",
+    )
+
+    summary = reevaluate_refreshed_discovery_candidates(context, run_reason="unit")
+
+    assert summary["attempted"] == 1
+    assert summary["reEvaluated"] == 1
+    events = context.quant_db().list_candidate_events(stock_code="600020", source_type="discover", limit=5)
+    latest_payload = events[0]["payload_json"]
+    assert latest_payload["technical_snapshot_status"] == "ready"
+    assert latest_payload["prepared_evidence"]["status"] == "ready"
+    assert latest_payload["candidate_score"] > 0
+    assert latest_payload["candidate_confidence"] > 0
+    assert latest_payload["refresh_re_evaluation"]["run_reason"] == "unit"
+    assert latest_payload["prepared_evidence"]["refresh"]["lastReevaluation"]["run_reason"] == "unit"
 
 
 def test_discovery_task_artifact_only_uses_completed_strategies(tmp_path, monkeypatch):

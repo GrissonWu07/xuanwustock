@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any
 
+from app.gateway.artifact_diagnostics import artifact_diagnostics_from_signal_payload
 from app.gateway.common import first_non_empty as _first_non_empty
 from app.gateway.common import float_value as _float
 from app.gateway.common import num as _num
@@ -114,6 +115,7 @@ def build_signal_summary_row(item: dict[str, Any], index: int, *, time_key: str,
     explainability = _safe_dict(profile.get("explainability"))
     fusion = _safe_dict(explainability.get("fusion_breakdown"))
     market = _signal_market_snapshot(profile, explainability)
+    artifact_diagnostics = artifact_diagnostics_from_signal_payload(item, profile)
 
     market_state = _txt(
         _first_non_empty(
@@ -127,19 +129,23 @@ def build_signal_summary_row(item: dict[str, Any], index: int, *, time_key: str,
     if volume_ratio is None:
         volume_ratio = _extract_reason_number(explainability, "volume_ratio")
     buy_tier_text, size_multiplier_text, guard_reason_text = _portfolio_guard_summary(profile)
+    action = _txt(item.get("action"), "HOLD").upper()
+    execution_status = _txt(item.get(status_key) or item.get("status") or item.get("execution_note"), "observed")
+    decision_time = _system_time_text(item.get(time_key) or item.get("updated_at") or item.get("created_at"), "--")
+    ignored_reason = _txt(item.get("reasoning") or guard_reason_text, "") if execution_status.lower() == "ignored" else ""
 
     return {
         "id": signal_id,
         "cells": [
             f"#{signal_id}",
-            _system_time_text(item.get(time_key) or item.get("updated_at") or item.get("created_at"), "--"),
+            decision_time,
             _txt(item.get("stock_code")),
             _txt(item.get("stock_name")),
-            _txt(item.get("action"), "HOLD").upper(),
+            action,
             buy_tier_text,
             size_multiplier_text,
             guard_reason_text,
-            _txt(item.get(status_key) or item.get("status") or item.get("execution_note"), "observed"),
+            execution_status,
             market_state,
             trend,
             _metric_text(volume_ratio),
@@ -150,6 +156,19 @@ def build_signal_summary_row(item: dict[str, Any], index: int, *, time_key: str,
         ],
         "code": _txt(item.get("stock_code")),
         "name": _txt(item.get("stock_name")),
+        "decisionProvenance": {
+            "signalId": signal_id,
+            "decisionTime": decision_time,
+            "finalAction": action,
+            "executionStatus": execution_status,
+            "ignoredReason": ignored_reason,
+            "gateResult": {
+                "buyTier": buy_tier_text,
+                "sizeMultiplier": size_multiplier_text,
+                "guardReason": guard_reason_text,
+            },
+            "artifactDiagnostics": artifact_diagnostics,
+        },
     }
 
 

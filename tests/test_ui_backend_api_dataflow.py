@@ -213,7 +213,9 @@ def _seed_structured_signal_for_detail(context: gateway_api.UIApiContext) -> int
         "fundamental_quality": {"label": "中性"},
         "risk_style": {"label": "稳重"},
         "auto_inferred_risk_style": {"label": "稳重"},
+        "market_snapshot": {"current_price": 106.62, "snapshot_at": "2026-04-24 10:30:00", "status": "ready"},
         "selected_strategy_profile": {"id": "conservative", "name": "保守 (conservative)", "version": "2"},
+        "stock_analysis_context": {"used": False, "omitted_reason": "no_valid_recent_stock_analysis"},
         "dual_track": {
             "min_fusion_confidence": 0.62,
             "min_tech_score_for_buy": 0.08,
@@ -403,6 +405,15 @@ def test_signal_detail_prefers_canonical_breakdown_and_clean_audit_labels(tmp_pa
 
     assert payload["decision"]["techScore"] == "0.036346"
     assert payload["decision"]["contextScore"] == "0.033122"
+    provenance = payload["decisionProvenance"]
+    assert provenance["decisionTime"] == payload["decision"]["checkpointAt"]
+    assert provenance["marketSnapshot"]["status"] == "ready"
+    assert provenance["marketSnapshot"]["asOf"] == "current_price=106.62"
+    assert provenance["strategyProfile"]["id"] == "conservative"
+    assert provenance["strategyProfile"]["version"] == "2"
+    assert provenance["stockAnalysisContext"]["status"] == "omitted"
+    assert provenance["stockAnalysisContext"]["omittedReason"] == "no_valid_recent_stock_analysis"
+    assert provenance["finalAction"] == "HOLD"
     assert rows["环境分"]["value"] == "0.033122"
     assert rows["环境轨置信度"]["value"] == "0.706667"
     assert rows["技术轨方向"]["value"] == "偏多"
@@ -781,7 +792,7 @@ def test_backend_api_research_run_module_persists_real_snapshot(tmp_path, monkey
     assert not payload["modules"][3]["note"].endswith("…")
     assert [row["code"] for row in payload["outputTable"]["rows"]] == ["002463", "600519", "300750"]
     assert all(row["eligible_status"] == "blocked" for row in payload["outputTable"]["rows"])
-    assert all(row["blocking_reason"] == "missing_technical_snapshot" for row in payload["outputTable"]["rows"])
+    assert all(row["blocking_reason"] == "missing_artifact_reference" for row in payload["outputTable"]["rows"])
     assert all(row["source"] in {"智瞰龙虎", "新闻流量", "宏观分析"} for row in payload["outputTable"]["rows"])
     quant_state = context.quant_db().get_quant_universe_state("002463")
     assert quant_state["quant_status"] == "inactive"

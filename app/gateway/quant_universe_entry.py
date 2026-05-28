@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from app.quant_sim.evidence_service import prepared_evidence_payload_fields
+from app.quant_sim.lifecycle_artifact_adapter import candidate_artifact_diagnostics
+from app.quant_sim.quant_universe_artifact_db import ArtifactBackedCandidateEventDB
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, QuantUniverseManager
 
 
@@ -51,8 +54,9 @@ def ingest_lifecycle_entry_rows(
         return summary
     auto_entry_mode = str(settings.get("auto_entry_mode") or "auto_trial")
 
+    artifact_db = ArtifactBackedCandidateEventDB(db, artifact_db_file=getattr(db, "db_file", ""))
     manager = QuantUniverseManager(
-        db=db,
+        db=artifact_db,
         profile_id=_selected_profile_id(db),
         policy=_policy_for_db(db),
     )
@@ -70,7 +74,7 @@ def ingest_lifecycle_entry_rows(
         summary["attempted"] += 1
         try:
             _ensure_stock_universe_row(context, row, source_type=source_type)
-            candidate_payload = _candidate_event_payload(row, source_type=source_type)
+            candidate_payload = _candidate_event_payload(row, source_type=source_type, db_file=getattr(db, "db_file", ""))
             if auto_entry_mode == "manual_only":
                 db.add_candidate_event({**candidate_payload, "status": "active"})
                 summary["events"] += 1
@@ -262,13 +266,14 @@ def _ensure_stock_universe_row(context: Any, row: dict[str, Any], *, source_type
         return
 
 
-def _candidate_event_payload(row: dict[str, Any], *, source_type: str) -> dict[str, Any]:
+def _candidate_event_payload(row: dict[str, Any], *, source_type: str, db_file: str | None = None) -> dict[str, Any]:
     code = normalize_stock_code(row.get("code") or row.get("stock_code") or row.get("id"))
     source_key = _source_key(row, source_type=source_type)
     name = str(row.get("name") or row.get("stock_name") or code).strip() or code
     source_score = _source_score(row, source_type=source_type, source_key=source_key)
     confidence = _confidence(row, source_type=source_type)
     trend = _trend(row)
+    artifact_payload = candidate_artifact_diagnostics(row, db_file=db_file)
     return {
         "stock_code": code,
         "stock_name": name,
@@ -283,25 +288,12 @@ def _candidate_event_payload(row: dict[str, Any], *, source_type: str) -> dict[s
             "name": name,
             "industry": row.get("industry") or row.get("sector") or "",
             "source": row.get("source") or row.get("strategyName") or "",
-            "latest_price": _first_present(row, "latestPrice", "latest_price", "price"),
-            "price": _first_present(row, "price", "latestPrice", "latest_price"),
-            "ma5": _first_present(row, "ma5", "MA5"),
-            "ma10": _first_present(row, "ma10", "MA10"),
-            "ma20": _first_present(row, "ma20", "MA20"),
-            "ma20_slope": _first_present(row, "ma20_slope", "MA20_slope", "ma20Slope"),
-            "ma60": _first_present(row, "ma60", "MA60"),
-            "amount": _first_present(row, "amount", "turnover", "成交额"),
-            "volume_ratio": _first_present(row, "volume_ratio", "量比"),
-            "rsi": _first_present(row, "rsi", "rsi12", "RSI"),
-            "macd": _first_present(row, "macd", "MACD"),
-            **_row_technical_snapshot_payload(row),
+            **artifact_payload,
             "technical_confirmation_count": row.get("technical_confirmation_count"),
             "technical_reasons": row.get("technical_reasons"),
-            "source_score": source_score,
-            "confidence": confidence,
-            "trend": trend,
             "lifecycle_score_diagnostics": row.get("lifecycle_score_diagnostics"),
             "eligible_status_before": row.get("eligible_status"),
+            **prepared_evidence_payload_fields(row, source_type=source_type),
         },
     }
 

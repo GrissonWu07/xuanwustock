@@ -203,6 +203,56 @@ def _trade_execution_detail(item: dict[str, Any]) -> str:
     return "--"
 
 
+def build_trade_provenance(item: dict[str, Any]) -> dict[str, Any]:
+    """Return compact provenance for trade detail/table row drill-down."""
+
+    metadata = _trade_metadata(item)
+    signal_id = _txt(item.get("signal_id"))
+    action = _txt(item.get("action")).upper()
+    lot = metadata.get("lot") if isinstance(metadata.get("lot"), dict) else {}
+    consumed_lots = metadata.get("consumed_lots") if isinstance(metadata.get("consumed_lots"), list) else []
+    slot_allocations = metadata.get("slot_allocations") if isinstance(metadata.get("slot_allocations"), list) else []
+    released_slots = (
+        metadata.get("released_slot_allocations")
+        if isinstance(metadata.get("released_slot_allocations"), list)
+        else []
+    )
+    missing: list[str] = []
+    if action == "BUY" and not lot:
+        missing.append("lot_missing")
+    if action == "BUY" and not slot_allocations:
+        missing.append("slot_allocation_missing")
+    if action == "SELL" and not consumed_lots and not metadata.get("terminal_liquidation"):
+        missing.append("consumed_lots_missing")
+    if action == "SELL" and not released_slots and not metadata.get("terminal_liquidation"):
+        missing.append("released_slot_allocations_missing")
+    return {
+        "signalId": signal_id,
+        "stockCode": _txt(item.get("stock_code")),
+        "action": action,
+        "positionPlan": metadata.get("position_sizing") if isinstance(metadata.get("position_sizing"), dict) else {},
+        "lotPlan": {
+            "lot": lot,
+            "consumedLots": consumed_lots,
+        },
+        "slotPlan": {
+            "slotUnits": _trade_slot_units(item),
+            "allocations": slot_allocations,
+            "releases": released_slots,
+        },
+        "execution": {
+            "status": "executed",
+            "quantity": int(_float(item.get("quantity"), 0.0) or 0),
+            "price": _float(item.get("price"), 0.0) or 0.0,
+            "grossAmount": _trade_gross_amount(item),
+            "feeTotal": _trade_fee_total(item),
+            "netAmount": _trade_net_amount(item),
+            "realizedPnl": _float(item.get("realized_pnl"), 0.0) or 0.0,
+        },
+        "missingReasons": missing,
+    }
+
+
 def _trade_cost_summary_metrics(summary: dict[str, Any] | None) -> list[dict[str, Any]]:
     item = summary or {}
     metrics = [

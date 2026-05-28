@@ -18,7 +18,14 @@ from app.gateway.quant_universe_entry import (
     ingest_lifecycle_entry_rows,
 )
 from app.gateway_api import UIApiContext, create_app
+from app.quant_sim.market_technical_artifact import (
+    ArtifactWriteRequest,
+    MarketTechnicalArtifactData,
+    MarketTechnicalArtifactRef,
+)
+from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
 from app.selector_result_store import save_latest_result
+from app.stock_refresh_artifact_writer import StockRefreshArtifactRequest, write_live_artifacts
 
 
 CHANGE_ID = "fix-discover-lifecycle-scoring"
@@ -84,6 +91,39 @@ COMPLETE_STRONG_TECHNICAL_SNAPSHOT = {
     "technical_snapshot_prepared_at": "2026-05-16 10:00:00",
     "technical_snapshot_indicator_version": "fixture-v1",
 }
+
+
+def _seed_artifact_for_snapshot(db_file: Path, stock_code: str, snapshot: dict[str, Any]) -> str:
+    artifact = MarketTechnicalArtifactStore(db_file).upsert(
+        ArtifactWriteRequest(
+            ref=MarketTechnicalArtifactRef.live(
+                stock_code=stock_code,
+                market="CN",
+                checkpoint_at="2026-05-15T06:30:00Z",
+                timeframe=str(snapshot.get("technical_snapshot_timeframe") or "30m"),
+            ),
+            data=MarketTechnicalArtifactData(
+                latest_price=float(snapshot.get("latestPrice") or snapshot.get("price") or 0),
+                close=float(snapshot.get("price") or snapshot.get("latestPrice") or 0),
+                ma5=float(snapshot.get("ma5") or 0),
+                ma10=float(snapshot.get("ma10") or 0),
+                ma20=float(snapshot.get("ma20") or 0),
+                ma60=float(snapshot.get("ma60") or 0),
+                ma20_slope=float(snapshot.get("ma20_slope") or 0),
+                rsi=float(snapshot.get("rsi") or 0),
+                macd=float(snapshot.get("macd") or 0),
+                volume_ratio=float(snapshot.get("volume_ratio") or 0),
+                amount=float(snapshot.get("amount") or 0),
+                trend=str(snapshot.get("trend") or ""),
+                provider=str(snapshot.get("technical_snapshot_provider") or "fixture"),
+                indicator_version=str(snapshot.get("technical_snapshot_indicator_version") or "fixture-v1"),
+                source_status="ready",
+                reason_code="ok",
+                computed_at="2026-05-16T02:00:00Z",
+            ),
+        )
+    )
+    return artifact.artifact_ref
 
 
 def _load_params() -> dict[str, Any]:
@@ -217,9 +257,9 @@ def test_candidate_event_payload_preserves_zero_normalized_evidence():
     assert payload["source_score"] == expected["source_score"]
     assert payload["confidence"] == expected["confidence"]
     assert payload["trend"] == expected["trend"]
-    assert payload["payload"]["source_score"] == expected["source_score"]
-    assert payload["payload"]["confidence"] == expected["confidence"]
-    assert payload["payload"]["trend"] == expected["trend"]
+    assert "source_score" not in payload["payload"]
+    assert "confidence" not in payload["payload"]
+    assert "trend" not in payload["payload"]
     assert payload["payload"]["lifecycle_score_diagnostics"]["reason_code"] == expected["reason_code"]
 
 
@@ -252,6 +292,7 @@ def test_lifecycle_ingest_keeps_weak_ai_candidate_recommended_only(tmp_path):
     context.quant_db().update_quant_universe_settings({"auto_entry_mode": "auto_trial"})
 
     row = {**params["row"], **COMPLETE_WEAK_TECHNICAL_SNAPSHOT}
+    row["artifact_ref"] = _seed_artifact_for_snapshot(context.quant_sim_db_file, row["code"], row)
     summary = ingest_lifecycle_entry_rows(context, [row], source_type="discover")
 
     expected = params["expected"]
@@ -362,16 +403,20 @@ def test_discover_task_status_reports_quant_auto_entry_diagnostics(tmp_path, mon
         from app.stock_refresh_scheduler import save_stock_runtime_entries
 
         code = str(selector_row["股票代码"])
+        entries = {
+            code: {
+                "stock_code": code,
+                "stock_name": selector_row.get("股票简称") or code,
+                "sector": selector_row.get("所属行业") or "测试行业",
+                "latest_price": selector_row.get("最新价") or 12.0,
+                **COMPLETE_STRONG_TECHNICAL_SNAPSHOT,
+            }
+        }
+        projections = write_live_artifacts(
+            StockRefreshArtifactRequest(db_file=ctx.quant_sim_db_file, entries=entries, market="CN")
+        )
         save_stock_runtime_entries(
-            {
-                code: {
-                    "stock_code": code,
-                    "stock_name": selector_row.get("股票简称") or code,
-                    "sector": selector_row.get("所属行业") or "测试行业",
-                    "latest_price": selector_row.get("最新价") or 12.0,
-                    **COMPLETE_STRONG_TECHNICAL_SNAPSHOT,
-                }
-            },
+            projections,
             base_dir=ctx.selector_result_dir,
             updated_at="2026-05-16T02:00:00Z",
         )

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+from app.quant_sim.lifecycle_artifact_adapter import artifact_gate_from_evidence, candidate_artifact_payload
 
 
 PROFILE_LIQUIDITY_MIN_AMOUNT = {
@@ -29,10 +32,25 @@ DISCOVERY_REQUIRED_TECHNICAL_SNAPSHOT_FIELDS = (
     "technical_snapshot_provider",
     "technical_snapshot_indicator_version",
 )
+DISCOVERY_BLOCKING_MISSING_FIELDS = {
+    *DISCOVERY_REQUIRED_TECHNICAL_SNAPSHOT_FIELDS,
+    "latest_price",
+    "current_price",
+    "close",
+    "rsi12",
+    "rsi_12",
+    "provider",
+    "indicator_version",
+}
 MISSING_TECHNICAL_SNAPSHOT_REASON = "missing_technical_snapshot"
 
 
-def evaluate_candidate_entry_gate(event: dict[str, Any], *, profile_id: str | None = None) -> dict[str, Any]:
+def evaluate_candidate_entry_gate(
+    event: dict[str, Any],
+    *,
+    profile_id: str | None = None,
+    artifact_db_file: str | Path | None = None,
+) -> dict[str, Any]:
     """Return a normalized entry gate decision for a candidate event.
 
     Source identity is audit metadata only. A passing result means the event may
@@ -41,7 +59,16 @@ def evaluate_candidate_entry_gate(event: dict[str, Any], *, profile_id: str | No
     """
 
     profile = _profile(profile_id)
-    evidence = _evidence(event)
+    evidence = evidence_from_candidate_event(event, artifact_db_file=artifact_db_file)
+    artifact_gate = artifact_gate_from_evidence(evidence)
+    if not artifact_gate["passed"]:
+        return _block_result(
+            evidence,
+            result="eligible_blocked",
+            status="blocked",
+            reason_code=str(artifact_gate["reason_code"]),
+            missing_fields=artifact_gate.get("missing_fields") or [],
+        )
     if _is_discovery_event(event):
         technical_snapshot = _discovery_technical_snapshot_gate(evidence)
         if not technical_snapshot["passed"]:
@@ -133,7 +160,13 @@ def _is_discovery_event(event: dict[str, Any]) -> bool:
 def _discovery_technical_snapshot_gate(evidence: dict[str, Any]) -> dict[str, Any]:
     explicit_missing = evidence.get("technical_snapshot_missing_fields")
     if isinstance(explicit_missing, list) and explicit_missing:
-        return {"passed": False, "missing_fields": [str(item) for item in explicit_missing if str(item).strip()]}
+        blocking_missing = [
+            str(item)
+            for item in explicit_missing
+            if str(item).strip() in DISCOVERY_BLOCKING_MISSING_FIELDS
+        ]
+        if blocking_missing:
+            return {"passed": False, "missing_fields": blocking_missing}
     missing = _missing_technical_snapshot_fields(evidence)
     if missing:
         return {"passed": False, "missing_fields": missing}
@@ -194,14 +227,23 @@ def _profile(profile_id: str | None) -> str:
     return "stable"
 
 
-def _evidence(event: dict[str, Any]) -> dict[str, Any]:
+def evidence_from_candidate_event(
+    event: dict[str, Any],
+    *,
+    artifact_db_file: str | Path | None = None,
+) -> dict[str, Any]:
     payload = event.get("payload_json")
     if isinstance(payload, dict):
-        return dict(payload)
-    payload = event.get("payload")
-    if isinstance(payload, dict):
-        return dict(payload)
-    return {}
+        evidence = dict(payload)
+    else:
+        payload = event.get("payload")
+        evidence = dict(payload) if isinstance(payload, dict) else {}
+    if artifact_db_file is not None:
+        # Keep persisted candidate payload light; decision gates use the
+        # artifact reader to materialize checkpoint facts only in memory.
+        artifact_payload = candidate_artifact_payload(evidence, db_file=artifact_db_file)
+        evidence = {**evidence, **artifact_payload}
+    return evidence
 
 
 def _pick(mapping: dict[str, Any], *keys: str) -> Any:

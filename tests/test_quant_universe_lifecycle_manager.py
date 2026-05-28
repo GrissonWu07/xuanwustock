@@ -39,6 +39,9 @@ def _strong_entry_payload(**overrides):
         "technical_snapshot_at": "2026-05-16 14:30:00",
         "technical_snapshot_row_count": 180,
         "technical_snapshot_indicator_version": "technical-entry-v1",
+        "artifact_ref": "mta:test",
+        "source_status": "ready",
+        "reason_code": "ok",
         "consecutive_checkpoint_score": 1.0,
         "ma20_breakout_retest_score": 1.0,
         "technical_confirmation_count": 5,
@@ -976,8 +979,11 @@ def test_low_price_event_uses_source_agnostic_downtrend_gate(tmp_path):
             "source_score": 0.95,
             "confidence": 0.9,
             "trend": "up",
-            "payload_json": {
-                "price": 8.8,
+                "payload_json": {
+                    "artifact_ref": "mta:test",
+                    "source_status": "ready",
+                    "reason_code": "ok",
+                    "price": 8.8,
                 "ma5": 8.7,
                 "ma10": 8.9,
                 "ma20": 9.4,
@@ -1012,8 +1018,11 @@ def test_research_event_uses_source_agnostic_downtrend_gate(tmp_path):
             "source_score": 0.98,
             "confidence": 0.95,
             "trend": "up",
-            "payload_json": {
-                "price": 9.8,
+                "payload_json": {
+                    "artifact_ref": "mta:test",
+                    "source_status": "ready",
+                    "reason_code": "ok",
+                    "price": 9.8,
                 "ma5": 9.6,
                 "ma10": 9.7,
                 "ma20": 10.1,
