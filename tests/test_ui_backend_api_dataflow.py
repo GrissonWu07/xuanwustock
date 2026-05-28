@@ -8,6 +8,12 @@ from fastapi.testclient import TestClient
 
 import app.gateway_api as gateway_api
 from app.notification_service import notification_service
+from app.quant_sim.market_technical_artifact import (
+    ArtifactWriteRequest,
+    MarketTechnicalArtifactData,
+    MarketTechnicalArtifactRef,
+)
+from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
 from app.selector_result_store import save_latest_result
 
 
@@ -508,40 +514,47 @@ def test_signal_detail_exposes_position_add_gate_and_execution_delta(tmp_path):
     assert rows["加仓门控理由"]["value"] == "已有浮盈 4.00% >= 2.00%"
 
 
-def test_replay_signal_detail_enriches_missing_market_snapshot_from_checkpoint_provider():
-    class FakeProvider:
-        def __init__(self):
-            self.prepared = None
-
-        def prepare(self, stock_codes, start_datetime, end_datetime, timeframe):
-            self.prepared = (stock_codes, start_datetime, end_datetime, timeframe)
-
-        def get_snapshot(self, stock_code, checkpoint, timeframe, *, stock_name=None):
-            return {
-                "current_price": 36.63,
-                "open": 36.1,
-                "high": 37.2,
-                "low": 35.8,
-                "volume": 123456,
-                "amount": 4567.8,
-                "turnover_rate": 2.34,
-                "dif": 0.49,
-                "dea": 0.52,
-                "k": 40.6,
-                "d": 54.4,
-                "j": 13.0,
-            }
-
-    class FakeReplayService:
-        def __init__(self):
-            self.snapshot_provider = FakeProvider()
+def test_replay_signal_detail_enriches_missing_market_snapshot_from_run_artifact(tmp_path):
+    replay_db = tmp_path / "quant_sim_replay.db"
+    artifact_ref = MarketTechnicalArtifactRef(
+        domain="replay",
+        run_id="42",
+        run_type="historical_replay",
+        stock_code="002518",
+        market="CN",
+        checkpoint_at="2025-08-29T05:30:00Z",
+        timeframe="30m",
+    )
+    written = MarketTechnicalArtifactStore(replay_db).upsert(
+        ArtifactWriteRequest(
+            ref=artifact_ref,
+            data=MarketTechnicalArtifactData(
+                open=36.1,
+                high=37.2,
+                low=35.8,
+                close=36.63,
+                latest_price=36.63,
+                volume=123456,
+                amount=4567.8,
+                turnover_rate=2.34,
+                rsi=58.0,
+                macd=0.49,
+                macd_signal=0.52,
+                provider="fixture",
+                indicator_version="artifact-v1",
+                source_status="ready",
+                reason_code="ok",
+                computed_at="2025-08-29T05:30:01Z",
+            ),
+        )
+    )
 
     class FakeContext:
-        def __init__(self):
-            self.service = FakeReplayService()
+        quant_sim_db_file = tmp_path / "quant_sim.db"
+        quant_sim_replay_db_file = replay_db
 
         def replay_service(self):
-            return self.service
+            raise AssertionError("signal detail must not read replay snapshot provider when artifact_ref is present")
 
     context = FakeContext()
     profile = gateway_api._enrich_signal_strategy_profile_with_replay_snapshot(
@@ -549,18 +562,25 @@ def test_replay_signal_detail_enriches_missing_market_snapshot_from_checkpoint_p
         signal={"stock_code": "002518", "stock_name": "科士达", "checkpoint_at": "2025-08-29 13:30:00"},
         source="replay",
         replay_run={"timeframe": "30m"},
-        strategy_profile={"analysis_timeframe": "30m", "market_snapshot": {"current_price": 36.63}},
+        strategy_profile={
+            "analysis_timeframe": "30m",
+            "market_snapshot": {
+                "artifact_ref": written.artifact_ref,
+                "source_status": "ready",
+                "reason_code": "ok",
+                "current_price": 36.63,
+            },
+        },
     )
 
     snapshot = profile["market_snapshot"]
-    assert context.service.snapshot_provider.prepared[0] == ["002518"]
-    assert context.service.snapshot_provider.prepared[3] == "30m"
     assert snapshot["current_price"] == 36.63
     assert snapshot["open"] == 36.1
     assert snapshot["high"] == 37.2
     assert snapshot["low"] == 35.8
     assert snapshot["volume"] == 123456
     assert snapshot["turnover_rate"] == 2.34
+    assert snapshot["artifact_ref"] == written.artifact_ref
 
 
 def test_discover_snapshot_aggregates_multiple_selector_results(tmp_path, monkeypatch):

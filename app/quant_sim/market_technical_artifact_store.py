@@ -22,6 +22,7 @@ from app.quant_sim.market_technical_artifact import (
     REPLAY_DOMAIN,
     parse_artifact_ref,
 )
+from app.quant_sim.time_utils import utc_now_iso_z
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,7 @@ class MarketTechnicalArtifactStore:
 
     def _row_payload(self, request: ArtifactWriteRequest, artifact_ref: str) -> dict[str, Any]:
         data = request.data
+        computed_at = data.computed_at or utc_now_iso_z()
         return {
             "artifact_ref": artifact_ref,
             "artifact_domain": request.ref.domain,
@@ -184,7 +186,7 @@ class MarketTechnicalArtifactStore:
             "indicator_version": data.indicator_version,
             "source_status": data.source_status,
             "reason_code": data.reason_code,
-            "computed_at": data.computed_at,
+            "computed_at": computed_at,
             "latest_price": data.latest_price,
             "close": data.close,
             "ma20": data.ma20,
@@ -200,7 +202,7 @@ class MarketTechnicalArtifactStore:
             "indicator_json": self._json(data.indicator_json),
             "structure_json": self._json(data.structure_json),
             "quality_json": self._json(data.quality_json),
-            "updated_at": data.computed_at,
+            "updated_at": computed_at,
         }
 
     def _get_by_ref(self, ref: MarketTechnicalArtifactRef, artifact_ref: str) -> ArtifactReadResult:

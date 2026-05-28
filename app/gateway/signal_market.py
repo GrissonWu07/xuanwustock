@@ -122,35 +122,16 @@ def _enrich_signal_strategy_profile_with_replay_snapshot(
             profile["market_snapshot"] = existing_snapshot
         return profile
 
-    stock_code = normalize_stock_code(signal.get("stock_code"))
-    checkpoint_dt = _parse_signal_time(signal.get("checkpoint_at") or signal.get("created_at") or signal.get("updated_at"))
-    if not stock_code or checkpoint_dt is None:
-        if existing_snapshot:
-            profile["market_snapshot"] = existing_snapshot
-        return profile
-
-    timeframe = _profile_text(
-        (replay_run or {}).get("timeframe"),
-        _profile_text(profile.get("analysis_timeframe"), "30m"),
-    )
-    try:
-        provider = context.replay_service().snapshot_provider
-        provider.prepare([stock_code], checkpoint_dt, checkpoint_dt, timeframe)
-        snapshot = provider.get_snapshot(
-            stock_code,
-            checkpoint_dt,
-            timeframe,
-            stock_name=_txt(signal.get("stock_name"), stock_code),
-        )
-    except Exception:
-        snapshot = None
-
     merged_snapshot = dict(existing_snapshot)
-    if isinstance(snapshot, dict):
-        for key, value in snapshot.items():
-            if _is_empty_market_value(value):
-                continue
-            merged_snapshot[key] = value
+    artifact_snapshot = _fetch_signal_market_snapshot(
+        context=context,
+        signal=signal,
+        strategy_profile=profile,
+    )
+    for key, value in artifact_snapshot.items():
+        if _is_empty_market_value(value):
+            continue
+        merged_snapshot[key] = value
     if merged_snapshot:
         profile["market_snapshot"] = merged_snapshot
     return profile

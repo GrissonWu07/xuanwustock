@@ -257,6 +257,31 @@ def test_duplicate_upsert_updates_same_artifact(tmp_path):
     assert loaded.artifact.data.latest_price == 11.2
 
 
+def test_artifact_upsert_defaults_computed_at_when_missing(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    store = MarketTechnicalArtifactStore(db_file)
+    ref = MarketTechnicalArtifactRef.live(
+        stock_code="600000",
+        market="CN",
+        checkpoint_at="2026-01-05T02:00:00Z",
+        timeframe="30m",
+        data_version="mta_v1",
+    )
+
+    store.upsert(ArtifactWriteRequest(ref=ref, data=_sample_data(computed_at=None)))
+
+    loaded = store.get_by_ref(ref.to_ref())
+    assert loaded.artifact is not None
+    assert loaded.artifact.data.computed_at
+    with closing(sqlite3.connect(db_file)) as conn:
+        row = conn.execute(
+            "SELECT computed_at, updated_at FROM market_technical_artifacts WHERE artifact_ref = ?",
+            (ref.to_ref(),),
+        ).fetchone()
+    assert row[0]
+    assert row[1]
+
+
 def test_partial_artifact_sorts_missing_fields(tmp_path):
     store = MarketTechnicalArtifactStore(tmp_path / "quant_sim.db")
     ref = MarketTechnicalArtifactRef.live(
