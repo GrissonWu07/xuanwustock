@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +21,7 @@ from app.quant_sim.replay_artifact_adapter import (
     write_run_artifact_from_snapshot,
 )
 from app.quant_sim.signal_center_service import SignalCenterService
-from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
+from app.quant_sim.time_utils import parse_system_datetime
 
 
 class HistoricalReplayMixin:
@@ -399,7 +399,6 @@ class HistoricalReplayMixin:
         positions_checked = 0
         checkpoint_signals: list[dict] = []
         checkpoint_text = self._format_datetime(checkpoint)
-        checkpoint_utc = self._market_time_to_utc(checkpoint, market)
         base_profile_id = (
             str(strategy_profile_binding.get("profile_id") or "").strip()
             if isinstance(strategy_profile_binding, dict)
@@ -575,7 +574,7 @@ class HistoricalReplayMixin:
                 auto_executed = portfolio.auto_execute_pending_signals(
                     pending_signals,
                     note=auto_execute_note,
-                    executed_at=checkpoint_utc,
+                    executed_at=checkpoint,
                 )
             except Exception as exc:
                 if run_id is not None:
@@ -726,7 +725,7 @@ class HistoricalReplayMixin:
         positions = temp_db.get_positions(as_of=checkpoint)
         if not positions:
             return
-        checkpoint_text = format_utc_iso_z(self._market_time_to_utc(checkpoint, market))
+        checkpoint_text = self._format_datetime(checkpoint)
         ex_date = checkpoint.date().isoformat()
         actions: list[dict] = []
         for position in positions:
@@ -833,24 +832,19 @@ class HistoricalReplayMixin:
         return datetime.fromisoformat(str(value).replace("T", " ")).replace(microsecond=0)
 
     @classmethod
-    def _parse_optional_naive_utc(cls, value: Any) -> datetime | None:
+    def _parse_optional_local_datetime(cls, value: Any) -> datetime | None:
         try:
-            return cls._to_naive_utc(value)
+            return cls._to_local_datetime(value)
         except (TypeError, ValueError):
             return None
 
     @staticmethod
-    def _to_naive_utc(value: Any) -> datetime:
+    def _to_local_datetime(value: Any) -> datetime:
         if isinstance(value, datetime):
             parsed = value
         else:
-            text = str(value or "").strip()
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is not None:
-            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
-        return parsed.replace(microsecond=0)
+            parsed = parse_system_datetime(str(value or "").strip())
+        return parsed.replace(tzinfo=None, microsecond=0)
 
     def _resolve_end_datetime(self, value: datetime | str | None) -> datetime:
         if value is None:
@@ -888,12 +882,3 @@ class HistoricalReplayMixin:
     @staticmethod
     def _format_datetime(value: datetime) -> str:
         return value.replace(microsecond=0).isoformat(sep=" ")
-
-    @staticmethod
-    def _market_time_to_utc(value: datetime, market: str = "CN") -> datetime:
-        local_value = (
-            value.replace(tzinfo=market_timezone(market))
-            if value.tzinfo is None
-            else value.astimezone(market_timezone(market))
-        )
-        return local_value.astimezone(timezone.utc).replace(microsecond=0)

@@ -11,7 +11,7 @@ from app.discover.market_snapshot import (
     REQUIRED_TECHNICAL_SNAPSHOT_FIELDS,
 )
 from app.quant_sim.evidence_service import attach_prepared_evidence
-from app.quant_sim.time_utils import format_utc_iso_z
+from app.quant_sim.time_utils import local_now_text
 from app.selector_result_store import DEFAULT_SELECTOR_RESULT_DIR, load_latest_result, save_latest_result
 from app.watchlist_selector_integration import normalize_stock_code
 
@@ -63,7 +63,7 @@ def save_discovery_candidate_artifact(
         {
             "runId": str(run_id or "").strip(),
             "selectedAt": str(selected_at or "").strip(),
-            "updatedAt": format_utc_iso_z(),
+            "updatedAt": local_now_text(),
             "rows": safe_rows,
             "summary": dict(summary or {}),
             "refreshSummary": dict(refresh_summary or {}),

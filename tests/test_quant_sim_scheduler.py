@@ -1,8 +1,9 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 import json
 import sqlite3
 from types import SimpleNamespace
 from unittest.mock import Mock
+from zoneinfo import ZoneInfo
 
 from app.quant_kernel import trading_time_utils
 from app.quant_sim.market_technical_artifact import ArtifactWriteRequest, MarketTechnicalArtifactData, MarketTechnicalArtifactRef
@@ -50,19 +51,19 @@ def _seed_live_artifact(db_file, stock_code: str, *, price: float = 10.0) -> str
 def test_scheduler_trading_time_uses_market_timezone_for_cn_hk_and_us():
     assert QuantSimScheduler._is_trading_time(
         "CN",
-        now_utc=datetime(2026, 5, 6, 2, 0, tzinfo=timezone.utc),
+        now_local=datetime(2026, 5, 6, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     assert QuantSimScheduler._is_trading_time(
         "HK",
-        now_utc=datetime(2026, 5, 4, 7, 0, tzinfo=timezone.utc),
+        now_local=datetime(2026, 5, 4, 15, 0, tzinfo=ZoneInfo("Asia/Hong_Kong")),
     )
     assert QuantSimScheduler._is_trading_time(
         "US",
-        now_utc=datetime(2026, 5, 4, 14, 0, tzinfo=timezone.utc),
+        now_local=datetime(2026, 5, 4, 10, 0, tzinfo=ZoneInfo("America/New_York")),
     )
     assert not QuantSimScheduler._is_trading_time(
         "US",
-        now_utc=datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc),
+        now_local=datetime(2026, 5, 4, 8, 0, tzinfo=ZoneInfo("America/New_York")),
     )
 
 
@@ -77,7 +78,7 @@ def test_scheduler_trading_time_reuses_cn_calendar_for_holidays(monkeypatch):
 
     assert not QuantSimScheduler._is_trading_time(
         "CN",
-        now_utc=datetime(2026, 5, 4, 2, 0, tzinfo=timezone.utc),
+        now_local=datetime(2026, 5, 4, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
 
 
@@ -499,7 +500,14 @@ def test_scheduler_opportunistic_review_keeps_cooling_without_consecutive_confir
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
     candidate_service.add_manual_candidate("600000", "浦发银行", "manual")
-    candidate_service.db.upsert_quant_universe_state("600000", {"quant_status": "cooling", "health_score": 100})
+    candidate_service.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "cooling",
+            "health_score": 100,
+            "last_health_evaluated_at": "2026-05-08 09:00:00",
+        },
+    )
     scheduler = QuantSimScheduler(db_file=db_file)
     monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
     scheduler.engine.analyze_active_candidates = Mock(return_value=[])
@@ -538,9 +546,9 @@ def test_scheduler_opportunistic_review_skips_cooling_until_and_recent_reviews(t
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
     rows = {
-        "600001": {"cooling_until": "2026-05-08T00:30:00Z", "last_health_evaluated_at": "2026-05-07T20:00:00Z"},
-        "600002": {"last_health_evaluated_at": "2026-05-08T00:05:00Z"},
-        "600003": {"last_health_evaluated_at": "2026-05-07T20:00:00Z"},
+        "600001": {"cooling_until": "2026-05-08 00:30:00", "last_health_evaluated_at": "2026-05-07 20:00:00"},
+        "600002": {"last_health_evaluated_at": "2026-05-08 00:05:00"},
+        "600003": {"last_health_evaluated_at": "2026-05-07 20:00:00"},
     }
     for code, state in rows.items():
         candidate_service.add_manual_candidate(code, code, "manual")
@@ -568,7 +576,7 @@ def test_scheduler_opportunistic_review_skips_cooling_until_and_recent_reviews(t
             "stock_code": candidate["stock_code"],
             "stock_name": candidate.get("stock_name"),
             "action": "HOLD",
-            "decision_time": "2026-05-08T00:10:00Z",
+            "decision_time": "2026-05-08 00:10:00",
             "tech_score": -0.5,
             "context_score": 0.0,
             "strategy_profile": {},
@@ -597,8 +605,8 @@ def test_scheduler_forces_cooling_review_when_candidate_event_is_queued(tmp_path
             "quant_status": "cooling",
             "health_score": 72,
             "candidate_score": 0.0,
-            "cooling_until": "2099-01-01T00:00:00Z",
-            "last_health_evaluated_at": "2026-05-08T00:05:00Z",
+            "cooling_until": "2099-01-01 00:00:00",
+            "last_health_evaluated_at": "2026-05-08 00:05:00",
         },
     )
     manager = QuantUniverseManager(
@@ -645,7 +653,7 @@ def test_scheduler_forces_cooling_review_when_candidate_event_is_queued(tmp_path
 
     scheduler = QuantSimScheduler(db_file=db_file)
     monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
-    monkeypatch.setattr(scheduler, "_decision_time", lambda: datetime(2026, 5, 8, 0, 10, tzinfo=timezone.utc))
+    monkeypatch.setattr(scheduler, "_decision_time", lambda: datetime(2026, 5, 8, 0, 10))
     scheduler.engine.analyze_active_candidates = Mock(return_value=[])
     scheduler.engine.analyze_positions = Mock(return_value=[])
     scheduler.portfolio.list_positions = Mock(return_value=[])

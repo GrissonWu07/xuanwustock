@@ -40,7 +40,6 @@ def test_live_quant_drill_quant_state_crud(tmp_path):
     db.upsert_sim_run_quant_states(
         run_id,
         checkpoint_at="2026-01-01 09:30:00",
-        checkpoint_at_utc="2026-01-01T01:30:00Z",
         states=[
             {
                 "stock_code": "600519",
@@ -54,7 +53,7 @@ def test_live_quant_drill_quant_state_crud(tmp_path):
                 "weakening_warning_streak": 3,
                 "blocked_streak": 1,
                 "no_buy_days": 4,
-                "cooling_until": "2026-01-03T01:30:00Z",
+                "cooling_until": "2026-01-03 09:30:00",
                 "retired_at": None,
                 "latest_reason": "auto_trial",
                 "snapshot_json": {"reason_code": "auto_trial"},
@@ -66,7 +65,7 @@ def test_live_quant_drill_quant_state_crud(tmp_path):
     assert rows["total"] == 1
     assert rows["items"][0]["stock_code"] == "600519"
     assert rows["items"][0]["downtrend_streak"] == 2
-    assert rows["items"][0]["cooling_until"] == "2026-01-03T01:30:00Z"
+    assert rows["items"][0]["cooling_until"] == "2026-01-03 09:30:00"
     assert rows["items"][0]["snapshot_json"]["reason_code"] == "auto_trial"
 
 
@@ -79,7 +78,6 @@ def test_live_quant_drill_event_candidate_and_summary_crud(tmp_path):
         [
             {
                 "checkpoint_at": "2026-01-01 09:30:00",
-                "checkpoint_at_utc": "2026-01-01T01:30:00Z",
                 "stock_code": "600519",
                 "stock_name": "贵州茅台",
                 "source_type": "low_price",
@@ -95,7 +93,7 @@ def test_live_quant_drill_event_candidate_and_summary_crud(tmp_path):
         run_id,
         stock_code="600519",
         source_type="low_price",
-        checkpoint_at_utc_lte="2026-01-01T01:30:00Z",
+        checkpoint_at_lte="2026-01-01 09:30:00",
     )
     candidates = db.list_sim_run_candidate_events(run_id, status="consumed")
     assert consumed == 1
@@ -107,7 +105,6 @@ def test_live_quant_drill_event_candidate_and_summary_crud(tmp_path):
         [
             {
                 "checkpoint_at": "2026-01-01 10:00:00",
-                "checkpoint_at_utc": "2026-01-01T02:00:00Z",
                 "stock_code": "600519",
                 "stock_name": "贵州茅台",
                 "event_type": "status_transition",
@@ -131,7 +128,6 @@ def test_live_quant_drill_event_candidate_and_summary_crud(tmp_path):
         run_id,
         {
             "checkpoint_at": "2026-01-01 10:00:00",
-            "checkpoint_at_utc": "2026-01-01T02:00:00Z",
             "inactive_count": 1,
             "trial_count": 2,
             "active_count": 3,
@@ -160,7 +156,6 @@ def test_delete_sim_run_cleans_live_quant_drill_tables(tmp_path):
     db.upsert_sim_run_quant_states(
         run_id,
         checkpoint_at="2026-01-01 09:30:00",
-        checkpoint_at_utc="2026-01-01T01:30:00Z",
         states=[{"stock_code": "600519", "quant_status": "active"}],
     )
     db.add_sim_run_quant_events(
@@ -168,7 +163,6 @@ def test_delete_sim_run_cleans_live_quant_drill_tables(tmp_path):
         [
             {
                 "checkpoint_at": "2026-01-01 09:30:00",
-                "checkpoint_at_utc": "2026-01-01T01:30:00Z",
                 "stock_code": "600519",
                 "event_type": "status_transition",
             }
@@ -179,7 +173,6 @@ def test_delete_sim_run_cleans_live_quant_drill_tables(tmp_path):
         [
             {
                 "checkpoint_at": "2026-01-01 09:30:00",
-                "checkpoint_at_utc": "2026-01-01T01:30:00Z",
                 "stock_code": "600519",
                 "source_type": "manual_seed",
             }
@@ -189,7 +182,6 @@ def test_delete_sim_run_cleans_live_quant_drill_tables(tmp_path):
         run_id,
         {
             "checkpoint_at": "2026-01-01 09:30:00",
-            "checkpoint_at_utc": "2026-01-01T01:30:00Z",
         },
     )
 

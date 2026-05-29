@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from app.gateway.deps import *
 from app.gateway.trades import _run_metadata, _trade_metadata, _trade_net_amount
-from app.quant_sim.time_utils import system_timezone
+from app.quant_sim.time_utils import parse_system_datetime
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -16,32 +16,26 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _sort_trade_chronologically(item: dict[str, Any]) -> tuple[str, int]:
     parsed = _parse_replay_time(item.get("executed_at") or item.get("created_at"))
-    return ((parsed or datetime.min.replace(tzinfo=timezone.utc)).isoformat(), _safe_int(item.get("id")))
+    return ((parsed or datetime.min).isoformat(), _safe_int(item.get("id")))
 
 
 def _parse_replay_time(value: Any) -> datetime | None:
     text = _txt(value)
     if not text:
         return None
-    normalized = text.replace("Z", "+00:00")
-    if "T" not in normalized and " " in normalized:
-        normalized = normalized.replace(" ", "T", 1)
     try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
+        return parse_system_datetime(text)
+    except (TypeError, ValueError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=system_timezone())
-    return parsed.astimezone(timezone.utc).replace(microsecond=0)
 
 
-def _trade_is_at_or_before_checkpoint(trade: dict[str, Any], cutoff_utc: datetime | None) -> bool:
-    if cutoff_utc is None:
+def _trade_is_at_or_before_checkpoint(trade: dict[str, Any], cutoff_local: datetime | None) -> bool:
+    if cutoff_local is None:
         return True
     trade_time = _parse_replay_time(trade.get("executed_at") or trade.get("created_at"))
     if trade_time is None:
         return True
-    return trade_time <= cutoff_utc
+    return trade_time <= cutoff_local
 
 
 def _capital_slot_allocations(metadata: dict[str, Any], fallback_slot: int, fallback_cash: float) -> list[dict[str, Any]]:
@@ -114,12 +108,12 @@ def _reconstruct_open_lots_from_trades(
     executed_to: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     open_lots: dict[str, dict[str, Any]] = {}
-    cutoff_utc = _parse_replay_time(executed_to) if executed_to else None
+    cutoff_local = _parse_replay_time(executed_to) if executed_to else None
     trades = sorted(
         [
             trade
             for trade in db.get_sim_run_trades(run_id)
-            if _trade_is_at_or_before_checkpoint(trade, cutoff_utc)
+            if _trade_is_at_or_before_checkpoint(trade, cutoff_local)
         ],
         key=_sort_trade_chronologically,
     )

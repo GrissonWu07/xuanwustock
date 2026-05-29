@@ -25,10 +25,11 @@ from app.quant_sim.capital_slots import (
     normalize_capital_slot_config,
 )
 from app.quant_sim.execution_constraints import trade_block_reason
+from app.quant_sim.market_technical_artifact import MarketTechnicalArtifactRef, parse_artifact_ref
 from app.quant_sim.portfolio_execution_guard import PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy
 from app.quant_sim.stock_execution_feedback import STOCK_EXECUTION_FEEDBACK_PROFILE_DEFAULTS
-from app.quant_sim.time_utils import ensure_utc_datetime, format_utc_iso_z
+from app.quant_sim.time_utils import format_local_time, parse_system_datetime
 from app.runtime_paths import default_db_path
 
 
@@ -300,8 +301,8 @@ class QuantSimDB:
                     quant_manual_override TEXT DEFAULT '',
                     quant_entry_source TEXT,
                     quant_entry_at TEXT,
-                    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                    created_at TEXT DEFAULT (datetime('now','localtime')),
+                    updated_at TEXT DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -311,7 +312,7 @@ class QuantSimDB:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     stock_universe_id INTEGER NOT NULL,
                     source TEXT NOT NULL,
-                    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                    created_at TEXT DEFAULT (datetime('now','localtime')),
                     UNIQUE(stock_universe_id, source),
                     FOREIGN KEY(stock_universe_id) REFERENCES stock_universe(id)
                 )
@@ -344,8 +345,8 @@ class QuantSimDB:
                     last_status_changed_at TEXT,
                     last_health_evaluated_at TEXT,
                     snapshot_json TEXT,
-                    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                    created_at TEXT DEFAULT (datetime('now','localtime')),
+                    updated_at TEXT DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -375,8 +376,8 @@ class QuantSimDB:
                     payload_json TEXT,
                     status TEXT DEFAULT 'active',
                     consumed_by_quant_manager_at TEXT,
-                    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                    created_at TEXT DEFAULT (datetime('now','localtime')),
+                    updated_at TEXT DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -395,7 +396,7 @@ class QuantSimDB:
                     health_score_after REAL,
                     candidate_score REAL,
                     evidence_json TEXT,
-                    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                    created_at TEXT DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -406,7 +407,7 @@ class QuantSimDB:
                     quant_universe_lifecycle_enabled INTEGER DEFAULT 1,
                     auto_exit_enabled INTEGER DEFAULT 1,
                     auto_entry_mode TEXT DEFAULT 'auto_trial',
-                    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                    updated_at TEXT DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -457,8 +458,8 @@ class QuantSimDB:
                 cap_reason TEXT,
                 execution_diagnostics_json TEXT DEFAULT '{}',
                 delay_count INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
                 executed_at TEXT,
                 FOREIGN KEY(candidate_id) REFERENCES stock_universe(id)
             )
@@ -481,8 +482,8 @@ class QuantSimDB:
                 peak_unrealized_pnl_pct REAL DEFAULT 0,
                 peak_at TEXT,
                 status TEXT DEFAULT 'holding',
-                opened_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                opened_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -511,7 +512,7 @@ class QuantSimDB:
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 initial_cash REAL NOT NULL DEFAULT 100000,
                 available_cash REAL NOT NULL DEFAULT 100000,
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -535,7 +536,7 @@ class QuantSimDB:
                 realized_pnl REAL DEFAULT 0,
                 note TEXT,
                 executed_at TEXT NOT NULL,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                created_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -550,7 +551,7 @@ class QuantSimDB:
                 total_equity REAL NOT NULL,
                 realized_pnl REAL NOT NULL,
                 unrealized_pnl REAL NOT NULL,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                created_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -584,7 +585,7 @@ class QuantSimDB:
                 capital_high_price_max_slot_units REAL DEFAULT 2,
                 capital_sell_cash_reuse_policy TEXT DEFAULT 'next_batch',
                 last_run_at TEXT,
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -597,7 +598,7 @@ class QuantSimDB:
                 available_cash REAL NOT NULL DEFAULT 0,
                 occupied_cash REAL NOT NULL DEFAULT 0,
                 settling_cash REAL NOT NULL DEFAULT 0,
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -614,8 +615,8 @@ class QuantSimDB:
                 released_cash REAL NOT NULL DEFAULT 0,
                 released_quantity INTEGER NOT NULL DEFAULT 0,
                 status TEXT DEFAULT 'open',
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY(position_lot_db_id) REFERENCES sim_position_lots(id)
             )
             """
@@ -631,7 +632,7 @@ class QuantSimDB:
                 cash_dividend_per_share REAL DEFAULT 0,
                 description TEXT,
                 applied_at TEXT NOT NULL,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
                 UNIQUE(stock_code, ex_date)
             )
             """
@@ -644,8 +645,8 @@ class QuantSimDB:
                 description TEXT,
                 enabled INTEGER DEFAULT 1,
                 is_default INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -657,7 +658,7 @@ class QuantSimDB:
                 version INTEGER NOT NULL,
                 config_json TEXT NOT NULL,
                 note TEXT,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
                 UNIQUE(profile_id, version),
                 FOREIGN KEY(profile_id) REFERENCES strategy_profiles(id)
             )
@@ -694,8 +695,8 @@ class QuantSimDB:
                 selected_strategy_profile_version_id INTEGER,
                 strategy_profile_snapshot_json TEXT,
                 metadata_json TEXT,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -762,8 +763,8 @@ class QuantSimDB:
                 description TEXT,
                 enabled INTEGER DEFAULT 1,
                 is_default INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -775,7 +776,7 @@ class QuantSimDB:
                 version INTEGER NOT NULL,
                 config_json TEXT NOT NULL,
                 note TEXT,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
                 UNIQUE(profile_id, version),
                 FOREIGN KEY(profile_id) REFERENCES strategy_profiles(id)
             )
@@ -795,7 +796,7 @@ class QuantSimDB:
                 market_value REAL DEFAULT 0,
                 total_equity REAL DEFAULT 0,
                 metadata_json TEXT,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY(run_id) REFERENCES sim_runs(id)
             )
             """
@@ -821,7 +822,7 @@ class QuantSimDB:
                 realized_pnl REAL DEFAULT 0,
                 note TEXT,
                 executed_at TEXT NOT NULL,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY(run_id) REFERENCES sim_runs(id)
             )
             """
@@ -858,7 +859,7 @@ class QuantSimDB:
                 sellable_quantity INTEGER DEFAULT 0,
                 locked_quantity INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'holding',
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY(run_id) REFERENCES sim_runs(id)
             )
             """
@@ -885,8 +886,8 @@ class QuantSimDB:
                 cap_reason TEXT,
                 execution_diagnostics_json TEXT DEFAULT '{}',
                 checkpoint_at TEXT,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY(run_id) REFERENCES sim_runs(id)
             )
             """
@@ -898,8 +899,8 @@ class QuantSimDB:
                 signal_id INTEGER NOT NULL UNIQUE,
                 strategy_profile_json TEXT,
                 explainability_json TEXT,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY(signal_id) REFERENCES sim_run_signals(id)
             )
             """
@@ -934,7 +935,7 @@ class QuantSimDB:
                 entry_timeline_json TEXT DEFAULT '{}',
                 sizing_cap_chain_json TEXT DEFAULT '[]',
                 sell_diagnostics_json TEXT DEFAULT '[]',
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                created_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -945,7 +946,7 @@ class QuantSimDB:
                 run_id INTEGER NOT NULL,
                 level TEXT NOT NULL DEFAULT 'info',
                 message TEXT NOT NULL,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY(run_id) REFERENCES sim_runs(id)
             )
             """
@@ -1504,7 +1505,6 @@ class QuantSimDB:
             raise
         finally:
             conn.close()
-
     def add_signal(self, signal: dict[str, Any], *, dedupe_pending: bool = True) -> int:
         conn = self._connect()
         cursor = conn.cursor()
@@ -3429,6 +3429,30 @@ class QuantSimDB:
             "version": version,
         }
 
+    @staticmethod
+    def _extract_signal_checkpoint_at(signal: dict[str, Any], strategy_profile: dict[str, Any]) -> str | None:
+        sources: list[Any] = []
+        for payload in (strategy_profile, signal):
+            if not isinstance(payload, dict):
+                continue
+            snapshot = payload.get("market_snapshot") if isinstance(payload.get("market_snapshot"), dict) else {}
+            sources.append(snapshot.get("artifact_ref"))
+            sources.append(payload.get("artifact_ref"))
+            sources.append(snapshot.get("technical_snapshot_at"))
+            sources.append(snapshot.get("checkpoint_at"))
+
+        for candidate in sources:
+            if not candidate:
+                continue
+            parsed = parse_artifact_ref(str(candidate))
+            if isinstance(parsed, MarketTechnicalArtifactRef):
+                return parsed.checkpoint_at
+            try:
+                return format_local_time(candidate)
+            except (TypeError, ValueError):
+                continue
+        return None
+
     def _upsert_sim_run_signals_with_cursor(
         self,
         cursor: sqlite3.Cursor,
@@ -3441,7 +3465,13 @@ class QuantSimDB:
             if source_signal_id is None:
                 source_signal_id = self._normalize_optional_int(signal.get("id"))
 
-            checkpoint_at = signal.get("checkpoint_at") or signal.get("executed_at") or signal.get("updated_at") or signal.get("created_at")
+            checkpoint_at = (
+                signal.get("checkpoint_at")
+                or self._extract_signal_checkpoint_at(signal, signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {})
+                or signal.get("executed_at")
+                or signal.get("updated_at")
+                or signal.get("created_at")
+            )
             created_at = signal.get("created_at") or self._now()
             updated_at = signal.get("updated_at") or created_at
             status = signal.get("status") or "observed"
@@ -3509,7 +3539,8 @@ class QuantSimDB:
                     (
                         run_id, source_signal_id, stock_code, stock_name, action, confidence, reasoning,
                         position_size_pct, stop_loss_pct, take_profit_pct, decision_type, tech_score, context_score,
-                        status, execution_note, blocked_reason, cap_reason, execution_diagnostics_json, checkpoint_at, created_at, updated_at
+                        status, execution_note, blocked_reason, cap_reason, execution_diagnostics_json,
+                        checkpoint_at, created_at, updated_at
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -7471,15 +7502,17 @@ class QuantSimDB:
 
     @staticmethod
     def _ensure_datetime(value: str | datetime | None) -> datetime:
-        return ensure_utc_datetime(value).replace(tzinfo=None)
+        if value is None:
+            return datetime.now().replace(microsecond=0)
+        return parse_system_datetime(value)
 
     @staticmethod
     def _format_datetime(value: datetime) -> str:
-        return format_utc_iso_z(value)
+        return format_local_time(value)
 
     @staticmethod
     def _now() -> str:
-        return format_utc_iso_z()
+        return format_local_time()
 
 
 class QuantSimReplayDB(QuantSimDB):
@@ -7500,6 +7533,7 @@ class QuantSimReplayDB(QuantSimDB):
         "sim_run_candidate_events",
         "sim_run_quant_summary",
         "sim_run_profit_gap_attributions",
+        "sim_run_market_technical_artifacts",
     }
 
     def __init__(
@@ -7544,7 +7578,6 @@ class QuantSimReplayDB(QuantSimDB):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER NOT NULL,
                 checkpoint_at TEXT NOT NULL,
-                checkpoint_at_utc TEXT NOT NULL,
                 stock_code TEXT NOT NULL,
                 stock_name TEXT,
                 market TEXT DEFAULT 'CN',
@@ -7569,9 +7602,9 @@ class QuantSimReplayDB(QuantSimDB):
                 retired_at TEXT,
                 latest_reason TEXT,
                 snapshot_json TEXT,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                UNIQUE(run_id, checkpoint_at_utc, stock_code),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
+                UNIQUE(run_id, checkpoint_at, stock_code),
                 FOREIGN KEY(run_id) REFERENCES sim_runs(id)
             )
             """
@@ -7582,7 +7615,6 @@ class QuantSimReplayDB(QuantSimDB):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER NOT NULL,
                 checkpoint_at TEXT NOT NULL,
-                checkpoint_at_utc TEXT NOT NULL,
                 stock_code TEXT NOT NULL,
                 stock_name TEXT,
                 event_type TEXT NOT NULL,
@@ -7595,7 +7627,7 @@ class QuantSimReplayDB(QuantSimDB):
                 candidate_score REAL DEFAULT 0,
                 reason_json TEXT,
                 evidence_json TEXT,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY(run_id) REFERENCES sim_runs(id)
             )
             """
@@ -7606,7 +7638,6 @@ class QuantSimReplayDB(QuantSimDB):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER NOT NULL,
                 checkpoint_at TEXT NOT NULL,
-                checkpoint_at_utc TEXT NOT NULL,
                 stock_code TEXT NOT NULL,
                 stock_name TEXT,
                 source_type TEXT NOT NULL,
@@ -7617,8 +7648,8 @@ class QuantSimReplayDB(QuantSimDB):
                 evidence_json TEXT,
                 occurred_at TEXT,
                 status TEXT DEFAULT 'new',
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY(run_id) REFERENCES sim_runs(id)
             )
             """
@@ -7629,7 +7660,6 @@ class QuantSimReplayDB(QuantSimDB):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER NOT NULL,
                 checkpoint_at TEXT NOT NULL,
-                checkpoint_at_utc TEXT NOT NULL,
                 inactive_count INTEGER DEFAULT 0,
                 trial_count INTEGER DEFAULT 0,
                 active_count INTEGER DEFAULT 0,
@@ -7642,9 +7672,9 @@ class QuantSimReplayDB(QuantSimDB):
                 candidate_event_count INTEGER DEFAULT 0,
                 data_warning_count INTEGER DEFAULT 0,
                 metadata_json TEXT,
-                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                UNIQUE(run_id, checkpoint_at_utc),
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
+                UNIQUE(run_id, checkpoint_at),
                 FOREIGN KEY(run_id) REFERENCES sim_runs(id)
             )
             """
@@ -7652,7 +7682,7 @@ class QuantSimReplayDB(QuantSimDB):
         cursor.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_sim_run_quant_states_run_status
-            ON sim_run_quant_states(run_id, quant_status, checkpoint_at_utc)
+            ON sim_run_quant_states(run_id, quant_status, checkpoint_at)
             """
         )
         self._ensure_column(cursor, "sim_run_quant_states", "downtrend_streak", "INTEGER DEFAULT 0")
@@ -7676,19 +7706,19 @@ class QuantSimReplayDB(QuantSimDB):
         cursor.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_sim_run_quant_events_run_status
-            ON sim_run_quant_events(run_id, to_status, checkpoint_at_utc)
+            ON sim_run_quant_events(run_id, to_status, checkpoint_at)
             """
         )
         cursor.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_sim_run_candidate_events_run_stock
-            ON sim_run_candidate_events(run_id, stock_code, source_type, checkpoint_at_utc)
+            ON sim_run_candidate_events(run_id, stock_code, source_type, checkpoint_at)
             """
         )
         cursor.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_sim_run_quant_summary_run_checkpoint
-            ON sim_run_quant_summary(run_id, checkpoint_at_utc)
+            ON sim_run_quant_summary(run_id, checkpoint_at)
             """
         )
 
@@ -7713,7 +7743,6 @@ class QuantSimReplayDB(QuantSimDB):
         run_id: int,
         *,
         checkpoint_at: str,
-        checkpoint_at_utc: str,
         states: list[dict[str, Any]],
     ) -> None:
         if not states:
@@ -7727,7 +7756,7 @@ class QuantSimReplayDB(QuantSimDB):
                     """
                     INSERT INTO sim_run_quant_states
                     (
-                        run_id, checkpoint_at, checkpoint_at_utc, stock_code, stock_name, market,
+                        run_id, checkpoint_at, stock_code, stock_name, market,
                         quant_enabled, quant_status, health_score, candidate_score, downtrend_streak,
                         weakening_warning_streak, blocked_streak, no_buy_days, cooling_until,
                         recovery_probe_until, recovery_probe_attempt_count, last_recovery_probe_attempt_at,
@@ -7735,9 +7764,8 @@ class QuantSimReplayDB(QuantSimDB):
                         active_since, active_checkpoints, retired_at, latest_reason, snapshot_json, created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(run_id, checkpoint_at_utc, stock_code) DO UPDATE SET
-                        checkpoint_at = excluded.checkpoint_at,
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(run_id, checkpoint_at, stock_code) DO UPDATE SET
                         stock_name = excluded.stock_name,
                         market = excluded.market,
                         quant_enabled = excluded.quant_enabled,
@@ -7766,7 +7794,6 @@ class QuantSimReplayDB(QuantSimDB):
                     (
                         int(run_id),
                         checkpoint_at,
-                        checkpoint_at_utc,
                         str(state["stock_code"]).strip(),
                         state.get("stock_name"),
                         state.get("market") or "CN",
@@ -7815,8 +7842,8 @@ class QuantSimReplayDB(QuantSimDB):
         clauses = ["run_id = ?"]
         params: list[Any] = [int(run_id)]
         if checkpoint_at:
-            clauses.append("(checkpoint_at = ? OR checkpoint_at_utc = ?)")
-            params.extend([checkpoint_at, checkpoint_at])
+            clauses.append("checkpoint_at = ?")
+            params.append(checkpoint_at)
         if status:
             clauses.append("quant_status = ?")
             params.append(status)
@@ -7838,7 +7865,7 @@ class QuantSimReplayDB(QuantSimDB):
                 SELECT *
                 FROM sim_run_quant_states
                 WHERE {where_sql}
-                ORDER BY checkpoint_at_utc DESC, stock_code ASC
+                ORDER BY checkpoint_at DESC, stock_code ASC
                 LIMIT ? OFFSET ?
                 """,
                 tuple(params + [page_size_value, offset]),
@@ -7860,17 +7887,16 @@ class QuantSimReplayDB(QuantSimDB):
                     """
                     INSERT INTO sim_run_quant_events
                     (
-                        run_id, checkpoint_at, checkpoint_at_utc, stock_code, stock_name,
+                        run_id, checkpoint_at, stock_code, stock_name,
                         event_type, from_status, to_status, reason_code, reason_text,
                         health_score_before, health_score_after, candidate_score,
                         reason_json, evidence_json, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         int(run_id),
                         event["checkpoint_at"],
-                        event["checkpoint_at_utc"],
                         str(event["stock_code"]).strip(),
                         event.get("stock_name"),
                         event.get("event_type") or "status_transition",
@@ -7933,7 +7959,7 @@ class QuantSimReplayDB(QuantSimDB):
                 SELECT *
                 FROM sim_run_quant_events
                 WHERE {where_sql}
-                ORDER BY checkpoint_at_utc DESC, id DESC
+                ORDER BY checkpoint_at DESC, id DESC
                 LIMIT ? OFFSET ?
                 """,
                 tuple(params + [page_size_value, offset]),
@@ -7955,16 +7981,15 @@ class QuantSimReplayDB(QuantSimDB):
                     """
                     INSERT INTO sim_run_candidate_events
                     (
-                        run_id, checkpoint_at, checkpoint_at_utc, stock_code, stock_name,
+                        run_id, checkpoint_at, stock_code, stock_name,
                         source_type, source_key, candidate_score, confidence, reason_text,
                         evidence_json, occurred_at, status, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         int(run_id),
                         event["checkpoint_at"],
-                        event["checkpoint_at_utc"],
                         str(event["stock_code"]).strip(),
                         event.get("stock_name"),
                         event["source_type"],
@@ -7973,7 +7998,7 @@ class QuantSimReplayDB(QuantSimDB):
                         float(event.get("confidence") or 0),
                         event.get("reason_text"),
                         self._dumps_metadata(event.get("evidence_json")),
-                        event.get("occurred_at") or event.get("checkpoint_at_utc") or event["checkpoint_at"],
+                        event.get("occurred_at") or event["checkpoint_at"],
                         event.get("status") or "new",
                         event.get("created_at") or now_text,
                         now_text,
@@ -7992,16 +8017,16 @@ class QuantSimReplayDB(QuantSimDB):
         *,
         stock_code: str,
         source_type: str | None = None,
-        checkpoint_at_utc_lte: str | None = None,
+        checkpoint_at_lte: str | None = None,
     ) -> int:
         clauses = ["run_id = ?", "stock_code = ?"]
         params: list[Any] = [int(run_id), str(stock_code).strip()]
         if source_type:
             clauses.append("source_type = ?")
             params.append(source_type)
-        if checkpoint_at_utc_lte:
-            clauses.append("checkpoint_at_utc <= ?")
-            params.append(checkpoint_at_utc_lte)
+        if checkpoint_at_lte:
+            clauses.append("checkpoint_at <= ?")
+            params.append(checkpoint_at_lte)
         params.append(self._now())
         where_sql = " AND ".join(clauses)
         conn = self._connect()
@@ -8030,7 +8055,7 @@ class QuantSimReplayDB(QuantSimDB):
         *,
         stock_code: str,
         source_type: str,
-        checkpoint_at_utc: str,
+        checkpoint_at: str,
         evaluation: dict[str, Any],
     ) -> int:
         conn = self._connect()
@@ -8043,11 +8068,11 @@ class QuantSimReplayDB(QuantSimDB):
                 WHERE run_id = ?
                   AND stock_code = ?
                   AND source_type = ?
-                  AND checkpoint_at_utc = ?
+                  AND checkpoint_at = ?
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (int(run_id), str(stock_code).strip(), str(source_type or "").strip(), checkpoint_at_utc),
+                (int(run_id), str(stock_code).strip(), str(source_type or "").strip(), checkpoint_at),
             )
             row = cursor.fetchone()
             if row is None:
@@ -8115,7 +8140,7 @@ class QuantSimReplayDB(QuantSimDB):
                 SELECT *
                 FROM sim_run_candidate_events
                 WHERE {where_sql}
-                ORDER BY checkpoint_at_utc DESC, id DESC
+                ORDER BY checkpoint_at DESC, id DESC
                 LIMIT ? OFFSET ?
                 """,
                 tuple(params + [page_size_value, offset]),
@@ -8134,14 +8159,13 @@ class QuantSimReplayDB(QuantSimDB):
                 """
                 INSERT INTO sim_run_quant_summary
                 (
-                    run_id, checkpoint_at, checkpoint_at_utc, inactive_count, trial_count,
+                    run_id, checkpoint_at, inactive_count, trial_count,
                     active_count, exit_only_count, cooling_count, retired_count,
                     manual_paused_count, auto_promoted_count, auto_exited_count,
                     candidate_event_count, data_warning_count, metadata_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id, checkpoint_at_utc) DO UPDATE SET
-                    checkpoint_at = excluded.checkpoint_at,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, checkpoint_at) DO UPDATE SET
                     inactive_count = excluded.inactive_count,
                     trial_count = excluded.trial_count,
                     active_count = excluded.active_count,
@@ -8159,7 +8183,6 @@ class QuantSimReplayDB(QuantSimDB):
                 (
                     int(run_id),
                     summary["checkpoint_at"],
-                    summary["checkpoint_at_utc"],
                     int(summary.get("inactive_count") or 0),
                     int(summary.get("trial_count") or 0),
                     int(summary.get("active_count") or 0),
@@ -8192,7 +8215,7 @@ class QuantSimReplayDB(QuantSimDB):
                 SELECT *
                 FROM sim_run_quant_summary
                 WHERE run_id = ?
-                ORDER BY checkpoint_at_utc ASC
+                ORDER BY checkpoint_at ASC
                 """,
                 (int(run_id),),
             )

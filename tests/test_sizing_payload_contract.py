@@ -18,9 +18,9 @@ def _signal_payload() -> dict:
         "tech_score": 0.55,
         "context_score": 0.30,
         "status": "pending",
-        "checkpoint_at": "2026-01-05T10:00:00Z",
-        "created_at": "2026-01-05T10:00:01Z",
-        "updated_at": "2026-01-05T10:00:01Z",
+        "checkpoint_at": "2026-01-05 10:00:00",
+        "created_at": "2026-01-05 10:00:01",
+        "updated_at": "2026-01-05 10:00:01",
         "strategy_profile": {
             "kernel_positioning": {
                 "quality_position_pct": 28.26,
@@ -55,8 +55,8 @@ def test_replay_signal_persists_kernel_and_execution_sizing_payload(tmp_path: Pa
         mode="historical_range",
         timeframe="30m",
         market="CN",
-        start_datetime="2026-01-01T00:00:00Z",
-        end_datetime="2026-01-31T00:00:00Z",
+        start_datetime="2026-01-01 00:00:00",
+        end_datetime="2026-01-31 00:00:00",
         initial_cash=400000,
         status="running",
         selected_strategy_profile_id="aggressive",

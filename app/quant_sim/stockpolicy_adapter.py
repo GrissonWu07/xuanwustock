@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 from app.quant_kernel import KernelStrategyRuntime
 from app.quant_kernel.interfaces import MarketDataProvider
 from app.quant_kernel.models import Decision
-from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
+from app.quant_sim.time_utils import format_local_time
 from app.smart_monitor_tdx_data import SmartMonitorTDXDataFetcher
 
 
@@ -43,7 +43,7 @@ class StockPolicyAdapter:
         self.market = str(market or "CN").upper()
 
     def now(self) -> datetime:
-        return datetime.now(timezone.utc).astimezone(market_timezone(self.market)).replace(tzinfo=None, microsecond=0)
+        return datetime.now().replace(microsecond=0)
 
     @staticmethod
     def _call_with_signature_fallback(method: Any, base_kwargs: dict[str, Any]) -> Decision:
@@ -167,5 +167,5 @@ class StockPolicyAdapter:
         marked = dict(snapshot)
         marked.setdefault("_quant_market_data_source", "live_comprehensive")
         marked.setdefault("_quant_market_data_mode", "live")
-        marked.setdefault("_quant_market_data_fetched_at", format_utc_iso_z())
+        marked.setdefault("_quant_market_data_fetched_at", format_local_time())
         return marked

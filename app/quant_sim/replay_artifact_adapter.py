@@ -13,7 +13,7 @@ from app.quant_sim.market_technical_artifact import (
     MarketTechnicalArtifactRef,
 )
 from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
-from app.quant_sim.time_utils import format_utc_iso_z, market_timezone, parse_datetime_with_default_timezone, utc_now_iso_z
+from app.quant_sim.time_utils import format_local_time, market_timezone, parse_datetime_with_default_timezone, local_now_text
 from app.quant_sim.lifecycle_artifact_adapter import artifact_to_payload
 from app.stock_refresh_artifact_writer import EXPECTED_ARTIFACT_FIELDS, build_market_technical_data_from_entry
 from app.watchlist_selector_integration import normalize_stock_code
@@ -54,7 +54,7 @@ def write_run_artifact_from_snapshot(
     artifact = MarketTechnicalArtifactStore(context.db_file).upsert(
         ArtifactWriteRequest(
             ref=ref,
-            data=build_market_technical_data_from_entry(entry, computed_at=utc_now_iso_z()),
+            data=build_market_technical_data_from_entry(entry, computed_at=local_now_text()),
             trace_id=context.trace_id,
         )
     )
@@ -91,7 +91,7 @@ def write_missing_run_artifact(
             data=MarketTechnicalArtifactData(
                 source_status="missing",
                 reason_code=reason_code,
-                computed_at=utc_now_iso_z(),
+                computed_at=local_now_text(),
                 provider="historical_snapshot",
                 missing_fields=list(EXPECTED_ARTIFACT_FIELDS),
             ),
@@ -152,7 +152,7 @@ def _checkpoint_at(value: datetime | str, market: str) -> str:
         dt = parse_datetime_with_default_timezone(value, market_timezone(market))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=market_timezone(market))
-    return format_utc_iso_z(dt)
+    return format_local_time(dt)
 
 
 def _domain_for_run_type(run_type: str) -> str:

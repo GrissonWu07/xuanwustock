@@ -6,7 +6,7 @@ from typing import Any
 
 from app.quant_sim.evidence_models import PreparedEvidenceInput
 from app.quant_sim.technical_entry_score import calculate_technical_entry_score
-from app.quant_sim.time_utils import format_system_time, format_utc_iso_z
+from app.quant_sim.time_utils import format_system_time, local_now_text
 from app.watchlist_selector_integration import normalize_stock_code
 
 
@@ -39,7 +39,7 @@ def build_prepared_evidence(request: PreparedEvidenceInput) -> dict[str, Any]:
     )
     status = _evidence_status(row, score)
     entry_gate = _entry_gate(row, score, status=status)
-    evidence_at = _system_time(request.evaluated_at or format_utc_iso_z())
+    evidence_at = _system_time(request.evaluated_at or local_now_text())
     return {
         "id": f"{request.run_id or 'unknown'}:{code or 'unknown'}:{source_key or request.source_type}",
         "runId": request.run_id,

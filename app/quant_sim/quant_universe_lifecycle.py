@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import Enum
 import json
 from typing import Any
 
 from app.quant_sim.candidate_entry_gate import evaluate_candidate_entry_gate
 from app.quant_sim.technical_entry_score import calculate_technical_entry_score
+from app.quant_sim.time_utils import format_local_time, parse_system_datetime
 
 
 class QuantStatus(str, Enum):
@@ -1326,14 +1327,14 @@ class QuantUniverseManager:
             if transition.allowed and transition.to_status != current:
                 next_status = transition.to_status
                 status_changed = True
-                last_status_changed_at = _format_utc_iso_z(evaluation_time)
+                last_status_changed_at = _format_local_time_text(evaluation_time)
                 if current == QuantStatus.COOLING and next_status in {QuantStatus.TRIAL, QuantStatus.ACTIVE}:
                     next_downtrend_streak = 0
                     next_warning_streak = 0
                     probe_attempt_count += 1
-                    last_recovery_probe_attempt_at = _format_utc_iso_z(evaluation_time)
+                    last_recovery_probe_attempt_at = _format_local_time_text(evaluation_time)
                     if next_status == QuantStatus.TRIAL:
-                        recovery_probe_until = _format_utc_iso_z(
+                        recovery_probe_until = _format_local_time_text(
                             evaluation_time + timedelta(hours=max(int(self.policy.recovery_probe_hours or 0), 0))
                         )
                         fatigue_threshold = int(self.policy.recovery_probe_attempt_fatigue_threshold or 0)
@@ -1343,7 +1344,7 @@ class QuantUniverseManager:
                             and recent_probe_loss_count <= 0
                         ):
                             probe_failure_reason = "recovery_probe_attempt_fatigue"
-                            recovery_probe_cooldown_until = _format_utc_iso_z(
+                            recovery_probe_cooldown_until = _format_local_time_text(
                                 evaluation_time + timedelta(days=max(int(self.policy.recovery_probe_cooldown_days or 0), 0))
                             )
                     else:
@@ -1352,7 +1353,7 @@ class QuantUniverseManager:
                     recovery_probe_until = None
                 if next_status == QuantStatus.ACTIVE:
                     if current != QuantStatus.ACTIVE:
-                        active_since = _format_utc_iso_z(evaluation_time)
+                        active_since = _format_local_time_text(evaluation_time)
                         next_active_checkpoints = 0
                     if current == QuantStatus.TRIAL:
                         next_downtrend_streak = 0
@@ -1361,21 +1362,21 @@ class QuantUniverseManager:
                     active_since = None
                     next_active_checkpoints = 0
                 if next_status == QuantStatus.COOLING:
-                    cooling_until = _format_utc_iso_z(evaluation_time + timedelta(days=self.policy.cooling_min_dwell_days))
+                    cooling_until = _format_local_time_text(evaluation_time + timedelta(days=self.policy.cooling_min_dwell_days))
                 elif current == QuantStatus.COOLING:
                     cooling_until = None
                 if next_status == QuantStatus.RETIRED:
-                    retired_at = _format_utc_iso_z(evaluation_time)
+                    retired_at = _format_local_time_text(evaluation_time)
                     retire_reason = transition.reason_code
                 elif current == QuantStatus.RETIRED:
                     retired_at = None
                     retire_reason = None
                 if recovery_probe_active and _recovery_probe_failed(latest_signal, transition):
                     recent_probe_loss_count += 1
-                    last_recovery_probe_failure_at = _format_utc_iso_z(evaluation_time)
+                    last_recovery_probe_failure_at = _format_local_time_text(evaluation_time)
                     probe_failure_reason = transition.reason_code or _signal_probe_failure_reason(latest_signal)
                     if recent_probe_loss_count >= int(self.policy.recovery_probe_failure_threshold or 0):
-                        recovery_probe_cooldown_until = _format_utc_iso_z(
+                        recovery_probe_cooldown_until = _format_local_time_text(
                             evaluation_time + timedelta(days=max(int(self.policy.recovery_probe_cooldown_days or 0), 0))
                         )
                 self.db.record_quant_universe_event(
@@ -1423,7 +1424,7 @@ class QuantUniverseManager:
                 "retired_at": retired_at,
                 "retire_reason": retire_reason,
                 "last_status_changed_at": last_status_changed_at,
-                "last_health_evaluated_at": _format_utc_iso_z(evaluation_time),
+                "last_health_evaluated_at": _format_local_time_text(evaluation_time),
                 "snapshot_json": {
                     "latest_signal": latest_signal,
                     "health": health.breakdown,
@@ -1650,7 +1651,7 @@ class QuantUniverseManager:
         if self.drill_mode and capacity_at is not None:
             day_key = self._capacity_day_key(capacity_at)
             return int(self._drill_auto_promotions_by_day.get(day_key, 0)) if day_key else 0
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = datetime.now().date().isoformat()
         conn = self.db._connect()
         cursor = conn.cursor()
         cursor.execute(
@@ -1660,7 +1661,7 @@ class QuantUniverseManager:
             WHERE event_type = 'candidate_promoted_to_trial'
               AND created_at >= ?
             """,
-            (f"{today}T00:00:00Z",),
+            (f"{today} 00:00:00",),
         )
         row = cursor.fetchone()
         conn.close()
@@ -1683,7 +1684,7 @@ class QuantUniverseManager:
         return ""
 
     def _theme_counts_today(self) -> tuple[dict[str, int], dict[str, int]]:
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = datetime.now().date().isoformat()
         conn = self.db._connect()
         cursor = conn.cursor()
         cursor.execute(
@@ -1694,7 +1695,7 @@ class QuantUniverseManager:
             WHERE qe.event_type = 'candidate_promoted_to_trial'
               AND qe.created_at >= ?
             """,
-            (f"{today}T00:00:00Z",),
+            (f"{today} 00:00:00",),
         )
         industry_counts: dict[str, int] = {}
         concept_counts: dict[str, int] = {}
@@ -2144,16 +2145,16 @@ def _signal_datetime(signal: dict[str, Any]) -> datetime:
         value = signal.get(key)
         if value not in (None, ""):
             return _to_datetime(value)
-    return datetime.now(timezone.utc)
+    return datetime.now().replace(microsecond=0)
 
 
 def _has_same_day_buy_signal(signals: list[dict[str, Any]], evaluation_time: datetime) -> bool:
-    evaluation_day = evaluation_time.astimezone(timezone.utc).date()
+    evaluation_day = _to_datetime(evaluation_time).date()
     for signal in signals:
         if _action(signal) != "BUY":
             continue
         try:
-            signal_day = _signal_datetime(signal).astimezone(timezone.utc).date()
+            signal_day = _signal_datetime(signal).date()
         except (TypeError, ValueError):
             continue
         if signal_day == evaluation_day:
@@ -2161,9 +2162,8 @@ def _has_same_day_buy_signal(signals: list[dict[str, Any]], evaluation_time: dat
     return False
 
 
-def _format_utc_iso_z(value: datetime) -> str:
-    dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+def _format_local_time_text(value: datetime) -> str:
+    return format_local_time(value)
 
 
 def _trend_score(value: Any) -> float:
@@ -2179,7 +2179,7 @@ def _is_future(value: datetime | str | None, now: datetime | str | None) -> bool
     if value is None:
         return False
     target = _to_datetime(value)
-    current = _to_datetime(now) if now is not None else datetime.now(timezone.utc)
+    current = _to_datetime(now) if now is not None else datetime.now().replace(microsecond=0)
     return target > current
 
 
@@ -2204,7 +2204,7 @@ def _recovery_probe_exit_grace_active(
         return False
     try:
         target = _to_datetime(attempt_at) + timedelta(hours=hours)
-        current = _to_datetime(now) if now is not None else datetime.now(timezone.utc)
+        current = _to_datetime(now) if now is not None else datetime.now().replace(microsecond=0)
     except (TypeError, ValueError):
         return False
     return current < target
@@ -2221,20 +2221,14 @@ def _retired_min_dwell_active(
         return False
     try:
         target = _to_datetime(retired_at) + timedelta(days=days)
-        current = _to_datetime(now) if now is not None else datetime.now(timezone.utc)
+        current = _to_datetime(now) if now is not None else datetime.now().replace(microsecond=0)
     except (TypeError, ValueError):
         return False
     return current < target
 
 
 def _to_datetime(value: datetime | str) -> datetime:
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    text = str(value).strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(text)
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return parse_system_datetime(value)
 
 
 def _float(value: Any, default: float) -> float:

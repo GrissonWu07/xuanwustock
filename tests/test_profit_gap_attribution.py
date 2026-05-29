@@ -242,13 +242,13 @@ def test_build_profit_gap_from_runs_uses_trades_positions_and_signal_diagnostics
             return []
 
         def list_sim_run_candidate_events(self, run_id, **kwargs):
-            return {"items": [{"stock_code": "301666", "checkpoint_at_utc": "2026-04-28T02:00:00Z", "source_type": "manual_seed", "status": "consumed"}]}
+            return {"items": [{"stock_code": "301666", "checkpoint_at": "2026-04-28 10:00:00", "source_type": "manual_seed", "status": "consumed"}]}
 
         def list_sim_run_quant_events(self, run_id, **kwargs):
-            return {"items": [{"stock_code": "301666", "checkpoint_at_utc": "2026-04-28T02:00:00Z", "from_status": "cooling", "to_status": "trial", "reason_code": "cooling_review_confirmed"}]}
+            return {"items": [{"stock_code": "301666", "checkpoint_at": "2026-04-28 10:00:00", "from_status": "cooling", "to_status": "trial", "reason_code": "cooling_review_confirmed"}]}
 
         def list_sim_run_quant_states(self, run_id, **kwargs):
-            return {"items": [{"stock_code": "301666", "checkpoint_at_utc": "2026-04-28T02:00:00Z", "quant_status": "trial", "health_score": 75}]}
+            return {"items": [{"stock_code": "301666", "checkpoint_at": "2026-04-28 10:00:00", "quant_status": "trial", "health_score": 75}]}
 
         def replace_profit_gap_attributions(self, historical_run_id, drill_run_id, rows):
             self.persisted = (historical_run_id, drill_run_id, rows)

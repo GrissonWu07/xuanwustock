@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
+
+from app.quant_sim.time_utils import parse_system_datetime
 
 LARGE_GAP_THRESHOLD = 500.0
 
@@ -432,7 +434,7 @@ def _attach_candidate_events(db: Any, run_id: int, by_code: dict[str, dict[str, 
         if not code:
             continue
         item = _summary_item(by_code, code, event.get("stock_name"))
-        event_time = event.get("checkpoint_at_utc") or event.get("checkpoint_at") or event.get("occurred_at")
+        event_time = event.get("checkpoint_at") or event.get("occurred_at")
         item["candidate_events"].append(event)
         _append_unique(item["candidate_sources"], event.get("source_type"))
         if not item.get("first_candidate_event_at") or _sort_key_time(event_time) < _sort_key_time(item.get("first_candidate_event_at")):
@@ -449,7 +451,7 @@ def _attach_quant_events(db: Any, run_id: int, by_code: dict[str, dict[str, Any]
         if not code:
             continue
         item = _summary_item(by_code, code, event.get("stock_name"))
-        event_time = event.get("checkpoint_at_utc") or event.get("checkpoint_at")
+        event_time = event.get("checkpoint_at")
         item["quant_events"].append(event)
         _append_unique(item["quant_transition_reasons"], event.get("reason_code"))
         if not item.get("first_quant_event_at") or _sort_key_time(event_time) < _sort_key_time(item.get("first_quant_event_at")):
@@ -466,7 +468,7 @@ def _attach_quant_states(db: Any, run_id: int, by_code: dict[str, dict[str, Any]
         if not code:
             continue
         item = _summary_item(by_code, code, state.get("stock_name"))
-        state_time = state.get("checkpoint_at_utc") or state.get("checkpoint_at")
+        state_time = state.get("checkpoint_at")
         item["quant_states"].append(state)
         if not item.get("first_quant_state_at") or _sort_key_time(state_time) < _sort_key_time(item.get("first_quant_state_at")):
             item["first_quant_state_at"] = state_time
@@ -527,14 +529,10 @@ def _sort_key_time(value: Any) -> str:
 def _parse_dt(value: Any) -> datetime | None:
     if not value:
         return None
-    text = str(value).replace("Z", "+00:00")
     try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
+        return parse_system_datetime(value)
+    except (TypeError, ValueError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _nullable_float(value: Any) -> float | None:

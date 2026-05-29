@@ -26,7 +26,7 @@ from app.gateway.trades import (
     build_trade_provenance,
 )
 from app.quant_sim.evidence_service import PAYLOAD_SCORE_SEMANTICS
-from app.quant_sim.time_utils import format_market_iso, market_timezone_name, system_timezone_name, utc_now_iso_z
+from app.quant_sim.time_utils import local_now_text, system_timezone_name
 from app.stock_refresh_scheduler import load_stock_runtime_entries
 
 LIVE_SIM_DEFAULT_QUANT_STATUS_FILTERS = ["trial", "active", "exit_only"]
@@ -42,43 +42,26 @@ def _live_current_time(scheduler: Any) -> datetime:
     return datetime.now().replace(microsecond=0)
 
 
-def _market_time_context(market: str, *, updated_at_utc: str, last_run_at: Any = None, next_run_at: Any = None) -> dict[str, Any]:
-    timezone_name = market_timezone_name(market)
-
-    def market_text(value: Any) -> str:
-        text = _txt(value)
-        if not text or text == "--":
-            return "--"
-        try:
-            return format_market_iso(text, market)
-        except (TypeError, ValueError):
-            return text
-
+def _market_time_context(market: str, *, updated_at: str, last_run_at: Any = None, next_run_at: Any = None) -> dict[str, Any]:
     return {
-        "storageTimezone": "UTC",
-        "storageFormat": "ISO-8601 UTC",
+        "storageTimezone": "local",
+        "storageFormat": "YYYY-MM-DD HH:mm:ss",
         "systemTimezone": system_timezone_name(),
         "market": _txt(market, "CN"),
-        "marketTimezone": timezone_name,
-        "updatedAtUtc": updated_at_utc,
-        "updatedAtSystem": _system_time_text(updated_at_utc),
-        "updatedAtMarket": market_text(updated_at_utc),
-        "updatedAtMarketTimezone": timezone_name,
+        "updatedAt": _system_time_text(updated_at),
         "lastRunSystem": _system_time_text(last_run_at, "--"),
         "nextRunSystem": _system_time_text(next_run_at, "--"),
-        "lastRunMarket": market_text(last_run_at),
-        "nextRunMarket": market_text(next_run_at),
     }
 
 
 def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None = None) -> dict[str, Any]:
     db = context.quant_db()
     scheduler = context.scheduler().get_status()
-    updated_at_utc = utc_now_iso_z()
+    updated_at = local_now_text()
     market = _txt(scheduler.get("market"), "CN")
     time_context = _market_time_context(
         market,
-        updated_at_utc=updated_at_utc,
+        updated_at=updated_at,
         last_run_at=scheduler.get("last_run_at"),
         next_run_at=scheduler.get("next_run"),
     )
@@ -115,7 +98,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
         for item in db.list_strategy_profiles(include_disabled=False)
     ]
     return {
-        "updatedAt": _system_time_text(updated_at_utc),
+        "updatedAt": _system_time_text(updated_at),
         "timeContext": time_context,
         "config": {
             "interval": f"{scheduler.get('interval_minutes', 0)} 分钟",
@@ -149,8 +132,6 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
             "nextRun": _system_time_text(scheduler.get("next_run"), "--"),
             "lastRunSystem": time_context["lastRunSystem"],
             "nextRunSystem": time_context["nextRunSystem"],
-            "lastRunMarket": time_context["lastRunMarket"],
-            "nextRunMarket": time_context["nextRunMarket"],
             "candidateCount": _txt(
                 context.candidate_pool().count_candidates(
                     status="active",
@@ -296,7 +277,7 @@ def _live_signal_table(
     ):
         rows.append(build_signal_summary_row(item, i, time_key="updated_at", status_key="status"))
     return {
-        "updatedAt": _system_time_text(utc_now_iso_z()),
+        "updatedAt": _system_time_text(local_now_text()),
         "table": {
             **build_signal_summary_table(rows),
             "pagination": pagination,

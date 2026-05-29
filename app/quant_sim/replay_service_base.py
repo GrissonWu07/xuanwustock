@@ -27,7 +27,7 @@ from app.quant_sim.replay_runner import get_quant_sim_replay_runner
 from app.quant_sim.scheduler import get_quant_sim_scheduler
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.stockpolicy_adapter import StockPolicyAdapter
-from app.quant_sim.time_utils import format_utc_iso_z, market_timezone, market_timezone_name
+from app.quant_sim.time_utils import market_timezone_name
 from app.quant_kernel.models import Decision
 from app.smart_monitor_tdx_data import SmartMonitorTDXDataFetcher
 

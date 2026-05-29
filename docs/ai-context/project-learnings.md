@@ -7,17 +7,20 @@ Use this file to keep concise reusable lessons from completed changes.
 ## Patterns
 
 - 量化系统中需要跨实时、历史回放、演练复用的行情技术事实，应先落为带 `artifact_ref` 的事实层，再让候选、信号、页面和诊断读取同一个 reader。这样能避免 runtime snapshot、candidate payload、signal market snapshot 和 provider cache 之间出现口径漂移。
+- 业务时间持久化应在项目自有 DB/API/artifact 边界统一格式化；provider/local cache 可以保留来源原始格式，避免为了业务时间语义重写 Parquet 缓存。
 
 ## Pitfalls
 
 - 不要把 provider/local cache、runtime snapshot 或 candidate payload 当作 checkpoint 决策事实。它们可以作为 artifact producer 的输入或展示缓存，但 run-scoped replay/drill 必须拒绝 fallback 到 live latest，避免未来函数。
 - 信号生成阶段可以在内存里使用完整行情技术 facts，但持久化到 signal detail 的 `market_snapshot` 应只保留 `artifact_ref`、`source_status`、`reason_code`、`missing_fields` 等轻量诊断，避免复制出第二份事实源。
+- 不要同时保留 `checkpoint_at` 和 `checkpoint_at_utc` 这类同语义双字段；短期看似兼容，长期会让 artifact、signal、trade、UI filter 的 join/sort 口径再次分裂。
 
 ## Verification Notes
 
 - 验证统一事实层时必须构造“旧来源值与 artifact 值冲突”的测试数据；只有断言 artifact 值胜出，才能证明测试没有被 runtime/provider fallback 掩盖。
 - run-scoped no-live-fallback 测试应同时存在 live artifact 和缺失的 run artifact，确认 replay/drill 返回 run-scoped missing reason，而不是静默读取 live。
 - 文件大小门禁要把“机械抽取的既有代码”和“本次新增行为代码”分开记录覆盖率证据；抽取模块仍需 broad regression，但不应稀释 artifact-focused coverage。
+- 时间口径类变更需要同时做 raw DB/API key 断言和 active-code `rg` 审计；只看页面渲染或 job 成功会掩盖隐藏的 UTC fallback。
 
 ## Project Preferences
 

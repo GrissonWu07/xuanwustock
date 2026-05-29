@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -11,6 +10,7 @@ from app.console_utils import safe_print as print
 from app.db.runtime.legacy_dbapi import legacy_dbapi_connection
 from app.db.runtime.registry import DatabaseRuntime
 from app.quant_sim.db import DEFAULT_DB_FILE, QuantSimDB
+from app.quant_sim.time_utils import local_now_text
 
 
 DB_PATH = str(DEFAULT_DB_FILE)
@@ -47,7 +47,7 @@ class PortfolioDB:
                 CREATE TABLE IF NOT EXISTS portfolio_analysis_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     portfolio_stock_id INTEGER NOT NULL,
-                    analysis_time TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                    analysis_time TEXT DEFAULT (datetime('now','localtime')),
                     rating TEXT,
                     confidence REAL,
                     current_price REAL,
@@ -85,7 +85,7 @@ class PortfolioDB:
 
     @staticmethod
     def _now() -> str:
-        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        return local_now_text()
 
     @staticmethod
     def _row_to_portfolio(row: sqlite3.Row) -> Dict:

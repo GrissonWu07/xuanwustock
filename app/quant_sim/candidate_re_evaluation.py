@@ -13,7 +13,7 @@ from app.discover.candidate_artifact import (
 from app.gateway.quant_universe_entry import ingest_lifecycle_entry_rows
 from app.quant_sim.evidence_models import CandidateReevaluationRequest
 from app.quant_sim.evidence_service import attach_prepared_evidence
-from app.quant_sim.time_utils import format_system_time, format_utc_iso_z
+from app.quant_sim.time_utils import format_system_time, local_now_text
 from app.selector_result_store import DEFAULT_SELECTOR_RESULT_DIR, load_latest_result
 from app.watchlist_selector_integration import normalize_stock_code
 
@@ -65,7 +65,7 @@ def _reevaluate(request: CandidateReevaluationRequest) -> dict[str, Any]:
             continue
         row["refreshReEvaluation"] = {
             "run_reason": request.run_reason,
-            "evaluated_at": _system_time(request.evaluated_at or format_utc_iso_z()),
+            "evaluated_at": _system_time(request.evaluated_at or local_now_text()),
             "previous_reason": "missing_technical_snapshot",
         }
         attach_prepared_evidence(
@@ -82,7 +82,7 @@ def _reevaluate(request: CandidateReevaluationRequest) -> dict[str, Any]:
         for skipped in result.get("skipped") or []:
             if isinstance(skipped, dict):
                 summary["skipped"].append(skipped)
-    summary["updatedAt"] = _system_time(request.evaluated_at or format_utc_iso_z())
+    summary["updatedAt"] = _system_time(request.evaluated_at or local_now_text())
     return summary
 
 
@@ -126,7 +126,7 @@ def _summary(run_reason: str) -> dict[str, Any]:
         "eligible": 0,
         "promoted": 0,
         "skipped": [],
-        "updatedAt": _system_time(format_utc_iso_z()),
+        "updatedAt": _system_time(local_now_text()),
     }
 
 

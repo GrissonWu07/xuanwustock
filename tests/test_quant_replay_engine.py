@@ -1156,7 +1156,7 @@ def test_run_checkpoint_does_not_update_run_status_message_for_internal_substeps
     assert run["status_message"] == "执行中"
 
 
-def test_run_checkpoint_persists_trade_execution_time_as_utc_for_market_checkpoint(tmp_path):
+def test_run_checkpoint_persists_trade_execution_time_as_local_checkpoint(tmp_path):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)
     candidate_service.add_candidate(
@@ -1164,7 +1164,7 @@ def test_run_checkpoint_persists_trade_execution_time_as_utc_for_market_checkpoi
         stock_name="天华新能",
         source="main_force",
         latest_price=10.0,
-        notes="回放UTC测试",
+        notes="回放本地时间测试",
     )
     replay_service = QuantSimReplayService(
         db_file=db_file,
@@ -1187,7 +1187,7 @@ def test_run_checkpoint_persists_trade_execution_time_as_utc_for_market_checkpoi
 
     assert summary["auto_executed"] == 1
     assert summary["signals"][0]["status"] == "executed"
-    assert trades[0]["executed_at"] == "2026-01-05T02:00:00Z"
+    assert trades[0]["executed_at"] == "2026-01-05 10:00:00"
 
 
 def test_run_checkpoint_keeps_distinct_replay_signals_for_repeated_pending_actions(tmp_path):

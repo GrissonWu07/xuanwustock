@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
+from app.quant_sim.time_utils import parse_system_datetime
 from app.quant_sim.evidence_service import prepared_evidence_payload_fields
 from app.quant_sim.lifecycle_artifact_adapter import candidate_artifact_diagnostics
 from app.quant_sim.quant_universe_artifact_db import ArtifactBackedCandidateEventDB
@@ -419,24 +420,22 @@ def _blocking_reason(state: dict[str, Any], quant_status: str, manual_override: 
         return "manual_paused"
     if bool(state.get("basic_info_missing")):
         return "basic_info_missing"
-    if _future_utc(state.get("cooling_until")):
+    if _future_local(state.get("cooling_until")):
         return "cooling_blocked"
     return ""
 
 
-def _future_utc(value: Any) -> bool:
+def _future_local(value: Any) -> bool:
     if not value:
         return False
     text = str(value).strip()
     if not text:
         return False
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
+        parsed = parse_system_datetime(text)
+    except (TypeError, ValueError):
         return True
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed > datetime.now(timezone.utc)
+    return parsed > datetime.now().replace(microsecond=0)
 
 
 def _float(value: Any) -> float:

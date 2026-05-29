@@ -20,10 +20,10 @@ from app.quant_sim.market_technical_artifact import (
 )
 from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
 from app.quant_sim.time_utils import (
-    format_utc_iso_z,
+    format_local_time,
     market_timezone,
     parse_datetime_with_default_timezone,
-    utc_now_iso_z,
+    local_now_text,
 )
 from app.watchlist_selector_integration import normalize_stock_code
 
@@ -167,7 +167,7 @@ def _write_request_for_entry(
     )
     return ArtifactWriteRequest(
         ref=ref,
-        data=_artifact_data_from_entry(entry, computed_at=utc_now_iso_z()),
+        data=_artifact_data_from_entry(entry, computed_at=local_now_text()),
         trace_id=request.trace_id,
     )
 
@@ -238,7 +238,7 @@ def _checkpoint_at(entry: dict[str, Any], *, market: str) -> str:
         or datetime.now(market_timezone(market))
     )
     parsed = parse_datetime_with_default_timezone(raw_value, market_timezone(market))
-    return format_utc_iso_z(parsed)
+    return format_local_time(parsed)
 
 
 def _safe_error_marker(value: Any) -> str:

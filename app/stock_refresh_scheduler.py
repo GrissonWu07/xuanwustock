@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime, timezone
+from datetime import datetime
 import os
 from pathlib import Path
 import threading
@@ -14,7 +14,7 @@ from app.discover.candidate_artifact import TECHNICAL_RUNTIME_KEYS, discovery_ca
 from app.discover.market_snapshot import REQUIRED_TECHNICAL_SNAPSHOT_FIELDS, prepare_discovery_market_snapshot_safely
 from app.quant_kernel import TradingTimeUtils
 from app.quant_sim.candidate_re_evaluation import reevaluate_refreshed_discovery_candidates
-from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
+from app.quant_sim.time_utils import format_local_time, market_timezone, parse_system_datetime, system_timezone
 from app.selector_result_store import DEFAULT_SELECTOR_RESULT_DIR, load_latest_result, save_latest_result
 from app.stock_refresh_artifact_writer import write_live_artifacts_for_refresh
 from app.stock_refresh_seed_entries import collect_local_seed_entries, merge_runtime_seed
@@ -81,16 +81,14 @@ def _has_basic_metrics(entry: dict[str, Any] | None) -> bool:
     return all(_metric_float(entry.get(key)) is not None for key in ("market_cap", "pe_ratio", "pb_ratio"))
 
 
-def _is_basic_info_check_recent(entry: dict[str, Any] | None, *, now_utc: datetime | None = None) -> bool:
+def _is_basic_info_check_recent(entry: dict[str, Any] | None, *, now_local: datetime | None = None) -> bool:
     if not isinstance(entry, dict):
         return False
-    checked_at = _parse_utc_timestamp(entry.get("basic_info_checked_at"))
+    checked_at = _parse_local_timestamp(entry.get("basic_info_checked_at"))
     if checked_at is None:
         return False
-    base = now_utc or datetime.now(timezone.utc)
-    if base.tzinfo is None:
-        base = base.replace(tzinfo=timezone.utc)
-    return (base.astimezone(timezone.utc) - checked_at).total_seconds() < BASIC_INFO_TTL_SECONDS
+    base = parse_system_datetime(now_local or datetime.now())
+    return (base - checked_at).total_seconds() < BASIC_INFO_TTL_SECONDS
 
 
 def _valid_name(value: Any) -> str:
@@ -218,20 +216,16 @@ def save_stock_runtime_entries(
 
 
 def _now() -> str:
-    return format_utc_iso_z()
+    return format_local_time()
 
 
-def _parse_utc_timestamp(value: Any) -> datetime | None:
+def _parse_local_timestamp(value: Any) -> datetime | None:
     text = _txt(value)
     if not text:
         return None
     try:
-        normalized = text.replace("Z", "+00:00")
-        parsed = datetime.fromisoformat(normalized)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-    except ValueError:
+        return parse_system_datetime(text)
+    except (TypeError, ValueError):
         return None
 
 
@@ -286,7 +280,7 @@ class UnifiedStockRefreshScheduler:
 
     def get_status(self) -> dict[str, Any]:
         jobs = self.scheduler.get_jobs(self.job_tag)
-        next_run = format_utc_iso_z(jobs[0].next_run.astimezone()) if jobs else None
+        next_run = format_local_time(jobs[0].next_run.astimezone()) if jobs else None
         return {
             "running": self.running,
             "interval_minutes": self.interval_minutes,
@@ -557,18 +551,16 @@ class UnifiedStockRefreshScheduler:
         self.run_once(context=context, run_reason="scheduled")
 
     @staticmethod
-    def _is_runtime_entry_fresh(entry: dict[str, Any] | None, *, now_utc: datetime | None = None) -> bool:
+    def _is_runtime_entry_fresh(entry: dict[str, Any] | None, *, now_local: datetime | None = None) -> bool:
         if not isinstance(entry, dict):
             return False
         if _price(entry.get("latest_price")) is None:
             return False
-        updated_at = _parse_utc_timestamp(entry.get("updated_at"))
+        updated_at = _parse_local_timestamp(entry.get("updated_at"))
         if updated_at is None:
             return False
-        base = now_utc or datetime.now(timezone.utc)
-        if base.tzinfo is None:
-            base = base.replace(tzinfo=timezone.utc)
-        return (base.astimezone(timezone.utc) - updated_at).total_seconds() < QUOTE_REALTIME_TTL_SECONDS
+        base = parse_system_datetime(now_local or datetime.now())
+        return (base - updated_at).total_seconds() < QUOTE_REALTIME_TTL_SECONDS
 
     @staticmethod
     def _has_resolved_stock_name(entry: dict[str, Any] | None, stock_code: str) -> bool:
@@ -587,7 +579,7 @@ class UnifiedStockRefreshScheduler:
         return UnifiedStockRefreshScheduler._is_basic_info_failure_cooldown_active(entry)
 
     @staticmethod
-    def _has_fresh_technical_snapshot(entry: dict[str, Any] | None, *, now_utc: datetime | None = None) -> bool:
+    def _has_fresh_technical_snapshot(entry: dict[str, Any] | None, *, now_local: datetime | None = None) -> bool:
         if not isinstance(entry, dict):
             return False
         if not bool(entry.get("technical_snapshot_ready")):
@@ -604,41 +596,35 @@ class UnifiedStockRefreshScheduler:
             runtime_keys = aliases.get(key) or (("price",) if key == "price" else (key,))
             if all(entry.get(runtime_key) in (None, "") for runtime_key in runtime_keys):
                 return False
-        updated_at = _parse_utc_timestamp(entry.get("updated_at"))
+        updated_at = _parse_local_timestamp(entry.get("updated_at"))
         if updated_at is None:
             return False
-        base = now_utc or datetime.now(timezone.utc)
-        if base.tzinfo is None:
-            base = base.replace(tzinfo=timezone.utc)
-        return (base.astimezone(timezone.utc) - updated_at).total_seconds() < TECHNICAL_SNAPSHOT_TTL_SECONDS
+        base = parse_system_datetime(now_local or datetime.now())
+        return (base - updated_at).total_seconds() < TECHNICAL_SNAPSHOT_TTL_SECONDS
 
     @staticmethod
-    def _is_failure_cooldown_active(entry: dict[str, Any] | None, *, now_utc: datetime | None = None) -> bool:
+    def _is_failure_cooldown_active(entry: dict[str, Any] | None, *, now_local: datetime | None = None) -> bool:
         if not isinstance(entry, dict):
             return False
         if _txt(entry.get("refresh_status")) != "remote_failed":
             return False
-        failure_at = _parse_utc_timestamp(entry.get("failure_at"))
+        failure_at = _parse_local_timestamp(entry.get("failure_at"))
         if failure_at is None:
             return False
-        base = now_utc or datetime.now(timezone.utc)
-        if base.tzinfo is None:
-            base = base.replace(tzinfo=timezone.utc)
-        return (base.astimezone(timezone.utc) - failure_at).total_seconds() < REMOTE_FAILURE_COOLDOWN_SECONDS
+        base = parse_system_datetime(now_local or datetime.now())
+        return (base - failure_at).total_seconds() < REMOTE_FAILURE_COOLDOWN_SECONDS
 
     @staticmethod
-    def _is_basic_info_failure_cooldown_active(entry: dict[str, Any] | None, *, now_utc: datetime | None = None) -> bool:
+    def _is_basic_info_failure_cooldown_active(entry: dict[str, Any] | None, *, now_local: datetime | None = None) -> bool:
         if not isinstance(entry, dict):
             return False
         if _txt(entry.get("basic_info_status")) != "remote_failed":
             return False
-        failure_at = _parse_utc_timestamp(entry.get("basic_info_failure_at"))
+        failure_at = _parse_local_timestamp(entry.get("basic_info_failure_at"))
         if failure_at is None:
             return False
-        base = now_utc or datetime.now(timezone.utc)
-        if base.tzinfo is None:
-            base = base.replace(tzinfo=timezone.utc)
-        return (base.astimezone(timezone.utc) - failure_at).total_seconds() < BASIC_INFO_FAILURE_COOLDOWN_SECONDS
+        base = parse_system_datetime(now_local or datetime.now())
+        return (base - failure_at).total_seconds() < BASIC_INFO_FAILURE_COOLDOWN_SECONDS
 
     @staticmethod
     def _resolve_market(context: Any) -> str:
@@ -648,10 +634,10 @@ class UnifiedStockRefreshScheduler:
             return "CN"
 
     @staticmethod
-    def _is_trading_time(market: str, *, now_utc: datetime | None = None) -> bool:
-        base = now_utc or datetime.now(timezone.utc)
+    def _is_trading_time(market: str, *, now_local: datetime | None = None) -> bool:
+        base = now_local or datetime.now()
         if base.tzinfo is None:
-            base = base.replace(tzinfo=timezone.utc)
+            base = base.replace(tzinfo=system_timezone())
         now = base.astimezone(market_timezone(market))
         return TRADING_TIME_CALENDAR.is_trading_time(now, market=market)
 

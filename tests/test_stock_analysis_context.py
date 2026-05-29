@@ -5,7 +5,7 @@ import json
 import sqlite3
 
 from app.database import StockAnalysisDatabase
-from app.quant_sim.time_utils import ensure_utc_datetime_from_system_time, format_utc_iso_z
+from app.quant_sim.time_utils import format_local_time
 
 
 def test_stock_analysis_context_repository_filters_quality_for_replay(tmp_path) -> None:
@@ -106,14 +106,14 @@ def test_stock_analysis_policy_is_resolved_from_strategy_profile(tmp_path) -> No
     assert context["policy"]["ttl_hours"] == 12.0
 
 
-def test_stock_analysis_context_persists_utc_and_matches_system_as_of(tmp_path) -> None:
+def test_stock_analysis_context_persists_local_time_and_matches_system_as_of(tmp_path) -> None:
     from app.data.analysis_context.repository import StockAnalysisContextRepository
 
     db = StockAnalysisDatabase(tmp_path / "analysis.db")
     data_as_of = "2026-03-12 15:00:00"
     valid_until = "2026-03-13 15:00:00"
-    expected_data_as_of = format_utc_iso_z(ensure_utc_datetime_from_system_time(data_as_of))
-    expected_valid_until = format_utc_iso_z(ensure_utc_datetime_from_system_time(valid_until))
+    expected_data_as_of = format_local_time(data_as_of)
+    expected_valid_until = format_local_time(valid_until)
 
     record_id = db.save_analysis(
         symbol="002518",

@@ -127,7 +127,7 @@ def should_skip_candidate_event_due_to_dedup(
             continue
         if str(event.get("status") or "new").strip().lower() == "consumed":
             continue
-        occurred_at = _parse_datetime(event.get("checkpoint_at_utc") or event.get("checkpoint_at") or event.get("occurred_at"))
+        occurred_at = _parse_datetime(event.get("checkpoint_at") or event.get("occurred_at"))
         if occurred_at is None:
             continue
         delta_days = (checkpoint_naive - occurred_at).days

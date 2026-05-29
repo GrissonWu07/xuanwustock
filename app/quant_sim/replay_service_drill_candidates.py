@@ -14,7 +14,6 @@ from app.quant_sim.live_quant_drill_candidates import (
     source_availability_for_checkpoint,
 )
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
-from app.quant_sim.time_utils import format_utc_iso_z
 
 
 class LiveQuantDrillCandidateMixin:
@@ -59,7 +58,7 @@ class LiveQuantDrillCandidateMixin:
             event_key = (
                 str(event.get("stock_code") or ""),
                 str(event.get("source_type") or ""),
-                str(event.get("checkpoint_at_utc") or event.get("checkpoint_at") or ""),
+                str(event.get("checkpoint_at") or ""),
             )
             if event_key in seen_event_keys:
                 continue
@@ -80,7 +79,7 @@ class LiveQuantDrillCandidateMixin:
 
         promoted = 0
         consumed = 0
-        checkpoint_at_utc = normalized_events[0]["checkpoint_at_utc"]
+        checkpoint_at = normalized_events[0]["checkpoint_at"]
         for event in normalized_events:
             manager_result = manager.ingest_candidate_event(
                 {
@@ -93,7 +92,7 @@ class LiveQuantDrillCandidateMixin:
                     "trend": event.get("trend"),
                     "event_weight": 1,
                     "reason_text": event.get("reason_text"),
-                    "occurred_at": event.get("occurred_at") or event["checkpoint_at_utc"],
+                    "occurred_at": event.get("occurred_at") or event["checkpoint_at"],
                     "payload_json": event.get("evidence_json") or {},
                     "status": "active",
                 },
@@ -103,7 +102,7 @@ class LiveQuantDrillCandidateMixin:
                 run_id,
                 stock_code=event["stock_code"],
                 source_type=event["source_type"],
-                checkpoint_at_utc=event["checkpoint_at_utc"],
+                checkpoint_at=event["checkpoint_at"],
                 evaluation=manager_result,
             )
             if str(manager_result.get("decision") or "") == "cooling_review_queued":
@@ -114,7 +113,7 @@ class LiveQuantDrillCandidateMixin:
                     run_id,
                     stock_code=event["stock_code"],
                     source_type=event["source_type"],
-                    checkpoint_at_utc_lte=checkpoint_at_utc,
+                    checkpoint_at_lte=checkpoint_at,
                 )
         return {
             "candidate_event_count": len(normalized_events),
@@ -299,13 +298,11 @@ class LiveQuantDrillCandidateMixin:
     ) -> dict[str, Any]:
         market = str(context.get("market") or "CN")
         checkpoint_at = self._format_datetime(checkpoint)
-        checkpoint_at_utc = format_utc_iso_z(self._market_time_to_utc(checkpoint, market))
         score = event.get("candidate_score")
         if score is None:
             score = event.get("source_score")
         return {
             "checkpoint_at": checkpoint_at,
-            "checkpoint_at_utc": checkpoint_at_utc,
             "stock_code": str(event.get("stock_code") or "").strip().upper(),
             "stock_name": str(event.get("stock_name") or event.get("stock_code") or "").strip(),
             "source_type": str(event.get("source_type") or "historical_candidate").strip(),
@@ -315,6 +312,6 @@ class LiveQuantDrillCandidateMixin:
             "trend": event.get("trend") or "up",
             "reason_text": event.get("reason_text"),
             "evidence_json": event.get("evidence_json") or event.get("payload_json") or {},
-            "occurred_at": event.get("occurred_at") or checkpoint_at_utc,
+            "occurred_at": event.get("occurred_at") or checkpoint_at,
             "status": event.get("status") or "active",
         }

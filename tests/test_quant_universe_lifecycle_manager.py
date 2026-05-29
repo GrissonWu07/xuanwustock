@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from app.quant_sim.quant_universe_lifecycle import (
     AutoEntryMode,
@@ -90,7 +90,7 @@ def test_health_score_ignores_candidate_event_support():
 
 
 def test_health_score_applies_reentry_watch_penalty_until_window_expires():
-    now = datetime(2026, 5, 8, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 8, 10, 0)
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
 
     active_watch = calculate_health_score(
@@ -1052,8 +1052,8 @@ def test_quant_universe_state_persists_recovery_probe_diagnostics(tmp_path):
             "quant_status": "trial",
             "recovery_probe_attempt_count": 3,
             "recent_probe_loss_count": 2,
-            "last_recovery_probe_failure_at": "2026-05-08T10:00:00Z",
-            "recovery_probe_cooldown_until": "2026-05-28T10:00:00Z",
+            "last_recovery_probe_failure_at": "2026-05-08 10:00:00",
+            "recovery_probe_cooldown_until": "2026-05-28 10:00:00",
             "probe_failure_reason": "holding_downtrend_exit_only",
         },
     )
@@ -1062,8 +1062,8 @@ def test_quant_universe_state_persists_recovery_probe_diagnostics(tmp_path):
 
     assert state["recovery_probe_attempt_count"] == 3
     assert state["recent_probe_loss_count"] == 2
-    assert state["last_recovery_probe_failure_at"] == "2026-05-08T10:00:00Z"
-    assert state["recovery_probe_cooldown_until"] == "2026-05-28T10:00:00Z"
+    assert state["last_recovery_probe_failure_at"] == "2026-05-08 10:00:00"
+    assert state["recovery_probe_cooldown_until"] == "2026-05-28 10:00:00"
     assert state["probe_failure_reason"] == "holding_downtrend_exit_only"
 
 
@@ -1080,9 +1080,9 @@ def test_manager_records_recovery_probe_failure_and_cooldown_after_repeated_fail
         {
             "stock_name": "浦发银行",
             "quant_status": "trial",
-            "recovery_probe_until": "2026-05-10T10:00:00Z",
+            "recovery_probe_until": "2026-05-10 10:00:00",
             "recent_probe_loss_count": 1,
-            "last_recovery_probe_failure_at": "2026-05-01T10:00:00Z",
+            "last_recovery_probe_failure_at": "2026-05-01 10:00:00",
             "downtrend_streak": policy.exit_only_downtrend_streak - 1,
         },
     )
@@ -1094,7 +1094,7 @@ def test_manager_records_recovery_probe_failure_and_cooldown_after_repeated_fail
             "tech_score": -0.2,
             "fusion_score": 0.1,
             "fusion_score_delta": -0.1,
-            "decision_time": "2026-05-08T10:00:00Z",
+                "decision_time": "2026-05-08 10:00:00",
             "status": "observed",
         },
         recent_signals=[],
@@ -1105,9 +1105,9 @@ def test_manager_records_recovery_probe_failure_and_cooldown_after_repeated_fail
 
     assert result["new_status"] == "exit_only"
     assert state["recent_probe_loss_count"] == 2
-    assert state["last_recovery_probe_failure_at"] == "2026-05-08T10:00:00Z"
+    assert state["last_recovery_probe_failure_at"] == "2026-05-08 10:00:00"
     assert state["probe_failure_reason"] == "holding_downtrend_exit_only"
-    assert state["recovery_probe_cooldown_until"] == "2026-05-28T10:00:00Z"
+    assert state["recovery_probe_cooldown_until"] == "2026-05-28 10:00:00"
 
 
 def test_manager_records_probe_attempt_fatigue_cooldown(tmp_path):
@@ -1125,13 +1125,13 @@ def test_manager_records_probe_attempt_fatigue_cooldown(tmp_path):
             "quant_status": "cooling",
             "health_score": policy.cooling_threshold - 5,
             "recovery_probe_attempt_count": 2,
-            "last_recovery_probe_attempt_at": "2026-05-01T10:00:00Z",
-            "cooling_until": "2026-05-01T00:00:00Z",
+            "last_recovery_probe_attempt_at": "2026-05-01 10:00:00",
+            "cooling_until": "2026-05-01 00:00:00",
         },
     )
     signal = {
         "action": "BUY",
-        "decision_time": "2026-05-08T10:00:00Z",
+        "decision_time": "2026-05-08 10:00:00",
         "tech_score": 0.3,
         "context_score": 0.1,
         "price": 12.8,
@@ -1158,9 +1158,9 @@ def test_manager_records_probe_attempt_fatigue_cooldown(tmp_path):
 
     assert result["new_status"] == "trial"
     assert state["recovery_probe_attempt_count"] == 3
-    assert state["last_recovery_probe_attempt_at"] == "2026-05-08T10:00:00Z"
+    assert state["last_recovery_probe_attempt_at"] == "2026-05-08 10:00:00"
     assert state["probe_failure_reason"] == "recovery_probe_attempt_fatigue"
-    assert state["recovery_probe_cooldown_until"] == "2026-05-28T10:00:00Z"
+    assert state["recovery_probe_cooldown_until"] == "2026-05-28 10:00:00"
 
 
 def test_manager_drill_mode_does_not_promote_by_source_count_bonus(tmp_path):
@@ -1290,7 +1290,7 @@ def test_manager_manual_ban_and_cooling_window_block_entry(tmp_path):
     manager.set_override("600000", "manual_ban")
     manager.db.upsert_quant_universe_state(
         "000001",
-        {"quant_status": "cooling", "cooling_until": "2099-01-01T00:00:00Z"},
+        {"quant_status": "cooling", "cooling_until": "2099-01-01 00:00:00"},
     )
 
     banned = manager.ingest_candidate_event(
@@ -1349,7 +1349,7 @@ def test_manager_candidate_event_does_not_restore_expired_cooling_stock(tmp_path
                 macd=0.05,
             ),
         },
-        capacity_at=datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc),
+        capacity_at=datetime(2026, 1, 5, 10, 0),
     )
 
     assert result["decision"] == "cooling_review_queued"
@@ -1609,7 +1609,7 @@ def test_manager_retired_min_dwell_blocks_high_score_reactivation(tmp_path):
         {
             "quant_status": "retired",
             "health_score": 20,
-            "retired_at": "2026-01-10T00:00:00Z",
+            "retired_at": "2026-01-10 00:00:00",
         },
     )
     manager.db.add_candidate_event(
@@ -1633,7 +1633,7 @@ def test_manager_retired_min_dwell_blocks_high_score_reactivation(tmp_path):
             "trend": "up",
             "payload_json": _strong_entry_payload(),
         },
-        capacity_at=datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc),
+        capacity_at=datetime(2026, 1, 15, 10, 0),
     )
 
     assert result["decision"] == "skipped"
@@ -1652,7 +1652,7 @@ def test_manager_retired_reactivation_allowed_after_min_dwell(tmp_path):
         {
             "quant_status": "retired",
             "health_score": 20,
-            "retired_at": "2026-01-10T00:00:00Z",
+            "retired_at": "2026-01-10 00:00:00",
         },
     )
     manager.db.add_candidate_event(
@@ -1676,7 +1676,7 @@ def test_manager_retired_reactivation_allowed_after_min_dwell(tmp_path):
             "trend": "up",
             "payload_json": _strong_entry_payload(),
         },
-        capacity_at=datetime(2026, 1, 25, 10, 0, tzinfo=timezone.utc),
+        capacity_at=datetime(2026, 1, 25, 10, 0),
     )
 
     assert result["decision"] == "promoted_to_trial"
@@ -1800,13 +1800,13 @@ def test_manager_update_after_signal_restores_cooling_from_executable_normal_buy
         {
             "quant_status": "cooling",
             "health_score": policy.cooling_threshold - 5,
-            "cooling_until": "2026-01-01T00:00:00Z",
+            "cooling_until": "2026-01-01 00:00:00",
         },
     )
 
     signal = {
         "action": "BUY",
-        "decision_time": "2026-01-05T10:00:00Z",
+        "decision_time": "2026-01-05 10:00:00",
         "tech_score": 0.3,
         "context_score": 0.1,
         "price": 12.8,
@@ -1834,7 +1834,7 @@ def test_manager_update_after_signal_restores_cooling_from_executable_normal_buy
     assert result["new_status"] == "trial"
     assert manager.db.get_latest_quant_universe_event("600000")["reason_code"] == "cooling_recovered_by_executable_buy"
     state = manager.db.get_quant_universe_state("600000")
-    assert state["recovery_probe_until"] == "2026-01-06T10:00:00Z"
+    assert state["recovery_probe_until"] == "2026-01-06 10:00:00"
 
 
 def test_manager_blocks_cooling_normal_buy_after_two_recent_probe_losses(tmp_path):
@@ -1846,7 +1846,7 @@ def test_manager_blocks_cooling_normal_buy_after_two_recent_probe_losses(tmp_pat
         {
             "quant_status": "cooling",
             "health_score": policy.cooling_threshold - 5,
-            "cooling_until": "2026-01-01T00:00:00Z",
+            "cooling_until": "2026-01-01 00:00:00",
             "recent_probe_loss_count": 2,
             "last_recovery_probe_failure_at": "2026-01-02T10:00:00Z",
         },
@@ -1894,7 +1894,7 @@ def test_manager_update_after_signal_resets_streaks_when_cooling_buy_recovers(tm
         {
             "quant_status": "cooling",
             "health_score": policy.cooling_threshold - 5,
-            "cooling_until": "2026-01-01T00:00:00Z",
+            "cooling_until": "2026-01-01 00:00:00",
             "downtrend_streak": 100,
             "weakening_warning_streak": 100,
         },
@@ -2002,7 +2002,7 @@ def test_manager_cooling_strong_trend_recovery_upgrades_directly_to_active(tmp_p
         {
             "quant_status": "cooling",
             "health_score": policy.cooling_threshold - 5,
-            "cooling_until": "2026-01-01T00:00:00Z",
+            "cooling_until": "2026-01-01 00:00:00",
             "recent_probe_loss_count": 2,
             "last_recovery_probe_failure_at": "2026-01-02T10:00:00Z",
         },
@@ -2101,7 +2101,7 @@ def test_manager_update_after_signal_keeps_cooling_for_executable_weak_buy(tmp_p
         {
             "quant_status": "cooling",
             "health_score": policy.cooling_threshold - 5,
-            "cooling_until": "2026-01-01T00:00:00Z",
+            "cooling_until": "2026-01-01 00:00:00",
         },
     )
 
@@ -2626,7 +2626,7 @@ def test_manager_update_after_signal_sets_cooling_until_when_entering_cooling(tm
 
     signal = {
         "action": "HOLD",
-        "decision_time": "2026-01-05T02:00:00Z",
+        "decision_time": "2026-01-05 10:00:00",
         "tech_score": -0.6,
         "context_score": -0.4,
         "price": 9.5,
@@ -2648,7 +2648,7 @@ def test_manager_update_after_signal_sets_cooling_until_when_entering_cooling(tm
     state = manager.db.get_quant_universe_state("600000")
     assert result["status_changed"] is True
     assert result["new_status"] == "cooling"
-    assert state["cooling_until"] == "2026-01-08T02:00:00Z"
+    assert state["cooling_until"] == "2026-01-08 10:00:00"
 
 
 def test_manager_update_after_signal_keeps_cooling_soft_gated_on_persistent_downtrend(tmp_path):
@@ -2661,7 +2661,7 @@ def test_manager_update_after_signal_keeps_cooling_soft_gated_on_persistent_down
             "quant_status": "cooling",
             "health_score": policy.retire_threshold + 5,
             "downtrend_streak": policy.downtrend_cooling_streak - 1,
-            "cooling_until": "2026-01-04T00:00:00Z",
+            "cooling_until": "2026-01-04 00:00:00",
         },
     )
     signal = {

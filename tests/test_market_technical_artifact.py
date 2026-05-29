@@ -633,7 +633,7 @@ def test_live_refresh_writer_persists_artifact_and_projection(tmp_path):
 
     assert loaded.reason_code == "ok"
     assert loaded.artifact is not None
-    assert loaded.artifact.ref.checkpoint_at == "2026-01-05T02:00:00Z"
+    assert loaded.artifact.ref.checkpoint_at == "2026-01-05 10:00:00"
     assert projection["latest_price"] == 10.5
     assert projection["price"] == 10.5
     assert projection["data_source"] == "tdx"

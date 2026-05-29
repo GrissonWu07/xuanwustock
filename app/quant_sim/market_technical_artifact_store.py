@@ -22,7 +22,7 @@ from app.quant_sim.market_technical_artifact import (
     REPLAY_DOMAIN,
     parse_artifact_ref,
 )
-from app.quant_sim.time_utils import utc_now_iso_z
+from app.quant_sim.time_utils import local_now_text
 
 logger = logging.getLogger(__name__)
 
@@ -136,8 +136,8 @@ class MarketTechnicalArtifactStore:
                 indicator_json TEXT NOT NULL DEFAULT '{{}}',
                 structure_json TEXT NOT NULL DEFAULT '{{}}',
                 quality_json TEXT NOT NULL DEFAULT '{{}}',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -171,7 +171,7 @@ class MarketTechnicalArtifactStore:
 
     def _row_payload(self, request: ArtifactWriteRequest, artifact_ref: str) -> dict[str, Any]:
         data = request.data
-        computed_at = data.computed_at or utc_now_iso_z()
+        computed_at = data.computed_at or local_now_text()
         return {
             "artifact_ref": artifact_ref,
             "artifact_domain": request.ref.domain,

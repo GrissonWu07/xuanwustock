@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -25,6 +25,7 @@ from app.quant_sim.quant_universe_lifecycle import (
     build_lifecycle_gate,
     is_recovery_probe_active,
 )
+from app.quant_sim.time_utils import format_local_time, parse_system_datetime
 from app.quant_sim.lifecycle_artifact_adapter import artifact_market_snapshot
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.stockpolicy_adapter import StockPolicyAdapter
@@ -165,8 +166,7 @@ class QuantSimEngine:
     def _format_review_decision_time(value: Any) -> Any:
         if not isinstance(value, datetime):
             return value
-        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        return format_local_time(value)
 
     def analyze_active_candidates(
         self,
@@ -901,10 +901,4 @@ def _active_recovery_probe_attempt_count(
 
 
 def _parse_gate_time(value: datetime | str) -> datetime:
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    text = str(value).strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(text)
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return parse_system_datetime(value)

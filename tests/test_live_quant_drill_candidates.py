@@ -14,7 +14,7 @@ def test_current_ai_and_current_discover_are_not_historical_sources():
     availability = source_availability_for_checkpoint(
         source_type="current_ai_analysis",
         checkpoint=datetime(2026, 1, 5, 9, 30),
-        available_fields={"generated_at": "2026-05-09T00:00:00Z"},
+        available_fields={"generated_at": "2026-05-09 00:00:00"},
     )
     assert availability == CandidateSourceAvailability.DISABLED
 
@@ -34,7 +34,7 @@ def test_spec_candidate_source_matrix_is_enforced():
         ("low_valuation", {"as_of_fundamental": True}, CandidateSourceAvailability.ENABLED),
         ("profit_growth", {"as_of_financial_report": True}, CandidateSourceAvailability.ENABLED),
         ("main_force", {"historical_capital_flow": True}, CandidateSourceAvailability.ENABLED),
-        ("historical_research", {"occurred_at": "2026-01-04T10:00:00Z"}, CandidateSourceAvailability.CONDITIONAL),
+        ("historical_research", {"occurred_at": "2026-01-04 10:00:00"}, CandidateSourceAvailability.CONDITIONAL),
         ("manual_seed", {}, CandidateSourceAvailability.ENABLED),
         ("small_cap", {"as_of_fundamental": False}, CandidateSourceAvailability.DISABLED),
         ("main_force", {"historical_capital_flow": False}, CandidateSourceAvailability.DISABLED),

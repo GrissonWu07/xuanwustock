@@ -7,7 +7,7 @@ from pathlib import Path
 from app.db.runtime.legacy_dbapi import legacy_dbapi_connection
 from app.db.runtime.legacy_sqlite import resolve_legacy_sqlite_db_path
 from app.db.runtime.registry import DatabaseRuntime
-from app.quant_sim.time_utils import ensure_utc_datetime_from_system_time, format_system_time, format_utc_iso_z
+from app.quant_sim.time_utils import format_local_time, format_system_time
 from app.runtime_paths import default_db_path
 
 
@@ -112,7 +112,7 @@ class StockAnalysisDatabase:
         cursor = conn.cursor()
 
         # 准备数据
-        created_at = format_utc_iso_z()
+        created_at = format_local_time()
         analysis_date = created_at
 
         # 将复杂对象转换为JSON字符串
@@ -122,16 +122,16 @@ class StockAnalysisDatabase:
         final_decision_json = json.dumps(final_decision, ensure_ascii=False, default=str)
         indicators_json = json.dumps(indicators or {}, ensure_ascii=False, default=str)
         historical_data_json = json.dumps(historical_data or [], ensure_ascii=False, default=str)
-        data_as_of_utc = self._system_timestamp_to_utc_text(data_as_of)
-        valid_until_utc = self._system_timestamp_to_utc_text(valid_until)
+        data_as_of_text = self._system_timestamp_to_local_text(data_as_of)
+        valid_until_text = self._system_timestamp_to_local_text(valid_until)
         if analysis_context_json is None:
             analysis_context_payload = dict(analysis_context or {})
-            if data_as_of_utc is not None:
-                analysis_context_payload["data_as_of"] = data_as_of_utc
+            if data_as_of_text is not None:
+                analysis_context_payload["data_as_of"] = data_as_of_text
             if data_as_of_quality is not None:
                 analysis_context_payload["data_as_of_quality"] = data_as_of_quality
-            if valid_until_utc is not None:
-                analysis_context_payload["valid_until"] = valid_until_utc
+            if valid_until_text is not None:
+                analysis_context_payload["valid_until"] = valid_until_text
             analysis_context_json = json.dumps(analysis_context_payload, ensure_ascii=False, default=str)
 
         if replace_same_day:
@@ -153,9 +153,9 @@ class StockAnalysisDatabase:
             indicators_json,
             historical_data_json,
             created_at,
-            data_as_of_utc,
+            data_as_of_text,
             data_as_of_quality,
-            valid_until_utc,
+            valid_until_text,
             analysis_context_json,
             formula_profile,
             indicator_version,
@@ -167,11 +167,11 @@ class StockAnalysisDatabase:
         return cursor.lastrowid
 
     @staticmethod
-    def _system_timestamp_to_utc_text(value) -> str | None:
+    def _system_timestamp_to_local_text(value) -> str | None:
         if value is None or str(value).strip() == "":
             return None
         try:
-            return format_utc_iso_z(ensure_utc_datetime_from_system_time(value))
+            return format_local_time(value)
         except (TypeError, ValueError):
             return str(value).strip()
 

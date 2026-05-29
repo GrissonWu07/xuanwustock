@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from app.db.runtime.legacy_dbapi import legacy_dbapi_connection
 from app.db.runtime.legacy_sqlite import resolve_legacy_sqlite_db_path
 from app.db.runtime.registry import DatabaseRuntime
+from app.quant_sim.time_utils import parse_system_datetime
 from app.runtime_paths import default_db_path
 
 
@@ -18,18 +19,7 @@ def _parse_persisted_dt(value: Any) -> datetime | None:
     if value is None:
         return None
     try:
-        if isinstance(value, datetime):
-            parsed = value
-        else:
-            text = str(value).strip()
-            if text.endswith("Z"):
-                text = f"{text[:-1]}+00:00"
-            elif "T" not in text and " " in text:
-                text = text.replace(" ", "T", 1)
-            parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo or timezone.utc)
-        return parsed.astimezone(timezone.utc).replace(microsecond=0)
+        return parse_system_datetime(value)
     except (TypeError, ValueError):
         return None
 
@@ -80,7 +70,7 @@ class StockAnalysisContextRepository:
         code = str(symbol or "").strip()
         if not code:
             return None
-        as_of_dt = _parse_persisted_dt(as_of) or _parse_persisted_dt(datetime.now()) or datetime.now(timezone.utc).replace(microsecond=0)
+        as_of_dt = _parse_persisted_dt(as_of) or datetime.now().replace(microsecond=0)
         fallback_start = as_of_dt - timedelta(hours=max(float(ttl_hours), 0.0))
         conn = legacy_dbapi_connection(
             db_path=self.db_path,

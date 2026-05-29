@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 
 import schedule
@@ -21,7 +21,7 @@ from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, QuantUniverseManager
 from app.quant_sim.quant_universe_notifications import build_quant_universe_retired_notification
-from app.quant_sim.time_utils import format_utc_iso_z, market_timezone
+from app.quant_sim.time_utils import format_local_time, market_timezone, parse_system_datetime, system_timezone
 from app.notification_service import notification_service
 TRADING_TIME_CALENDAR = TradingTimeUtils()
 _SCHEDULER_INSTANCES: dict[str, "QuantSimScheduler"] = {}
@@ -74,7 +74,7 @@ class QuantSimScheduler:
         strategy_mode = str(config["strategy_mode"])
         market = str(config["market"])
         current_time = self._decision_time()
-        lifecycle_event_since = format_utc_iso_z()
+        lifecycle_event_since = format_local_time()
         if hasattr(self.engine.adapter, "set_market"):
             self.engine.adapter.set_market(market)
         configured_profile_id = str(config.get("strategy_profile_id") or "").strip()
@@ -206,7 +206,7 @@ class QuantSimScheduler:
     def get_status(self) -> dict[str, object]:
         config = self.db.get_scheduler_config()
         jobs = self.scheduler.get_jobs(self.job_tag)
-        next_run = format_utc_iso_z(jobs[0].next_run.astimezone()) if jobs else None
+        next_run = format_local_time(jobs[0].next_run.astimezone()) if jobs else None
         return {
             "running": self.running,
             "enabled": config["enabled"],
@@ -439,17 +439,13 @@ class QuantSimScheduler:
             text = str(value or "").strip()
             if not text:
                 return None
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            return QuantSimScheduler._normalize_datetime(datetime.fromisoformat(text))
+            return QuantSimScheduler._normalize_datetime(parse_system_datetime(text))
         except (TypeError, ValueError):
             return None
 
     @staticmethod
     def _normalize_datetime(value: datetime) -> datetime:
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+        return parse_system_datetime(value)
 
     def _dispatch_lifecycle_notifications(self, events: list[dict]) -> int:
         sent = 0
@@ -474,15 +470,15 @@ class QuantSimScheduler:
             self.start()
 
     @staticmethod
-    def _market_now(market: str, now_utc: datetime | None = None) -> datetime:
-        base = now_utc or datetime.now(timezone.utc)
+    def _market_now(market: str, now_local: datetime | None = None) -> datetime:
+        base = now_local or datetime.now()
         if base.tzinfo is None:
-            base = base.replace(tzinfo=timezone.utc)
+            base = base.replace(tzinfo=system_timezone())
         return base.astimezone(market_timezone(market))
 
     @classmethod
-    def _is_trading_time(cls, market: str, *, now_utc: datetime | None = None) -> bool:
-        now = cls._market_now(market, now_utc)
+    def _is_trading_time(cls, market: str, *, now_local: datetime | None = None) -> bool:
+        now = cls._market_now(market, now_local)
         return TRADING_TIME_CALENDAR.is_trading_time(now, market=market)
 
     @staticmethod
@@ -491,7 +487,7 @@ class QuantSimScheduler:
 
     @staticmethod
     def _now() -> str:
-        return format_utc_iso_z()
+        return format_local_time()
 
     @classmethod
     def _has_reached_start_date(cls, start_date_text: str, market: str = "CN") -> bool:

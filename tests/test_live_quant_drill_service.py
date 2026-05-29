@@ -543,7 +543,7 @@ def test_live_quant_drill_cooling_review_uses_checkpoint_snapshot(tmp_path):
 
     assert result["reviewed"] == 1
     assert captured["market_snapshot"]["current_price"] == 10.0
-    assert temp_db.get_quant_universe_state("600519")["last_health_evaluated_at"] == "2026-01-05T10:00:00Z"
+    assert temp_db.get_quant_universe_state("600519")["last_health_evaluated_at"] == "2026-01-05 10:00:00"
 
 
 def test_live_quant_drill_records_cooling_review_not_restored_diagnostics(tmp_path):

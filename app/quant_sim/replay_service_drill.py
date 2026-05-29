@@ -14,7 +14,7 @@ from app.quant_sim.engine import QuantSimEngine
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.quant_universe_artifact_db import ArtifactBackedCandidateEventDB
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
-from app.quant_sim.time_utils import format_utc_iso_z
+from app.quant_sim.time_utils import parse_system_datetime
 
 
 class LiveQuantDrillMixin:
@@ -285,7 +285,6 @@ class LiveQuantDrillMixin:
     ) -> None:
         market = str(context.get("market") or "CN")
         checkpoint_at = self._format_datetime(checkpoint)
-        checkpoint_at_utc = format_utc_iso_z(self._market_time_to_utc(checkpoint, market))
         response = temp_db.list_quant_universe_state(limit=100000)
         states = list(response.get("items") or [])
         status_counts: dict[str, int] = {}
@@ -297,7 +296,6 @@ class LiveQuantDrillMixin:
         self.db.upsert_sim_run_quant_states(
             run_id,
             checkpoint_at=checkpoint_at,
-            checkpoint_at_utc=checkpoint_at_utc,
             states=states,
         )
         persisted_event_ids = context.setdefault("_persisted_quant_event_ids", set())
@@ -314,7 +312,6 @@ class LiveQuantDrillMixin:
             replay_events.append(
                 {
                     "checkpoint_at": checkpoint_at,
-                    "checkpoint_at_utc": checkpoint_at_utc,
                     "stock_code": event.get("stock_code"),
                     "stock_name": event.get("stock_name") or event.get("stock_code"),
                     "event_type": event.get("event_type"),
@@ -336,7 +333,6 @@ class LiveQuantDrillMixin:
             run_id,
             {
                 "checkpoint_at": checkpoint_at,
-                "checkpoint_at_utc": checkpoint_at_utc,
                 "inactive_count": status_counts.get("inactive", 0),
                 "trial_count": status_counts.get("trial", 0),
                 "active_count": status_counts.get("active", 0),
@@ -703,18 +699,25 @@ class LiveQuantDrillMixin:
         checkpoint: datetime,
         interval_minutes: int,
     ) -> bool:
-        current = self._to_naive_utc(checkpoint)
+        current = parse_system_datetime(checkpoint)
         cooling_until = item.get("cooling_until")
         if cooling_until:
-            cooling_dt = self._parse_optional_naive_utc(cooling_until)
+            cooling_dt = self._parse_optional_local_time(cooling_until)
             if cooling_dt is not None and cooling_dt > current:
                 return False
         last_eval = item.get("last_health_evaluated_at")
         if not last_eval:
             return True
-        last_dt = self._parse_optional_naive_utc(last_eval)
+        last_dt = self._parse_optional_local_time(last_eval)
         if last_dt is None:
             return True
         if last_dt > current:
             return True
         return (current - last_dt).total_seconds() >= interval_minutes * 60
+
+    @staticmethod
+    def _parse_optional_local_time(value: Any) -> datetime | None:
+        try:
+            return parse_system_datetime(value)
+        except (TypeError, ValueError):
+            return None

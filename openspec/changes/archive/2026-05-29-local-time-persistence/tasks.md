@@ -1,0 +1,198 @@
+# Tasks: 本地时间持久化
+
+## 1. Implementation
+
+- [x] 1.1 统一本地时间工具与缓存边界规范
+  - Workflow lane: `full`
+  - Related requirement: `项目自有持久化时间使用部署本地时间`, `本地缓存不受数据库重建影响`
+  - Design reference: `Generated Code Paths`, `Reuse / Common Logic Plan`, `Integration Impact`
+  - Design review reference: `Finding Closure: Zero unresolved blocking findings`
+  - Applicable rules: `project-implementation-standards`, `python-code-standards`, `logging-standards`, `encoding-standards`, `testing-standards`
+  - Target code paths: `app/quant_sim/time_utils.py`, boundary callers in `app/local_market_data_store.py` only if normalization helper is needed; no Parquet rewrite logic
+  - Multi-lens review: product single time concept; engineering shared helper; devex less duplicated formatting; security no sensitive logs; QA helper tests
+  - Reuse/common logic impact: extend existing `time_utils.py`; do not create parallel helper families
+  - Requirement scope / fallback: project-owned time output uses `YYYY-MM-DD HH:mm:ss`; no UTC fallback; provider cache files stay source-native
+  - Method/function parameter plan: helper functions max 5 inputs; use explicit named options object if boundary normalization needs more context
+  - Comments/logging/traceability: add comments only at provider-cache boundary; log invalid normalization with trace_id if available; no raw provider payloads
+  - Encoding/no-mojibake: helper names/tests/docs UTF-8; no garbled Chinese comments or messages
+  - File size guardrail: `time_utils.py` baseline 79 lines, must remain <=1000; no new oversized file
+  - Database impact: none directly
+  - Backend logic confirmation: goal-mode recorded in design
+  - API contract/layers: none
+  - API path/parameters confirmation: not applicable
+  - API IO / async: none
+  - UI mockup/function confirmation: not applicable
+  - Browser/UI QA: not applicable
+  - Config parameter confirmation: no new configuration
+  - Change: create/adjust local-time parse/format/now helpers and replace project-owned UTC helper use at utility boundary where safe for following tasks
+  - Standalone verification: `python -m pytest -q tests/test_time_utils.py` or new focused test module validating format, parsing, and no `Z` suffix for local helpers
+  - Real E2E test: not individually required; covered by task 1.5 job/API flow
+  - Test target boundary: project-owned helper behavior only; do not test Python datetime internals
+  - Requirement-to-test mapping: local format scenario -> helper tests; cache boundary scenario -> helper does not mutate cache path/content
+  - Counterexample matrix: timezone-aware input, naive local input, existing `YYYY-MM-DD HH:mm:ss`, ISO `Z` input at boundary, invalid input
+  - Masked-test analysis: tests must inspect exact returned string, not only parse success
+  - Broad-qualifier audit: “所有项目自有时间” maps to helper contract used by subsequent tasks
+  - Decision Chain Trace: normalization path input -> parse -> local text output
+  - Evidence Capture Timing Audit: `computed_at/updated_at` values captured at write time, not lazily at read time
+  - Deterministic Sort Audit: not applicable
+  - Validation: focused tests pass and `rg "utc_now_iso_z|format_utc_iso_z"` remaining uses are categorized for later tasks
+  - Test parameters: `.agent/workdir/sp-openspec/local-time-persistence/test-params/time-utils-local.md`
+  - Coverage target: at least 85% for changed/affected helper code
+  - Required reviews after implementation: Alignment Review and Security Review
+  - Review gate: fix and re-review all findings before task 1.2
+
+- [x] 1.2 重建 DB schema 与 repository 为本地时间单字段
+  - Workflow lane: `full`
+  - Related requirement: `checkpoint_at 是唯一检查点时间字段`, `不提供 UTC 兼容路径`, `项目自有持久化时间使用部署本地时间`
+  - Design reference: `Data Impact`, `Database Decision`, `Compatibility / Migration`, `File Size / Split Plan`
+  - Design review reference: `API / Database / IO / Async Review`
+  - Applicable rules: `project-implementation-standards`, `python-code-standards`, `configuration-standards`, `testing-standards`, `logging-standards`
+  - Target code paths: `app/quant_sim/db.py`, any focused DB helper introduced under `app/quant_sim/`
+  - Multi-lens review: product direct join; engineering thin edits in oversized DB; security no data leak in rebuild logs; QA schema assertions
+  - Reuse/common logic impact: reuse existing DB initialization and CRUD; extract focused helper only if needed to avoid growing `db.py`
+  - Requirement scope / fallback: remove `checkpoint_at_utc` creation, writes, reads, indexes, `COALESCE` fallback; no migration branch
+  - Method/function parameter plan: existing DB method signatures should remove UTC params; if multiple timestamp fields needed, use named DTO
+  - Comments/logging/traceability: log schema rebuild/reset with trace_id when available; do not log full records
+  - Encoding/no-mojibake: SQL/test strings UTF-8; no garbled Chinese status text
+  - File size guardrail: `db.py` baseline 8083 lines; only thin edits permitted; substantive new logic must be focused module <=1000 lines
+  - Database impact: SQLite dev schema changes; MySQL-compatible schema intent; pool <=100 if touched
+  - Backend logic confirmation: goal-mode recorded
+  - API contract/layers: none directly
+  - API path/parameters confirmation: not applicable
+  - API IO / async: DB reset/rebuild remains existing operational path
+  - UI mockup/function confirmation: not applicable
+  - Browser/UI QA: not applicable
+  - Config parameter confirmation: no new config
+  - Change: update run signal/lifecycle/candidate/summary/artifact-related schemas and CRUD to local `checkpoint_at`; remove UTC field extraction/backfill and fallback sorting
+  - Standalone verification: `python -m pytest -q tests/test_quant_sim_db.py tests/test_live_quant_drill_db.py -k "checkpoint or quant or signal or summary"` with updated local-time assertions
+  - Real E2E test: required at task 1.5; this task contributes DB evidence
+  - Test target boundary: project-owned DB schema/query behavior only
+  - Requirement-to-test mapping: no UTC schema -> PRAGMA/table_info tests; local join -> insert/query test; no fallback -> missing UTC field query test
+  - Counterexample matrix: rows with only local checkpoint, duplicate checkpoint+stock, sorted same checkpoint tie, old UTC input rejected/ignored per no fallback
+  - Masked-test analysis: tests must inspect schema and SQL output, not only successful service call
+  - Broad-qualifier audit: “不得 read/write/create/return checkpoint_at_utc” checked by tests and `rg`
+  - Decision Chain Trace: insert -> unique key -> query filter -> sort -> API source row
+  - Evidence Capture Timing Audit: created/updated/checkpoint timestamp captured before DB write
+  - Deterministic Sort Audit: local `checkpoint_at DESC`, stable tie-breaker `id`/`stock_code` as existing behavior requires
+  - Validation: DB tests pass and `rg "checkpoint_at_utc" app/quant_sim/db.py` has no active code matches
+  - Test parameters: `.agent/workdir/sp-openspec/local-time-persistence/test-params/db-local-schema.md`
+  - Coverage target: at least 85% for changed/affected DB paths
+  - Required reviews after implementation: Alignment Review and Security Review
+  - Review gate: fix and re-review all findings before task 1.3
+
+- [x] 1.3 统一 replay/drill/artifact/lifecycle/交易写入本地 checkpoint
+  - Workflow lane: `full`
+  - Related requirement: `checkpoint_at 是唯一检查点时间字段`, `时间行为可从系统入口验证`, `本地缓存不受数据库重建影响`
+  - Design reference: `Generated Code Paths`, `Architecture Impact`, `Standalone Verification Plan`
+  - Design review reference: `Verification and E2E Readiness`
+  - Applicable rules: `project-implementation-standards`, `python-code-standards`, `testing-standards`, `logging-standards`
+  - Target code paths: `app/quant_sim/replay_service_historical.py`, `app/quant_sim/replay_service_drill.py`, `app/quant_sim/replay_service_drill_candidates.py`, `app/quant_sim/replay_artifact_adapter.py`, `app/quant_sim/live_quant_drill_candidates.py`, `app/quant_sim/market_technical_artifact_store.py`, `app/quant_sim/quant_universe_lifecycle.py`, `app/quant_sim/portfolio_service.py`, `app/quant_sim/scheduler.py`, `app/stock_refresh_artifact_writer.py`
+  - Multi-lens review: product explainable run data; engineering shared helper use; QA short run verification
+  - Reuse/common logic impact: replace UTC conversions with shared local helper; keep provider cache readers untouched
+  - Requirement scope / fallback: no `_market_time_to_utc` persistence for project-owned fields; no `checkpoint_at_utc_lte` APIs
+  - Method/function parameter plan: remove UTC params from internal calls; use named request object if call chains exceed 5 params
+  - Comments/logging/traceability: comment where cached provider timestamps enter local artifact; log run checkpoint normalization at debug/info with trace_id/run_id
+  - Encoding/no-mojibake: Chinese status messages remain readable
+  - File size guardrail: avoid adding body logic to files already >1000; focused helper modules <=1000 lines
+  - Database impact: writes local-only run rows using task 1.2 schema
+  - Backend logic confirmation: goal-mode recorded
+  - API contract/layers: none directly
+  - API path/parameters confirmation: not applicable
+  - API IO / async: replay/drill remain existing async/job flows
+  - UI mockup/function confirmation: not applicable
+  - Browser/UI QA: not applicable
+  - Config parameter confirmation: no new config
+  - Change: update historical replay, live quant drill, candidate event generation, artifact writes, lifecycle state/event, scheduler/portfolio timestamps to local-time helper output
+  - Standalone verification: targeted replay/drill/artifact tests plus a short service-level run using rebuilt test DB
+  - Real E2E test: required at task 1.5; this task must prepare the runnable job path
+  - Test target boundary: project-owned adapters/services; provider/cache mocked or local fixture only
+  - Requirement-to-test mapping: short drill -> run-scoped artifact/candidate/state/signal same `checkpoint_at`; short replay -> checkpoint/artifact/signal/trade same local time
+  - Counterexample matrix: cached row with UTC-like source timestamp, cached row with local timestamp, checkpoint around market open, repeated checkpoint
+  - Masked-test analysis: tests must inspect persisted rows after job, not only returned run status
+  - Broad-qualifier audit: “实时量化、历史回放、演练、生命周期、交易” each has at least one changed-path test or verification record
+  - Decision Chain Trace: checkpoint generator -> artifact write -> signal write -> trade write -> lifecycle write
+  - Evidence Capture Timing Audit: artifact `computed_at`, lifecycle `evaluated_at`, trade `executed_at` captured at write event
+  - Deterministic Sort Audit: candidate/event queries sort by local checkpoint and stable tie-breakers
+  - Validation: `python -m pytest -q tests/test_market_technical_artifact.py tests/test_live_quant_drill_db.py tests/test_quant_sim_db.py -k "replay or drill or artifact or lifecycle or checkpoint"`
+  - Test parameters: `.agent/workdir/sp-openspec/local-time-persistence/test-params/replay-drill-local-time.md`
+  - Coverage target: at least 85% for changed/affected service paths
+  - Required reviews after implementation: Alignment Review and Security Review
+  - Review gate: fix and re-review all findings before task 1.4
+
+- [x] 1.4 更新 API/UI 为本地时间单口径
+  - Workflow lane: `full`
+  - Related requirement: `API 和 UI 只暴露本地时间口径`
+  - Design reference: `API Impact`, `UI Impact`, `Browser / UI QA Plan`
+  - Design review reference: `UI Mockup / Browser QA Review`, `API / Database / IO / Async Review`
+  - Applicable rules: `project-implementation-standards`, `testing-standards`, `logging-standards`, `encoding-standards`
+  - Target code paths: `app/gateway/live_sim.py`, `app/gateway/his_replay.py`, `app/gateway/market_technical_artifacts.py`, `app/gateway/signal_market.py`, `app/gateway/page_market_artifact_projection.py`, `ui/src/lib/page-models.ts`, affected UI pages/locales/tests
+  - Multi-lens review: product no confusing UTC text; design no layout change; engineering route helpers; QA API and UI checks
+  - Reuse/common logic impact: use shared backend local formatter; frontend consumes provided local text
+  - Requirement scope / fallback: remove UTC response fields and UI assumptions; no compatibility alias
+  - Method/function parameter plan: route helpers max 5 params or named projection object
+  - Comments/logging/traceability: no extra logs unless payload normalization errors occur; trace_id on backend errors
+  - Encoding/no-mojibake: Chinese UI/locales/tests readable; no mojibake
+  - File size guardrail: `his_replay.py` baseline 1244 lines; avoid large additions; helpers if needed
+  - Database impact: none beyond reading task 1.2 schema
+  - Backend logic confirmation: goal-mode recorded
+  - API contract/layers: existing API paths only; response fields changed to local-only
+  - API path/parameters confirmation: no new paths/parameters; goal-mode recorded
+  - API IO / async: normal existing API IO
+  - UI mockup/function confirmation: no mockup; functional description recorded in design
+  - Browser/UI QA: required if frontend runnable; visit live quant and his-replay pages and confirm no UTC labels/fields
+  - Config parameter confirmation: no new config
+  - Change: remove `updatedAtUtc`, `checkpointAtUtc`, timezone explanatory fields where tied to removed UTC semantics; update frontend types and tests
+  - Standalone verification: API test client assertions plus frontend tests/typecheck as available
+  - Real E2E test: required at task 1.5; this task must support UI/API evidence
+  - Test target boundary: project-owned gateway and UI model behavior; no browser testing of framework internals
+  - Requirement-to-test mapping: live-sim payload -> no `updatedAtUtc`; his-replay payload -> no `checkpointAtUtc`; UI model -> no UTC field requirement
+  - Counterexample matrix: missing updated time, null checkpoint, completed/failed/running tasks, no-run empty state
+  - Masked-test analysis: assertions must inspect raw JSON keys, not only rendered text
+  - Broad-qualifier audit: all changed API/UI surfaces from design are checked
+  - Decision Chain Trace: DB row -> gateway projection -> API JSON -> UI model/render
+  - Evidence Capture Timing Audit: response `updatedAt/checkpointAt` reflects already-persisted local text, not client-side conversion
+  - Deterministic Sort Audit: if API lists are sorted, assert local checkpoint sort and stable ties
+  - Validation: `python -m pytest -q tests/test_ui_backend_api_actions.py tests/test_ui_backend_api_dataflow.py -k "time or live or replay or artifact"` plus frontend type/test command if available
+  - Test parameters: `.agent/workdir/sp-openspec/local-time-persistence/test-params/api-ui-local-time.md`
+  - Coverage target: at least 85% for changed/affected API/UI code
+  - Required reviews after implementation: Alignment Review and Security Review
+  - Review gate: fix and re-review all findings before task 1.5
+
+- [x] 1.5 完整验证、重建策略和 E2E 证据
+  - Workflow lane: `full`
+  - Related requirement: `时间行为可从系统入口验证`, all requirements
+  - Design reference: `Standalone Verification Plan`, `Real E2E Test Design`, `Compatibility / Migration`
+  - Design review reference: `Task Readiness`, `Verification and E2E Readiness`
+  - Applicable rules: all project rules listed in proposal
+  - Target code paths: tests, reset/deploy docs/scripts only if existing reset docs need local-time/cache-preservation update
+  - Multi-lens review: product end-to-end confidence; engineering no hidden UTC; QA real job/API evidence; security log review
+  - Reuse/common logic impact: no new behavior outside verification/docs
+  - Requirement scope / fallback: verify local-only behavior and cache preservation; no fallback/compatibility
+  - Method/function parameter plan: not applicable unless helper scripts are changed
+  - Comments/logging/traceability: verification logs must avoid sensitive data; record command outputs in review evidence
+  - Encoding/no-mojibake: docs/test params/review evidence UTF-8
+  - File size guardrail: changed docs/tests <=1000 lines unless existing fixtures
+  - Database impact: rebuild local business DB in test environment; preserve `data/local_sources`
+  - Backend logic confirmation: goal-mode recorded
+  - API contract/layers: existing APIs verified
+  - API path/parameters confirmation: no new paths/parameters
+  - API IO / async: verify job/API responses after run completion
+  - UI mockup/function confirmation: no mockup; browser QA if frontend touched and runnable
+  - Browser/UI QA: required if UI changed; record target routes and screenshots/text assertions
+  - Config parameter confirmation: no new config
+  - Change: add/update verification tests and test-parameter files; document rebuild preserves cache when needed
+  - Standalone verification: run targeted pytest suites, short drill, short replay, API payload inspection, `rg` checks for removed UTC fields in active code paths
+  - Real E2E test: required; run local backend/test-client job flow for short drill and short replay, assert persisted rows and payloads
+  - Test target boundary: project-owned job/API/UI behavior; third-party provider calls mocked/local cached or skipped with reason
+  - Requirement-to-test mapping: every spec scenario maps to at least one test or E2E assertion
+  - Counterexample matrix: old UTC field expected absent, local cache file remains, invalid UTC fallback not used, local checkpoint join works
+  - Masked-test analysis: E2E checks raw DB/API after job, not just status success
+  - Broad-qualifier audit: active code `rg` for `checkpoint_at_utc`, `updatedAtUtc`, `checkpointAtUtc`, `utc_now_iso_z`, `format_utc_iso_z`; remaining matches must be docs/archive or justified non-project-owned source parsing
+  - Decision Chain Trace: reset/rebuild -> run job -> write artifact/signal/trade -> query API -> UI model
+  - Evidence Capture Timing Audit: verify persisted timestamp fields captured at write time
+  - Deterministic Sort Audit: verify task/signal/lifecycle lists sort by local checkpoint with stable tie-breakers
+  - Validation: commands and evidence recorded in `.agent/workdir/sp-openspec/local-time-persistence/task-reviews.md` and final `review.md`
+  - Test parameters: `.agent/workdir/sp-openspec/local-time-persistence/test-params/e2e-local-time.md`
+  - Coverage target: at least 85% for changed/affected code
+  - Required reviews after implementation: Alignment Review and Security Review
+  - Review gate: all findings fixed and re-reviewed before `/sp-complete`

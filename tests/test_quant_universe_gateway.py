@@ -88,7 +88,7 @@ def test_quant_universe_state_settings_and_overview_endpoints(tmp_path):
             "health_score": 66,
             "downtrend_streak": 1,
             "weakening_warning_streak": 2,
-            "cooling_until": "2026-05-09T00:00:00Z",
+            "cooling_until": "2026-05-09 00:00:00",
             "quant_entry_source": "discover",
         },
     )

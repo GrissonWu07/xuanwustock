@@ -1,7 +1,8 @@
 import threading
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from app.quant_kernel import trading_time_utils
 from app.selector_result_store import save_latest_result
@@ -11,11 +12,11 @@ from app.stock_refresh_scheduler import UnifiedStockRefreshScheduler, load_stock
 def test_stock_refresh_scheduler_trading_time_uses_market_timezone():
     assert UnifiedStockRefreshScheduler._is_trading_time(
         "US",
-        now_utc=datetime(2026, 5, 4, 14, 0, tzinfo=timezone.utc),
+        now_local=datetime(2026, 5, 4, 10, 0, tzinfo=ZoneInfo("America/New_York")),
     )
     assert not UnifiedStockRefreshScheduler._is_trading_time(
         "US",
-        now_utc=datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc),
+        now_local=datetime(2026, 5, 4, 8, 0, tzinfo=ZoneInfo("America/New_York")),
     )
 
 
@@ -30,7 +31,7 @@ def test_stock_refresh_scheduler_reuses_cn_calendar_for_holidays(monkeypatch):
 
     assert not UnifiedStockRefreshScheduler._is_trading_time(
         "CN",
-        now_utc=datetime(2026, 5, 4, 2, 0, tzinfo=timezone.utc),
+        now_local=datetime(2026, 5, 4, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
 
 
@@ -115,7 +116,7 @@ def test_runtime_entry_refetches_basic_info_when_recent_check_left_metrics_missi
             "stock_code": "600128",
             "stock_name": "苏豪弘业",
             "latest_price": 9.92,
-            "basic_info_checked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "basic_info_checked_at": datetime.now().replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S"),
         },
     )
 
@@ -420,7 +421,7 @@ def test_run_once_repairs_quant_candidate_name_when_refresh_resolves_it(monkeypa
 def test_run_once_uses_fresh_runtime_cache_without_remote_fetch(monkeypatch, tmp_path):
     quote_calls: list[str] = []
     updates: list[dict[str, object]] = []
-    now_text = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    now_text = datetime.now().replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     save_stock_runtime_entries(
         {
             "000001": {
@@ -508,7 +509,7 @@ def test_run_once_refetches_fresh_cache_when_stock_name_is_only_code(monkeypatch
     quote_calls: list[str] = []
     basic_info_calls: list[str] = []
     candidate_updates: list[dict[str, object]] = []
-    now_text = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    now_text = datetime.now().replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     ready_snapshot = {
         "price": 36.88,
         "ma5": 35.6,
@@ -610,7 +611,7 @@ def test_run_once_refetches_fresh_cache_when_stock_name_is_only_code(monkeypatch
 def test_run_once_refetches_fresh_cache_when_basic_info_is_incomplete(monkeypatch, tmp_path):
     quote_calls: list[str] = []
     basic_info_calls: list[str] = []
-    now_text = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    now_text = datetime.now().replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     ready_snapshot = {
         "price": 9.92,
         "ma5": 9.8,
@@ -840,7 +841,7 @@ def test_run_once_updates_watchlist_metrics_from_basic_info_interface(monkeypatc
 
 def test_run_once_respects_failure_cooldown_without_remote_retry(monkeypatch, tmp_path):
     quote_calls: list[str] = []
-    now_text = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    now_text = datetime.now().replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     save_stock_runtime_entries(
         {
             "000001": {

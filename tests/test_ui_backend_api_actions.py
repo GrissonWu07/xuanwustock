@@ -1852,7 +1852,7 @@ def test_live_sim_reset_clears_signals_and_capital_pool_snapshot(tmp_path):
     assert payload["capitalPool"]["pool"]["poolReady"] is False
 
 
-def test_live_sim_snapshot_includes_market_time_context(tmp_path):
+def test_live_sim_snapshot_includes_local_time_context(tmp_path):
     context = _make_context(tmp_path)
 
     context.scheduler().update_config(market="US")
@@ -1860,13 +1860,12 @@ def test_live_sim_snapshot_includes_market_time_context(tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["updatedAt"] == format_system_time(payload["timeContext"]["updatedAtUtc"])
-    assert payload["timeContext"]["storageTimezone"] == "UTC"
+    assert payload["updatedAt"] == format_system_time(payload["timeContext"]["updatedAt"])
+    assert payload["timeContext"]["storageTimezone"] == "local"
+    assert payload["timeContext"]["storageFormat"] == "YYYY-MM-DD HH:mm:ss"
     assert payload["timeContext"]["systemTimezone"]
-    assert payload["timeContext"]["updatedAtSystem"] == payload["updatedAt"]
-    assert payload["timeContext"]["marketTimezone"] == "America/New_York"
-    assert payload["timeContext"]["updatedAtUtc"].endswith("Z")
-    assert payload["timeContext"]["updatedAtMarketTimezone"] == "America/New_York"
+    assert "updatedAtUtc" not in payload["timeContext"]
+    assert "updatedAtMarket" not in payload["timeContext"]
 
 
 def test_page_tables_render_system_time_instead_of_utc_strings(tmp_path):
@@ -2001,7 +2000,7 @@ def test_page_tables_render_system_time_instead_of_utc_strings(tmp_path):
     assert checkpoint_payload["checkpoints"]["items"][0]["checkpointAt"] == expected_checkpoint_at
 
 
-def test_stock_analysis_records_persist_utc_and_render_system_time(tmp_path):
+def test_stock_analysis_records_persist_local_time_and_render_system_time(tmp_path):
     context = _make_context(tmp_path)
     record_id = context.stock_analysis_db().save_analysis(
         symbol="600519",
@@ -2022,8 +2021,10 @@ def test_stock_analysis_records_persist_utc_and_render_system_time(tmp_path):
     ).fetchone()
     conn.close()
 
-    assert created_at.endswith("Z")
-    assert analysis_date.endswith("Z")
+    assert not created_at.endswith("Z")
+    assert not analysis_date.endswith("Z")
+    assert "T" not in created_at
+    assert "T" not in analysis_date
 
     response = TestClient(create_app(context=context)).get("/api/v1/history")
     assert response.status_code == 200
@@ -2936,7 +2937,7 @@ def test_his_replay_capital_pool_endpoint_rebuilds_lots_at_selected_checkpoint(t
     assert visible_lot["priceBasis"] == "market"
 
 
-def test_his_replay_capital_pool_includes_utc_trade_at_same_market_checkpoint(tmp_path):
+def test_his_replay_capital_pool_includes_local_trade_at_same_market_checkpoint(tmp_path):
     context = _make_context(tmp_path)
     db = context.replay_db()
     run_id = db.create_sim_run(
@@ -2997,7 +2998,7 @@ def test_his_replay_capital_pool_includes_utc_trade_at_same_market_checkpoint(tm
                     {
                         "side": "BUY",
                         "lot": {
-                            "lot_id": "000938-utc-same-checkpoint",
+                            "lot_id": "000938-local-same-checkpoint",
                             "lot_count": 4,
                             "quantity": 400,
                             "remaining_quantity": 400,
@@ -3008,8 +3009,8 @@ def test_his_replay_capital_pool_includes_utc_trade_at_same_market_checkpoint(tm
                     },
                     ensure_ascii=False,
                 ),
-                "executed_at": "2026-03-12T07:00:00Z",
-                "created_at": "2026-03-12T07:00:00Z",
+                "executed_at": "2026-03-12 15:00:00",
+                "created_at": "2026-03-12 15:00:00",
             }
         ],
         snapshots=[],

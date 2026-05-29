@@ -40,23 +40,22 @@ def test_stock_analysis_db_replace_same_day_keeps_one_record_per_symbol(tmp_path
     assert records[0]["analysis_context"]["summary"] == "新分析"
 
 
-def test_stock_analysis_db_same_day_uses_system_day_for_utc_created_at(tmp_path):
+def test_stock_analysis_db_same_day_uses_local_created_at(tmp_path):
     db = StockAnalysisDatabase(tmp_path / "analysis.db")
     record_id = db.save_analysis(**_analysis_payload("000001"), replace_same_day=True)
-    utc_created_at = "2026-03-11T16:30:00Z"
-    system_day = format_system_time(utc_created_at)[:10]
+    local_created_at = "2026-03-12 00:30:00"
+    system_day = format_system_time(local_created_at)[:10]
 
     conn = db._connect()
     conn.execute(
         "UPDATE analysis_records SET created_at = ?, analysis_date = ? WHERE id = ?",
-        (utc_created_at, utc_created_at, record_id),
+        (local_created_at, local_created_at, record_id),
     )
     conn.commit()
     conn.close()
 
     assert db.has_analysis_for_symbol_on_date("000001", system_day)
-    if system_day != utc_created_at[:10]:
-        assert not db.has_analysis_for_symbol_on_date("000001", utc_created_at[:10])
+    assert not db.has_analysis_for_symbol_on_date("000001", "2026-03-11")
 
 
 def test_daily_scheduler_dedupes_codes_and_skips_existing_today(tmp_path, monkeypatch):

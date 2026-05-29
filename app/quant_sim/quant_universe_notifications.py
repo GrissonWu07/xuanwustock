@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
+from app.quant_sim.time_utils import local_now_text
 
 GROUP_DEFINITIONS = {
     "new_trial": {"title": "新进入 trial", "to_status": "trial"},
@@ -124,7 +124,7 @@ def _evidence_value(event: dict[str, Any], key: str) -> Any:
 
 
 def _now_text() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return local_now_text()
 
 
 __all__ = [

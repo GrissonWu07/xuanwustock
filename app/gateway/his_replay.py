@@ -19,6 +19,7 @@ from app.gateway.trades import (
     _trade_net_amount,
     _trade_realized_pnl_pct,
     _trade_sell_tax_fee,
+    build_trade_provenance,
 )
 from app.gateway.replay_capital_pool import build_his_replay_capital_pool
 from app.gateway.replay_liquidation import build_terminal_liquidation, terminal_liquidation_metrics
@@ -348,8 +349,8 @@ def _build_live_quant_drill_payload(db: QuantSimDB, run: dict[str, Any], run_id:
     )
     try:
         final_states_response = (
-            db.list_sim_run_quant_states(run_id, checkpoint_at=last_summary.get("checkpoint_at_utc"), page_size=50)
-            if last_summary.get("checkpoint_at_utc")
+            db.list_sim_run_quant_states(run_id, checkpoint_at=last_summary.get("checkpoint_at"), page_size=50)
+            if last_summary.get("checkpoint_at")
             else {"items": [], "total": 0, "page": 1, "pageSize": 50}
         )
     except sqlite3.DatabaseError as exc:
@@ -379,7 +380,7 @@ def _build_live_quant_drill_payload(db: QuantSimDB, run: dict[str, Any], run_id:
         },
         "lifecycleSeries": [
             {
-                "checkpointAt": _system_time_text(row.get("checkpoint_at") or row.get("checkpoint_at_utc"), "--"),
+                "checkpointAt": _system_time_text(row.get("checkpoint_at"), "--"),
                 "trialCount": int(row.get("trial_count") or 0),
                 "activeCount": int(row.get("active_count") or 0),
                 "exitOnlyCount": int(row.get("exit_only_count") or 0),
@@ -391,7 +392,7 @@ def _build_live_quant_drill_payload(db: QuantSimDB, run: dict[str, Any], run_id:
         "candidateEventsTable": _drill_table_payload(
             [
                 {
-                    "checkpointAt": _system_time_text(event.get("checkpoint_at") or event.get("checkpoint_at_utc"), "--"),
+                    "checkpointAt": _system_time_text(event.get("checkpoint_at"), "--"),
                     "stockCode": _txt(event.get("stock_code")),
                     "stockName": _txt(event.get("stock_name")),
                     "sourceType": _txt(event.get("source_type")),
@@ -408,7 +409,7 @@ def _build_live_quant_drill_payload(db: QuantSimDB, run: dict[str, Any], run_id:
         "exitEventsTable": _drill_table_payload(
             [
                 {
-                    "checkpointAt": _system_time_text(event.get("checkpoint_at") or event.get("checkpoint_at_utc"), "--"),
+                    "checkpointAt": _system_time_text(event.get("checkpoint_at"), "--"),
                     "stockCode": _txt(event.get("stock_code")),
                     "stockName": _txt(event.get("stock_name")),
                     "fromStatus": _txt(event.get("from_status")),
@@ -654,6 +655,7 @@ def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict
             ],
             "code": _txt(item.get("stock_code")),
             "name": _txt(item.get("stock_name")),
+            "tradeProvenance": build_trade_provenance(item),
         }
         for i, item in enumerate(
             db.get_sim_run_trades(

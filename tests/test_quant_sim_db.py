@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from app.db.bootstrap import bootstrap_database_runtime
@@ -92,6 +92,29 @@ def test_quant_replay_db_only_creates_replay_tables(tmp_path):
     }
 
 
+def test_quant_replay_db_preserves_run_market_technical_artifacts(tmp_path):
+    db_file = tmp_path / "quant_sim_replay.db"
+    conn = sqlite3.connect(db_file)
+    try:
+        conn.execute("CREATE TABLE sim_run_market_technical_artifacts (id INTEGER PRIMARY KEY, artifact_ref TEXT)")
+        conn.execute(
+            "INSERT INTO sim_run_market_technical_artifacts (artifact_ref) VALUES (?)",
+            ("mta:v1|domain=drill|run_id=1|run_type=live_quant_drill|market=CN|stock_code=600000|checkpoint_at=2026-01-05T02%3A00%3A00Z|timeframe=30m|data_version=mta_v1",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    QuantSimReplayDB(db_file)
+
+    conn = sqlite3.connect(db_file)
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM sim_run_market_technical_artifacts").fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1
+
+
 def test_quant_replay_db_resolves_runtime_replay_store_path(tmp_path):
     runtime = bootstrap_database_runtime({}, data_dir=tmp_path)
 
@@ -174,7 +197,7 @@ def test_quant_db_enables_wal_for_file_database(tmp_path):
     assert journal_mode.lower() == "wal"
 
 
-def test_add_signal_sets_created_and_updated_at_as_utc_iso_z(tmp_path):
+def test_add_signal_sets_created_and_updated_at_as_local_time(tmp_path):
     db = QuantSimDB(tmp_path / "app.quant_sim.db")
 
     signal_id = db.add_signal(
@@ -192,10 +215,10 @@ def test_add_signal_sets_created_and_updated_at_as_utc_iso_z(tmp_path):
 
     assert signal["id"] == signal_id
     assert signal["created_at"] == signal["updated_at"]
-    assert signal["created_at"].endswith("Z")
-    assert "T" in signal["created_at"]
-    parsed = datetime.fromisoformat(signal["created_at"].replace("Z", "+00:00"))
-    assert parsed.tzinfo == timezone.utc
+    assert not signal["created_at"].endswith("Z")
+    assert "T" not in signal["created_at"]
+    parsed = datetime.fromisoformat(signal["created_at"])
+    assert parsed.tzinfo is None
 
 
 def test_quant_db_reads_during_uncommitted_writer_in_wal_mode(tmp_path):
@@ -1286,6 +1309,123 @@ def test_upsert_sim_run_signals_updates_existing_checkpoint_signal(tmp_path):
     assert signals[0]["position_size_pct"] == 55.0
     assert signals[0]["status"] == "observed"
     assert signals[0]["updated_at"] == "2026-04-01 10:00:02"
+
+
+def test_upsert_sim_run_signals_persists_artifact_checkpoint_local(tmp_path):
+    db = QuantSimReplayDB(tmp_path / "quant_sim_replay.db")
+    run_id = db.create_sim_run(
+        mode="live_quant_drill",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-01-05 10:00:00",
+        end_datetime="2026-01-05 10:00:00",
+        initial_cash=100000.0,
+        status="running",
+    )
+    artifact_ref = (
+        "mta:v1|domain=drill|run_id=1|run_type=live_quant_drill|market=CN|"
+        "stock_code=300390|checkpoint_at=2026-01-05%2010%3A00%3A00|"
+        "timeframe=30m|data_version=mta_v1"
+    )
+
+    db.upsert_sim_run_signals(
+        run_id,
+        [
+            {
+                "id": 101,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "checkpoint_at": "2026-01-05 10:00:00",
+                "strategy_profile": {
+                    "market_snapshot": {
+                        "artifact_ref": artifact_ref,
+                        "source_status": "ready",
+                        "reason_code": "ok",
+                    }
+                },
+            }
+        ],
+    )
+
+    signal = db.get_sim_run_signals(run_id)[0]
+
+    assert signal["checkpoint_at"] == "2026-01-05 10:00:00"
+    assert "checkpoint_at_utc" not in signal
+
+
+def test_get_sim_run_signals_orders_by_local_checkpoint(tmp_path):
+    db = QuantSimReplayDB(tmp_path / "quant_sim_replay.db")
+    run_id = db.create_sim_run(
+        mode="live_quant_drill",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-01-05 10:00:00",
+        end_datetime="2026-01-06 10:00:00",
+        initial_cash=100000.0,
+        status="running",
+    )
+
+    db.upsert_sim_run_signals(
+        run_id,
+        [
+            {
+                "id": 101,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "checkpoint_at": "2026-01-06 09:30:00",
+                "created_at": "2026-01-06 09:30:01",
+            },
+            {
+                "id": 102,
+                "stock_code": "600000",
+                "stock_name": "浦发银行",
+                "action": "SELL",
+                "checkpoint_at": "2026-01-06 10:00:00",
+                "created_at": "2026-01-06 10:00:01",
+            },
+        ],
+    )
+
+    signals = db.get_sim_run_signals(run_id)
+
+    assert [signal["source_signal_id"] for signal in signals] == [102, 101]
+
+
+def test_quant_replay_db_uses_local_checkpoint_from_details(tmp_path):
+    db_file = tmp_path / "quant_sim_replay.db"
+    db = QuantSimReplayDB(db_file)
+    run_id = db.create_sim_run(
+        mode="live_quant_drill",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-01-05 10:00:00",
+        end_datetime="2026-01-05 10:00:00",
+        initial_cash=100000.0,
+        status="running",
+    )
+    artifact_ref = (
+        "mta:v1|domain=drill|run_id=1|run_type=live_quant_drill|market=CN|"
+        "stock_code=300390|checkpoint_at=2026-01-05%2010%3A00%3A00|"
+        "timeframe=30m|data_version=mta_v1"
+    )
+    db.upsert_sim_run_signals(
+        run_id,
+        [
+            {
+                "id": 101,
+                "stock_code": "300390",
+                "stock_name": "天华新能",
+                "action": "BUY",
+                "checkpoint_at": "2026-01-05 10:00:00",
+                "strategy_profile": {"market_snapshot": {"artifact_ref": artifact_ref}},
+            }
+        ],
+    )
+    signal = db.get_sim_run_signals(run_id)[0]
+    assert signal["checkpoint_at"] == "2026-01-05 10:00:00"
+    assert "checkpoint_at_utc" not in signal
 
 
 def test_delete_sim_run_removes_all_replay_artifacts(tmp_path):
