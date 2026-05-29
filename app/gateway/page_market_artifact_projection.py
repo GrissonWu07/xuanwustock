@@ -7,7 +7,7 @@ from typing import Any
 from app.gateway.artifact_diagnostics import artifact_diagnostics_from_payload
 from app.quant_sim.market_technical_artifact import LIVE_DOMAIN, InvalidArtifactRef, parse_artifact_ref
 from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
-from app.stock_refresh_artifact_writer import derive_runtime_entry_from_artifact
+from app.stock_refresh_artifact_writer import derive_runtime_entry_from_artifact, write_live_artifacts_for_refresh
 from app.watchlist_selector_integration import normalize_stock_code
 
 
@@ -29,6 +29,12 @@ def apply_live_artifact_projection(request: PageArtifactProjectionRequest) -> di
     runtime = runtime if isinstance(runtime, dict) else {}
     artifact_ref = str(row.get("artifact_ref") or runtime.get("artifact_ref") or "").strip()
     if not artifact_ref:
+        projection = _materialize_runtime_projection(request, code, runtime)
+        if projection:
+            _merge_projection(row, projection, request)
+            row["artifactDiagnostics"] = artifact_diagnostics_from_payload(projection)
+            row["marketTechnicalBacked"] = True
+            return row
         _clear_market_projection(row, request)
         row["artifactDiagnostics"] = artifact_diagnostics_from_payload({})
         row["marketTechnicalBacked"] = False
@@ -61,6 +67,29 @@ def apply_live_artifact_projection(request: PageArtifactProjectionRequest) -> di
     row["artifactDiagnostics"] = artifact_diagnostics_from_payload(projection)
     row["marketTechnicalBacked"] = True
     return row
+
+
+def _materialize_runtime_projection(
+    request: PageArtifactProjectionRequest,
+    code: str,
+    runtime: dict[str, Any],
+) -> dict[str, Any]:
+    if not code or not _runtime_ready_for_artifact(runtime):
+        return {}
+    projections = write_live_artifacts_for_refresh(
+        db_file=request.db_file,
+        entries={code: runtime},
+        market=str(request.row.get("market") or runtime.get("market") or "CN"),
+        run_reason="page-artifact-projection",
+    )
+    return projections.get(code) if isinstance(projections.get(code), dict) else {}
+
+
+def _runtime_ready_for_artifact(runtime: dict[str, Any]) -> bool:
+    return (
+        bool(runtime.get("technical_snapshot_ready"))
+        and str(runtime.get("technical_snapshot_status") or "").strip() == "ready"
+    )
 
 
 def apply_live_artifact_projection_to_rows(

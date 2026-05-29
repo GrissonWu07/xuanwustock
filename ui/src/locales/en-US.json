@@ -81,6 +81,8 @@
   "Position sizing": "Position sizing",
   "Confidence": "Confidence",
   "Score": "Score",
+  "量化技术入池分": "Quant technical entry score",
+  "技术置信度": "Technical confidence",
   "Auto-entry: attempted {attempted}, promoted {promoted}, eligible {eligible}, skipped {skipped}": "Auto-entry: attempted {attempted}, promoted {promoted}, eligible {eligible}, skipped {skipped}",
   "Focus on symbols you care about first. Outputs from discover and research are merged here before analysis and quant.": "Focus on symbols you care about first. Outputs from discover and research are merged here before analysis and quant.",
   "Full analysis expanded. See thematic details below.": "Full analysis expanded. See thematic details below.",

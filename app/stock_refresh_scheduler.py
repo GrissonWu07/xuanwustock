@@ -11,7 +11,11 @@ from typing import Any, Callable
 import schedule
 
 from app.discover.candidate_artifact import TECHNICAL_RUNTIME_KEYS, discovery_candidate_codes
-from app.discover.market_snapshot import REQUIRED_TECHNICAL_SNAPSHOT_FIELDS, prepare_discovery_market_snapshot_safely
+from app.discover.market_snapshot import (
+    REQUIRED_TECHNICAL_SNAPSHOT_FIELDS,
+    prepare_discovery_market_snapshot,
+    prepare_discovery_market_snapshot_safely,
+)
 from app.quant_kernel import TradingTimeUtils
 from app.quant_sim.candidate_re_evaluation import reevaluate_refreshed_discovery_candidates
 from app.quant_sim.time_utils import format_local_time, market_timezone, parse_system_datetime, system_timezone
@@ -217,6 +221,13 @@ def save_stock_runtime_entries(
 
 def _now() -> str:
     return format_local_time()
+
+
+def _prepare_runtime_market_snapshot(stock_code: str) -> dict[str, Any]:
+    try:
+        return prepare_discovery_market_snapshot(stock_code)
+    except Exception:
+        return prepare_discovery_market_snapshot_safely(stock_code)
 
 
 def _parse_local_timestamp(value: Any) -> datetime | None:
@@ -691,7 +702,7 @@ class UnifiedStockRefreshScheduler:
 
         technical_snapshot: dict[str, Any] = {}
         if not (stop_event and stop_event.is_set()):
-            technical_snapshot = prepare_discovery_market_snapshot_safely(stock_code)
+            technical_snapshot = _prepare_runtime_market_snapshot(stock_code)
 
         info_name = _valid_name(basic_info.get("name"))
         if info_name.upper() == stock_code.upper():

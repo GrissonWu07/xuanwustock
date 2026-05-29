@@ -1,0 +1,171 @@
+# Tasks: audit-data-loop-logic-gaps
+
+## 1. Implementation
+
+- [x] 1.1 Implement prepared candidate evidence authority
+  - Related requirement: `发现候选必须暴露 prepared evidence`, `分数和状态口径必须明确`
+  - Applicable rules: `PIR-001`, `PIR-002`, `PIR-003`, `PIR-004`, `PIR-005`, `PY-001`, `PY-003`, `PY-007`, `CFG-005`, `TEST-001`, `TEST-002`, `TEST-003`
+  - Target code paths: `app/quant_sim/evidence_models.py`, `app/quant_sim/evidence_repository.py`, `app/quant_sim/evidence_service.py`, `app/discover/discover.py`, `app/discover/candidate_artifact.py`, `app/gateway/quant_universe_entry.py`, `tests/test_quant_evidence_provenance.py`, `tests/test_discover_refresh_hydration.py`
+  - Multi-lens review: product evidence clarity, engineering shared service, security no secret exposure, QA explicit evidence assertions
+  - Reuse/common logic impact: reuse discovery hydration and `calculate_technical_entry_score`; extract evidence persistence to new modules
+  - Requirement scope / fallback: raw selector fallback remains stale/unprepared only; no source-score fallback to quant entry score
+  - Method/function parameter plan: use `PreparedEvidenceInput` or equivalent named object for evidence writes
+  - File size guardrail: each generated/modified code file must stay <= 1000 lines; split plan: keep new logic out of `discover.py` and do not modify oversized `db.py`
+  - Database impact: sqlite-dev/mysql-implementation/pool <= 100; no old-data migration
+  - Backend logic confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; evidence authority and source-score fallback prohibition confirmed
+  - API contract/layers: OpenAPI response additions for `GET /api/v1/discover`, `POST /api/v1/discover/actions/run-strategy`, `GET /api/v1/tasks/{task_id}`; gateway controller + evidence service/repository
+  - API path/parameters confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; no new paths, existing parameters only
+  - API IO / async: database read/write and existing async discovery task; discovery task remains async
+  - UI mockup/function confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; mockup `mockups/evidence-provenance-ui.md`
+  - Browser/UI QA: required and confirmed by user on 2026-05-17; `/discover`
+  - Config parameter confirmation: not-applicable; no new config
+  - Change: persist/serve prepared evidence for discovery candidates and ensure discover/lifecycle handoff uses it
+  - Standalone verification: focused pytest creates ready and missing candidates, runs discovery handoff, asserts evidence fields and blocked missing snapshot
+  - Real E2E test: required and confirmed by user on 2026-05-17; local backend `POST /api/v1/discover/actions/run-strategy` then `GET /api/v1/discover`
+  - Validation: backend tests, API response assertion, coverage >=90% for changed/affected code
+  - Test parameters: `openspec/changes/audit-data-loop-logic-gaps/test-params/discovery-prepared-evidence.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against concrete authentication, authorization, tenant/user isolation, validation, data exposure, logging, dependency, configuration, database/API IO, async, and external-service risks when relevant
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 1.2 Implement refresh-triggered candidate re-evaluation
+  - Related requirement: `刷新成功必须重新评估被数据问题阻止的候选`
+  - Applicable rules: `PIR-001`, `PIR-002`, `PIR-003`, `PY-001`, `PY-005`, `PY-007`, `CFG-005`, `TEST-001`, `TEST-002`, `TEST-003`
+  - Target code paths: `app/quant_sim/candidate_re_evaluation.py`, `app/stock_refresh_scheduler.py`, `app/quant_sim/evidence_service.py`, `tests/test_discover_refresh_hydration.py`, `tests/test_quant_evidence_provenance.py`
+  - Multi-lens review: product closes stale candidate loop, engineering idempotency, security no user-controlled DB path, QA duplicate prevention
+  - Reuse/common logic impact: reuse existing refresh scheduler and lifecycle ingestion; add re-evaluation orchestration as shared service
+  - Requirement scope / fallback: re-evaluate only data-blocked/recommended candidates in current discovery/candidate scope; no threshold tuning
+  - Method/function parameter plan: use `CandidateReevaluationRequest` object
+  - File size guardrail: each generated/modified code file must stay <= 1000 lines; split plan: new service handles logic, scheduler only delegates
+  - Database impact: sqlite-dev/mysql-implementation/pool <= 100
+  - Backend logic confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; refresh-triggered re-evaluation and duplicate prevention confirmed
+  - API contract/layers: existing `GET /api/v1/discover` and `GET /api/v1/quant/live-sim` expose results; no new API
+  - API path/parameters confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; no new paths
+  - API IO / async: refresh worker DB IO and market data IO; no blocking API request thread
+  - UI mockup/function confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; mockup `mockups/evidence-provenance-ui.md`
+  - Browser/UI QA: required and confirmed by user on 2026-05-17; `/discover`, `/live-sim`
+  - Config parameter confirmation: not-applicable; no new config
+  - Change: after refresh writes fresh technical snapshot, re-evaluate previously data-blocked candidates and record latest result
+  - Standalone verification: pytest simulates missing snapshot -> blocked, refresh ready snapshot -> re-evaluated, no duplicate promotion
+  - Real E2E test: required and confirmed by user on 2026-05-17; local backend discovery plus refresh/reload assertions
+  - Validation: focused backend tests and API snapshot check
+  - Test parameters: `openspec/changes/audit-data-loop-logic-gaps/test-params/refresh-reevaluation.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against concrete authentication, authorization, tenant/user isolation, validation, data exposure, logging, dependency, configuration, database/API IO, async, and external-service risks when relevant
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 1.3 Implement decision provenance for signals, trades, and ignored signals
+  - Related requirement: `信号和交易必须暴露 decision provenance`
+  - Applicable rules: `PIR-001`, `PIR-002`, `PIR-003`, `PIR-004`, `PY-001`, `PY-003`, `PY-007`, `TEST-001`, `TEST-002`, `TEST-003`
+  - Target code paths: `app/quant_sim/decision_provenance.py`, `app/quant_sim/evidence_service.py`, `app/gateway/signal_detail.py`, `app/gateway/trades.py`, `app/gateway/live_sim.py`, `app/gateway/his_replay.py`, `tests/test_quant_evidence_provenance.py`, `tests/test_quant_universe_gateway.py`
+  - Multi-lens review: product loss attribution, design details over table clutter, engineering shared builder, security redacted payloads, QA signal/trade assertions
+  - Reuse/common logic impact: reuse existing signal explainability and trade metadata; extract provenance builder
+  - Requirement scope / fallback: provenance missing must display explicit missing reason; no silent blanks
+  - Method/function parameter plan: use `DecisionProvenanceInput` object
+  - File size guardrail: each generated/modified code file must stay <= 1000 lines; split plan: do not add business logic to oversized signal/replay services without extraction
+  - Database impact: sqlite-dev/mysql-implementation/pool <= 100 if provenance persists new references; otherwise read existing DB data
+  - Backend logic confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; minimum provenance fields confirmed
+  - API contract/layers: OpenAPI response additions for `GET /api/v1/quant/signals/{signal_id}`, `GET /api/v1/quant/live-sim/trades`, `GET /api/v1/quant/his-replay/progress`
+  - API path/parameters confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; existing paths/parameters only
+  - API IO / async: DB reads for signal/trade/evidence; no long-running new API
+  - UI mockup/function confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; mockup `mockups/evidence-provenance-ui.md`
+  - Browser/UI QA: required and confirmed by user on 2026-05-17; `/signal-detail/:signalId`, `/live-sim`, `/his-replay`
+  - Config parameter confirmation: not-applicable
+  - Change: add provenance payloads and UI-visible explanation for signals/trades/ignored signals
+  - Standalone verification: focused tests assert signal detail, trade detail, ignored counts and missing slot/lot reason
+  - Real E2E test: required and confirmed by user on 2026-05-17; local API signal/trade detail check after synthetic or real small run
+  - Validation: backend tests, UI tests, response snapshot checks
+  - Test parameters: `openspec/changes/audit-data-loop-logic-gaps/test-params/decision-provenance.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against concrete authentication, authorization, tenant/user isolation, validation, data exposure, logging, dependency, configuration, database/API IO, async, and external-service risks when relevant
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 1.4 Align score/state semantics and affected UI displays
+  - Related requirement: `分数和状态口径必须明确`
+  - Applicable rules: `PIR-001`, `PIR-002`, `PIR-004`, `TEST-001`, `TEST-002`, `TEST-003`
+  - Target code paths: `app/gateway/live_sim.py`, `app/gateway/discover.py`, `ui/src/lib/page-models.ts`, `ui/src/features/discover/discover-page.tsx`, `ui/src/features/quant/live-sim-page.tsx`, `ui/src/features/quant/signal-detail-page.tsx`, `ui/src/tests/discover-page.test.tsx`, `ui/src/tests/live-sim-page.test.tsx`, `ui/src/tests/signal-detail-page.test.tsx`
+  - Multi-lens review: product unambiguous labels, design compact table/detail split, engineering typed page models, QA UI assertions
+  - Reuse/common logic impact: reuse existing page model and table components; add labels/fields only where needed
+  - Requirement scope / fallback: no source-score fallback; UI time uses system time only
+  - Method/function parameter plan: no new complex functions with >5 inputs; page model types document fields
+  - File size guardrail: each generated/modified code file must stay <= 1000 lines; split plan: if component grows, extract detail subcomponent
+  - Database impact: none beyond evidence fields already provided by backend
+  - Backend logic confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; labels/semantics confirmed
+  - API contract/layers: response-field additions on existing page snapshot APIs
+  - API path/parameters confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; no new paths
+  - API IO / async: no new IO
+  - UI mockup/function confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; mockup `mockups/evidence-provenance-ui.md`
+  - Browser/UI QA: required and confirmed by user on 2026-05-17; `/discover`, `/live-sim`, `/signal-detail/:signalId`
+  - Config parameter confirmation: not-applicable
+  - Change: update page models and UI labels/details so score/state semantics are explicit
+  - Standalone verification: UI tests assert labels, no raw UTC strings, table counts align with state filters
+  - Real E2E test: required and confirmed by user on 2026-05-17; browser QA on local UI routes
+  - Validation: UI tests and browser screenshot/DOM checks
+  - Test parameters: `openspec/changes/audit-data-loop-logic-gaps/test-params/score-state-semantics.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against concrete authentication, authorization, tenant/user isolation, validation, data exposure, logging, dependency, configuration, database/API IO, async, and external-service risks when relevant
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 1.5 Add replay/drill checkpoint coverage and context parity disclosure
+  - Related requirement: `回放和演练必须披露 checkpoint 数据覆盖`
+  - Applicable rules: `PIR-001`, `PIR-002`, `PIR-004`, `PIR-005`, `PY-001`, `PY-007`, `TEST-001`, `TEST-002`, `TEST-003`
+  - Target code paths: `app/quant_sim/replay_coverage.py`, `app/gateway/his_replay.py`, `app/gateway/signal_detail.py`, `ui/src/features/quant/his-replay-page.tsx`, `ui/src/tests/his-replay-page.test.tsx`, `tests/test_quant_replay_engine.py`
+  - Multi-lens review: product replay trust, engineering helper extraction, security no raw provider errors, QA coverage cases
+  - Reuse/common logic impact: reuse existing `prepare_report` where possible; add coverage normalization helper
+  - Requirement scope / fallback: disclose omitted stock-analysis context; do not reconstruct point-in-time research context in this change
+  - Method/function parameter plan: use `ReplayCoverageSummary` object
+  - File size guardrail: each generated/modified code file must stay <= 1000 lines; split plan: avoid adding logic to oversized `replay_service.py`, use helper and gateway mapping
+  - Database impact: read existing replay run/events; optional evidence references through existing DB runtime
+  - Backend logic confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; coverage summary and context omitted policy confirmed
+  - API contract/layers: response-field additions for `GET /api/v1/quant/his-replay`, `GET /api/v1/quant/his-replay/progress`, `GET /api/v1/quant/signals/{signal_id}`
+  - API path/parameters confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; no new paths
+  - API IO / async: replay task remains async; progress API reads DB only
+  - UI mockup/function confirmation: confirmed by user on 2026-05-17 with "没问题，实现把"; mockup `mockups/evidence-provenance-ui.md`
+  - Browser/UI QA: required and confirmed by user on 2026-05-17; `/his-replay`, `/signal-detail/:signalId?source=replay`
+  - Config parameter confirmation: not-applicable
+  - Change: surface checkpoint coverage and context parity in replay/drill reports and signal details
+  - Standalone verification: tests cover exact, nearest, missing checkpoint cases and omitted context display
+  - Real E2E test: required and confirmed by user on 2026-05-17; bounded local replay/drill run
+  - Validation: backend and UI tests
+  - Test parameters: `openspec/changes/audit-data-loop-logic-gaps/test-params/replay-checkpoint-coverage.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against concrete authentication, authorization, tenant/user isolation, validation, data exposure, logging, dependency, configuration, database/API IO, async, and external-service risks when relevant
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 1.6 Close OpenSpec evidence and documentation loop
+  - Related requirement: `OpenSpec 证据必须与实现完成状态一致`
+  - Applicable rules: `PIR-001`, `TEST-001`, `TEST-002`, `TEST-010`
+  - Target code paths: `openspec/changes/audit-data-loop-logic-gaps/task-reviews.md`, `openspec/changes/audit-data-loop-logic-gaps/review.md`, `docs/wiki/quant-evidence-provenance.md`, `openspec/changes/quant-technical-entry-score/review.md`, `openspec/changes/quant-technical-entry-score/task-reviews.md`
+  - Multi-lens review: devex source-of-truth consistency, QA final evidence, product docs clarity
+  - Reuse/common logic impact: reuse current OpenSpec completion format and existing wiki style
+  - Requirement scope / fallback: update stale evidence or record explicit skip reason; do not claim unrelated change archived unless gates pass
+  - Method/function parameter plan: not-applicable
+  - File size guardrail: markdown only; no code file impact
+  - Database impact: none
+  - Backend logic confirmation: not-applicable
+  - API contract/layers: none
+  - API path/parameters confirmation: not-applicable
+  - API IO / async: none
+  - UI mockup/function confirmation: not-applicable
+  - Browser/UI QA: not-applicable except evidence references from prior tasks
+  - Config parameter confirmation: not-applicable
+  - Change: update review evidence, wiki, completion readiness, and related active change status evidence
+  - Standalone verification: inspect artifacts for stale failure text, unchecked tasks, unresolved findings, missing wiki references
+  - Real E2E test: not-applicable; governance artifact check only
+  - Validation: artifact grep/checklist and final review
+  - Test parameters: `openspec/changes/audit-data-loop-logic-gaps/test-params/openspec-closure.md`
+  - Coverage target: not-applicable to markdown-only task; implementation tasks above carry coverage gates
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against concrete authentication, authorization, tenant/user isolation, validation, data exposure, logging, dependency, configuration, database/API IO, async, and external-service risks when relevant
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts

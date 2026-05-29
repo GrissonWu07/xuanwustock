@@ -57,16 +57,16 @@ export const isEligibleEntry = (row: TableRow, override?: EntryStatusOverride) =
 export function EligibleBadge({ row, override }: { row: TableRow; override?: EntryStatusOverride }) {
   const status = entryStatusOf(row, override);
   const reason = entryReasonOf(row, override);
-  const score = fieldNumber(row, "candidate_score") ?? fieldNumber(row, "source_score") ?? fieldNumber(row, "score");
-  const confidence = fieldNumber(row, "candidate_confidence") ?? fieldNumber(row, "confidence") ?? fieldNumber(row, "source_confidence");
+  const score = fieldNumber(row, "candidate_score");
+  const confidence = fieldNumber(row, "candidate_confidence");
   const snapshotStatus = fieldText(row, "technical_snapshot_status") || fieldText(row, "technicalSnapshotStatus");
   const missingFields = fieldList(row, "technical_snapshot_missing_fields");
   const tone = status === "eligible" ? "badge--success" : status === "already_in_quant" ? "badge--accent" : "badge--neutral";
   return (
     <span className="chip-row" style={{ gap: "6px" }}>
       <span className={`badge ${tone}`}>{status}</span>
-      {score !== null ? <span className="badge badge--neutral">{t("Score")} {formatDiagnosticNumber(score)}</span> : null}
-      {confidence !== null ? <span className="badge badge--neutral">{t("Confidence")} {formatDiagnosticNumber(confidence)}</span> : null}
+      {score !== null ? <span className="badge badge--neutral">{t("量化技术入池分")} {formatDiagnosticNumber(score)}</span> : null}
+      {confidence !== null ? <span className="badge badge--neutral">{t("技术置信度")} {formatDiagnosticNumber(confidence)}</span> : null}
       {reason ? <span className="badge badge--neutral">{reason}</span> : null}
       {snapshotStatus ? <span className="badge badge--neutral">{t("Technical snapshot")} {snapshotStatus}</span> : null}
       {missingFields.length > 0 ? <span className="badge badge--neutral">{missingFields.join(", ")}</span> : null}

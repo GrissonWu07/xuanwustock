@@ -496,7 +496,14 @@ def _hydrated_discovery_rows(context: Any) -> list[dict[str, Any]]:
             run_id=_txt(artifact.get("runId")),
             artifact_status="current",
         )
-        return renormalize_hydrated_discovery_rows(rows)
+        normalized = renormalize_hydrated_discovery_rows(rows)
+        return apply_live_artifact_projection_to_rows(
+            db_file=context.quant_sim_db_file,
+            rows=normalized,
+            runtime_entries=runtime_entries,
+            price_cell_index=4,
+            industry_cell_index=2,
+        )
     return renormalize_hydrated_discovery_rows(mark_rows_stale_unprepared(_raw_discover_rows(context)))
 
 

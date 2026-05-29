@@ -115,6 +115,12 @@ const lifecycleDiscoverSnapshot = {
     rows: [
       {
         ...diagnosticsParams.ui_candidate_diagnostics.row,
+        preparedEvidence: {
+          status: "ready",
+          technicalSnapshot: { status: "ready" },
+          quantTechnical: { candidateScore: 0.8123, candidateConfidence: 0.9345 },
+          scoreSemantics: { candidateScore: "quant_technical_entry_score" },
+        },
         actions: [{ label: "Add to watchlist", icon: "⭐", tone: "accent", action: "item-watchlist" }],
       },
       {
@@ -241,8 +247,9 @@ describe("DiscoverPage", () => {
     renderDiscoverPage(client);
 
     expect(await screen.findByText("eligible")).toBeInTheDocument();
-    expect(screen.getByText(diagnosticsParams.ui_candidate_diagnostics.expected.score_text)).toBeInTheDocument();
-    expect(screen.getByText(diagnosticsParams.ui_candidate_diagnostics.expected.confidence_text)).toBeInTheDocument();
+    expect(screen.getByText("量化技术入池分 0.8123 · 技术置信度 0.9345 · 快照 ready")).toBeInTheDocument();
+    expect(screen.getByText("Quant technical entry score 0.82")).toBeInTheDocument();
+    expect(screen.getByText("Technical confidence 0.79")).toBeInTheDocument();
     expect(screen.getByText("already_in_quant")).toBeInTheDocument();
     expect(screen.getByText("skipped")).toBeInTheDocument();
     expect(screen.getByText("cooling_blocked")).toBeInTheDocument();

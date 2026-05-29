@@ -14,6 +14,7 @@ from app.gateway.quant_universe_entry import ingest_lifecycle_entry_rows
 from app.quant_sim.evidence_models import CandidateReevaluationRequest
 from app.quant_sim.evidence_service import attach_prepared_evidence
 from app.quant_sim.time_utils import format_system_time, local_now_text
+from app.stock_refresh_artifact_writer import write_live_artifacts_for_refresh
 from app.selector_result_store import DEFAULT_SELECTOR_RESULT_DIR, load_latest_result
 from app.watchlist_selector_integration import normalize_stock_code
 
@@ -44,6 +45,12 @@ def _reevaluate(request: CandidateReevaluationRequest) -> dict[str, Any]:
         return _summary(request.run_reason)
 
     runtime_entries = _load_runtime_entries(context.selector_result_dir)
+    db = context.quant_db()
+    runtime_entries = _ensure_runtime_artifacts(
+        db,
+        runtime_entries,
+        run_reason=request.run_reason,
+    )
     rows = hydrate_discovery_candidate_rows(
         artifact_rows,
         runtime_entries,
@@ -51,7 +58,6 @@ def _reevaluate(request: CandidateReevaluationRequest) -> dict[str, Any]:
         artifact_status="current",
     )
     rows = renormalize_hydrated_discovery_rows(rows)
-    db = context.quant_db()
     summary = _summary(request.run_reason)
     for row in rows:
         if not isinstance(row, dict):
@@ -87,17 +93,60 @@ def _reevaluate(request: CandidateReevaluationRequest) -> dict[str, Any]:
 
 
 def _needs_re_evaluation(db: Any, stock_code: str) -> bool:
-    events = db.list_candidate_events(stock_code=stock_code, source_type="discover", limit=5)
+    events = _list_candidate_events(db, stock_code)
     if not events:
         return False
-    latest = events[0]
-    if str(latest.get("status") or "").strip() not in {"blocked", "recommended_only"}:
+    return any(_is_data_blocked_event(event) for event in events)
+
+
+def _list_candidate_events(db: Any, stock_code: str) -> list[dict[str, Any]]:
+    try:
+        return db.list_candidate_events(stock_code=stock_code, limit=20)
+    except TypeError:
+        return db.list_candidate_events(stock_code=stock_code, source_type="discover", limit=20)
+
+
+def _is_data_blocked_event(event: dict[str, Any]) -> bool:
+    if str(event.get("status") or "").strip() not in {"blocked", "recommended_only"}:
         return False
-    payload = latest.get("payload_json") if isinstance(latest.get("payload_json"), dict) else {}
+    payload = event.get("payload_json") if isinstance(event.get("payload_json"), dict) else {}
     gate = payload.get("entry_gate") if isinstance(payload.get("entry_gate"), dict) else {}
     reason = str(gate.get("reason_code") or payload.get("blocking_reason") or "").strip()
     status = str(payload.get("technical_snapshot_status") or "").strip()
     return reason in DATA_BLOCK_REASONS or status in DATA_BLOCK_REASONS
+
+
+def _ensure_runtime_artifacts(
+    db: Any,
+    runtime_entries: dict[str, dict[str, Any]],
+    *,
+    run_reason: str,
+) -> dict[str, dict[str, Any]]:
+    db_file = str(getattr(db, "db_file", "") or "").strip()
+    if not db_file:
+        return runtime_entries
+    ready_without_artifact = {
+        code: entry
+        for code, entry in runtime_entries.items()
+        if isinstance(entry, dict)
+        and bool(entry.get("technical_snapshot_ready"))
+        and str(entry.get("technical_snapshot_status") or "").strip() == "ready"
+        and not str(entry.get("artifact_ref") or "").strip()
+    }
+    if not ready_without_artifact:
+        return runtime_entries
+    projections = write_live_artifacts_for_refresh(
+        db_file=db_file,
+        entries=ready_without_artifact,
+        market="CN",
+        run_reason=f"candidate-reevaluation:{run_reason}",
+    )
+    if not projections:
+        return runtime_entries
+    next_entries = dict(runtime_entries)
+    for code, projection in projections.items():
+        next_entries[code] = {**next_entries.get(code, {}), **projection}
+    return next_entries
 
 
 def _load_runtime_entries(base_dir: str | Path = DEFAULT_SELECTOR_RESULT_DIR) -> dict[str, dict[str, Any]]:

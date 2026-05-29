@@ -8,6 +8,7 @@ Use this file to keep concise reusable lessons from completed changes.
 
 - 量化系统中需要跨实时、历史回放、演练复用的行情技术事实，应先落为带 `artifact_ref` 的事实层，再让候选、信号、页面和诊断读取同一个 reader。这样能避免 runtime snapshot、candidate payload、signal market snapshot 和 provider cache 之间出现口径漂移。
 - 业务时间持久化应在项目自有 DB/API/artifact 边界统一格式化；provider/local cache 可以保留来源原始格式，避免为了业务时间语义重写 Parquet 缓存。
+- 发现来源分、量化技术入池分、信号融合分和交易执行诊断需要分层命名。来源分可以作为审计信息保留，但自动入池、生命周期和 UI 入池标签必须读取 prepared evidence / artifact-backed candidate score。
 
 ## Pitfalls
 
@@ -21,6 +22,7 @@ Use this file to keep concise reusable lessons from completed changes.
 - run-scoped no-live-fallback 测试应同时存在 live artifact 和缺失的 run artifact，确认 replay/drill 返回 run-scoped missing reason，而不是静默读取 live。
 - 文件大小门禁要把“机械抽取的既有代码”和“本次新增行为代码”分开记录覆盖率证据；抽取模块仍需 broad regression，但不应稀释 artifact-focused coverage。
 - 时间口径类变更需要同时做 raw DB/API key 断言和 active-code `rg` 审计；只看页面渲染或 job 成功会掩盖隐藏的 UTC fallback。
+- 刷新后重评要从本地候选事件表读取所有数据阻塞事件，而不是只看某个来源或最新一条事件；否则会重新引入“发现来源影响量化状态”的窄口径问题。
 
 ## Project Preferences
 

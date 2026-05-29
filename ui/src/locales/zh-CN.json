@@ -82,6 +82,8 @@
   "Position sizing": "仓位建议",
   "Confidence": "置信度",
   "Score": "评分",
+  "量化技术入池分": "量化技术入池分",
+  "技术置信度": "技术置信度",
   "Auto-entry: attempted {attempted}, promoted {promoted}, eligible {eligible}, skipped {skipped}": "自动入池：尝试 {attempted}，已纳入 {promoted}，待确认 {eligible}，跳过 {skipped}",
   "Focus on symbols you care about first. Outputs from discover and research are merged here before analysis and quant.": "先看你真正关心的股票。来自发现股票和研究情报的结果都会汇总到这里，再继续推进到股票分析和实时量化。",
   "Full analysis expanded. See thematic details below.": "完整研判已展开，下方查看各主题细节。",
