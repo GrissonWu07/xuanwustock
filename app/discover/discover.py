@@ -497,8 +497,11 @@ def _hydrated_discovery_rows(context: Any) -> list[dict[str, Any]]:
             artifact_status="current",
         )
         normalized = renormalize_hydrated_discovery_rows(rows)
+        db_file = getattr(context, "quant_sim_db_file", None)
+        if db_file is None:
+            return normalized
         return apply_live_artifact_projection_to_rows(
-            db_file=context.quant_sim_db_file,
+            db_file=db_file,
             rows=normalized,
             runtime_entries=runtime_entries,
             price_cell_index=4,
@@ -510,8 +513,11 @@ def _hydrated_discovery_rows(context: Any) -> list[dict[str, Any]]:
 def _discover_rows(context: Any) -> list[dict[str, Any]]:
     rows = _hydrated_discovery_rows(context)
     runtime_entries = load_stock_runtime_entries(base_dir=context.selector_result_dir)
+    db_file = getattr(context, "quant_sim_db_file", None)
+    if db_file is None:
+        return rows
     projected = apply_live_artifact_projection_to_rows(
-        db_file=context.quant_sim_db_file,
+        db_file=db_file,
         rows=rows,
         runtime_entries=runtime_entries,
         price_cell_index=4,

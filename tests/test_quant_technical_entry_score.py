@@ -5,7 +5,18 @@ from app.gateway.quant_universe_entry import enrich_lifecycle_entry_rows
 from app.gateway_api import UIApiContext
 from app.quant_sim.candidate_entry_gate import evaluate_candidate_entry_gate
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, calculate_candidate_score
-from app.quant_sim.technical_entry_score import min_candidate_confidence
+from app.quant_sim.technical_entry_score import (
+    _distance_quality,
+    _num,
+    _optional_num,
+    _overextension_penalty,
+    _overheated_penalty,
+    _rsi_constructive_score,
+    _rsi_risk_quality,
+    _volume_constructive_score,
+    _volume_risk_quality,
+    min_candidate_confidence,
+)
 
 
 def _context(tmp_path):
@@ -216,3 +227,83 @@ def test_technical_score_penalizes_contradictory_and_thin_evidence():
     assert result["candidate_score"] == 0.0
     assert result["candidate_confidence"] == 0.0
     assert result["breakdown"]["blocking_reason"] == "missing_required_snapshot"
+
+
+def test_technical_score_applies_liquidity_adjustment_without_source_fallback():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    liquid = calculate_candidate_score([_event(source_score=1.0, confidence=1.0)], {"is_liquid": True}, policy)
+    illiquid = calculate_candidate_score([_event(source_score=1.0, confidence=1.0)], {"is_liquid": False}, policy)
+
+    assert liquid["candidate_score"] > illiquid["candidate_score"]
+    assert round(liquid["candidate_score"] - illiquid["candidate_score"], 4) == 0.1
+    assert "source_score_component" not in illiquid["breakdown"]
+
+
+def test_snapshot_blocking_distinguishes_unready_stale_and_missing_metadata():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    unready = calculate_candidate_score(
+        [_event(payload=_strong_technical_payload(technical_snapshot_ready=False))],
+        {},
+        policy,
+    )
+    stale_unprepared = calculate_candidate_score(
+        [_event(payload=_strong_technical_payload(technical_snapshot_status="stale_unprepared"))],
+        {},
+        policy,
+    )
+    missing_metadata_payload = _strong_technical_payload()
+    missing_metadata_payload.pop("technical_snapshot_provider")
+    missing_metadata = calculate_candidate_score([_event(payload=missing_metadata_payload)], {}, policy)
+
+    assert unready["breakdown"]["blocking_reason"] == "missing_required_snapshot"
+    assert stale_unprepared["breakdown"]["blocking_reason"] == "stale_required_snapshot"
+    assert missing_metadata["breakdown"]["blocking_reason"] == "missing_required_snapshot"
+    assert "technical_snapshot_provider" in missing_metadata["breakdown"]["missing_snapshot_fields"]
+
+
+def test_score_boundaries_for_mid_and_bad_market_conditions():
+    policy = QuantUniverseLifecyclePolicy.stable_defaults()
+    payload = _strong_technical_payload(
+        price=10.3,
+        ma5=10.4,
+        ma10=10.2,
+        ma20=10.0,
+        ma20_slope=-0.01,
+        ma60=9.7,
+        amount=45_000_000,
+        volume_ratio=4.2,
+        rsi=80.0,
+        macd=-0.01,
+        trend="sideways",
+        technical_snapshot_row_count=65,
+    )
+    payload.pop("consecutive_checkpoint_score")
+    payload.pop("ma20_breakout_retest_score")
+
+    result = calculate_candidate_score([_event(payload=payload)], {}, policy)
+
+    assert result["breakdown"]["confirmation_source"] == "single_snapshot_cap"
+    assert result["breakdown"]["history_depth"] == 0.7
+    assert result["breakdown"]["volume_liquidity_score"] < 0.5
+    assert result["breakdown"]["overheated_penalty"] > 0
+
+
+def test_technical_score_helper_boundaries_are_deterministic():
+    assert _rsi_constructive_score(43) == 0.4
+    assert _rsi_constructive_score(90) == 0.0
+    assert _rsi_risk_quality(40) == 0.5
+    assert _volume_constructive_score(0.7) == 0.3
+    assert _volume_constructive_score(6.0) == 0.0
+    assert _volume_risk_quality(0.6) == 0.5
+    assert _volume_risk_quality(6.0) == 0.0
+    assert _distance_quality(0, 10, ideal_high=0.08, warn_high=0.15, allow_negative=False) == 0.0
+    assert _distance_quality(9.8, 10, ideal_high=0.08, warn_high=0.15, allow_negative=True) == 0.5
+    assert _distance_quality(13, 10, ideal_high=0.08, warn_high=0.15, allow_negative=False) == 0.0
+    assert _overextension_penalty(12, 10, 10) == 0.10
+    assert _overextension_penalty(11, 10, 10) == 0.05
+    assert _overheated_penalty(83, 1.0) == 0.10
+    assert _overheated_penalty(76, 1.0) == 0.05
+    assert _num("bad", 7.0) == 7.0
+    assert _optional_num("bad") is None
