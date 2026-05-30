@@ -19,6 +19,31 @@ from app.quant_sim.portfolio_execution_guard import (
 from app.quant_sim.lifecycle_artifact_adapter import ARTIFACT_DIAGNOSTIC_KEYS
 from app.smart_monitor_db import SmartMonitorDB, DEFAULT_DB_FILE as SMART_MONITOR_DB_FILE
 
+_PERSISTED_MARKET_SNAPSHOT_KEYS = tuple(
+    dict.fromkeys(
+        (
+            *ARTIFACT_DIAGNOSTIC_KEYS,
+            "current_price",
+            "latest_price",
+            "price",
+            "close",
+            "prev_close",
+            "pre_close",
+            "previous_close",
+            "volume",
+            "is_suspended",
+            "suspended",
+            "is_limit_up",
+            "is_limit_down",
+            "limit_up_price",
+            "limit_down_price",
+            "tradable",
+            "is_tradable",
+            "can_trade",
+        )
+    )
+)
+
 
 class SignalCenterService(SignalCenterTailMixin):
     """Normalizes strategy decisions into persisted signals."""
@@ -99,9 +124,14 @@ class SignalCenterService(SignalCenterTailMixin):
         profile = dict(strategy_profile)
         snapshot = profile.get("market_snapshot")
         if isinstance(snapshot, dict):
+            persisted_keys = (
+                ARTIFACT_DIAGNOSTIC_KEYS
+                if str(snapshot.get("artifact_ref") or "").strip()
+                else _PERSISTED_MARKET_SNAPSHOT_KEYS
+            )
             profile["market_snapshot"] = {
                 key: snapshot.get(key)
-                for key in ARTIFACT_DIAGNOSTIC_KEYS
+                for key in persisted_keys
                 if key in snapshot
             }
         return profile

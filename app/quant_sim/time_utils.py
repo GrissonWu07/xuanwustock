@@ -37,7 +37,7 @@ def parse_datetime_with_default_timezone(value: str | datetime, default_timezone
     else:
         text = str(value).strip()
         if text.endswith("Z"):
-            text = f"{text[:-1]}+00:00"
+            text = text[:-1]
         elif "T" not in text and " " in text:
             text = text.replace(" ", "T", 1)
         dt = datetime.fromisoformat(text)
@@ -47,11 +47,7 @@ def parse_datetime_with_default_timezone(value: str | datetime, default_timezone
 
 
 def parse_system_datetime(value: str | datetime) -> datetime:
-    return (
-        parse_datetime_with_default_timezone(value, system_timezone())
-        .astimezone(system_timezone())
-        .replace(tzinfo=None, microsecond=0)
-    )
+    return parse_datetime_with_default_timezone(value, system_timezone()).replace(tzinfo=None, microsecond=0)
 
 
 def format_local_time(value: str | datetime | None = None) -> str:

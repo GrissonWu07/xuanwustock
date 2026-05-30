@@ -9,6 +9,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from app.db.runtime.legacy_dbapi import legacy_dbapi_connection
 from app.quant_sim.market_technical_artifact import (
     ArtifactQuery,
     ArtifactReadResult,
@@ -98,7 +99,11 @@ class MarketTechnicalArtifactStore:
         return self._get_by_ref(ref_or_reason, ref_or_reason.to_ref())
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_file)
+        conn = legacy_dbapi_connection(
+            db_path=self.db_file,
+            store="primary",
+            row_factory=True,
+        )
         conn.row_factory = sqlite3.Row
         return conn
 

@@ -2018,9 +2018,9 @@ class QuantSimDB:
             FROM sim_trades t
             LEFT JOIN strategy_signals s ON s.id = t.signal_id
             WHERE UPPER(t.action) = 'SELL'
-              AND t.executed_at >= ?
-              AND t.executed_at <= ?
-            ORDER BY t.executed_at DESC, t.id DESC
+              AND REPLACE(REPLACE(t.executed_at, 'T', ' '), 'Z', '') >= ?
+              AND REPLACE(REPLACE(t.executed_at, 'T', ' '), 'Z', '') <= ?
+            ORDER BY REPLACE(REPLACE(t.executed_at, 'T', ' '), 'Z', '') DESC, t.id DESC
             LIMIT ?
             """,
             (since_text, as_of_text, checkpoint_limit),
@@ -2030,8 +2030,9 @@ class QuantSimDB:
             """
             SELECT *
             FROM sim_account_snapshots
-            WHERE created_at >= ? AND created_at <= ?
-            ORDER BY created_at ASC, id ASC
+            WHERE REPLACE(REPLACE(created_at, 'T', ' '), 'Z', '') >= ?
+              AND REPLACE(REPLACE(created_at, 'T', ' '), 'Z', '') <= ?
+            ORDER BY REPLACE(REPLACE(created_at, 'T', ' '), 'Z', '') ASC, id ASC
             LIMIT ?
             """,
             (since_text, as_of_text, checkpoint_limit),
@@ -2040,12 +2041,12 @@ class QuantSimDB:
         cursor.execute(
             """
             SELECT
-                SUM(CASE WHEN substr(executed_at, 1, 16) = substr(?, 1, 16) THEN 1 ELSE 0 END) AS checkpoint_buys,
-                SUM(CASE WHEN substr(executed_at, 1, 10) = substr(?, 1, 10) THEN 1 ELSE 0 END) AS day_buys
+                SUM(CASE WHEN substr(REPLACE(REPLACE(executed_at, 'T', ' '), 'Z', ''), 1, 16) = substr(?, 1, 16) THEN 1 ELSE 0 END) AS checkpoint_buys,
+                SUM(CASE WHEN substr(REPLACE(REPLACE(executed_at, 'T', ' '), 'Z', ''), 1, 10) = substr(?, 1, 10) THEN 1 ELSE 0 END) AS day_buys
             FROM sim_trades
             WHERE UPPER(action) = 'BUY'
-              AND executed_at >= ?
-              AND executed_at <= ?
+              AND REPLACE(REPLACE(executed_at, 'T', ' '), 'Z', '') >= ?
+              AND REPLACE(REPLACE(executed_at, 'T', ' '), 'Z', '') <= ?
             """,
             (as_of_text, as_of_text, since_text, as_of_text),
         )

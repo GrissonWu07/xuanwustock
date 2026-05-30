@@ -97,6 +97,7 @@ class QuantSimEngine:
             strategy_mode=strategy_mode,
             strategy_profile_binding=profile_binding,
             current_time=current_time,
+            require_artifact=False,
         )
         decision_price = self._extract_decision_price(decision)
         if decision_price > 0:
@@ -140,6 +141,7 @@ class QuantSimEngine:
             strategy_mode=strategy_mode,
             strategy_profile_binding=profile_binding,
             current_time=current_time,
+            require_artifact=False,
         )
         payload = self.signal_center.build_signal_payload(candidate, decision)
         action = str(payload.get("action") or "HOLD").upper()
@@ -277,6 +279,7 @@ class QuantSimEngine:
                 strategy_mode=strategy_mode,
                 strategy_profile_binding=effective_binding,
                 current_time=current_time,
+                require_artifact=False,
             )
             decision_price = self._extract_decision_price(decision)
             if decision_price > 0:
@@ -437,10 +440,21 @@ class QuantSimEngine:
         strategy_mode: str = "auto",
         strategy_profile_binding: dict | None = None,
         current_time: datetime | None = None,
+        require_artifact: bool = True,
     ):
         artifact_snapshot = self._candidate_artifact_market_snapshot(candidate) if market_snapshot is None else market_snapshot
         if artifact_snapshot:
             market_snapshot = artifact_snapshot
+        elif require_artifact and market_snapshot is None:
+            return self._artifact_block_decision(
+                candidate,
+                market_snapshot={
+                    "source_status": "missing",
+                    "reason_code": "missing_artifact_reference",
+                    "technical_snapshot_ready": False,
+                },
+                current_time=current_time,
+            )
         if self._market_artifact_not_ready(market_snapshot):
             return self._artifact_block_decision(
                 candidate,
@@ -510,6 +524,8 @@ class QuantSimEngine:
 
     def _candidate_artifact_market_snapshot(self, candidate: dict[str, Any]) -> dict[str, Any]:
         artifact_row = self._candidate_with_artifact_ref(candidate)
+        if not str(artifact_row.get("artifact_ref") or "").strip():
+            return {}
         return artifact_market_snapshot(artifact_row, db_file=self.db_file)
 
     def _candidate_with_artifact_ref(self, candidate: dict[str, Any]) -> dict[str, Any]:
@@ -595,6 +611,7 @@ class QuantSimEngine:
         strategy_mode: str = "auto",
         strategy_profile_binding: dict | None = None,
         current_time: datetime | None = None,
+        require_artifact: bool = True,
     ):
         artifact_source = self._candidate_with_artifact_ref(candidate)
         if not artifact_source.get("artifact_ref"):
@@ -602,6 +619,19 @@ class QuantSimEngine:
         artifact_snapshot = self._candidate_artifact_market_snapshot(artifact_source) if market_snapshot is None else market_snapshot
         if artifact_snapshot:
             market_snapshot = artifact_snapshot
+        elif require_artifact and market_snapshot is None:
+            return self._artifact_block_decision(
+                {
+                    **candidate,
+                    "latest_price": candidate.get("latest_price") or position.get("latest_price") or position.get("price"),
+                },
+                market_snapshot={
+                    "source_status": "missing",
+                    "reason_code": "missing_artifact_reference",
+                    "technical_snapshot_ready": False,
+                },
+                current_time=current_time,
+            )
         if self._market_artifact_not_ready(artifact_snapshot):
             return self._artifact_block_decision(
                 {

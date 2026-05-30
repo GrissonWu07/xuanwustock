@@ -240,7 +240,7 @@ def _hydrate_stock_item_from_runtime(
         if db_file is None:
             return item
         return apply_live_artifact_projection(
-            PageArtifactProjectionRequest(db_file=db_file, row=item, runtime_entries={})
+            PageArtifactProjectionRequest(db_file=db_file, row=item, runtime_entries=runtime_entries)
         )
 
     next_item = dict(item)

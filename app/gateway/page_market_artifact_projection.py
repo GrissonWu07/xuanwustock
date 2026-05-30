@@ -35,7 +35,14 @@ def apply_live_artifact_projection(request: PageArtifactProjectionRequest) -> di
             row["artifactDiagnostics"] = artifact_diagnostics_from_payload(projection)
             row["marketTechnicalBacked"] = True
             return row
-        _clear_market_projection(row, request)
+        runtime_projection = _runtime_fallback_projection(runtime)
+        if runtime_projection:
+            _merge_projection(row, runtime_projection, request)
+            row["artifactDiagnostics"] = artifact_diagnostics_from_payload({})
+            row["marketTechnicalBacked"] = False
+            return row
+        if request.runtime_entries:
+            _clear_market_projection(row, request)
         row["artifactDiagnostics"] = artifact_diagnostics_from_payload({})
         row["marketTechnicalBacked"] = False
         return row
@@ -90,6 +97,16 @@ def _runtime_ready_for_artifact(runtime: dict[str, Any]) -> bool:
         bool(runtime.get("technical_snapshot_ready"))
         and str(runtime.get("technical_snapshot_status") or "").strip() == "ready"
     )
+
+
+def _runtime_fallback_projection(runtime: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(runtime, dict):
+        return {}
+    projection: dict[str, Any] = {}
+    for key in ("latest_price", "price", "latestPrice", "sector", "industry", "market_cap", "pe_ratio", "pb_ratio"):
+        if runtime.get(key) not in (None, ""):
+            projection[key] = runtime.get(key)
+    return projection
 
 
 def apply_live_artifact_projection_to_rows(

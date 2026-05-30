@@ -1,0 +1,69 @@
+# Quant Technical Entry Score Tasks
+
+## 1. Implementation
+
+- [x] 1.1 Implement pure technical candidate scoring
+  - Related requirement: `Technical Candidate Entry Score`, `Technical Confidence`, `Technical Entry Components`, `Technical Entry Gates`, `Profile Thresholds`
+  - Applicable rules: `PIR-001`, `PIR-002`, `PIR-003`, `PY-001`, `PY-003`, `PY-007`, `TEST-001`, `TEST-002`, `TEST-003`, `TEST-007`, `TEST-010`
+  - Target code paths: `app/quant_sim/technical_entry_score.py`, `app/quant_sim/quant_universe_lifecycle.py`, `app/quant_sim/candidate_entry_gate.py`, `tests/test_quant_technical_entry_score.py`
+  - Reuse/common logic impact: extract shared technical scoring; lifecycle manager delegates to it
+  - Requirement scope / fallback: implement technical-only score/confidence; no fallback to source score/confidence
+  - Method/function parameter plan: use named dataclasses for scoring input/output; no public function >5 inputs
+  - File size guardrail: each generated/modified code file must stay <= 1000 lines; split plan: scoring code in new module, lifecycle shim only
+  - Database impact: reuses existing SQLite/MySQL quant DB runtime and pool <=100; no migration
+  - API contract/layers: existing API semantics only; service scoring changes under lifecycle service
+  - API IO / async: no new IO; no new async work
+  - Change: implement technical score/confidence formula, score breakdown, source-score exclusion, confirmation cap, stale/missing data behavior, and technical confidence gate
+  - Standalone verification: pytest technical scorer and lifecycle manager tests assert score breakdown, source exclusion, confidence gate, and blocked missing snapshot
+  - Real E2E test: required later in task 1.3; not required for isolated scorer task
+  - Validation: focused tests and coverage for `app.quant_sim.technical_entry_score`
+  - Test parameters: `.agent/workdir/sp-openspec/quant-technical-entry-score/test-params/technical-entry-score.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 1.2 Persist prepared discovery rows and include AI scanner by default
+  - Related requirement: `Prepared Discovery Persistence`, `API and UI Score Semantics`, `Flow Consistency`
+  - Applicable rules: `PIR-001`, `PIR-002`, `PIR-003`, `PIR-004`, `PIR-005`, `PY-001`, `PY-003`, `PY-007`, `TEST-001`, `TEST-002`, `TEST-003`, `TEST-007`, `TEST-010`
+  - Target code paths: `app/discover/discover.py`, `app/gateway/quant_universe_entry.py`, `app/discover/candidate_artifact.py`, `tests/test_discover_lifecycle_scoring.py`, `tests/test_ui_backend_api_actions.py`
+  - Reuse/common logic impact: reuse candidate events as prepared DB record; reuse discovery hydration
+  - Requirement scope / fallback: DB candidate payload is authoritative after discovery; raw selector cache is not source of truth; source score is not substituted as lifecycle score
+  - Method/function parameter plan: reuse existing row/payload objects with documented allowed keys; no new >5 input functions
+  - File size guardrail: each generated/modified code file must stay <= 1000 lines; split plan: only one-line default AI change in existing 1000-line discover module, richer logic in smaller gateway/candidate modules
+  - Database impact: candidate event payload JSON stores prepared evidence; existing DB runtime/pool; no migration
+  - API contract/layers: existing discover APIs return corrected fields; gateway remains controller, quant entry helper is service/handoff layer
+  - API IO / async: discovery task remains async; discover GET must not do remote IO
+  - Change: default discovery includes AI scanner, candidate event payload persists prepared technical evidence and technical score diagnostics, discover enrichment stops falling back to source score/confidence
+  - Standalone verification: tests assert default selected strategies include AI, prepared payload contains technical score diagnostics, and discover API does not map source score to candidate_score without lifecycle state
+  - Real E2E test: required later in task 1.3
+  - Validation: focused discovery tests
+  - Test parameters: `.agent/workdir/sp-openspec/quant-technical-entry-score/test-params/discovery-prepared-db-handoff.md`
+  - Coverage target: at least 90% code coverage for changed/affected code
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before the next task starts
+
+- [x] 1.3 Verify full discovery and drill flow
+  - Related requirement: `Flow Consistency`, `Prepared Discovery Persistence`, `API and UI Score Semantics`
+  - Applicable rules: `PIR-001`, `PIR-003`, `PIR-005`, `TEST-001`, `TEST-002`, `TEST-003`, `TEST-009`, `TEST-010`
+  - Target code paths: `.agent/workdir/sp-openspec/quant-technical-entry-score/review.md`, `.agent/workdir/sp-openspec/quant-technical-entry-score/task-reviews.md`
+  - Reuse/common logic impact: verify same lifecycle scorer through real API/task boundary
+  - Requirement scope / fallback: clear DB only, preserve cache, no old-data migration
+  - Method/function parameter plan: operational verification only
+  - File size guardrail: documentation files only
+  - Database impact: delete local DB files only during verification; preserve cache
+  - API contract/layers: run existing backend APIs
+  - API IO / async: run async discovery task and drill task
+  - Change: no production code change; execute required real E2E and record evidence
+  - Standalone verification: backend API calls and DB inspection after discovery
+  - Real E2E test: required; local backend, empty DB, default discovery, AI included, then drill from `2026-01-01`
+  - Validation: task status, DB candidate events, score breakdown, quant pool counts, drill status
+  - Test parameters: `.agent/workdir/sp-openspec/quant-technical-entry-score/test-params/real-e2e-discovery-drill.md`
+  - Coverage target: at least 90% coverage already evidenced by code tasks; this task records E2E evidence
+  - Required reviews after implementation:
+    - Alignment review against spec, design, task, rules, and changed code
+    - Security review against security-sensitive behavior and project-defined security rules
+  - Review gate: all findings must be fixed and re-reviewed before completion
