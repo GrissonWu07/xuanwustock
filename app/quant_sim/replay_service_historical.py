@@ -13,6 +13,8 @@ from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.db import QuantSimDB
 from app.quant_sim.dynamic_strategy import DEFAULT_AI_DYNAMIC_LOOKBACK, DEFAULT_AI_DYNAMIC_STRENGTH, DEFAULT_AI_DYNAMIC_STRATEGY
 from app.quant_sim.engine import QuantSimEngine
+from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
+from app.quant_sim.outcome_scoring_entrypoints import OutcomeBatchRequest, OutcomeBatchScope, score_signal_batch
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.replay_artifact_adapter import (
     RunArtifactContext,
@@ -272,6 +274,17 @@ class HistoricalReplayMixin:
                     "handoff_to_live": False,
                 }
 
+            outcome_batch = score_signal_batch(
+                OutcomeBatchRequest(
+                    db=self.db,
+                    artifact_store=MarketTechnicalArtifactStore(self.replay_db_file),
+                    scope=OutcomeBatchScope(run_id=run_id, run_type="historical_replay", domain="replay"),
+                    as_of_checkpoint=last_checkpoint_text or None,
+                    limit=5000,
+                    trace_id=f"historical_replay_{run_id}",
+                )
+            )
+
             with self.db.write_batch():
                 self.db.replace_sim_run_runtime_results(
                     run_id,
@@ -288,7 +301,11 @@ class HistoricalReplayMixin:
                     win_rate=float(metrics["win_rate"]),
                     trade_count=len(trades),
                     status_message="回放任务已完成",
-                    metadata={"checkpoint_count": len(checkpoints), "final_slot_summary": final_slot_summary},
+                    metadata={
+                        "checkpoint_count": len(checkpoints),
+                        "final_slot_summary": final_slot_summary,
+                        "outcome_summary": outcome_batch.get("summary") or {},
+                    },
                 )
                 self.db.append_sim_run_event(run_id, f"回放任务已完成，共生成 {len(trades)} 笔交易。", level="success")
 

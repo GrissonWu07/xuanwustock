@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import json
 import sqlite3
 import threading
@@ -28,6 +28,7 @@ from app.quant_sim.execution_constraints import trade_block_reason
 from app.quant_sim.market_technical_artifact import MarketTechnicalArtifactRef, parse_artifact_ref
 from app.quant_sim.portfolio_execution_guard import PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy
+from app.quant_sim.signal_outcome_policy import OUTCOME_POLICY_PROFILE_DEFAULTS
 from app.quant_sim.stock_execution_feedback import STOCK_EXECUTION_FEEDBACK_PROFILE_DEFAULTS
 from app.quant_sim.time_utils import format_local_time, parse_system_datetime
 from app.runtime_paths import default_db_path
@@ -94,6 +95,24 @@ BUILTIN_STRATEGY_PROFILES: tuple[dict[str, str], ...] = (
         "variant": "conservative",
     },
 )
+
+
+@dataclass(frozen=True)
+class OutcomeScoreFilters:
+    signal_id: int | None = None
+    stock_code: str | None = None
+    matured_at_lte: str | None = None
+    status: str | None = None
+    action: str | None = None
+    limit: int | None = 500
+
+
+@dataclass(frozen=True)
+class OutcomeFeedbackFilters:
+    stock_code: str | None = None
+    profile_id: str | None = None
+    as_of_checkpoint_lte: str | None = None
+    limit: int | None = 200
 
 
 def normalize_strategy_profile_id(profile_id: Any) -> str:
@@ -465,6 +484,8 @@ class QuantSimDB:
             )
             """
         )
+        if not self.include_replay_tables:
+            self._ensure_signal_outcome_live_tables(cursor)
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS sim_positions (
@@ -905,6 +926,8 @@ class QuantSimDB:
             )
             """
         )
+        if self.include_replay_tables:
+            self._ensure_signal_outcome_run_tables(cursor)
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS sim_run_profit_gap_attributions (
@@ -995,6 +1018,8 @@ class QuantSimDB:
         self._ensure_column(cursor, "strategy_signals", "blocked_reason", "TEXT")
         self._ensure_column(cursor, "strategy_signals", "cap_reason", "TEXT")
         self._ensure_column(cursor, "strategy_signals", "execution_diagnostics_json", "TEXT DEFAULT '{}'")
+        if not self.include_replay_tables:
+            self._ensure_signal_outcome_live_tables(cursor)
         self._ensure_column(cursor, "sim_positions", "peak_price", "REAL DEFAULT 0")
         self._ensure_column(cursor, "sim_positions", "peak_unrealized_pnl", "REAL DEFAULT 0")
         self._ensure_column(cursor, "sim_positions", "peak_unrealized_pnl_pct", "REAL DEFAULT 0")
@@ -1066,6 +1091,7 @@ class QuantSimDB:
             self._ensure_column(cursor, "sim_run_signals", "cap_reason", "TEXT")
             self._ensure_column(cursor, "sim_run_signals", "execution_diagnostics_json", "TEXT DEFAULT '{}'")
             self._ensure_column(cursor, "sim_run_signals", "updated_at", "TEXT")
+            self._ensure_signal_outcome_run_tables(cursor)
             self._ensure_column(cursor, "sim_run_profit_gap_attributions", "historical_run_id", "INTEGER DEFAULT 0")
             self._ensure_column(cursor, "sim_run_profit_gap_attributions", "drill_run_id", "INTEGER DEFAULT 0")
             self._ensure_column(cursor, "sim_run_profit_gap_attributions", "stock_code", "TEXT")
@@ -1112,6 +1138,136 @@ class QuantSimDB:
 
         conn.commit()
         conn.close()
+
+    def _ensure_signal_outcome_live_tables(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_outcome_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL DEFAULT 'live',
+                signal_id INTEGER NOT NULL,
+                stock_code TEXT NOT NULL,
+                action TEXT NOT NULL,
+                horizon_checkpoints INTEGER NOT NULL,
+                signal_checkpoint_at TEXT,
+                matured_at TEXT,
+                source_artifact_ref TEXT,
+                outcome_score REAL DEFAULT 0,
+                status TEXT DEFAULT 'skipped',
+                reason_code TEXT,
+                metrics_json TEXT DEFAULT '{}',
+                formula_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
+                UNIQUE(domain, signal_id, horizon_checkpoints)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS outcome_feedback_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL DEFAULT 'live',
+                stock_code TEXT NOT NULL,
+                profile_id TEXT NOT NULL DEFAULT 'default',
+                as_of_checkpoint TEXT NOT NULL,
+                feedback_score REAL DEFAULT 0,
+                sample_count INTEGER DEFAULT 0,
+                buy_avg_score REAL DEFAULT 0,
+                sell_avg_score REAL DEFAULT 0,
+                latest_matured_at TEXT,
+                summary_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
+                UNIQUE(domain, stock_code, profile_id, as_of_checkpoint)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_signal_outcome_scores_signal
+            ON signal_outcome_scores(signal_id, horizon_checkpoints)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_signal_outcome_scores_stock_matured
+            ON signal_outcome_scores(stock_code, matured_at, id)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_outcome_feedback_scores_stock_time
+            ON outcome_feedback_scores(stock_code, profile_id, as_of_checkpoint DESC, id DESC)
+            """
+        )
+
+    def _ensure_signal_outcome_run_tables(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_run_signal_outcome_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                run_type TEXT NOT NULL,
+                domain TEXT NOT NULL,
+                signal_id INTEGER NOT NULL,
+                stock_code TEXT NOT NULL,
+                action TEXT NOT NULL,
+                horizon_checkpoints INTEGER NOT NULL,
+                signal_checkpoint_at TEXT,
+                matured_at TEXT,
+                source_artifact_ref TEXT,
+                outcome_score REAL DEFAULT 0,
+                status TEXT DEFAULT 'skipped',
+                reason_code TEXT,
+                metrics_json TEXT DEFAULT '{}',
+                formula_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
+                UNIQUE(run_id, run_type, signal_id, horizon_checkpoints)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_run_outcome_feedback_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                run_type TEXT NOT NULL,
+                domain TEXT NOT NULL,
+                stock_code TEXT NOT NULL,
+                profile_id TEXT NOT NULL DEFAULT 'default',
+                as_of_checkpoint TEXT NOT NULL,
+                feedback_score REAL DEFAULT 0,
+                sample_count INTEGER DEFAULT 0,
+                buy_avg_score REAL DEFAULT 0,
+                sell_avg_score REAL DEFAULT 0,
+                latest_matured_at TEXT,
+                summary_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
+                UNIQUE(run_id, run_type, stock_code, profile_id, as_of_checkpoint)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sim_run_signal_outcome_signal
+            ON sim_run_signal_outcome_scores(run_id, signal_id, horizon_checkpoints)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sim_run_signal_outcome_stock_matured
+            ON sim_run_signal_outcome_scores(run_id, stock_code, matured_at, id)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sim_run_outcome_feedback_stock_time
+            ON sim_run_outcome_feedback_scores(run_id, stock_code, profile_id, as_of_checkpoint DESC, id DESC)
+            """
+        )
 
     def add_candidate(self, candidate: dict[str, Any]) -> int:
         payload = {
@@ -1740,6 +1896,230 @@ class QuantSimDB:
         )
         conn.commit()
         conn.close()
+
+    def upsert_signal_outcome_score(self, record: dict[str, Any]) -> int:
+        payload = self._outcome_score_payload(record, run_scoped=False)
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            self._ensure_signal_outcome_live_tables(cursor)
+            cursor.execute(
+                """
+                INSERT INTO signal_outcome_scores
+                (
+                    domain, signal_id, stock_code, action, horizon_checkpoints,
+                    signal_checkpoint_at, matured_at, source_artifact_ref, outcome_score,
+                    status, reason_code, metrics_json, formula_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(domain, signal_id, horizon_checkpoints) DO UPDATE SET
+                    stock_code = excluded.stock_code,
+                    action = excluded.action,
+                    signal_checkpoint_at = excluded.signal_checkpoint_at,
+                    matured_at = excluded.matured_at,
+                    source_artifact_ref = excluded.source_artifact_ref,
+                    outcome_score = excluded.outcome_score,
+                    status = excluded.status,
+                    reason_code = excluded.reason_code,
+                    metrics_json = excluded.metrics_json,
+                    formula_json = excluded.formula_json,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+            cursor.execute(
+                """
+                SELECT id FROM signal_outcome_scores
+                WHERE domain = ? AND signal_id = ? AND horizon_checkpoints = ?
+                """,
+                (payload[0], payload[1], payload[4]),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row["id"]) if row else 0
+        finally:
+            conn.close()
+
+    def upsert_sim_run_signal_outcome_score(self, record: dict[str, Any]) -> int:
+        payload = self._outcome_score_payload(record, run_scoped=True)
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            self._ensure_signal_outcome_run_tables(cursor)
+            cursor.execute(
+                """
+                INSERT INTO sim_run_signal_outcome_scores
+                (
+                    run_id, run_type, domain, signal_id, stock_code, action,
+                    horizon_checkpoints, signal_checkpoint_at, matured_at,
+                    source_artifact_ref, outcome_score, status, reason_code,
+                    metrics_json, formula_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, run_type, signal_id, horizon_checkpoints) DO UPDATE SET
+                    domain = excluded.domain,
+                    stock_code = excluded.stock_code,
+                    action = excluded.action,
+                    signal_checkpoint_at = excluded.signal_checkpoint_at,
+                    matured_at = excluded.matured_at,
+                    source_artifact_ref = excluded.source_artifact_ref,
+                    outcome_score = excluded.outcome_score,
+                    status = excluded.status,
+                    reason_code = excluded.reason_code,
+                    metrics_json = excluded.metrics_json,
+                    formula_json = excluded.formula_json,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+            cursor.execute(
+                """
+                SELECT id FROM sim_run_signal_outcome_scores
+                WHERE run_id = ? AND run_type = ? AND signal_id = ? AND horizon_checkpoints = ?
+                """,
+                (payload[0], payload[1], payload[3], payload[6]),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row["id"]) if row else 0
+        finally:
+            conn.close()
+
+    def list_signal_outcome_scores(self, filters: OutcomeScoreFilters | None = None) -> list[dict[str, Any]]:
+        filter_value = filters or OutcomeScoreFilters()
+        return self._list_outcome_scores("signal_outcome_scores", filter_value, run_scope=None)
+
+    def list_sim_run_signal_outcome_scores(
+        self,
+        run_id: int,
+        run_type: str,
+        filters: OutcomeScoreFilters | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._list_outcome_scores(
+            "sim_run_signal_outcome_scores",
+            filters or OutcomeScoreFilters(),
+            run_scope={"run_id": int(run_id), "run_type": str(run_type)},
+        )
+
+    def upsert_outcome_feedback_score(self, record: dict[str, Any]) -> int:
+        payload = self._outcome_feedback_payload(record, run_scoped=False)
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            self._ensure_signal_outcome_live_tables(cursor)
+            cursor.execute(
+                """
+                INSERT INTO outcome_feedback_scores
+                (
+                    domain, stock_code, profile_id, as_of_checkpoint, feedback_score,
+                    sample_count, buy_avg_score, sell_avg_score, latest_matured_at,
+                    summary_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(domain, stock_code, profile_id, as_of_checkpoint) DO UPDATE SET
+                    feedback_score = excluded.feedback_score,
+                    sample_count = excluded.sample_count,
+                    buy_avg_score = excluded.buy_avg_score,
+                    sell_avg_score = excluded.sell_avg_score,
+                    latest_matured_at = excluded.latest_matured_at,
+                    summary_json = excluded.summary_json,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+            cursor.execute(
+                """
+                SELECT id FROM outcome_feedback_scores
+                WHERE domain = ? AND stock_code = ? AND profile_id = ? AND as_of_checkpoint = ?
+                """,
+                (payload[0], payload[1], payload[2], payload[3]),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row["id"]) if row else 0
+        finally:
+            conn.close()
+
+    def upsert_sim_run_outcome_feedback_score(self, record: dict[str, Any]) -> int:
+        payload = self._outcome_feedback_payload(record, run_scoped=True)
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            self._ensure_signal_outcome_run_tables(cursor)
+            cursor.execute(
+                """
+                INSERT INTO sim_run_outcome_feedback_scores
+                (
+                    run_id, run_type, domain, stock_code, profile_id,
+                    as_of_checkpoint, feedback_score, sample_count, buy_avg_score,
+                    sell_avg_score, latest_matured_at, summary_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, run_type, stock_code, profile_id, as_of_checkpoint) DO UPDATE SET
+                    domain = excluded.domain,
+                    feedback_score = excluded.feedback_score,
+                    sample_count = excluded.sample_count,
+                    buy_avg_score = excluded.buy_avg_score,
+                    sell_avg_score = excluded.sell_avg_score,
+                    latest_matured_at = excluded.latest_matured_at,
+                    summary_json = excluded.summary_json,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+            cursor.execute(
+                """
+                SELECT id FROM sim_run_outcome_feedback_scores
+                WHERE run_id = ? AND run_type = ? AND stock_code = ?
+                  AND profile_id = ? AND as_of_checkpoint = ?
+                """,
+                (payload[0], payload[1], payload[3], payload[4], payload[5]),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row["id"]) if row else 0
+        finally:
+            conn.close()
+
+    def get_latest_outcome_feedback(
+        self,
+        filters: OutcomeFeedbackFilters,
+        *,
+        run_scope: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        table = "sim_run_outcome_feedback_scores" if run_scope else "outcome_feedback_scores"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_scope:
+            clauses.extend(["run_id = ?", "run_type = ?"])
+            params.extend([int(run_scope["run_id"]), str(run_scope["run_type"])])
+        if filters.stock_code:
+            clauses.append("stock_code = ?")
+            params.append(filters.stock_code)
+        if filters.profile_id:
+            clauses.append("profile_id = ?")
+            params.append(filters.profile_id)
+        if filters.as_of_checkpoint_lte:
+            clauses.append("as_of_checkpoint <= ?")
+            params.append(filters.as_of_checkpoint_lte)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT *
+                FROM {table}
+                {where_sql}
+                ORDER BY as_of_checkpoint DESC, id DESC
+                LIMIT 1
+                """,
+                tuple(params),
+            )
+            row = cursor.fetchone()
+            return self._outcome_feedback_row_to_dict(row) if row is not None else None
+        finally:
+            conn.close()
 
     def configure_account(self, initial_cash: float) -> None:
         if initial_cash <= 0:
@@ -3206,12 +3586,22 @@ class QuantSimDB:
         conn = self._connect()
         cursor = conn.cursor()
         where_suffix, filter_params = self._build_replay_table_filters(actions=actions, stock_keyword=stock_keyword)
-        query = """
-            SELECT * FROM sim_run_signals
-            WHERE run_id = ?
-            {where_suffix}
-            ORDER BY checkpoint_at DESC, created_at DESC, id DESC
-            """.format(where_suffix=where_suffix)
+        if include_strategy_profile:
+            query = """
+                SELECT s.*, d.strategy_profile_json, d.explainability_json
+                FROM sim_run_signals s
+                LEFT JOIN sim_run_signal_details d ON d.signal_id = s.id
+                WHERE s.run_id = ?
+                {where_suffix}
+                ORDER BY s.checkpoint_at DESC, s.created_at DESC, s.id DESC
+                """.format(where_suffix=where_suffix)
+        else:
+            query = """
+                SELECT * FROM sim_run_signals
+                WHERE run_id = ?
+                {where_suffix}
+                ORDER BY checkpoint_at DESC, created_at DESC, id DESC
+                """.format(where_suffix=where_suffix)
         params: list[Any] = [run_id, *filter_params]
         if limit is not None:
             query += " LIMIT ? OFFSET ?"
@@ -6700,6 +7090,9 @@ class QuantSimDB:
         aggressive_config["base"]["context"]["quant_universe_lifecycle_policy"] = self._deep_copy_json(
             lifecycle_policy_defaults["aggressive"]
         )
+        aggressive_config["base"]["context"]["signal_outcome_policy"] = self._deep_copy_json(
+            OUTCOME_POLICY_PROFILE_DEFAULTS["aggressive"]
+        )
         aggressive_config["profiles"]["candidate"]["technical"]["group_weights"] = {
             "trend": 1.60,
             "momentum": 1.35,
@@ -6818,6 +7211,9 @@ class QuantSimDB:
         stable_config["base"]["context"]["quant_universe_lifecycle_policy"] = self._deep_copy_json(
             lifecycle_policy_defaults["stable"]
         )
+        stable_config["base"]["context"]["signal_outcome_policy"] = self._deep_copy_json(
+            OUTCOME_POLICY_PROFILE_DEFAULTS["stable"]
+        )
         stable_config["profiles"]["candidate"]["technical"]["group_weights"] = {
             "trend": 1.30,
             "momentum": 1.15,
@@ -6932,6 +7328,9 @@ class QuantSimDB:
         )
         conservative_config["base"]["context"]["quant_universe_lifecycle_policy"] = self._deep_copy_json(
             lifecycle_policy_defaults["conservative"]
+        )
+        conservative_config["base"]["context"]["signal_outcome_policy"] = self._deep_copy_json(
+            OUTCOME_POLICY_PROFILE_DEFAULTS["conservative"]
         )
         conservative_config["profiles"]["candidate"]["technical"]["group_weights"] = {
             "trend": 1.05,
@@ -7423,6 +7822,117 @@ class QuantSimDB:
             return existing_status
         return new_status or existing_status
 
+    def _outcome_score_payload(self, record: dict[str, Any], *, run_scoped: bool) -> tuple[Any, ...]:
+        now_text = self._now()
+        base = (
+            str(record.get("domain") or ("replay" if run_scoped else "live")),
+            int(record["signal_id"]),
+            str(record["stock_code"]).strip(),
+            str(record.get("action") or "HOLD").upper(),
+            int(record["horizon_checkpoints"]),
+            record.get("signal_checkpoint_at"),
+            record.get("matured_at"),
+            record.get("source_artifact_ref"),
+            float(record.get("outcome_score") or 0),
+            str(record.get("status") or "skipped"),
+            str(record.get("reason_code") or ""),
+            self._dumps_metadata(record.get("metrics")) or "{}",
+            self._dumps_metadata(record.get("formula")) or "{}",
+            record.get("created_at") or now_text,
+            now_text,
+        )
+        if not run_scoped:
+            return base
+        return (
+            int(record["run_id"]),
+            str(record["run_type"]),
+            *base,
+        )
+
+    def _outcome_feedback_payload(self, record: dict[str, Any], *, run_scoped: bool) -> tuple[Any, ...]:
+        now_text = self._now()
+        base = (
+            str(record.get("domain") or ("replay" if run_scoped else "live")),
+            str(record["stock_code"]).strip(),
+            str(record.get("profile_id") or "default"),
+            str(record["as_of_checkpoint"]),
+            float(record.get("feedback_score") or 0),
+            int(record.get("sample_count") or 0),
+            float(record.get("buy_avg_score") or 0),
+            float(record.get("sell_avg_score") or 0),
+            record.get("latest_matured_at"),
+            self._dumps_metadata(record.get("summary")) or "{}",
+            record.get("created_at") or now_text,
+            now_text,
+        )
+        if not run_scoped:
+            return base
+        return (
+            int(record["run_id"]),
+            str(record["run_type"]),
+            *base,
+        )
+
+    def _list_outcome_scores(
+        self,
+        table: str,
+        filters: OutcomeScoreFilters,
+        *,
+        run_scope: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_scope:
+            clauses.extend(["run_id = ?", "run_type = ?"])
+            params.extend([int(run_scope["run_id"]), str(run_scope["run_type"])])
+        if filters.signal_id is not None:
+            clauses.append("signal_id = ?")
+            params.append(int(filters.signal_id))
+        if filters.stock_code:
+            clauses.append("stock_code = ?")
+            params.append(filters.stock_code)
+        if filters.matured_at_lte:
+            clauses.append("matured_at <= ?")
+            params.append(filters.matured_at_lte)
+        if filters.status:
+            clauses.append("status = ?")
+            params.append(filters.status)
+        if filters.action:
+            clauses.append("UPPER(action) = ?")
+            params.append(str(filters.action).upper())
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        limit_sql = ""
+        if filters.limit is not None:
+            limit_sql = "LIMIT ?"
+            params.append(max(1, int(filters.limit)))
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT *
+                FROM {table}
+                {where_sql}
+                ORDER BY COALESCE(matured_at, signal_checkpoint_at) DESC, id DESC
+                {limit_sql}
+                """,
+                tuple(params),
+            )
+            return [self._outcome_score_row_to_dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def _outcome_score_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = self._row_to_dict(row)
+        payload["metrics"] = self._loads_metadata(payload.pop("metrics_json", None))
+        payload["formula"] = self._loads_metadata(payload.pop("formula_json", None))
+        return payload
+
+    def _outcome_feedback_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = self._row_to_dict(row)
+        payload["summary"] = self._loads_metadata(payload.pop("summary_json", None))
+        return payload
+
     @staticmethod
     def _quant_enabled_for_status(quant_status: str) -> int:
         return 1 if str(quant_status or "").strip() in {"trial", "active", "exit_only", "cooling"} else 0
@@ -7535,6 +8045,8 @@ class QuantSimReplayDB(QuantSimDB):
         "sim_run_quant_summary",
         "sim_run_profit_gap_attributions",
         "sim_run_market_technical_artifacts",
+        "sim_run_signal_outcome_scores",
+        "sim_run_outcome_feedback_scores",
     }
 
     def __init__(

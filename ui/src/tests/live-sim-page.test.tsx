@@ -125,6 +125,15 @@ const snapshot = {
     { label: "卖出lot", value: "1" },
     { label: "剩余lot", value: "1" },
   ],
+  outcomeSummary: {
+    total_count: 6,
+    mature_count: 4,
+    skipped_count: 2,
+    buy_avg_score: 62.5,
+    sell_avg_score: 71.2,
+    bad_buy_count: 1,
+    good_sell_count: 1,
+  },
 };
 
 const lifecycleSnapshot = {
@@ -140,6 +149,9 @@ const lifecycleSnapshot = {
         lifecycle: {
           quant_status: "trial",
           health_score: 82,
+          last_health_evaluated_at: "2026-05-17 10:00:00",
+          candidate_score: 0.8123,
+          candidate_confidence: 0.9345,
           latest_reason: "新发现已进入量化",
           quant_auto_managed: true,
           quant_manual_override: "",
@@ -371,14 +383,18 @@ describe("LiveSimPage", () => {
     expect(screen.queryByRole("checkbox", { name: "自动出池" })).not.toBeInTheDocument();
 
     const statusFilter = screen.getByLabelText("生命周期状态筛选");
-    const statusNames = [/量化|Quant/, /正常扫描/, /只出场/, /冷却|Cooling/, /已退出|Retired/, /手工暂停/];
+    const statusNames = [/试跑|Trial/, /扫描|Active/, /出场|Exit/, /冷却|Cool/, /退出|Retired/, /暂停|Paused/];
     statusNames.forEach((status) => expect(within(statusFilter).getByRole("button", { name: status })).toBeInTheDocument());
-    expect(within(statusFilter).getByRole("button", { name: /量化|Quant/ })).toHaveAttribute("aria-pressed", "true");
-    expect(within(statusFilter).getByRole("button", { name: /正常扫描/ })).toHaveAttribute("aria-pressed", "true");
-    expect(within(statusFilter).getByRole("button", { name: /只出场/ })).toHaveAttribute("aria-pressed", "true");
-    expect(within(statusFilter).getByRole("button", { name: /手工暂停/ })).toHaveAttribute("aria-pressed", "false");
+    expect(within(statusFilter).getByRole("button", { name: /试跑|Trial/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(statusFilter).getByRole("button", { name: /扫描|Active/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(statusFilter).getByRole("button", { name: /出场|Exit/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(statusFilter).getByRole("button", { name: /暂停|Paused/ })).toHaveAttribute("aria-pressed", "false");
 
     expect(screen.getByLabelText("健康 82")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("技术置信度").some((item) => item.textContent === "0.9345")).toBe(true);
+    expect(screen.getAllByLabelText("健康未评估").length).toBeGreaterThan(0);
+    expect(screen.queryByText("健康 82 · 置信 0.9345")).not.toBeInTheDocument();
+    expect(screen.queryByText("量化技术入池分 0.8123 · 技术置信度 0.9345")).not.toBeInTheDocument();
     expect(screen.queryByText("新发现已进入量化")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "恢复到量化 600001" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "恢复到量化 600002" })).not.toBeInTheDocument();
@@ -386,9 +402,9 @@ describe("LiveSimPage", () => {
     expect(screen.queryByRole("button", { name: "暂停自动管理 600001" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "删除候选股" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /冷却|Cooling/ }));
-    fireEvent.click(screen.getByRole("button", { name: /手工暂停/ }));
-    fireEvent.click(screen.getByRole("button", { name: /已退出|Retired/ }));
+    fireEvent.click(screen.getByRole("button", { name: /冷却|Cool/ }));
+    fireEvent.click(screen.getByRole("button", { name: /暂停|Paused/ }));
+    fireEvent.click(screen.getByRole("button", { name: /退出|Retired/ }));
     expect(screen.queryByRole("button", { name: "恢复到量化 600004" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "600004" })).toBeInTheDocument();
   });
@@ -577,6 +593,11 @@ describe("LiveSimPage", () => {
     expect(within(executionSection).getByText("成本拆解")).toBeInTheDocument();
     expect(within(executionSection).getByText("收入拆解")).toBeInTheDocument();
     expect(within(executionSection).getByText("交易背景")).toBeInTheDocument();
+    const outcomeSection = screen.getByLabelText("信号 outcome 复盘");
+    expect(within(outcomeSection).getByText("已评分信号")).toBeInTheDocument();
+    expect(within(outcomeSection).getByText("6")).toBeInTheDocument();
+    expect(within(outcomeSection).getByText("BUY 平均分")).toBeInTheDocument();
+    expect(within(outcomeSection).getByText("62.5")).toBeInTheDocument();
   });
 });
 

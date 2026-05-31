@@ -14,6 +14,7 @@ from app.gateway.signal_indicators import (
     _to_vote_row,
 )
 from app.gateway.signal_market import _build_signal_ai_monitor_payload, _enrich_signal_strategy_profile_with_replay_snapshot
+from app.gateway.outcomes import SignalOutcomeQuery, signal_outcome_rows
 from app.gateway.signal_parameters import _build_parameter_details
 from app.quant_sim.decision_provenance import build_decision_provenance
 from app.quant_sim.evidence_models import DecisionProvenanceInput
@@ -303,6 +304,18 @@ def _build_signal_detail_payload(
             replay_run=replay_run,
         )
     )
+    run_id = _int((replay_run or {}).get("id") if replay_run else signal.get("run_id"))
+    run_metadata = _safe_json_load((replay_run or {}).get("metadata") if replay_run else {})
+    run_type = _txt(run_metadata.get("run_type") or (replay_run or {}).get("mode"), "historical_replay")
+    outcome_rows = signal_outcome_rows(
+        context,
+        SignalOutcomeQuery(
+            signal_id=int(_txt(signal.get("id"), "0") or 0),
+            source=source,
+            run_id=run_id,
+            run_type=run_type,
+        ),
+    )
 
     return {
         "updatedAt": _now(),
@@ -320,6 +333,7 @@ def _build_signal_detail_payload(
         "effectiveThresholds": [{"name": _txt(k), "value": _txt(v)} for k, v in effective_thresholds.items() if _txt(k)],
         "aiMonitor": ai_monitor,
         "artifactDiagnostics": artifact_diagnostics,
+        "outcomes": outcome_rows,
         "strategyProfile": strategy_profile,
     }
 

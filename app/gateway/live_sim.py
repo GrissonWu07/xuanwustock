@@ -25,7 +25,9 @@ from app.gateway.trades import (
     _trade_slot_units,
     build_trade_provenance,
 )
+from app.quant_sim.db import OutcomeScoreFilters
 from app.quant_sim.evidence_service import PAYLOAD_SCORE_SEMANTICS
+from app.quant_sim.outcome_scoring_entrypoints import summarize_outcome_rows
 from app.quant_sim.time_utils import local_now_text, system_timezone_name
 from app.stock_refresh_scheduler import load_stock_runtime_entries
 
@@ -67,6 +69,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
     )
     account = db.get_account_summary()
     trade_cost_summary = db.get_trade_cost_summary()
+    outcome_summary = summarize_outcome_rows(db.list_signal_outcome_scores(OutcomeScoreFilters(limit=5000)))
     search = _txt((table_query or {}).get("search"))
     quant_status_filters = _live_sim_quant_status_filters((table_query or {}).get("quant_status"))
     candidate_total = context.candidate_pool().count_candidates(
@@ -158,6 +161,7 @@ def _snapshot_live_sim(context: UIApiContext, table_query: dict[str, Any] | None
             "selected": quant_status_filters,
         },
         "tradeCostSummary": _trade_cost_summary_metrics(trade_cost_summary),
+        "outcomeSummary": outcome_summary,
     }
 
 

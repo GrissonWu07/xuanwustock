@@ -18,6 +18,8 @@ from app.quant_sim.dynamic_strategy import (
     DEFAULT_AI_DYNAMIC_STRATEGY,
 )
 from app.quant_sim.engine import QuantSimEngine
+from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
+from app.quant_sim.outcome_scoring_entrypoints import OutcomeBatchRequest, OutcomeBatchScope, score_signal_batch
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseLifecyclePolicy, QuantUniverseManager
 from app.quant_sim.quant_universe_notifications import build_quant_universe_retired_notification
@@ -85,6 +87,16 @@ class QuantSimScheduler:
         ai_dynamic_strategy = str(config.get("ai_dynamic_strategy") or DEFAULT_AI_DYNAMIC_STRATEGY).strip().lower()
         ai_dynamic_strength = float(config.get("ai_dynamic_strength") or DEFAULT_AI_DYNAMIC_STRENGTH)
         ai_dynamic_lookback = int(config.get("ai_dynamic_lookback") or DEFAULT_AI_DYNAMIC_LOOKBACK)
+        outcome_batch = score_signal_batch(
+            OutcomeBatchRequest(
+                db=self.db,
+                artifact_store=MarketTechnicalArtifactStore(self.db_file),
+                scope=OutcomeBatchScope(),
+                as_of_checkpoint=format_local_time(current_time),
+                limit=500,
+                trace_id=f"live_scheduler_{format_local_time(current_time)}",
+            )
+        )
         positions = self.portfolio.list_positions()
         held_codes = {str(item.get("stock_code") or "").strip() for item in positions if str(item.get("stock_code") or "").strip()}
         candidates = [
@@ -136,6 +148,8 @@ class QuantSimScheduler:
             "cooling_reviewed": cooling_reviewed,
             "lifecycle_auto_exited": lifecycle_auto_exited,
             "auto_executed": auto_executed,
+            "outcomes_scored": int(outcome_batch.get("scored_signals") or 0),
+            "outcome_feedback_count": int(outcome_batch.get("feedback_count") or 0),
             "snapshot_id": snapshot_id,
             "total_equity": account_summary["total_equity"],
         }

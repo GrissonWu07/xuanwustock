@@ -13,6 +13,7 @@ from app.db.runtime.legacy_dbapi import legacy_dbapi_connection
 from app.quant_sim.market_technical_artifact import (
     ArtifactQuery,
     ArtifactReadResult,
+    ArtifactWindowResult,
     ArtifactWriteRequest,
     InvalidArtifactRef,
     DRILL_DOMAIN,
@@ -97,6 +98,42 @@ class MarketTechnicalArtifactStore:
         if isinstance(ref_or_reason, str):
             return ArtifactReadResult(artifact=None, reason_code=ref_or_reason)
         return self._get_by_ref(ref_or_reason, ref_or_reason.to_ref())
+
+    def future_window_by_ref(
+        self,
+        artifact_ref: str | None,
+        *,
+        horizon_checkpoints: int,
+        as_of_checkpoint: str | None = None,
+    ) -> ArtifactWindowResult:
+        parsed = parse_artifact_ref(artifact_ref)
+        if isinstance(parsed, InvalidArtifactRef):
+            return ArtifactWindowResult(
+                source=None,
+                window=[],
+                reason_code=parsed.reason_code,
+                requested_horizon=max(0, int(horizon_checkpoints or 0)),
+            )
+        source = self._get_by_ref(parsed, artifact_ref or "")
+        if source.artifact is None:
+            return ArtifactWindowResult(
+                source=None,
+                window=[],
+                reason_code=source.reason_code,
+                requested_horizon=max(0, int(horizon_checkpoints or 0)),
+            )
+        window = self._future_window(
+            parsed,
+            horizon_checkpoints=max(0, int(horizon_checkpoints or 0)),
+            as_of_checkpoint=as_of_checkpoint,
+        )
+        reason = "ok" if len(window) >= int(horizon_checkpoints or 0) else "horizon_not_mature"
+        return ArtifactWindowResult(
+            source=source.artifact,
+            window=window,
+            reason_code=reason,
+            requested_horizon=max(0, int(horizon_checkpoints or 0)),
+        )
 
     def _connect(self) -> sqlite3.Connection:
         conn = legacy_dbapi_connection(
@@ -245,6 +282,54 @@ class MarketTechnicalArtifactStore:
             source_status=artifact.data.source_status,
             missing_fields=artifact.data.missing_fields,
         )
+
+    def _future_window(
+        self,
+        ref: MarketTechnicalArtifactRef,
+        *,
+        horizon_checkpoints: int,
+        as_of_checkpoint: str | None = None,
+    ) -> list[MarketTechnicalArtifact]:
+        if horizon_checkpoints <= 0:
+            return []
+        table = self._table_for_ref(ref)
+        with closing(self._connect()) as conn:
+            if not self._table_exists(conn, table):
+                return []
+            as_of_text = str(as_of_checkpoint or "").strip()
+            as_of_clause = "AND checkpoint_at <= ?" if as_of_text else ""
+            params: list[Any] = [
+                ref.domain,
+                ref.run_id,
+                ref.run_type,
+                ref.stock_code,
+                ref.market,
+                ref.timeframe,
+                ref.data_version,
+                ref.checkpoint_at,
+            ]
+            if as_of_text:
+                params.append(as_of_text)
+            params.append(horizon_checkpoints)
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {table}
+                WHERE artifact_domain = ?
+                  AND run_id = ?
+                  AND run_type = ?
+                  AND stock_code = ?
+                  AND market = ?
+                  AND timeframe = ?
+                  AND data_version = ?
+                  AND checkpoint_at > ?
+                  {as_of_clause}
+                ORDER BY checkpoint_at ASC, id ASC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [self._artifact_from_row(row) for row in rows]
 
     def _table_exists(self, conn: sqlite3.Connection, table: str) -> bool:
         row = conn.execute(

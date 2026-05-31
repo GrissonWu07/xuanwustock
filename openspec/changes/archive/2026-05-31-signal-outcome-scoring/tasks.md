@@ -1,0 +1,198 @@
+# Tasks: 信号 Outcome 评分与成熟反馈闭环
+
+## 1. Implementation
+
+- [x] 1.1 建立 outcome 持久化和 artifact window 查询
+  - Workflow lane: `full`
+  - Related requirement: `Signal Outcome Scoring`, `Live Replay Drill Data Isolation`, `Artifact-Backed Scoring and Missing Data Handling`
+  - Design reference: `Data Impact`, `Database Decision`, `Generated Code Paths`
+  - Design review reference: `Finding D1` closed; DB 只做 schema/CRUD，核心逻辑拆新模块
+  - Applicable rules: `PIR-003`, `PIR-006`, `PIR-010`, `CFG-005`, `TEST-010A`, `TEST-010B`
+  - Target code paths: `app/quant_sim/db.py`, `app/quant_sim/market_technical_artifact_store.py`, `tests/test_signal_outcome_scoring.py`
+  - Multi-lens review: engineering/database/QA/security
+  - Reuse/common logic impact: extend existing `MarketTechnicalArtifactStore` and `QuantSimDB` run isolation; no duplicate artifact facts
+  - Requirement scope / fallback: create live/run outcome tables and queries only; no old-data backfill and no fallback to live artifacts for run-scoped scoring
+  - Method/function parameter plan: use named request/query data objects where more than 5 inputs are needed
+  - Comments/logging/traceability: add schema comments only where non-obvious; no sensitive logging in DB helpers
+  - Encoding/no-mojibake: new tests and markdown remain UTF-8
+  - File size guardrail: keep new/modified files <=1000 lines where new; `db.py` is existing oversized file, add only schema/CRUD and move logic to services
+  - Database impact: SQLite dev and MySQL-compatible schema pattern; connection pool remains project runtime with max <=100
+  - Backend logic confirmation: goal-mode recorded in `design.md`
+  - API contract/layers: none in this task
+  - API path/parameters confirmation: not applicable
+  - API IO / async: DB IO only
+  - UI mockup/function confirmation: not applicable
+  - Browser/UI QA: not applicable
+  - Config parameter confirmation: not applicable
+  - Change: create live/run outcome and feedback persistence helpers; add artifact window query ordered by checkpoint; persist skipped/partial reason rows
+  - Standalone verification: pytest creates temp DB, writes artifacts/signals, queries horizon windows and verifies run/live isolation
+  - Real E2E test: not standalone E2E for this task; covered by task 1.5 run/API E2E
+  - Test target boundary: project DB/store behavior only; no provider correctness tests
+  - Requirement-to-test mapping: missing run artifact, live/run isolation, source fields ignored in artifact window inputs
+  - Counterexample matrix: live vs replay vs drill, missing artifact vs partial artifact, same stock different run_id
+  - Masked-test analysis: tests must ensure missing run artifact cannot pass by live artifact lookup
+  - Broad-qualifier audit: verify "same algorithm / isolated data / no fallback" qualifiers
+  - Decision Chain Trace: artifact ref parse -> domain table select -> ordered window -> skipped/ready persistence
+  - Evidence Capture Timing Audit: `matured_at`, `source_artifact_ref`, `reason_code`, `created_at/updated_at`
+  - Deterministic Sort Audit: artifact window sort by checkpoint ascending with stable tie-break
+  - Validation: focused pytest and coverage for store/DB helpers
+  - Test parameters: `.agent/workdir/sp-openspec/signal-outcome-scoring/test-params/outcome-artifact-window.md`
+  - Coverage target: at least 85% for changed/affected DB helper and artifact store code
+  - Required reviews after implementation: Alignment Review and Security Review
+  - Review gate: fix and re-review every finding before task 1.2
+
+- [x] 1.2 实现 BUY/SELL outcome scoring 服务
+  - Workflow lane: `full`
+  - Related requirement: `Signal Outcome Scoring`, `Matured-Only Feedback Consumption`, `Artifact-Backed Scoring and Missing Data Handling`
+  - Design reference: `Architecture Impact`, `Target Behavior`, `Error Handling`
+  - Design review reference: `Spec Alignment` and `Verification and E2E Readiness`
+  - Applicable rules: `PIR-006`, `PIR-010`, `PIR-011`, `PY-012`, `TEST-010A`, `TEST-010B`
+  - Target code paths: `app/quant_sim/signal_outcome_scoring.py`, `tests/test_signal_outcome_scoring.py`
+  - Multi-lens review: product/engineering/QA/security
+  - Reuse/common logic impact: consume `MarketTechnicalArtifactStore`; do not duplicate candidate_score or market snapshot logic
+  - Requirement scope / fallback: calculate only mature horizons; no future data consumption; no source score input
+  - Method/function parameter plan: `OutcomeScoringRequest`, `OutcomeHorizonRequest`, `OutcomeScoreResult`
+  - Comments/logging/traceability: comment score formulas and matured-only invariant; log start/completed/skipped with safe IDs
+  - Encoding/no-mojibake: score reason texts and tests must be readable UTF-8
+  - File size guardrail: new module <=1000 lines
+  - Database impact: writes through DB helper from task 1.1
+  - Backend logic confirmation: goal-mode recorded
+  - API contract/layers: none in this task
+  - API path/parameters confirmation: not applicable
+  - API IO / async: artifact/store DB IO
+  - UI mockup/function confirmation: not applicable
+  - Browser/UI QA: not applicable
+  - Config parameter confirmation: use `signal_outcome_policy` defaults from spec
+  - Change: compute BUY MFE/MAE/target/invalidation/MA20/T+1/delay/market alignment; compute SELL avoided drawdown/missed upside/validation/quick rebuy; produce 0-100 score and formula diagnostics
+  - Standalone verification: pytest with explicit artifact windows for BUY, SELL, immature horizon, missing artifact, and source field scrub
+  - Real E2E test: not standalone E2E for this task; covered by task 1.5
+  - Test target boundary: project scoring service only
+  - Requirement-to-test mapping: BUY mature, SELL mature, incomplete horizon, source fields ignored
+  - Counterexample matrix: BUY vs SELL; horizon 3/5/10; positive/negative/partial windows; source-score adversarial payload
+  - Masked-test analysis: tests must assert formula metrics, not only status
+  - Broad-qualifier audit: `only market and technical artifacts`, `SHALL NOT use source score`
+  - Decision Chain Trace: request -> source artifact -> future window -> maturity gate -> metrics -> score -> persistence payload
+  - Evidence Capture Timing Audit: `matured_at` must be the horizon artifact checkpoint before persistence
+  - Deterministic Sort Audit: horizon artifacts ordered by checkpoint; duplicate checkpoint tie-break
+  - Validation: `pytest tests/test_signal_outcome_scoring.py --cov=app.quant_sim.signal_outcome_scoring --cov-fail-under=85`
+  - Test parameters: `.agent/workdir/sp-openspec/signal-outcome-scoring/test-params/outcome-score-formulas.md`
+  - Coverage target: at least 85% for `app.quant_sim.signal_outcome_scoring`
+  - Required reviews after implementation: Alignment Review and Security Review
+  - Review gate: fix and re-review every finding before task 1.3
+
+- [x] 1.3 实现成熟 outcome 聚合并接入交易决策
+  - Workflow lane: `full`
+  - Related requirement: `Outcome Feedback Score`, `Matured-Only Feedback Consumption`, `Live Replay Drill Data Isolation`
+  - Design reference: `Decision consumption`, `Reuse / Common Logic Plan`, `Configuration Parameter Confirmation`
+  - Design review reference: `Finding D3` closed; minimum sample and decay required
+  - Applicable rules: `PIR-006`, `PIR-010`, `PIR-011`, `TEST-010A`, `TEST-010B`
+  - Target code paths: `app/quant_sim/outcome_feedback.py`, `app/quant_sim/stock_execution_feedback.py`, `app/quant_sim/portfolio_execution_guard.py`, `app/quant_sim/quant_universe_lifecycle.py`, `app/quant_sim/signal_center_service.py`, `tests/test_signal_outcome_feedback.py`
+  - Multi-lens review: product/engineering/security/QA
+  - Reuse/common logic impact: extend existing gate payloads and policy normalization instead of creating parallel gates
+  - Requirement scope / fallback: consume mature outcomes only; feedback must not overwrite `candidate_score`; no source score behavior
+  - Method/function parameter plan: `OutcomeFeedbackRequest`, `OutcomeFeedbackSummary`, `OutcomeFeedbackDecision`
+  - Comments/logging/traceability: log `outcome_feedback_applied` when feedback changes size, threshold, cooldown, or lifecycle reason
+  - Encoding/no-mojibake: reason texts and diagnostics must be UTF-8 and i18n-safe where surfaced
+  - File size guardrail: new module <=1000 lines; existing gate modules stay <=1000 if currently under limit or only minimal additions if oversized
+  - Database impact: reads/writes feedback summary helpers
+  - Backend logic confirmation: goal-mode recorded
+  - API contract/layers: diagnostics visible through existing APIs after task 1.4
+  - API path/parameters confirmation: not applicable
+  - API IO / async: DB reads for mature feedback
+  - UI mockup/function confirmation: not applicable
+  - Browser/UI QA: not applicable
+  - Config parameter confirmation: `signal_outcome_policy` defaults from spec
+  - Change: aggregate mature BUY/SELL outcome by stock/profile/domain/run; inject feedback into stock execution feedback, portfolio guard, lifecycle and signal diagnostics
+  - Standalone verification: pytest verifies poor BUY outcomes downgrade future BUY, good/poor SELL outcome affects SELL confidence, replay feedback does not affect live
+  - Real E2E test: not standalone E2E for this task; covered by task 1.5
+  - Test target boundary: project gate/feedback behavior only
+  - Requirement-to-test mapping: outcome feedback downgrade, no candidate_score overwrite, live/replay isolation
+  - Counterexample matrix: insufficient samples, mature samples, future samples, replay samples in live context
+  - Masked-test analysis: tests must reach feedback gate after earlier action/profile/data gates pass
+  - Broad-qualifier audit: `only matured`, `without changing candidate_score`, `same algorithm isolated data`
+  - Decision Chain Trace: mature outcome filter -> aggregate -> policy thresholds -> gate payload -> sizing/lifecycle consumer
+  - Evidence Capture Timing Audit: feedback `as_of_checkpoint`, `latest_matured_at`, sample count captured before decision write
+  - Deterministic Sort Audit: feedback sample selection by matured_at desc with stable id tie-break
+  - Validation: `pytest tests/test_signal_outcome_feedback.py tests/test_stock_execution_feedback.py tests/test_quant_universe_lifecycle_manager.py`
+  - Test parameters: `.agent/workdir/sp-openspec/signal-outcome-scoring/test-params/outcome-feedback-decision.md`
+  - Coverage target: at least 85% for new/affected outcome feedback code
+  - Required reviews after implementation: Alignment Review and Security Review
+  - Review gate: fix and re-review every finding before task 1.4
+
+- [x] 1.4 暴露 API、UI 与策略配置
+  - Workflow lane: `full`
+  - Related requirement: `Outcome Evidence and Diagnostics`, `Outcome Configuration`
+  - Design reference: `API Impact`, `UI Impact`, `Configuration Parameter Confirmation`, `Browser / UI QA Plan`
+  - Design review reference: fallback findings F2/F3 closed
+  - Applicable rules: `PIR-004`, `PIR-005`, `PIR-007`, `AIQ-003`, `ENC-005`, `TEST-012`
+  - Target code paths: `app/gateway/signal_detail.py`, `app/gateway/his_replay.py`, `app/gateway/live_sim.py`, `app/locales/*.json`, `ui/src/features/quant/signal-detail-page.tsx`, `ui/src/features/quant/his-replay-page.tsx`, `ui/src/features/quant/live-sim-page.tsx`, `ui/src/features/settings/strategy-config-page.tsx`, `ui/src/locales/*.json`, related UI tests
+  - Multi-lens review: product/design/devex/security/QA
+  - Reuse/common logic impact: extend existing page models and API payloads; no new top-level page
+  - Requirement scope / fallback: show persisted outcome/feedback; do not compute on read unless API explicitly triggers scoring
+  - Method/function parameter plan: typed payload/model additions; no vague map-only UI model
+  - Comments/logging/traceability: API scoring triggers log safe job/request IDs; UI no sensitive logging
+  - Encoding/no-mojibake: all UI text i18n in zh/en locale JSON
+  - File size guardrail: split UI helper components if page files would exceed 1000 lines after change
+  - Database impact: read outcome/feedback summaries
+  - Backend logic confirmation: goal-mode recorded
+  - API contract/layers: existing signal detail extended; new `/api/v1/quant/outcomes/*` endpoints through gateway/service boundary
+  - API path/parameters confirmation: goal-mode recorded in design API table
+  - API IO / async: scoring POST endpoints must be async/job-like or bounded; GET endpoints read DB only
+  - UI mockup/function confirmation: goal-mode functional description recorded; no standalone mockup
+  - Browser/UI QA: UI tests plus browser check if dev server available
+  - Config parameter confirmation: `signal_outcome_policy` field names/defaults from spec
+  - Change: add outcome payloads, run summaries, signal detail panels, run outcome summary cards, strategy config controls and translations
+  - Standalone verification: backend API tests for outcome payloads; UI tests for visible sections and i18n
+  - Real E2E test: required; use project test server or gateway test client plus UI runner to verify API/UI from real routes
+  - Test target boundary: project API/UI behavior only; no third-party provider calls
+  - Requirement-to-test mapping: signal detail exposes outcomes, run result exposes summary, config visible
+  - Counterexample matrix: live signal vs replay signal; BUY vs SELL; no outcome vs mature outcome; zh/en locale
+  - Masked-test analysis: UI tests must assert rendered outcome values, not just component mounted
+  - Broad-qualifier audit: `existing signal detail, historical replay, live quant drill, lifecycle diagnostic entry points`
+  - Decision Chain Trace: API query -> DB summary -> response model -> UI model -> rendered section
+  - Evidence Capture Timing Audit: response `matured_at`, `feedback_impact`, `reason_code`
+  - Deterministic Sort Audit: outcome rows sorted by horizon asc; top stocks by impact desc with stable tie-break
+  - Validation: backend API pytest + UI test runner
+  - Test parameters: `.agent/workdir/sp-openspec/signal-outcome-scoring/test-params/outcome-api-ui.md`
+  - Coverage target: at least 85% for changed API/model code; UI tests meaningful for affected screens
+  - Required reviews after implementation: Alignment Review and Security Review
+  - Review gate: fix and re-review every finding before task 1.5
+
+- [x] 1.5 集成 run/live scoring 入口并完成端到端验证
+  - Workflow lane: `full`
+  - Related requirement: all requirements
+  - Design reference: `Standalone Verification Plan`, `Real E2E Test Design`, `Error Handling`
+  - Design review reference: `Verification and E2E Readiness`
+  - Applicable rules: `PIR-007`, `PIR-008`, `TEST-001`, `TEST-011`, `TEST-012`, `LOG-*`, `ENC-*`
+  - Target code paths: `app/quant_sim/replay_service_historical.py`, `app/quant_sim/replay_service_drill.py`, `app/quant_sim/scheduler.py`, `tests/test_signal_outcome_scoring.py`, `tests/test_signal_outcome_feedback.py`, API/UI tests
+  - Multi-lens review: full product/design/engineering/devex/security/QA
+  - Reuse/common logic impact: call shared scoring service from replay, drill, and live scheduler; no duplicated scoring formulas
+  - Requirement scope / fallback: run scoring is idempotent; does not backfill old unrelated data; missing artifacts recorded explicitly
+  - Method/function parameter plan: use scoring request objects
+  - Comments/logging/traceability: job start/end/skipped logs with trace_id/run_id/signal_id/horizon/scoring_version
+  - Encoding/no-mojibake: final evidence and test params UTF-8
+  - File size guardrail: refactor if integration pushes any modified file above 1000 lines beyond baseline functional minimum
+  - Database impact: run/live scoring writes outcome and feedback rows
+  - Backend logic confirmation: goal-mode recorded
+  - API contract/layers: scoring endpoints or page actions call service
+  - API path/parameters confirmation: goal-mode recorded
+  - API IO / async: run/live scoring may be async/job-like; tests verify bounded behavior
+  - UI mockup/function confirmation: not applicable beyond task 1.4
+  - Browser/UI QA: if runnable, verify `/his-replay`, `/live-sim`, signal detail; otherwise record blocker and UI runner evidence
+  - Config parameter confirmation: confirmed in design
+  - Change: wire scoring into replay/drill completion and live matured scan; run complete regression and coverage; produce review evidence
+  - Standalone verification: create run with artifacts/signals, trigger scoring, verify DB rows, API payload, UI render, and feedback applied only at later checkpoint
+  - Real E2E test: required; command/tool/runtime target/test data/assertions recorded in task review
+  - Test target boundary: project-owned workflow; no real provider
+  - Requirement-to-test mapping: complete mapping for all scenarios
+  - Counterexample matrix: broad terms `same`, `all`, `only`, `SHALL NOT`, live/replay/drill, mature/immature
+  - Masked-test analysis: prove feedback tests are not passing because earlier gates block execution
+  - Broad-qualifier audit: compare every spec qualifier with code paths
+  - Decision Chain Trace: signal -> artifact window -> score -> persistence -> aggregate -> feedback consumer -> API/UI evidence
+  - Evidence Capture Timing Audit: matured_at/source_artifact_ref/outcome_score/feedback_score/status/reason captured before downstream transforms
+  - Deterministic Sort Audit: horizon rows, top stocks, feedback sample selection
+  - Validation: focused tests, integration tests, UI tests, coverage, and full regression if feasible
+  - Test parameters: `.agent/workdir/sp-openspec/signal-outcome-scoring/test-params/outcome-e2e.md`
+  - Coverage target: at least 85% for changed/affected modules
+  - Required reviews after implementation: Alignment Review and Security Review, then final implementation review before completion
+  - Review gate: all findings must be closed before `/sp-complete`

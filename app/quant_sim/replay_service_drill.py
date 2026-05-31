@@ -11,6 +11,8 @@ from typing import Any
 from app.quant_sim.db import QuantSimDB
 from app.quant_sim.dynamic_strategy import DEFAULT_AI_DYNAMIC_LOOKBACK, DEFAULT_AI_DYNAMIC_STRENGTH, DEFAULT_AI_DYNAMIC_STRATEGY
 from app.quant_sim.engine import QuantSimEngine
+from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
+from app.quant_sim.outcome_scoring_entrypoints import OutcomeBatchRequest, OutcomeBatchScope, score_signal_batch
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.quant_universe_artifact_db import ArtifactBackedCandidateEventDB
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
@@ -133,6 +135,16 @@ class LiveQuantDrillMixin:
             )
             positions = temp_portfolio.list_positions()
             metrics = self._calculate_run_metrics(float(account_summary["initial_cash"]), trades, snapshots)
+            outcome_batch = score_signal_batch(
+                OutcomeBatchRequest(
+                    db=self.db,
+                    artifact_store=MarketTechnicalArtifactStore(self.replay_db_file),
+                    scope=OutcomeBatchScope(run_id=run_id, run_type="live_quant_drill", domain="drill"),
+                    as_of_checkpoint=last_checkpoint_text or None,
+                    limit=5000,
+                    trace_id=f"live_quant_drill_{run_id}",
+                )
+            )
             with self.db.write_batch():
                 self.db.replace_sim_run_runtime_results(
                     run_id,
@@ -156,6 +168,7 @@ class LiveQuantDrillMixin:
                         "disabled_candidate_sources": context.get("disabled_candidate_sources") or [],
                         "data_warnings": context.get("data_warnings") or [],
                         "final_slot_summary": self._collect_slot_summary(temp_db),
+                        "outcome_summary": outcome_batch.get("summary") or {},
                     },
                 )
                 self.db.append_sim_run_event(run_id, "实时量化演练任务已完成。", level="success")

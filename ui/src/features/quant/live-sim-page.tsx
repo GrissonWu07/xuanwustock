@@ -8,12 +8,12 @@ import { usePageData } from "../../lib/use-page-data";
 import type { SummaryMetric, TableRow, TableSection } from "../../lib/page-models";
 import { toDisplayCount, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
+import { OutcomeSummaryCard } from "./outcome-summary-card";
 import { ReplayCapitalPoolPanel } from "./replay-capital-pool-panel";
 import { t } from "../../lib/i18n";
 import {
   DEFAULT_LIFECYCLE_SETTINGS,
   DEFAULT_QUANT_STATUS_FILTERS,
-  HealthScoreBar,
   LifecycleSummaryBadgeGroup,
   QUANT_STATUS_OPTIONS,
   QuantStatusBadge,
@@ -206,6 +206,10 @@ type LifecycleTableRow = TableRow & {
 const lifecycleOf = (row: TableRow): QuantLifecyclePayload => (row as LifecycleTableRow).lifecycle ?? {};
 const lifecycleStatusOf = (row: TableRow) => ((row as LifecycleTableRow).lifecycle ? String(lifecycleOf(row).quant_status || "active") : "active");
 const stockDetailPath = (code: string) => `/portfolio/position/${encodeURIComponent(code)}`;
+const hasHealthEvaluation = (lifecycle: QuantLifecyclePayload) => Boolean(String(lifecycle.last_health_evaluated_at ?? "").trim());
+const formatHealthValue = (lifecycle: QuantLifecyclePayload) =>
+  hasHealthEvaluation(lifecycle) ? String(Math.round(Number(lifecycle.health_score ?? 0))) : "--";
+const formatConfidenceValue = (lifecycle: QuantLifecyclePayload) => Number(lifecycle.candidate_confidence ?? 0).toFixed(4);
 
 async function requestQuantUniverse<T>(path: string, payload?: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -287,7 +291,7 @@ function LiveQuantStockList({
             const name = String(row.cells[nameIndex] || "--");
             const price = String(row.cells[priceIndex] || "--");
             const status = lifecycleStatusOf(row);
-            const showStatusBadge = status !== "trial" && status !== "active";
+            const confidenceValue = formatConfidenceValue(lifecycle);
             return (
               <article className="live-quant-stock-card" key={row.id}>
                 <div className="live-quant-stock-card__identity">
@@ -296,12 +300,21 @@ function LiveQuantStockList({
                   </Link>
                   <span className="live-quant-stock-card__name">{name}</span>
                 </div>
+                <div className="live-quant-stock-card__status">
+                  <QuantStatusBadge status={status} />
+                </div>
                 <div className="live-quant-stock-card__price">
                   <strong>{price}</strong>
                 </div>
-                <div className="live-quant-stock-card__state">
-                  {showStatusBadge ? <QuantStatusBadge status={status} /> : null}
-                  <HealthScoreBar value={lifecycle.health_score} compact />
+                <div className="live-quant-stock-card__metrics">
+                  {hasHealthEvaluation(lifecycle) ? (
+                    <span className="badge badge--neutral live-quant-stock-card__score" aria-label={t("健康 {v0}", { v0: formatHealthValue(lifecycle) })}>
+                      {formatHealthValue(lifecycle)}
+                    </span>
+                  ) : (
+                    <span className="badge badge--neutral live-quant-stock-card__score" aria-label={t("健康未评估")}>--</span>
+                  )}
+                  <span className="badge badge--neutral live-quant-stock-card__confidence" aria-label={t("技术置信度")}>{confidenceValue}</span>
                 </div>
               </article>
             );
@@ -549,7 +562,12 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
   const availableQuantStatuses = (snapshot.quant_status_filters?.available ?? QUANT_STATUS_OPTIONS).filter((status) => QUANT_STATUS_OPTIONS.includes(status));
   const candidatePoolTable: TableSection = {
     ...candidatePoolBaseTable,
-    columns: [...candidatePoolBaseTable.columns, t("状态"), t("健康度"), t("生命周期原因")],
+    columns: [
+      ...candidatePoolBaseTable.columns,
+      t("状态"),
+      t("当前健康"),
+      t("置信度"),
+    ],
     rows: snapshot.candidatePool.rows
       .filter((row) => selectedQuantStatuses.includes(lifecycleStatusOf(row)))
       .map((row) => {
@@ -560,8 +578,8 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           cells: [
             ...baseCells,
             lifecycleStatusOf(row),
-            t("健康 {v0}", { v0: Math.round(Number(lifecycle.health_score ?? 100)) }),
-            String(lifecycle.latest_reason || "--"),
+            formatHealthValue(lifecycle),
+            formatConfidenceValue(lifecycle),
           ],
           actions: (row.actions ?? []).filter((action) => action.action === "delete-candidate"),
         };
@@ -1112,6 +1130,8 @@ export function LiveSimPage({ client }: LiveSimPageProps) {
           />
 
           {snapshot.capitalPool ? <ReplayCapitalPoolPanel capitalPool={snapshot.capitalPool} showPositionSummary /> : null}
+
+          <OutcomeSummaryCard summary={snapshot.outcomeSummary} />
 
           <QuantTableSectionCard
             title={t("成交记录")}

@@ -480,6 +480,19 @@ const QUANT_UNIVERSE_LIFECYCLE_FIELDS: ProfitProtectionField[] = [
   { key: "cooling_supplemental_max_position_pct", label: { zh: "冷却补扫仓位上限", en: "Cooling supplemental max position pct" }, type: "number", path: ["cooling_supplemental_max_position_pct"], step: 0.5 },
 ];
 
+const SIGNAL_OUTCOME_POLICY_FIELDS: ProfitProtectionField[] = [
+  { key: "outcome_feedback_enabled", label: { zh: "启用 outcome 反馈", en: "Enable outcome feedback" }, type: "checkbox", path: ["outcome_feedback_enabled"] },
+  { key: "buy_target_pct", label: { zh: "BUY 目标收益(%)", en: "BUY target (%)" }, type: "number", path: ["buy_target_pct"], step: 0.1 },
+  { key: "buy_invalidation_mae_pct", label: { zh: "BUY 失效 MAE(%)", en: "BUY invalidation MAE (%)" }, type: "number", path: ["buy_invalidation_mae_pct"], step: 0.1 },
+  { key: "sell_validation_drawdown_pct", label: { zh: "SELL 验证回撤(%)", en: "SELL validation drawdown (%)" }, type: "number", path: ["sell_validation_drawdown_pct"], step: 0.1 },
+  { key: "missed_upside_penalty_pct", label: { zh: "SELL 错过上涨惩罚(%)", en: "Missed upside penalty (%)" }, type: "number", path: ["missed_upside_penalty_pct"], step: 0.1 },
+  { key: "min_feedback_samples", label: { zh: "最小成熟样本数", en: "Minimum mature samples" }, type: "number", path: ["min_feedback_samples"], step: 1 },
+  { key: "feedback_lookback_days", label: { zh: "反馈回看天数", en: "Feedback lookback days" }, type: "number", path: ["feedback_lookback_days"], step: 1 },
+  { key: "poor_buy_score_threshold", label: { zh: "差 BUY outcome 阈值", en: "Poor BUY outcome threshold" }, type: "number", path: ["poor_buy_score_threshold"], step: 1 },
+  { key: "good_sell_score_threshold", label: { zh: "好 SELL outcome 阈值", en: "Good SELL outcome threshold" }, type: "number", path: ["good_sell_score_threshold"], step: 1 },
+  { key: "feedback_size_multiplier_floor", label: { zh: "反馈仓位倍率下限", en: "Feedback size multiplier floor" }, type: "number", path: ["feedback_size_multiplier_floor"], step: 0.05 },
+];
+
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const deepClone = <T,>(value: T): T => JSON.parse(JSON.stringify(value ?? {})) as T;
 const pickText = (text: LocaleText, locale: string) => (locale === "zh-CN" ? text.zh : text.en);
@@ -808,6 +821,42 @@ const ensureQuantUniverseLifecycleDefaults = (root: Record<string, unknown>, pat
   });
 };
 
+const ensureSignalOutcomePolicyDefaults = (root: Record<string, unknown>, path: string[]) => {
+  const container = ensureObjectPath(root, path);
+  const defaults: Record<string, number | boolean | number[]> = {
+    outcome_feedback_enabled: true,
+    outcome_horizons_checkpoints: [3, 5, 10],
+    buy_target_pct: 4,
+    buy_invalidation_mae_pct: -4.5,
+    sell_validation_drawdown_pct: 3,
+    missed_upside_penalty_pct: 5,
+    min_feedback_samples: 3,
+    feedback_lookback_days: 30,
+    poor_buy_score_threshold: 45,
+    good_sell_score_threshold: 65,
+    feedback_size_multiplier_floor: 0.3,
+  };
+  Object.entries(defaults).forEach(([key, value]) => {
+    if (!(key in container)) {
+      container[key] = Array.isArray(value) ? [...value] : value;
+      return;
+    }
+    if (Array.isArray(value)) {
+      const rawValue = container[key];
+      container[key] = Array.isArray(rawValue)
+        ? rawValue.map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0)
+        : [...value];
+      return;
+    }
+    if (typeof value === "boolean") {
+      container[key] = getBooleanAt(container, [key], value);
+      return;
+    }
+    const parsed = Number(container[key]);
+    container[key] = Number.isFinite(parsed) ? parsed : value;
+  });
+};
+
 const normalizeStrategyConfig = (raw: Record<string, unknown> | undefined): Record<string, unknown> => {
   const next = deepClone(raw ?? {});
   ensureWeightMap(next, ["base", "technical", "group_weights"], TECHNICAL_GROUPS, 1);
@@ -824,6 +873,7 @@ const normalizeStrategyConfig = (raw: Record<string, unknown> | undefined): Reco
   ensureStockExecutionFeedbackDefaults(next, ["base", "context", "stock_execution_feedback_policy"]);
   ensurePortfolioExecutionGuardDefaults(next, ["base", "context", "portfolio_execution_guard_policy"]);
   ensureQuantUniverseLifecycleDefaults(next, ["base", "context", "quant_universe_lifecycle_policy"]);
+  ensureSignalOutcomePolicyDefaults(next, ["base", "context", "signal_outcome_policy"]);
 
   ensureWeightMap(next, ["profiles", "candidate", "technical", "group_weights"], TECHNICAL_GROUPS, 1);
   ensureWeightMap(next, ["profiles", "candidate", "technical", "dimension_weights"], TECHNICAL_DIMENSIONS, 1);
@@ -834,6 +884,7 @@ const normalizeStrategyConfig = (raw: Record<string, unknown> | undefined): Reco
   ensureStockExecutionFeedbackDefaults(next, ["profiles", "candidate", "context", "stock_execution_feedback_policy"]);
   ensurePortfolioExecutionGuardDefaults(next, ["profiles", "candidate", "context", "portfolio_execution_guard_policy"]);
   ensureQuantUniverseLifecycleDefaults(next, ["profiles", "candidate", "context", "quant_universe_lifecycle_policy"]);
+  ensureSignalOutcomePolicyDefaults(next, ["profiles", "candidate", "context", "signal_outcome_policy"]);
 
   ensureWeightMap(next, ["profiles", "position", "technical", "group_weights"], TECHNICAL_GROUPS, 1);
   ensureWeightMap(next, ["profiles", "position", "technical", "dimension_weights"], TECHNICAL_DIMENSIONS, 1);
@@ -844,6 +895,7 @@ const normalizeStrategyConfig = (raw: Record<string, unknown> | undefined): Reco
   ensureStockExecutionFeedbackDefaults(next, ["profiles", "position", "context", "stock_execution_feedback_policy"]);
   ensurePortfolioExecutionGuardDefaults(next, ["profiles", "position", "context", "portfolio_execution_guard_policy"]);
   ensureQuantUniverseLifecycleDefaults(next, ["profiles", "position", "context", "quant_universe_lifecycle_policy"]);
+  ensureSignalOutcomePolicyDefaults(next, ["profiles", "position", "context", "signal_outcome_policy"]);
   return next;
 };
 
@@ -1680,6 +1732,83 @@ export function StrategyConfigPage({ client }: StrategyConfigPageProps) {
                       }}
                       onChange={(event) => updateNumberPath(fullPath, event.target.value, 4, `quant_universe_lifecycle.${field.key}`)}
                     />
+                  </div>
+                );
+              })}
+            </div>
+          </WorkbenchCard>
+
+          <WorkbenchCard className="strategy-config-card">
+            <div className="strategy-config-card__header">
+              <div>
+                <h2 className="strategy-config-card__title">{locale === "zh-CN" ? "信号 outcome 反馈" : "Signal outcome feedback"}</h2>
+                <div className="strategy-config-card__subtitle">
+                  {locale === "zh-CN"
+                    ? t("按 3/5/10 个检查点后的真实行情结果评估 BUY/SELL 信号，只使用 market_technical_artifact，并把成熟 outcome 反馈给后续交易决策。")
+                    : "Scores BUY/SELL signals after 3/5/10 checkpoints using market_technical_artifact only, then feeds mature outcomes back into future decisions."}
+                </div>
+              </div>
+            </div>
+            <div className="strategy-config-dual-grid">
+              <div className="strategy-config-dual-item">
+                <label>
+                  <span>{locale === "zh-CN" ? "Outcome 检查点周期" : "Outcome horizons"}</span>
+                </label>
+                <input
+                  className="input"
+                  type="text"
+                  value={getStringAt(editableConfig, ["base", "context", "signal_outcome_policy", "outcome_horizons_checkpoints"], "3,5,10")}
+                  onFocus={() => {
+                    setFocusedFormulaSection(4);
+                    setFocusedParam("signal_outcome.outcome_horizons_checkpoints");
+                  }}
+                  onChange={(event) =>
+                    updateStringPath(
+                      ["base", "context", "signal_outcome_policy", "outcome_horizons_checkpoints"],
+                      event.target.value,
+                      4,
+                      "signal_outcome.outcome_horizons_checkpoints",
+                    )
+                  }
+                />
+              </div>
+            </div>
+            <div className="strategy-config-dual-grid">
+              {SIGNAL_OUTCOME_POLICY_FIELDS.map((field) => {
+                const fullPath = ["base", "context", "signal_outcome_policy", ...field.path];
+                return (
+                  <div key={`signal-outcome-${field.key}`} className="strategy-config-dual-item">
+                    <label>
+                      <span>{pickText(field.label, locale)}</span>
+                    </label>
+                    {field.type === "checkbox" ? (
+                      <label className="strategy-config-switch" aria-label={pickText(field.label, locale)}>
+                        <input
+                          type="checkbox"
+                          checked={getBooleanAt(editableConfig, fullPath, true)}
+                          onFocus={() => {
+                            setFocusedFormulaSection(4);
+                            setFocusedParam(`signal_outcome.${field.key}`);
+                          }}
+                          onChange={(event) => updateBooleanPath(fullPath, event.target.checked, 4, `signal_outcome.${field.key}`)}
+                        />
+                        <span className="strategy-config-switch__track">
+                          <span className="strategy-config-switch__thumb" />
+                        </span>
+                      </label>
+                    ) : (
+                      <input
+                        className="input"
+                        type="number"
+                        step={field.step ?? 0.01}
+                        value={getNumberAt(editableConfig, fullPath, 0)}
+                        onFocus={() => {
+                          setFocusedFormulaSection(4);
+                          setFocusedParam(`signal_outcome.${field.key}`);
+                        }}
+                        onChange={(event) => updateNumberPath(fullPath, event.target.value, 4, `signal_outcome.${field.key}`)}
+                      />
+                    )}
                   </div>
                 );
               })}

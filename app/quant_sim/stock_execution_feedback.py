@@ -200,6 +200,18 @@ def evaluate_stock_execution_feedback_gate(
             f"近期累计已实现盈亏{summary_obj.recent_realized_pnl:.2f} / {summary_obj.recent_realized_pnl_pct:.2f}%"
         )
 
+    outcome_feedback = _outcome_feedback(market_snapshot)
+    if outcome_feedback["actionable"] and status != "blocked":
+        recommended_multiplier = _float(outcome_feedback.get("recommended_size_multiplier"), 1.0)
+        if outcome_feedback["requires_stronger_confirmation"] and not trend["confirmed"]:
+            status = "blocked"
+            multiplier = 0.0
+            reasons.append("成熟outcome反馈偏弱，普通BUY需要更强趋势确认")
+        elif outcome_feedback["reason_code"] == "poor_buy_outcome_feedback":
+            status = "downgraded"
+            multiplier = min(multiplier, recommended_multiplier)
+            reasons.append("成熟BUY outcome偏弱，降低后续试错仓位")
+
     if status == "passed":
         feedback_score = 0.0
     else:
@@ -214,7 +226,7 @@ def evaluate_stock_execution_feedback_gate(
             severity += 0.5
         feedback_score = -min(cap, cap * min(1.0, severity))
 
-    return _gate(
+    gate = _gate(
         status=status,
         multiplier=multiplier,
         policy=resolved_policy,
@@ -224,6 +236,8 @@ def evaluate_stock_execution_feedback_gate(
         reasons=reasons,
         current_time=current_time,
     )
+    gate["outcome_feedback"] = outcome_feedback
+    return gate
 
 
 def _gate(
@@ -400,6 +414,27 @@ def _extract_metrics(snapshot: dict[str, Any] | None) -> dict[str, float | None]
         "ma10": _optional_float(payload.get("ma10")),
         "ma20": _optional_float(payload.get("ma20")),
         "ma20_slope": _optional_float(payload.get("ma20_slope")),
+    }
+
+
+def _outcome_feedback(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    payload = snapshot if isinstance(snapshot, dict) else {}
+    feedback = payload.get("outcome_feedback") if isinstance(payload.get("outcome_feedback"), dict) else {}
+    summary = feedback.get("summary") if isinstance(feedback.get("summary"), dict) else feedback
+    return {
+        "actionable": _bool(summary.get("actionable"), False),
+        "sample_count": int(_float(summary.get("sample_count"), 0.0)),
+        "outcome_feedback_score": _float(
+            summary.get("outcome_feedback_score") or feedback.get("feedback_score"),
+            50.0,
+        ),
+        "recommended_size_multiplier": _clamp(
+            _float(summary.get("recommended_size_multiplier"), 1.0),
+            0.0,
+            1.0,
+        ),
+        "requires_stronger_confirmation": _bool(summary.get("requires_stronger_confirmation"), False),
+        "reason_code": str(summary.get("reason_code") or ""),
     }
 
 

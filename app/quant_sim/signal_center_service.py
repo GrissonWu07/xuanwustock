@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from app.db.runtime.registry import DatabaseRuntime
 from app.quant_sim.signal_center_tail import SignalCenterTailMixin
-from app.quant_sim.db import DEFAULT_DB_FILE, QuantSimDB
+from app.quant_sim.db import DEFAULT_DB_FILE, OutcomeFeedbackFilters, QuantSimDB
 from app.quant_kernel.models import Decision
 from app.quant_sim.stock_execution_feedback import (
     evaluate_stock_execution_feedback_gate,
@@ -142,6 +142,7 @@ class SignalCenterService(SignalCenterTailMixin):
         payload = self._apply_position_add_gate(candidate, payload)
         payload = self._apply_divergence_probe_guard(candidate, payload)
         payload = self._apply_reentry_constraints(candidate, payload)
+        payload = self._attach_outcome_feedback(candidate, payload)
         payload = self._apply_stock_execution_feedback(candidate, payload)
         payload = self._apply_portfolio_execution_guard(candidate, payload)
         payload = self._apply_false_strong_filter(payload)
@@ -154,6 +155,64 @@ class SignalCenterService(SignalCenterTailMixin):
         if action == "HOLD":
             payload["position_size_pct"] = 0
         return payload
+
+    def _attach_outcome_feedback(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        stock_code = str(candidate.get("stock_code") or "").strip()
+        if not stock_code:
+            return payload
+        normalized = dict(payload)
+        strategy_profile = normalized.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            strategy_profile = {}
+        strategy_profile = dict(strategy_profile)
+        profile_id = self._outcome_feedback_profile_id(strategy_profile)
+        checkpoint = normalized.get("decision_time") or candidate.get("checkpoint_at") or normalized.get("created_at")
+        feedback = self.db.get_latest_outcome_feedback(
+            OutcomeFeedbackFilters(
+                stock_code=stock_code,
+                profile_id=profile_id,
+                as_of_checkpoint_lte=str(checkpoint) if checkpoint else None,
+            )
+        )
+        if not feedback:
+            return normalized
+        summary = feedback.get("summary") if isinstance(feedback.get("summary"), dict) else {}
+        outcome_feedback = {
+            "profile_id": profile_id,
+            "feedback_score": feedback.get("feedback_score"),
+            "sample_count": feedback.get("sample_count"),
+            "latest_matured_at": feedback.get("latest_matured_at"),
+            "summary": summary,
+        }
+        strategy_profile["outcome_feedback"] = outcome_feedback
+        market_snapshot = strategy_profile.get("market_snapshot")
+        if not isinstance(market_snapshot, dict):
+            market_snapshot = {}
+        market_snapshot = dict(market_snapshot)
+        market_snapshot["outcome_feedback"] = outcome_feedback
+        strategy_profile["market_snapshot"] = market_snapshot
+        normalized["strategy_profile"] = strategy_profile
+        return normalized
+
+    def _outcome_feedback_profile_id(self, strategy_profile: dict[str, Any]) -> str:
+        selected = (
+            strategy_profile.get("selected_strategy_profile")
+            if isinstance(strategy_profile.get("selected_strategy_profile"), dict)
+            else {}
+        )
+        profile_id = str(
+            selected.get("id")
+            or strategy_profile.get("strategy_profile_id")
+            or strategy_profile.get("profile_id")
+            or ""
+        ).strip()
+        if profile_id:
+            return profile_id
+        try:
+            scheduler = self.db.get_scheduler_config()
+        except Exception:
+            scheduler = {}
+        return str(scheduler.get("strategy_profile_id") or "aggressive")
 
     @staticmethod
     def _is_default_db_file(db_file: str | Path) -> bool:

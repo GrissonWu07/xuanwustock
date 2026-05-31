@@ -17,6 +17,7 @@ from app.gateway.history import _action_history_rerun, _snapshot_history
 from app.gateway.live_sim import _action_live_sim_analyze_candidate, _action_live_sim_bulk_quant, _action_live_sim_delete_candidate, _action_live_sim_delete_position, _action_live_sim_reset, _action_live_sim_save, _action_live_sim_start, _action_live_sim_start_drill, _action_live_sim_stop, _live_signal_table, _live_trade_table, _snapshot_live_sim
 from app.gateway.market_technical_artifacts import ArtifactApiError, artifact_error_response, get_artifact_by_identity as _get_artifact_by_identity, get_artifact_by_ref as _get_artifact_by_ref, trace_id_from_request as _artifact_trace_id
 from app.gateway.monitor import _action_ai_monitor_analyze, _action_ai_monitor_delete, _action_ai_monitor_start, _action_ai_monitor_stop, _action_real_monitor_delete_rule, _action_real_monitor_refresh, _action_real_monitor_start, _action_real_monitor_stop, _action_real_monitor_update_rule, _snapshot_ai_monitor, _snapshot_real_monitor
+from app.gateway.outcomes import SignalOutcomeQuery, run_outcome_summary as _run_outcome_summary, score_live_matured_outcomes as _score_live_matured_outcomes, score_run_outcomes as _score_run_outcomes, signal_outcome_rows as _signal_outcome_rows
 from app.gateway.quant_universe import QuantUniverseDomainError, ignore_auto_entry as _quant_universe_ignore_auto_entry, promote_to_trial as _quant_universe_promote_to_trial, quant_universe_overview as _quant_universe_overview, quant_universe_settings as _quant_universe_settings, quant_universe_state as _quant_universe_state, restore_to_trial as _quant_universe_restore_to_trial, set_override as _quant_universe_set_override, update_quant_universe_settings as _quant_universe_update_settings
 import app.gateway.portfolio as _gateway_portfolio_module
 from app.gateway.portfolio import _action_portfolio_analyze as _action_portfolio_analyze_impl, _action_portfolio_delete_position as _action_portfolio_delete_position_impl, _action_portfolio_refresh as _action_portfolio_refresh_impl, _action_portfolio_refresh_indicators as _action_portfolio_refresh_indicators_impl, _action_portfolio_schedule_save as _action_portfolio_schedule_save_impl, _action_portfolio_schedule_start as _action_portfolio_schedule_start_impl, _action_portfolio_schedule_stop as _action_portfolio_schedule_stop_impl, _action_portfolio_update_position as _action_portfolio_update_position_impl, _portfolio_technical_snapshot as _portfolio_technical_snapshot, _snapshot_portfolio as _snapshot_portfolio_impl
@@ -332,6 +333,38 @@ def create_app(context: UIApiContext | None = None) -> FastAPI:
     @app.get("/api/v1/quant/signals/{signal_id}")
     def get_signal_detail(signal_id: str, source: str = "auto", refresh_market: bool = False) -> dict[str, Any]:
         return _find_signal_detail(api_context, signal_id, source=source, fetch_realtime_snapshot=bool(refresh_market))
+
+    @app.get("/api/v1/quant/outcomes/signals/{signal_id}")
+    def get_signal_outcomes(
+        signal_id: int,
+        source: str = "live",
+        runId: int | None = None,
+        runType: str | None = None,
+        horizon: int | None = None,
+    ) -> dict[str, Any]:
+        rows = _signal_outcome_rows(
+            api_context,
+            SignalOutcomeQuery(
+                signal_id=int(signal_id),
+                source=str(source),
+                run_id=runId,
+                run_type=runType,
+                horizon=horizon,
+            ),
+        )
+        return {"updatedAt": _now(), "items": rows}
+
+    @app.get("/api/v1/quant/outcomes/runs/{run_id}")
+    def get_run_outcome_summary(run_id: int, runType: str = "historical_replay", stockCode: str = "") -> dict[str, Any]:
+        return {"updatedAt": _now(), **_run_outcome_summary(api_context, run_id=int(run_id), run_type=runType, stock_code=stockCode or None)}
+
+    @app.post("/api/v1/quant/outcomes/runs/{run_id}/score")
+    def post_score_run_outcomes(run_id: int, runType: str = "historical_replay", limit: int = 500) -> dict[str, Any]:
+        return {"updatedAt": _now(), **_score_run_outcomes(api_context, run_id=int(run_id), run_type=runType, limit=limit)}
+
+    @app.post("/api/v1/quant/outcomes/live/score-matured")
+    def post_score_live_matured_outcomes(limit: int = 500) -> dict[str, Any]:
+        return {"updatedAt": _now(), **_score_live_matured_outcomes(api_context, limit=limit)}
 
     @app.get("/api/v1/quant/market-technical-artifacts")
     def get_market_technical_artifact_by_identity(

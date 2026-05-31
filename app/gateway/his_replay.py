@@ -6,6 +6,8 @@ from app.gateway.deps import *
 from app.gateway.context import UIApiContext
 from app.gateway.scheduler_config import _enabled_strategy_profile_id, _fee_rate_pct_text, _latest_replay_defaults, _normalize_dynamic_lookback, _normalize_dynamic_strength, _normalize_fee_rate, _payload_fee_rate
 from app.gateway.signal_table import build_signal_summary_row, build_signal_summary_table
+from app.quant_sim.db import OutcomeScoreFilters
+from app.quant_sim.outcome_scoring_entrypoints import summarize_outcome_rows
 from app.gateway.table_query import _normalize_replay_table_page, _normalize_replay_table_page_size, _replay_actions_for_filter, _replay_table_pagination
 from app.gateway.trades import (
     _replay_execution_summary_metrics,
@@ -545,6 +547,7 @@ def _build_his_replay_task_items(
             "strategyProfileName": _txt(item.get("selected_strategy_profile_name")),
             "strategyProfileVersionId": _txt(item.get("selected_strategy_profile_version_id")),
             "stockScope": _run_stock_scope_rows_from_metadata(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+            "outcomeSummary": _run_outcome_summary_from_metadata_or_rows(db, run_id, _txt(item.get("mode"), "historical_range"), run_metadata),
         }
         if is_live_drill:
             include_live_drill_details = detail_run_id is not None and run_id == int(detail_run_id) and status_text == "completed" and not has_active_live_drill
@@ -623,6 +626,22 @@ def _build_his_replay_task_items(
 
         task_items.append(task)
     return task_items
+
+
+def _run_outcome_summary_from_metadata_or_rows(
+    db: QuantSimDB,
+    run_id: int,
+    run_type: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    summary = metadata.get("outcome_summary") if isinstance(metadata.get("outcome_summary"), dict) else {}
+    if summary:
+        return summary
+    if not run_id:
+        return {}
+    normalized_run_type = "live_quant_drill" if run_type == "live_quant_drill" else "historical_replay"
+    rows = db.list_sim_run_signal_outcome_scores(run_id, normalized_run_type, OutcomeScoreFilters(limit=5000))
+    return summarize_outcome_rows(rows) if rows else {}
 
 
 def _build_his_replay_trade_table(db: QuantSimDB, run_id: int, table_query: dict[str, Any] | None = None) -> dict[str, Any]:

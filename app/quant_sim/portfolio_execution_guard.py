@@ -319,6 +319,7 @@ def evaluate_portfolio_execution_guard(
         "hot_zone": hot_zone_penalty,
         "failed_volume_confirmation": failed_volume_penalty,
         "stock_failure": _stock_failure_penalty(profile, resolved),
+        "outcome_feedback": _outcome_feedback_penalty(market),
         "portfolio_cooldown": float(resolved["portfolio_cooldown_penalty"]) if portfolio["cooldown_active"] else 0.0,
         "portfolio_drawdown": float(resolved["portfolio_drawdown_penalty"]) if portfolio["drawdown_guard_triggered"] else 0.0,
     }
@@ -354,6 +355,8 @@ def evaluate_portfolio_execution_guard(
         reasons.append("t1_new_buy_unconfirmed")
     reasons.extend(hot_zone_reasons)
     reasons.extend(failed_volume_reasons)
+    if penalties["outcome_feedback"] > 0:
+        reasons.append("outcome_feedback_penalty")
 
     status = "passed"
     multiplier = float(resolved[f"{tier.split('_')[0]}_multiplier"])
@@ -492,6 +495,20 @@ def _metrics(signal: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
             )
         ),
     }
+
+
+def _outcome_feedback_penalty(market: dict[str, Any]) -> float:
+    feedback = _dict(market.get("outcome_feedback"))
+    summary = _dict(feedback.get("summary")) or feedback
+    if not bool(summary.get("actionable")):
+        return 0.0
+    score = _float(
+        summary.get("outcome_feedback_score") or feedback.get("feedback_score"),
+        50.0,
+    )
+    if score >= 50.0:
+        return 0.0
+    return _clamp((50.0 - score) / 100.0, 0.0, 0.25)
 
 
 def _trend_confirmation(metrics: dict[str, Any], market: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:

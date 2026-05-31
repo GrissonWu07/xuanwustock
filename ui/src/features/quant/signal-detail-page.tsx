@@ -306,6 +306,13 @@ type SignalDetailPayload = {
     aiDynamicLookback: string;
     aiProfileSwitched: string;
   };
+  decisionProvenance?: {
+    decisionTime?: string;
+    marketSnapshot?: { status?: string; asOf?: string; snapshotAt?: string; timeframe?: string };
+    strategyProfile?: { id?: string; name?: string; version?: string };
+    stockAnalysisContext?: { status?: string; omittedReason?: string };
+    finalAction?: string;
+  };
   techVotes: VoteRow[];
   contextVotes: VoteRow[];
   technicalIndicators: IndicatorRow[];
@@ -313,7 +320,17 @@ type SignalDetailPayload = {
   voteOverview?: VoteOverview;
   parameterDetails?: ParameterDetailRow[];
   aiMonitor?: AiMonitorPayload;
+  outcomes?: SignalOutcomeRow[];
   strategyProfile?: StrategyProfileSnapshot;
+};
+
+type SignalOutcomeRow = {
+  horizon_checkpoints?: number;
+  outcome_score?: number;
+  status?: string;
+  reason_code?: string;
+  matured_at?: string;
+  metrics?: Record<string, unknown>;
 };
 
 const emptyAiMonitor: AiMonitorPayload = {
@@ -1182,6 +1199,7 @@ export function SignalDetailPage() {
     finalScore: decision.contextScore,
   };
   const parameterDetails = detail.parameterDetails ?? [];
+  const outcomeRows = detail.outcomes ?? [];
   const technicalRows = detail.technicalIndicators;
   const environmentRows = detail.contextVotes;
   const technicalParameterRows: ParameterDetailRow[] = [];
@@ -1709,6 +1727,23 @@ export function SignalDetailPage() {
     coldStartLine,
     t("链路：核心 {v0} -> 加权 {v1} -> 门控 {v2} -> 最终 {v3}", { v0: localizeDecisionCode(coreRuleAction), v1: localizeDecisionCode(weightedThresholdAction), v2: localizeDecisionCode(weightedGateAction), v3: localizeDecisionCode(finalActionForChain) }),
   ].filter(Boolean);
+  const provenance = detail.decisionProvenance;
+  const provenanceLines = provenance
+    ? [
+        t("证据：行情 {v0} · {v1}", {
+          v0: provenance.marketSnapshot?.status ?? "--",
+          v1: provenance.marketSnapshot?.asOf ?? provenance.marketSnapshot?.snapshotAt ?? "--",
+        }),
+        t("上下文：研究上下文 {v0} · {v1}", {
+          v0: provenance.stockAnalysisContext?.status ?? "--",
+          v1: provenance.stockAnalysisContext?.omittedReason ?? "--",
+        }),
+        t("Profile：{v0} · 版本 {v1}", {
+          v0: provenance.strategyProfile?.id ?? "--",
+          v1: provenance.strategyProfile?.version ?? "--",
+        }),
+      ]
+    : [];
   const filteredVoteRows = voteRows.filter((item) => {
     if (voteTrackFilter !== "all" && item.track !== voteTrackFilter) {
       return false;
@@ -1791,6 +1826,9 @@ export function SignalDetailPage() {
                     {keyDecisionLines.map((line) => (
                       <div key={line}>{line}</div>
                     ))}
+                    {provenanceLines.map((line) => (
+                      <div key={line}>{line}</div>
+                    ))}
                   </div>
                 </div>
                   <div className="signal-detail-summary-grid" data-testid="decision-summary-grid">
@@ -1865,6 +1903,36 @@ export function SignalDetailPage() {
                 </div>
               </div>
             </section>
+
+            {outcomeRows.length > 0 ? (
+              <section data-testid="signal-outcome-section">
+                <div className="section-card__header">
+                  <div>
+                    <h2 className="section-card__title">{t("信号 outcome")}</h2>
+                    <p className="section-card__description">{t("按预测窗口展示事后命中、风险和成熟状态。")}</p>
+                  </div>
+                </div>
+                <div className="signal-detail-summary-grid">
+                  {outcomeRows.map((item) => {
+                    const metrics = item.metrics ?? {};
+                    const primaryMetric =
+                      typeof metrics.mfe_pct === "number"
+                        ? t("MFE {v0}% / MAE {v1}%", { v0: _formatPlainNumber(metrics.mfe_pct, 2), v1: _formatPlainNumber(typeof metrics.mae_pct === "number" ? metrics.mae_pct : null, 2) })
+                        : typeof metrics.avoided_drawdown_pct === "number"
+                        ? t("避免回撤 {v0}% / 错过 {v1}%", { v0: _formatPlainNumber(metrics.avoided_drawdown_pct, 2), v1: _formatPlainNumber(typeof metrics.missed_upside_pct === "number" ? metrics.missed_upside_pct : null, 2) })
+                        : t("原因 {v0}", { v0: String(item.reason_code || "--") });
+                    return (
+                      <div className="signal-detail-summary-stat" key={`${item.horizon_checkpoints}-${item.reason_code}`}>
+                        <span className="signal-detail-summary-stat__label">{t("{v0} checkpoint", { v0: String(item.horizon_checkpoints ?? "--") })}</span>
+                        <strong className="signal-detail-summary-stat__value">{_formatPlainNumber(item.outcome_score ?? null, 2)}</strong>
+                        <span className="signal-detail-summary-stat__label">{`${localizeDecisionCode(item.status || "--")} · ${item.matured_at || item.reason_code || "--"}`}</span>
+                        <span className="signal-detail-summary-stat__label">{primaryMetric}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
 
             <section>
               <div className="signal-detail-split-layout signal-detail-split-layout--gates" data-testid="gate-split-layout">

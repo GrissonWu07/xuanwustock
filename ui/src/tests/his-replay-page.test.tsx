@@ -78,6 +78,30 @@ const initialSnapshot = {
       strategyProfileId: "aggressive",
       strategyProfileName: "积极",
       strategyProfileVersionId: "3",
+      outcomeSummary: {
+        total_count: 9,
+        mature_count: 6,
+        skipped_count: 3,
+        buy_avg_score: 58.4,
+        sell_avg_score: 74.1,
+        bad_buy_count: 2,
+        good_sell_count: 1,
+      },
+      checkpointCoverage: {
+        status: "ready",
+        stockCount: 2,
+        checkpointCount: 12,
+        exactCount: 20,
+        nearestCount: 4,
+        missingCount: 0,
+        skippedCount: 0,
+      },
+      contextParity: {
+        stockAnalysisContext: {
+          status: "omitted",
+          omittedReason: "historical_replay_asof_safety",
+        },
+      },
       holdings: [],
       terminalLiquidation: {
         fee_total: 25.44,
@@ -415,6 +439,8 @@ describe("HisReplayPage", () => {
     renderHisReplayPage(client);
 
     expect(await screen.findByLabelText("已选回放任务详情")).toBeInTheDocument();
+    expect(screen.getByText("数据覆盖：精确 20 · 最近 4 · 缺失 0 · 跳过 0")).toBeInTheDocument();
+    expect(screen.getByText("上下文差异：研究上下文 omitted · historical_replay_asof_safety")).toBeInTheDocument();
     expect(screen.queryByText("生命周期趋势")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("生命周期趋势图")).not.toBeInTheDocument();
     expect(screen.queryByText("入池事件")).not.toBeInTheDocument();
@@ -632,6 +658,11 @@ describe("HisReplayPage", () => {
     expect(within(section).getByText("忽略SELL")).toBeInTheDocument();
     expect(within(section).queryByText("其他")).not.toBeInTheDocument();
     expect(within(section).queryByText("清算后现金")).not.toBeInTheDocument();
+    const outcomeSection = screen.getByLabelText("信号 outcome 复盘");
+    expect(within(outcomeSection).getByText("已评分信号")).toBeInTheDocument();
+    expect(within(outcomeSection).getByText("9")).toBeInTheDocument();
+    expect(within(outcomeSection).getByText("SELL 平均分")).toBeInTheDocument();
+    expect(within(outcomeSection).getByText("74.1")).toBeInTheDocument();
     expect(screen.getByText("盈亏构成")).toBeInTheDocument();
     expect(screen.getByText("按股票归集本次任务的已实现盈亏、期末浮动盈亏、成本、到账和费用，用来判断收益主要来自哪些标的。")).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "301381 宏工科技" }).length).toBeGreaterThan(0);

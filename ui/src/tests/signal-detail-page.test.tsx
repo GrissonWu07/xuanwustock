@@ -59,6 +59,13 @@ const mockPayload = {
     aiDynamicLookback: "48",
     aiProfileSwitched: "是",
   },
+  decisionProvenance: {
+    decisionTime: "2026-04-23 16:39:45",
+    marketSnapshot: { status: "ready", asOf: "current_price=106.62", snapshotAt: "2026-04-23 16:39:45", timeframe: "30m" },
+    strategyProfile: { id: "conservative", name: "保守", version: "2" },
+    stockAnalysisContext: { status: "omitted", omittedReason: "historical_replay_asof_safety" },
+    finalAction: "HOLD",
+  },
   techVotes: [],
   contextVotes: [
     {
@@ -351,6 +358,8 @@ describe("SignalDetailPage", () => {
     expect(screen.getByText("市场：牛市 · 风格 稳重 · 基本面 中性")).toBeInTheDocument();
     expect(screen.getByText("双轨：技术偏空(-0.0088) · 环境偏多(+0.0338) · 置信度 0.6587")).toBeInTheDocument();
     expect(screen.getByText("链路：核心 Hold -> 加权 Hold -> 门控 Hold -> 最终 Hold")).toBeInTheDocument();
+    expect(screen.getByText("证据：行情 ready · current_price=106.62")).toBeInTheDocument();
+    expect(screen.getByText("上下文：研究上下文 omitted · historical_replay_asof_safety")).toBeInTheDocument();
     expect(screen.queryByText("0.0")).not.toBeInTheDocument();
     expect(screen.queryByText("建议保持仓位")).not.toBeInTheDocument();
   });
@@ -386,6 +395,36 @@ describe("SignalDetailPage", () => {
     expect(screen.queryByText("阈值参数")).not.toBeInTheDocument();
     expect(screen.queryByText("技术信号")).not.toBeInTheDocument();
     expect(screen.queryByText("环境信号")).not.toBeInTheDocument();
+  });
+
+  it("renders signal outcome rows with mature metrics", async () => {
+    const outcomePayload = JSON.parse(JSON.stringify(mockPayload));
+    outcomePayload.outcomes = [
+      {
+        horizon_checkpoints: 5,
+        outcome_score: 78.25,
+        status: "mature",
+        reason_code: "ok",
+        matured_at: "2026-04-24 13:30:00",
+        metrics: {
+          mfe_pct: 6.2,
+          mae_pct: -1.1,
+          target_hit: true,
+        },
+      },
+    ];
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: async () => outcomePayload,
+    } as Response);
+
+    renderSignalDetailPage();
+
+    expect(await screen.findByTestId("signal-outcome-section")).toBeInTheDocument();
+    expect(screen.getByText("信号 outcome")).toBeInTheDocument();
+    expect(screen.getByText("78.25")).toBeInTheDocument();
+    expect(screen.getByText(/MFE 6\.20% \/ MAE -1\.10%/)).toBeInTheDocument();
+    expect(screen.getByText(/2026-04-24 13:30:00/)).toBeInTheDocument();
   });
 
   it("uses split desktop layouts for decision, gate, and contribution sections", async () => {

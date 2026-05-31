@@ -8,6 +8,7 @@ import { usePageData } from "../../lib/use-page-data";
 import type { ReplayCapitalPoolSnapshot, ReplaySnapshot, SummaryMetric, TableRow, TableSection } from "../../lib/page-models";
 import { summarizeTaskStatuses, toDisplayText } from "./quant-display";
 import { QuantTableSectionCard } from "./quant-table-section";
+import { OutcomeSummaryCard } from "./outcome-summary-card";
 import { ReplayCapitalPoolPanel } from "./replay-capital-pool-panel";
 import { t } from "../../lib/i18n";
 
@@ -1324,6 +1325,24 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
                         <div className="summary-item__body">{t("结束时间：{v0}", { v0: selectedTaskEndedAt })}</div>
                         <div className="summary-item__body">{t("最近检查点：{v0}", { v0: selectedTaskLatestCheckpointAt })}</div>
                         <div className="summary-item__body">{t("已写入检查点：{v0}", { v0: selectedTaskCheckpointCount })}</div>
+                        {selectedTask.checkpointCoverage ? (
+                          <div className="summary-item__body">
+                            {t("数据覆盖：精确 {v0} · 最近 {v1} · 缺失 {v2} · 跳过 {v3}", {
+                              v0: String(selectedTask.checkpointCoverage.exactCount ?? 0),
+                              v1: String(selectedTask.checkpointCoverage.nearestCount ?? 0),
+                              v2: String(selectedTask.checkpointCoverage.missingCount ?? 0),
+                              v3: String(selectedTask.checkpointCoverage.skippedCount ?? 0),
+                            })}
+                          </div>
+                        ) : null}
+                        {selectedTask.contextParity?.stockAnalysisContext ? (
+                          <div className="summary-item__body">
+                            {t("上下文差异：研究上下文 {v0} · {v1}", {
+                              v0: selectedTask.contextParity.stockAnalysisContext.status ?? "--",
+                              v1: selectedTask.contextParity.stockAnalysisContext.omittedReason ?? "--",
+                            })}
+                          </div>
+                        ) : null}
                         <div className="summary-item__body">{t("回放节点：{v0}", { v0: selectedTaskProgressTotal > 0 ? selectedTaskProgressTotal : selectedTaskCheckpointCount })}</div>
                         <div className="summary-item__body">{t("区间：{v0}", { v0: selectedTaskRange })}</div>
                         <div className="summary-item__body">{t("模式：{v0} · 粒度：{v1} · 市场：{v2}", { v0: selectedTaskModeLabel, v1: selectedTaskTimeframe, v2: selectedTaskMarket })}</div>
@@ -1359,6 +1378,8 @@ export function HisReplayPage({ client }: HisReplayPageProps) {
           {selectedTaskCapitalPool ? (
             <ReplayCapitalPoolPanel capitalPool={selectedTaskCapitalPool} />
           ) : null}
+
+          <OutcomeSummaryCard summary={selectedTask?.outcomeSummary} />
 
           {executionCostSummary.length ? (
             <WorkbenchCard>

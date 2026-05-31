@@ -86,6 +86,32 @@ export type TableRow = {
   technical_snapshot_prepared_at?: string;
   technical_snapshot_row_count?: number;
   technical_snapshot_indicator_version?: string;
+  preparedEvidence?: {
+    id?: string;
+    status?: string;
+    quantTechnical?: {
+      candidateScore?: number;
+      candidateConfidence?: number;
+      breakdown?: Record<string, unknown>;
+    };
+    technicalSnapshot?: {
+      status?: string;
+      ready?: boolean;
+      missingFields?: string[];
+      asOf?: string;
+      preparedAt?: string;
+    };
+    entryGate?: {
+      status?: string;
+      passed?: boolean | null;
+      reasonCode?: string;
+    };
+    scoreSemantics?: Record<string, string>;
+  };
+  scoreSemantics?: Record<string, string>;
+  tradeProvenance?: Record<string, unknown>;
+  decisionProvenance?: Record<string, unknown>;
+  lifecycle?: Record<string, unknown>;
 };
 
 export type TableSection = {
@@ -124,6 +150,20 @@ export type ActionTile = {
 };
 
 export type TaskStatus = "idle" | "queued" | "running" | "completed" | "failed";
+
+export type SignalOutcomeSummary = {
+  total_count?: number;
+  mature_count?: number;
+  skipped_count?: number;
+  buy_count?: number;
+  sell_count?: number;
+  buy_avg_score?: number;
+  sell_avg_score?: number;
+  bad_buy_count?: number;
+  good_sell_count?: number;
+  top_positive?: Array<Record<string, unknown>>;
+  top_negative?: Array<Record<string, unknown>>;
+};
 
 export type QuantAutoEntrySummary = {
   attempted?: number;
@@ -339,6 +379,7 @@ export type LiveSimSnapshot = {
     systemTimezone?: string;
     market?: string;
     updatedAt?: string;
+    updatedAtSystem?: string;
     lastRunSystem?: string;
     nextRunSystem?: string;
   };
@@ -390,6 +431,7 @@ export type LiveSimSnapshot = {
     selected?: string[];
   };
   tradeCostSummary?: SummaryMetric[];
+  outcomeSummary?: SignalOutcomeSummary;
   capitalPool?: ReplayCapitalPool;
 };
 
@@ -562,6 +604,24 @@ export type ReplaySnapshot = {
     strategyProfileId?: string;
     strategyProfileName?: string;
     strategyProfileVersionId?: string;
+    checkpointCoverage?: {
+      status?: string;
+      stockCount?: number;
+      checkpointCount?: number;
+      exactCount?: number;
+      nearestCount?: number;
+      missingCount?: number;
+      skippedCount?: number;
+      readyCount?: number;
+      coverageCount?: number;
+      failureReasons?: string[];
+    };
+    contextParity?: {
+      stockAnalysisContext?: {
+        status?: string;
+        omittedReason?: string;
+      };
+    };
     holdings?: TableRow[];
     topWinningTrades?: TableRow[];
     topLosingTrades?: TableRow[];
@@ -570,6 +630,7 @@ export type ReplaySnapshot = {
     capitalPool?: ReplayCapitalPool;
     terminalLiquidation?: Record<string, string | number | null | undefined>;
     stockScope?: TableRow[];
+    outcomeSummary?: SignalOutcomeSummary;
     lifecycleSummary?: {
       initialQuantCount: number;
       candidateEventCount: number;

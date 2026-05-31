@@ -373,3 +373,17 @@ class ArtifactReadResult:
     reason_code: str
     source_status: str = "missing"
     missing_fields: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ArtifactWindowResult:
+    """Ordered future artifact window for one signal checkpoint."""
+
+    source: MarketTechnicalArtifact | None
+    window: list[MarketTechnicalArtifact]
+    reason_code: str
+    requested_horizon: int
+
+    @property
+    def mature(self) -> bool:
+        return self.source is not None and len(self.window) >= self.requested_horizon
