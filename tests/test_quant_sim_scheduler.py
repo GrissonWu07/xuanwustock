@@ -130,6 +130,33 @@ def test_scheduler_run_once_skips_when_market_is_closed(tmp_path, monkeypatch):
     assert scheduler.engine.candidate_pool.db.get_signals(limit=10) == []
 
 
+def test_scheduler_applies_corporate_actions_before_outcome_scoring(tmp_path, monkeypatch):
+    order: list[str] = []
+
+    class FakeCorporateActionApplicationService:
+        def apply_due_actions(self, command):
+            order.append("corporate_actions")
+            assert command.scope.scope_type == "live"
+            assert command.scope.scope_id == "live"
+            return SimpleNamespace(applied_count=2)
+
+    scheduler = QuantSimScheduler(db_file=tmp_path / "app.quant_sim.db")
+    monkeypatch.setattr(scheduler, "_is_trading_time", lambda market: True)
+    monkeypatch.setattr(
+        "app.quant_sim.scheduler.CorporateActionApplicationService",
+        lambda: FakeCorporateActionApplicationService(),
+    )
+    monkeypatch.setattr(
+        "app.quant_sim.scheduler.score_signal_batch",
+        lambda request: order.append("outcome_scoring") or {"scored_signals": 0, "feedback_count": 0},
+    )
+
+    result = scheduler.run_once()
+
+    assert order[:2] == ["corporate_actions", "outcome_scoring"]
+    assert result["corporate_actions_applied"] == 2
+
+
 def test_scheduler_tracks_positions_and_generates_followup_signals(tmp_path, monkeypatch):
     db_file = tmp_path / "app.quant_sim.db"
     artifact_ref = _seed_live_artifact(db_file, "600000", price=10.4)

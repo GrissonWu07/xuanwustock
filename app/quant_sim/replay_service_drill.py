@@ -226,6 +226,8 @@ class LiveQuantDrillMixin:
             market=str(context.get("market") or "CN"),
             start_dt=context.get("start_dt") or checkpoint,
             end_dt=context.get("end_dt") or checkpoint,
+            run_id=run_id,
+            scope_type="live_quant_drill",
         )
         candidate_processing = self._process_live_quant_drill_candidate_events(
             run_id=run_id,

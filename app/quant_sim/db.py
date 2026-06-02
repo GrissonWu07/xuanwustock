@@ -115,6 +115,22 @@ class OutcomeFeedbackFilters:
     limit: int | None = 200
 
 
+@dataclass(frozen=True)
+class CorporateActionApplicationInput:
+    stock_code: str
+    ex_date: str
+    record_date: str | None = None
+    bonus_share_ratio: float = 0.0
+    cash_dividend_per_share: float = 0.0
+    description: str | None = None
+    applied_at: str | datetime | None = None
+    scope_type: str = "live"
+    scope_id: str = "live"
+    market: str = "CN"
+    action_ref: str | None = None
+    action_type: str = "mixed_dividend_share"
+
+
 def normalize_strategy_profile_id(profile_id: Any) -> str:
     return str(profile_id or "").strip()
 
@@ -644,9 +660,60 @@ class QuantSimDB:
         )
         cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS sim_corporate_action_applications (
+            CREATE TABLE IF NOT EXISTS corporate_action_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action_ref TEXT NOT NULL UNIQUE,
+                stock_code TEXT NOT NULL,
+                market TEXT NOT NULL DEFAULT 'CN',
+                action_type TEXT NOT NULL,
+                ex_date TEXT NOT NULL,
+                record_date TEXT NOT NULL DEFAULT '',
+                bonus_share_ratio REAL DEFAULT 0,
+                cash_dividend_per_share REAL DEFAULT 0,
+                description TEXT,
+                provider TEXT,
+                source_status TEXT NOT NULL DEFAULT 'ready',
+                reason_code TEXT NOT NULL DEFAULT 'ok',
+                data_version TEXT NOT NULL DEFAULT 'ca_v1',
+                raw_json TEXT NOT NULL DEFAULT '{}',
+                fetched_at TEXT,
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
+                UNIQUE(stock_code, market, action_type, ex_date, record_date, data_version)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS corporate_action_coverage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 stock_code TEXT NOT NULL,
+                market TEXT NOT NULL DEFAULT 'CN',
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                source_status TEXT NOT NULL,
+                reason_code TEXT NOT NULL DEFAULT 'ok',
+                facts_count INTEGER DEFAULT 0,
+                checked_at TEXT NOT NULL,
+                retry_after TEXT,
+                valid_until TEXT,
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
+                UNIQUE(stock_code, market, start_date, end_date, provider)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sim_corporate_action_applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_type TEXT NOT NULL DEFAULT 'live',
+                scope_id TEXT NOT NULL DEFAULT 'live',
+                stock_code TEXT NOT NULL,
+                market TEXT NOT NULL DEFAULT 'CN',
+                action_ref TEXT NOT NULL,
+                action_type TEXT NOT NULL DEFAULT 'mixed_dividend_share',
                 ex_date TEXT NOT NULL,
                 record_date TEXT,
                 bonus_share_ratio REAL DEFAULT 0,
@@ -654,9 +721,23 @@ class QuantSimDB:
                 description TEXT,
                 applied_at TEXT NOT NULL,
                 created_at TEXT DEFAULT (datetime('now','localtime')),
-                UNIQUE(stock_code, ex_date)
+                UNIQUE(scope_type, scope_id, stock_code, market, action_ref)
             )
             """
+        )
+        self._ensure_column(cursor, "sim_corporate_action_applications", "scope_type", "TEXT NOT NULL DEFAULT 'live'")
+        self._ensure_column(cursor, "sim_corporate_action_applications", "scope_id", "TEXT NOT NULL DEFAULT 'live'")
+        self._ensure_column(cursor, "sim_corporate_action_applications", "market", "TEXT NOT NULL DEFAULT 'CN'")
+        self._ensure_column(cursor, "sim_corporate_action_applications", "action_ref", "TEXT")
+        self._ensure_column(cursor, "sim_corporate_action_applications", "action_type", "TEXT NOT NULL DEFAULT 'mixed_dividend_share'")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_corporate_action_facts_lookup ON corporate_action_facts(stock_code, market, ex_date, action_ref)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_corporate_action_coverage_lookup ON corporate_action_coverage(stock_code, market, provider, start_date, end_date)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sim_corporate_action_scope ON sim_corporate_action_applications(scope_type, scope_id, stock_code, market, action_ref)"
         )
         cursor.execute(
             """
@@ -4493,16 +4574,47 @@ class QuantSimDB:
         cash_dividend_per_share: float = 0.0,
         description: str | None = None,
         applied_at: str | datetime | None = None,
+        scope_type: str = "live",
+        scope_id: str = "live",
+        market: str = "CN",
+        action_ref: str | None = None,
+        action_type: str = "mixed_dividend_share",
     ) -> bool:
-        code = str(stock_code or "").strip()
-        ex_date_text = str(ex_date or "").strip()
+        return self.apply_corporate_action_command(
+            CorporateActionApplicationInput(
+                stock_code=stock_code,
+                ex_date=ex_date,
+                record_date=record_date,
+                bonus_share_ratio=bonus_share_ratio,
+                cash_dividend_per_share=cash_dividend_per_share,
+                description=description,
+                applied_at=applied_at,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                market=market,
+                action_ref=action_ref,
+                action_type=action_type,
+            )
+        )
+
+    def apply_corporate_action_command(self, command: CorporateActionApplicationInput) -> bool:
+        code = str(command.stock_code or "").strip()
+        ex_date_text = str(command.ex_date or "").strip()
         if not code or not ex_date_text:
             return False
-        share_ratio = max(float(bonus_share_ratio or 0.0), 0.0)
-        cash_per_share = max(float(cash_dividend_per_share or 0.0), 0.0)
+        share_ratio = max(float(command.bonus_share_ratio or 0.0), 0.0)
+        cash_per_share = max(float(command.cash_dividend_per_share or 0.0), 0.0)
         if share_ratio <= 0 and cash_per_share <= 0:
             return False
-        applied_at_text = self._format_datetime(self._ensure_datetime(applied_at))
+        applied_at_text = self._format_datetime(self._ensure_datetime(command.applied_at))
+        scope_type = str(command.scope_type or "live").strip() or "live"
+        scope_id = str(command.scope_id or "live").strip() or "live"
+        market = str(command.market or "CN").strip().upper() or "CN"
+        action_type = str(command.action_type or "mixed_dividend_share").strip() or "mixed_dividend_share"
+        record_date = str(command.record_date or "").strip() or None
+        action_ref = str(command.action_ref or "").strip() or (
+            f"ca:legacy:{market}:{code}:{action_type}:{ex_date_text}:{record_date or ''}:{share_ratio:g}:{cash_per_share:g}"
+        )
 
         conn = self._connect()
         cursor = conn.cursor()
@@ -4511,12 +4623,26 @@ class QuantSimDB:
                 """
                 INSERT INTO sim_corporate_action_applications
                 (
-                    stock_code, ex_date, record_date, bonus_share_ratio,
+                    scope_type, scope_id, stock_code, market, action_ref, action_type,
+                    ex_date, record_date, bonus_share_ratio,
                     cash_dividend_per_share, description, applied_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (code, ex_date_text, record_date, share_ratio, cash_per_share, description, applied_at_text),
+                (
+                    scope_type,
+                    scope_id,
+                    code,
+                    market,
+                    action_ref,
+                    action_type,
+                    ex_date_text,
+                    record_date,
+                    share_ratio,
+                    cash_per_share,
+                    command.description,
+                    applied_at_text,
+                ),
             )
         except sqlite3.IntegrityError:
             conn.rollback()

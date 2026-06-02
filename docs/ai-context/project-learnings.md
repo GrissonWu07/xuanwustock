@@ -7,6 +7,7 @@ Use this file to keep concise reusable lessons from completed changes.
 ## Patterns
 
 - 量化系统中需要跨实时、历史回放、演练复用的行情技术事实，应先落为带 `artifact_ref` 的事实层，再让候选、信号、页面和诊断读取同一个 reader。这样能避免 runtime snapshot、candidate payload、signal market snapshot 和 provider cache 之间出现口径漂移。
+- 公司行为、除权除息、送转和现金分红属于持仓会计事实，不应并入行情技术 artifact；应使用独立事实表、覆盖表和 scoped application ledger，让 live、historical replay、live quant drill 共用服务但独立记录应用状态。
 - 业务时间持久化应在项目自有 DB/API/artifact 边界统一格式化；provider/local cache 可以保留来源原始格式，避免为了业务时间语义重写 Parquet 缓存。
 - 发现来源分、量化技术入池分、信号融合分和交易执行诊断需要分层命名。来源分可以作为审计信息保留，但自动入池、生命周期和 UI 入池标签必须读取 prepared evidence / artifact-backed candidate score。
 - 信号 outcome 这类事后质量评分应作为成熟反馈单独持久化和消费：`candidate_score` 仍表示事前技术入池质量，`outcome_feedback_score` 表示同股历史信号成熟后的反馈，二者不能互相覆盖。

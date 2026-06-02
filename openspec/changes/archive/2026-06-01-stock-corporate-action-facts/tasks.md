@@ -1,0 +1,300 @@
+# Tasks: 公司行为事实层与 local-first 会计应用
+
+## Global Implementation Constraints
+
+- Implement only behavior approved by this change. No old DB migration compatibility, no new public API, no UI changes, no strategy changes.
+- Use existing `QuantSimDB` / `DatabaseRuntime`; do not introduce a new connection pool. Pool size constraints remain owned by existing runtime.
+- Use named dataclasses/DTOs when more than five inputs are needed.
+- Keep generated/modified code files under 1000 lines; prefer `app/quant_sim/corporate_action_facts.py` for new logic instead of expanding `db.py`.
+- Logs must include safe trace context where available and must not include raw provider payload, credentials, tokens, or sensitive account snapshots.
+- Test third-party integrations with fake provider/fixtures only; do not assert Akshare/TDX correctness or availability.
+- Changed/affected code requires at least 85% coverage and requirement-to-test mapping.
+
+## 1. 公司行为事实模型、schema 与持久化
+
+- [x] 1.1 新增公司行为事实模型和 deterministic `action_ref`
+  - Requirements: 股票级公司行为事实持久化；公司行为 local-first 获取与覆盖诊断。
+  - Design refs: Data Design, Method / Parameter Plan, Error Handling。
+  - Design-review evidence: `.agent/workdir/sp-openspec/stock-corporate-action-facts/design-review.md` closed backend/data boundary findings with zero unresolved blockers.
+  - Applicable rules: PIR-002, PIR-006, PIR-010, PIR-011, PIR-012, PY-002, PY-012, PY-013, TEST-003.
+  - Reuse/common logic impact: new narrow data model reused by provider, store and application service; no duplicate model per flow.
+  - Target paths: `app/quant_sim/corporate_action_facts.py`。
+  - Scope/fallback: 只支持 A 股第一阶段 action types；unsupported/raw-only 只持久化不应用；不做旧格式兼容。
+  - Parameter plan: use `CorporateActionFact`, `CorporateActionCoverage`, `CorporateActionQuery`, `CorporateActionScope`, `CorporateActionApplicationCommand`; no public method >5 inputs.
+  - Logging/trace: no provider raw payload in logs; log only action_ref/stock/market/status/reason.
+  - Encoding: Chinese provider description stored/readable UTF-8; reason codes ASCII.
+  - DB impact: no direct schema mutation in this task.
+  - Confirmation: backend confirmed; UI/API/config not applicable; E2E covered by task 6.2.
+  - Standalone verification: pytest model tests using this task's parameter file.
+  - Real E2E: not applicable to isolated model task; covered by task 6.2 after integration.
+  - Requirement-to-test mapping: supported fact persistence -> deterministic ref test; unsupported action -> persisted-not-applied model test; missing record_date -> normalized identity test.
+  - Test boundary: project model normalization and deterministic ref only, not provider correctness.
+  - Validation: unit tests for deterministic `action_ref`, supported/unsupported action type, missing `record_date`, normalized decimal terms.
+  - Coverage target: >=85% for new module lines touched by this task.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-1-1-corporate-action-fact-model.json`。
+  - Audits: Requirement Counterexample Matrix for action types; Evidence Capture Timing Audit for `action_ref`; Deterministic Sort Audit not applicable.
+  - Review gates: Alignment Review + Security Review.
+
+- [x] 1.2 新增数据库 schema 和 scoped application ledger 字段
+  - Requirements: 股票级公司行为事实持久化；事实层与应用账本作用域隔离。
+  - Design refs: Database Decision, Data Impact, Compatibility / Migration。
+  - Design-review evidence: `design-review.md` confirms DB need, scoped ledger, SQLite/MySQL constraints, and no old migration compatibility.
+  - Applicable rules: PIR-003, PIR-010, CFG-005, CFG-006, TEST-011.
+  - Reuse/common logic impact: extend existing `QuantSimDB` initialization and application ledger; no new DB runtime/pool.
+  - Target paths: `app/quant_sim/db.py`。
+  - Scope/fallback: database reset acceptable; no migration compatibility path; guarded schema initialization for local SQLite.
+  - Parameter plan: schema helper methods only; no broad dict parameters for new public behavior.
+  - Logging/trace: schema initialization logs only safe table names on error.
+  - Encoding: SQL identifiers ASCII; text columns UTF-8 compatible.
+  - DB impact: create `corporate_action_facts`, `corporate_action_coverage`; add scoped fields to `sim_corporate_action_applications`; use existing `QuantSimDB` / `DatabaseRuntime`; no new pool.
+  - SQLite/MySQL: avoid SQLite-only upsert in new service SQL unless behind existing dialect/runtime abstraction; review SQL for MySQL-compatible columns and indexes.
+  - Confirmation: backend confirmed; config no user-facing changes.
+  - Standalone verification: create temporary `QuantSimDB`, inspect schema and scoped uniqueness behavior.
+  - Real E2E: not applicable to schema-only task; covered by task 6.2 integrated run.
+  - Requirement-to-test mapping: fact persistence table -> table/column test; coverage table -> table/column test; scoped ledger -> replay/live same action_ref test.
+  - Test boundary: project DB schema and scoped uniqueness only.
+  - Validation: SQLite schema test verifies tables/columns/indexes; test two replay scopes and live scope can each record same `action_ref` independently.
+  - Coverage target: affected db helpers >=85% where practical; record skip if `db.py` aggregate coverage cannot be isolated.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-1-2-corporate-action-schema.json`。
+  - Audits: Requirement Counterexample Matrix for scope variants; Broad-Qualifier Audit for live/replay/drill; Evidence Capture Timing Audit for application ledger fields.
+  - Review gates: Alignment Review + Security Review.
+
+## 2. Local-first 公司行为读取与诊断
+
+- [x] 2.1 实现 provider adapter + local-first fact service
+  - Requirements: 公司行为 local-first 获取与覆盖诊断；测试不验证第三方 provider 正确性。
+  - Design refs: Local-first Semantics, Integration Impact, Error Handling。
+  - Design-review evidence: `design-review.md` closes provider_failed retry, local-hit coverage and partial fetch findings.
+  - Applicable rules: PIR-006, PIR-007, PIR-010, PIR-011, PY-005, PY-006, PY-007, TEST-003, TEST-009, TEST-013.
+  - Reuse/common logic impact: wraps existing Akshare normalizer; removes direct provider use from replay/live checkpoint paths.
+  - Target paths: `app/quant_sim/corporate_actions.py`, `app/quant_sim/corporate_action_facts.py`。
+  - Scope/fallback: no public force refresh; provider failure is transient; empty range is stable for historical ranges.
+  - Parameter plan: service accepts `CorporateActionQuery` and provider dependency object.
+  - Logging/trace: log local hit, remote fetch, provider failure with trace_id when available; no raw provider payload.
+  - Encoding: fixture descriptions remain readable UTF-8.
+  - DB impact: reads/writes facts and coverage via existing runtime.
+  - Confirmation: backend confirmed; E2E in task 6.2.
+  - Standalone verification: fake-provider pytest verifies each local-first branch and retry expiry.
+  - Real E2E: provider local-first effect observed in task 6.2 drill rerun.
+  - Requirement-to-test mapping: local_hit -> no provider call; partial_missing -> uncovered subrange call; empty_range -> no provider call; provider_failed -> retry metadata and expired retry.
+  - Test boundary: fake provider controls responses/failures; no live Akshare dependency.
+  - Validation: facts+coverage local hit skips provider; partial coverage fetches only uncovered sub-range; empty range skips provider; provider failure creates retry metadata and is not empty; expired `retry_after`/`valid_until` permits a new fake-provider attempt.
+  - Coverage target: >=85% for new service code.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-2-1-local-first-provider.json`。
+  - Audits: Decision Chain Trace for local-first path; Masked-Test Analysis proving provider skip is not masked by empty input; Evidence Capture Timing Audit for coverage status/retry.
+  - Review gates: Alignment Review + Security Review.
+
+- [x] 2.2 返回公司行为 source diagnostics summary
+  - Requirements: 公司行为验证入口和性能反馈。
+  - Design refs: Logging / Traceability, Standalone Verification Plan。
+  - Design-review evidence: `design-review.md` requires source status and diagnostics for E2E/performance explanation.
+  - Applicable rules: PIR-007, PIR-011, PY-007, TEST-003, TEST-010B.
+  - Reuse/common logic impact: shared diagnostics result consumed by replay/drill/live callers; no per-caller summary logic.
+  - Target paths: `app/quant_sim/corporate_action_facts.py`, replay/drill/live callers。
+  - Scope/fallback: diagnostic summary is internal/job evidence; no public API.
+  - Parameter plan: return named result object, not vague untyped dict for new service boundary.
+  - Logging/trace: summary may be logged with counts only.
+  - Encoding: reason codes ASCII.
+  - DB impact: none beyond coverage/fact writes in task 2.1.
+  - Confirmation: backend confirmed; UI/API not applicable.
+  - Standalone verification: pytest diagnostics aggregation with fake statuses.
+  - Real E2E: task 6.2 collects summary counts from integrated run.
+  - Requirement-to-test mapping: each source status -> count and reason_code assertion; provider payload exclusion -> summary field assertion.
+  - Test boundary: project diagnostic aggregation.
+  - Validation: tests assert `local_hit`, `remote_fetched`, `empty_range`, `provider_failed`, `partial_missing` counts and reason codes.
+  - Coverage target: >=85% for diagnostic aggregation.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-2-2-corporate-action-diagnostics.json`。
+  - Audits: Evidence Capture Timing Audit for source summary; Broad-Qualifier Audit for all source statuses.
+  - Review gates: Alignment Review + Security Review.
+
+## 3. Scoped due action 会计应用
+
+- [x] 3.1 实现 `CorporateActionApplicationService.apply_due_actions()`
+  - Requirements: Due 公司行为统一会计应用；事实层与应用账本作用域隔离。
+  - Design refs: Due Action Application Order, Deterministic Sort Audit。
+  - Design-review evidence: `design-review.md` closes due action `ex_date <= checkpoint_date`, scope idempotency and deterministic order.
+  - Applicable rules: PIR-006, PIR-010, PIR-011, PY-012, TEST-010A, TEST-010B.
+  - Reuse/common logic impact: orchestrates existing DB accounting application; no duplicated lot/slot/cash math.
+  - Target paths: `app/quant_sim/corporate_action_facts.py`, `app/quant_sim/db.py`。
+  - Scope/fallback: apply supported facts only; unsupported skipped with reason; due means `ex_date <= checkpoint_date` and not applied in current scope.
+  - Parameter plan: use `CorporateActionApplicationCommand` and `CorporateActionScope`.
+  - Logging/trace: log applied/already_applied/unsupported with action_ref/scope only.
+  - Encoding: descriptions preserved; reason codes ASCII.
+  - DB impact: reads facts/coverage and scoped application ledger; calls accounting adjustment.
+  - Confirmation: backend confirmed live/replay/drill due action behavior.
+  - Standalone verification: pytest service tests with fixture facts, scoped ledgers and positions.
+  - Real E2E: integrated application observed through task 6.2 drill when due actions exist; otherwise fixture tests prove accounting path.
+  - Requirement-to-test mapping: due missed prior ex_date -> later checkpoint applies; unsupported -> skip; already applied -> no-op; sort -> deterministic order.
+  - Test boundary: project accounting service using fixture facts.
+  - Validation: idempotency; deterministic order `ex_date ASC, action_ref ASC`; unsupported skipped; `ex_date < checkpoint_date` missed earlier still applied; `already_applied` no-op.
+  - Coverage target: >=85% for application service.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-3-1-scoped-due-application.json`。
+  - Audits: Decision Chain Trace for due application; Deterministic Sort Audit; Masked-Test Analysis for idempotency not masking supported application.
+  - Review gates: Alignment Review + Security Review.
+
+- [x] 3.2 Extend accounting ledger without changing lot/slot/cash semantics
+  - Requirements: Due 公司行为统一会计应用；事实层与应用账本作用域隔离。
+  - Design refs: Reuse / Common Logic Plan, Data Design。
+  - Design-review evidence: `design-review.md` confirms preserving existing accounting semantics while adding scoped ledger identity.
+  - Applicable rules: PIR-003, PIR-006, PIR-010, PY-012, TEST-010A, TEST-011.
+  - Reuse/common logic impact: extend existing `apply_corporate_action()` behavior; do not rewrite accounting algorithms.
+  - Target paths: `app/quant_sim/db.py`。
+  - Scope/fallback: preserve existing eligible lot, partial sell allocation, no eligible lot behavior; no new fallback accounting.
+  - Parameter plan: add/consume scoped command object or minimal wrapper; do not add long parameter list.
+  - Logging/trace: log ledger conflicts safely.
+  - Encoding: no mojibake in descriptions.
+  - DB impact: scoped ledger writes; no live/replay cross-scope reads.
+  - Confirmation: backend confirmed; no UI/API/config.
+  - Standalone verification: pytest DB accounting regressions with temporary DB.
+  - Real E2E: covered by task 6.2 integrated drill; no separate E2E for DB helper.
+  - Requirement-to-test mapping: eligible lot -> quantity/cost change; partial allocation -> unreleased quantity; no eligible lot -> no position price adjustment; replay/live isolation -> scoped ledger tests.
+  - Test boundary: project DB accounting behavior.
+  - Validation: regression tests for eligible lot adjustment, partial sell allocation using unreleased quantity, no eligible lot no position price adjustment, two replay runs each apply same action once, live applies after replay used same `action_ref`.
+  - Coverage target: affected accounting paths >=85% where practical; record if `db.py` aggregate coverage cannot be isolated.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-3-2-accounting-regression.json`。
+  - Audits: Requirement Counterexample Matrix for scope and lot eligibility; Evidence Capture Timing Audit for ledger write.
+  - Review gates: Alignment Review + Security Review.
+
+## 4. Replay / drill / live 调度接入
+
+- [x] 4.1 Route replay/drill due actions through unified service
+  - Requirements: 历史回放 checkpoint 前应用 due action；实时量化演练 checkpoint 前应用 due action。
+  - Design refs: Code Path Plan, Due Action Application Order。
+  - Design-review evidence: `design-review.md` confirms replay/drill must use shared service and not pollute live state.
+  - Applicable rules: PIR-006, PIR-007, PIR-010, PIR-011, TEST-011, TEST-012.
+  - Reuse/common logic impact: replay and drill reuse same historical due-action method/service; no duplicate provider fetch path.
+  - Target paths: `app/quant_sim/replay_service_historical.py`, `app/quant_sim/replay_service_drill.py`。
+  - Scope/fallback: no direct provider call in checkpoint path; no live DB mutation; no fallback to live scope.
+  - Parameter plan: pass command/scope object with run id.
+  - Logging/trace: include run_id/run_type/checkpoint/scope/status counts.
+  - Encoding: event messages readable UTF-8.
+  - DB impact: replay DB application ledger only; shared facts may be read/written local-first as designed.
+  - Confirmation: backend confirmed; E2E in task 6.2.
+  - Standalone verification: pytest replay/drill checkpoint tests with fake service/provider.
+  - Real E2E: task 6.2 live quant drill covers drill path; historical replay path covered by standalone tests unless run separately during verification.
+  - Requirement-to-test mapping: replay checkpoint -> due action before signal; drill checkpoint -> due action before lifecycle/signal; no live pollution -> separate DB assertion.
+  - Test boundary: project replay/drill path with fake service/provider.
+  - Validation: replay/drill tests verify local facts avoid provider, application before signal/snapshot, replay does not modify live DB, missed previous ex_date applies at later checkpoint.
+  - Coverage target: affected replay/drill paths >=85% where practical.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-4-1-replay-drill-due-actions.json`。
+  - Audits: Decision Chain Trace for checkpoint ordering; Broad-Qualifier Audit for replay and drill.
+  - Review gates: Alignment Review + Security Review.
+
+- [x] 4.2 Route live scheduler due actions through unified service
+  - Requirements: live-sim 交易 checkpoint 前应用 due action。
+  - Design refs: Live scheduler order, API/UI Impact。
+  - Design-review evidence: `design-review.md` confirms live scheduler order and read-only gateway constraint.
+  - Applicable rules: PIR-006, PIR-007, PIR-010, PIR-011, TEST-011, TEST-012.
+  - Reuse/common logic impact: live scheduler uses same `CorporateActionApplicationService` as replay/drill.
+  - Target paths: `app/quant_sim/scheduler.py`, affected live-sim gateway tests if needed。
+  - Scope/fallback: only `QuantSimScheduler.run_once()` may write live due actions; live-sim GET/snapshot must remain read-only.
+  - Parameter plan: use `CorporateActionScope(scope_type="live", scope_id="live")`.
+  - Logging/trace: include live scope/checkpoint/status counts.
+  - Encoding: no UI text changes.
+  - DB impact: live application ledger and live account accounting only.
+  - Confirmation: backend confirmed live-sim behavior.
+  - Standalone verification: pytest scheduler test with fake facts/service and live-sim snapshot read-only test.
+  - Real E2E: task 6.2 confirms integrated drill; live scheduler real E2E not required separately because no external API/UI change, but scheduler path has standalone verification.
+  - Requirement-to-test mapping: live checkpoint -> application before snapshot; GET snapshot -> no application; outside trading -> no application.
+  - Test boundary: project scheduler behavior.
+  - Validation: scheduler fake-fact test verifies application before account snapshot/outcome scoring; live-sim GET snapshot does not invoke application service or write DB; outside trading time still skips without application.
+  - Coverage target: affected scheduler path >=85% where practical.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-4-2-live-scheduler-due-actions.json`。
+  - Audits: Decision Chain Trace for live scheduler order; Masked-Test Analysis for trading-time skip vs due-action proof.
+  - Review gates: Alignment Review + Security Review.
+
+## 5. Artifact boundary and diagnostics
+
+- [x] 5.1 Preserve `market_technical_artifact` boundary
+  - Requirements: market_technical_artifact 边界保持轻量引用。
+  - Design refs: Architecture Impact, artifact boundary decision。
+  - Design-review evidence: `design-review.md` confirms corporate action facts must stay outside market technical artifact payload.
+  - Applicable rules: PIR-006, PIR-010, PIR-012, TEST-003, TEST-010A.
+  - Reuse/common logic impact: preserve existing artifact services; only add bounded references if needed.
+  - Target paths: `app/quant_sim/market_technical_artifact.py`, `app/quant_sim/market_technical_artifact_store.py`, adapters if touched。
+  - Scope/fallback: do not store full corporate action payload/application ledger in artifact; lightweight refs/status only if touched.
+  - Parameter plan: no new broad artifact payload object beyond existing schema unless required.
+  - Logging/trace: not applicable unless artifact write changes.
+  - Encoding: reason codes ASCII.
+  - DB impact: no new artifact payload tables.
+  - Confirmation: backend confirmed no UI/API.
+  - Standalone verification: pytest artifact serialization/row tests if artifact path touched; otherwise review evidence records no artifact code changed.
+  - Real E2E: not applicable to artifact boundary task; E2E in task 6.2 checks no diagnostic payload bloat if touched.
+  - Requirement-to-test mapping: forbidden raw payload -> artifact JSON assertion; allowed refs/status -> bounded-field assertion.
+  - Test boundary: project artifact serialization only.
+  - Validation: tests assert artifact JSON does not include provider raw payload or application ledger; optional status/ref fields are bounded.
+  - Coverage target: affected artifact paths >=85% where practical.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-5-1-artifact-boundary.json`。
+  - Audits: Requirement Counterexample Matrix for full payload attempts; Evidence Capture Timing Audit not applicable if no artifact change.
+  - Review gates: Alignment Review + Security Review.
+
+## 6. Verification, reviews, and E2E drill
+
+- [x] 6.1 Run targeted automated tests and coverage
+  - Requirements: all.
+  - Design refs: Test Strategy, Project-Code Test Boundary, Standalone Verification Plan。
+  - Design-review evidence: `design-review.md` requires coverage, E2E and project-code test boundary.
+  - Applicable rules: PIR-007, PIR-008, TEST-001, TEST-002, TEST-003, TEST-010, TEST-011, TEST-012, TEST-013.
+  - Reuse/common logic impact: verification confirms shared service reuse rather than separate live/replay implementations.
+  - Target paths: tests only / review evidence.
+  - Scope/fallback: no production behavior change.
+  - Parameter plan: use task parameter files listed in this tasks doc.
+  - Logging/trace: capture safe command outputs only.
+  - Encoding: test output and artifacts readable.
+  - DB impact: temporary test DB only.
+  - Confirmation: E2E confirmed by user; UI/API not applicable.
+  - Standalone verification: this task owns command execution evidence.
+  - Real E2E: delegated to task 6.2; this task runs automated tests and coverage.
+  - Requirement-to-test mapping: produce final mapping table in `task-reviews.md` from all requirements to tests.
+  - Test boundary: project-owned code only.
+  - Validation commands: targeted pytest for corporate action facts, db, replay/drill, scheduler; coverage evidence >=85% for changed/affected code.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-6-1-verification.json`。
+  - Audits: Requirement-to-test mapping; Masked-Test Analysis; Broad-Qualifier Audit; Decision Chain Trace; Evidence Capture Timing Audit; Deterministic Sort Audit.
+  - Review gates: Alignment Review + Security Review.
+
+- [x] 6.2 Run real live quant drill twice to verify local-first E2E
+  - Requirements: 公司行为验证入口和性能反馈。
+  - Design refs: Real E2E Test Design。
+  - Design-review evidence: `design-review.md` records user-confirmed E2E requirement and evidence fields.
+  - Applicable rules: PIR-007, PIR-008, TEST-011, TEST-012, TEST-013.
+  - Reuse/common logic impact: E2E confirms replay/drill/live shared service behavior through drill path.
+  - Target paths: runtime command/API evidence only.
+  - Scope/fallback: if no real due action appears, record `no_due_action_in_real_range` and rely on fixture tests for accounting application.
+  - Parameter plan: use explicit run parameters in test params file.
+  - Logging/trace: capture run ids/status/elapsed/provider diagnostics safely.
+  - Encoding: output readable.
+  - DB impact: local test/live quant drill DB state; do not mutate production remote DB.
+  - Confirmation: user requested drill after completion.
+  - Standalone verification: real drill run and rerun with recorded evidence.
+  - Real E2E: required and defined by this task.
+  - Requirement-to-test mapping: local-first performance -> second run local/coverage evidence; due application -> application count or no_due_action note; scope isolation -> no live pollution evidence.
+  - Test boundary: project job behavior, not provider correctness.
+  - Concrete E2E: run existing live quant drill entry point for a bounded range, recommended `2026-01-01 10:00:00` to current available trading checkpoint with current quant universe and aggressive profile if existing local runtime supports it; rerun same parameters immediately; collect run ids, status, elapsed time, corporate action fact/coverage counts, local/remote/empty/provider_failed counts, application counts, and live DB non-pollution evidence.
+  - Validation: E2E evidence collected and recorded; if no due action exists in real range, record `no_due_action_in_real_range`.
+  - Coverage target: no code coverage is measured by this E2E-only task; it must reference task 6.1 coverage evidence and must not substitute for automated coverage.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-6-2-e2e-live-quant-drill.json`。
+  - Audits: Evidence Capture Timing Audit for E2E metrics; Decision Chain Trace from run trigger to due application.
+  - Review gates: Alignment Review + Security Review.
+
+- [x] 6.3 Complete per-task and final reviews
+  - Requirements: OpenSpec workflow rules.
+  - Design refs: Multi-Lens Planning Review。
+  - Design-review evidence: `design-review.md` requires final review and zero unresolved findings.
+  - Applicable rules: PIR-015, PIR-016, TEST-010, AGENTS `/sp-impl` review gates.
+  - Reuse/common logic impact: final review checks avoidable duplicate logic and shared service usage.
+  - Target paths: `.agent/workdir/sp-openspec/stock-corporate-action-facts/task-reviews.md`, `.agent/workdir/sp-openspec/stock-corporate-action-facts/review.md`。
+  - Scope/fallback: do not close with unresolved findings.
+  - Parameter plan: no runtime parameters.
+  - Logging/trace: record commands and findings only.
+  - Encoding: review artifacts Chinese UTF-8.
+  - DB impact: none.
+  - Confirmation: all user confirmations already recorded in design.
+  - Standalone verification: review evidence validates all task verification commands and E2E output.
+  - Real E2E: verify task 6.2 evidence is present or record approved blocker.
+  - Requirement-to-test mapping: final review must include all requirements and scenarios.
+  - Test boundary: review evidence only.
+  - Validation: per-task Alignment/Security Review; full main-thread implementation review; two independent final read-only review threads; cross-validation and closure.
+  - Coverage target: review task has no executable code; it must verify task 6.1 recorded >=85% changed/affected code coverage or accepted skip reason.
+  - Test params: `.agent/workdir/sp-openspec/stock-corporate-action-facts/test-params/task-6-3-final-review.json`。
+  - Audits: all required OpenSpec review audits.
+  - Review gates: this task is the final review gate.

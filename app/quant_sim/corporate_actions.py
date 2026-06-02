@@ -78,13 +78,23 @@ class AkshareCorporateActionProvider:
             record_date = _to_date_text(values[6])
             if not ex_date or (bonus_per_10 <= 0 and cash_per_10 <= 0):
                 continue
+            bonus_ratio = bonus_per_10 / 10.0
+            cash_ratio = cash_per_10 / 10.0
+            if bonus_ratio > 0 and cash_ratio > 0:
+                action_type = "mixed_dividend_share"
+            elif bonus_ratio > 0:
+                action_type = "share_transfer"
+            else:
+                action_type = "cash_dividend"
             actions.append(
                 {
                     "stock_code": stock_code,
+                    "market": "CN",
+                    "action_type": action_type,
                     "ex_date": ex_date,
                     "record_date": record_date,
-                    "bonus_share_ratio": bonus_per_10 / 10.0,
-                    "cash_dividend_per_share": cash_per_10 / 10.0,
+                    "bonus_share_ratio": bonus_ratio,
+                    "cash_dividend_per_share": cash_ratio,
                     "description": f"每10股送转{bonus_per_10:g}股派{cash_per_10:g}元",
                 }
             )

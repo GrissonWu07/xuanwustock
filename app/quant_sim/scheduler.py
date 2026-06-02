@@ -11,6 +11,14 @@ import schedule
 
 from app.db.runtime.registry import DatabaseRuntime
 from app.quant_kernel import TradingTimeUtils
+from app.quant_sim.corporate_actions import AkshareCorporateActionProvider
+from app.quant_sim.corporate_action_facts import (
+    CorporateActionApplicationCommand,
+    CorporateActionApplicationService,
+    CorporateActionFactService,
+    CorporateActionFactStore,
+    CorporateActionScope,
+)
 from app.quant_sim.db import DEFAULT_DB_FILE, QuantSimDB
 from app.quant_sim.dynamic_strategy import (
     DEFAULT_AI_DYNAMIC_LOOKBACK,
@@ -69,6 +77,7 @@ class QuantSimScheduler:
                 "positions_checked": 0,
                 "cooling_reviewed": 0,
                 "auto_executed": 0,
+                "corporate_actions_applied": 0,
                 "snapshot_id": 0,
                 "total_equity": self.portfolio.get_account_summary()["total_equity"],
             }
@@ -84,6 +93,19 @@ class QuantSimScheduler:
         strategy_profile_id = configured_profile_id if configured_profile_id and configured_profile_id != default_profile_id else None
         lifecycle_profile_id = configured_profile_id or default_profile_id
         lifecycle_policy = self.engine._quant_lifecycle_policy_from_binding({"profile_id": lifecycle_profile_id})
+        corporate_action_result = CorporateActionApplicationService().apply_due_actions(
+            CorporateActionApplicationCommand(
+                account_db=self.db,
+                fact_service=CorporateActionFactService(
+                    CorporateActionFactStore(self.db),
+                    provider=AkshareCorporateActionProvider(),
+                ),
+                scope=CorporateActionScope(scope_type="live", scope_id="live"),
+                checkpoint=current_time,
+                market=market,
+                trace_id=f"live_scheduler_{format_local_time(current_time)}",
+            )
+        )
         ai_dynamic_strategy = str(config.get("ai_dynamic_strategy") or DEFAULT_AI_DYNAMIC_STRATEGY).strip().lower()
         ai_dynamic_strength = float(config.get("ai_dynamic_strength") or DEFAULT_AI_DYNAMIC_STRENGTH)
         ai_dynamic_lookback = int(config.get("ai_dynamic_lookback") or DEFAULT_AI_DYNAMIC_LOOKBACK)
@@ -146,6 +168,7 @@ class QuantSimScheduler:
             "signals_created": len(candidate_signals) + len(position_signals),
             "positions_checked": len(positions),
             "cooling_reviewed": cooling_reviewed,
+            "corporate_actions_applied": corporate_action_result.applied_count,
             "lifecycle_auto_exited": lifecycle_auto_exited,
             "auto_executed": auto_executed,
             "outcomes_scored": int(outcome_batch.get("scored_signals") or 0),

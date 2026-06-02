@@ -10,6 +10,13 @@ from typing import Any
 
 from app.quant_kernel.models import Decision
 from app.quant_sim.candidate_pool_service import CandidatePoolService
+from app.quant_sim.corporate_action_facts import (
+    CorporateActionApplicationCommand,
+    CorporateActionApplicationService,
+    CorporateActionFactService,
+    CorporateActionFactStore,
+    CorporateActionScope,
+)
 from app.quant_sim.db import QuantSimDB
 from app.quant_sim.dynamic_strategy import DEFAULT_AI_DYNAMIC_LOOKBACK, DEFAULT_AI_DYNAMIC_STRENGTH, DEFAULT_AI_DYNAMIC_STRATEGY
 from app.quant_sim.engine import QuantSimEngine
@@ -158,6 +165,8 @@ class HistoricalReplayMixin:
                     market=context["market"],
                     start_dt=start_dt,
                     end_dt=end_dt,
+                    run_id=run_id,
+                    scope_type="historical_replay",
                 )
                 checkpoint_summary = self._run_checkpoint(
                     run_id=run_id,
@@ -738,36 +747,24 @@ class HistoricalReplayMixin:
         market: str = "CN",
         start_dt: datetime,
         end_dt: datetime,
+        run_id: int | None = None,
+        scope_type: str = "historical_replay",
     ) -> None:
-        positions = temp_db.get_positions(as_of=checkpoint)
-        if not positions:
-            return
-        checkpoint_text = self._format_datetime(checkpoint)
-        ex_date = checkpoint.date().isoformat()
-        actions: list[dict] = []
-        for position in positions:
-            stock_code = str(position.get("stock_code") or "").strip()
-            if not stock_code:
-                continue
-            try:
-                stock_actions = self.corporate_action_provider.get_actions(stock_code, start_dt, end_dt)
-            except Exception:
-                stock_actions = []
-            actions.extend(
-                {**action, "stock_code": stock_code}
-                for action in stock_actions
-                if str(action.get("ex_date") or "").strip() == ex_date
+        _ = (start_dt, end_dt)
+        fact_service = CorporateActionFactService(
+            CorporateActionFactStore(self.shared_db),
+            provider=self.corporate_action_provider,
+        )
+        CorporateActionApplicationService().apply_due_actions(
+            CorporateActionApplicationCommand(
+                account_db=temp_db,
+                fact_service=fact_service,
+                scope=CorporateActionScope(scope_type=scope_type, scope_id=str(run_id or "run")),
+                checkpoint=checkpoint,
+                market=market,
+                trace_id=f"{scope_type}_{run_id or 'run'}_{self._format_datetime(checkpoint)}",
             )
-        for action in actions:
-            temp_db.apply_corporate_action(
-                stock_code=str(action.get("stock_code") or ""),
-                ex_date=str(action.get("ex_date") or checkpoint.date().isoformat()),
-                record_date=str(action.get("record_date") or "") or None,
-                bonus_share_ratio=float(action.get("bonus_share_ratio") or 0.0),
-                cash_dividend_per_share=float(action.get("cash_dividend_per_share") or 0.0),
-                description=str(action.get("description") or ""),
-                applied_at=checkpoint_text,
-            )
+        )
 
     @staticmethod
     def _collect_open_lots(temp_db: QuantSimDB, positions: list[dict], *, as_of: datetime) -> list[dict]:

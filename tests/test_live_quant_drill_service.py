@@ -468,6 +468,10 @@ def test_live_quant_drill_runs_cooling_review_before_main_scan(tmp_path, monkeyp
     service = QuantSimReplayService(db_file=str(tmp_path / "live.db"), replay_db_file=str(tmp_path / "replay.db"))
     call_order: list[str] = []
 
+    def fake_apply_due(*args, **kwargs):
+        del args, kwargs
+        call_order.append("corporate_actions")
+
     def fake_main_scan(*args, **kwargs):
         call_order.append("main_scan")
         return {"signals": [], "candidates_scanned": 1}
@@ -476,6 +480,7 @@ def test_live_quant_drill_runs_cooling_review_before_main_scan(tmp_path, monkeyp
         call_order.append("cooling_review")
         return {"reviewed": 2, "restored": 1}
 
+    monkeypatch.setattr(service, "_apply_due_corporate_actions", fake_apply_due)
     monkeypatch.setattr(service, "_run_live_quant_drill_main_scan", fake_main_scan)
     monkeypatch.setattr(service, "_run_live_quant_drill_cooling_review", fake_cooling_review)
 
@@ -497,7 +502,7 @@ def test_live_quant_drill_runs_cooling_review_before_main_scan(tmp_path, monkeyp
         manager=object(),
     )
 
-    assert call_order == ["cooling_review", "main_scan"]
+    assert call_order == ["corporate_actions", "cooling_review", "main_scan"]
 
 
 def test_live_quant_drill_cooling_review_uses_checkpoint_snapshot(tmp_path):
