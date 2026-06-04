@@ -119,6 +119,8 @@
   "Quant simulation": "实时量化",
   "Quotes support manual refresh. Quant scheduler also writes latest prices and signals here.": "报价支持手动刷新，量化调度运行时也会把最新价格和信号回写到这里。",
   "Watchlist refresh updates name, price, and sector in batch. Quant scheduler also writes latest prices and signals here.": "关注池刷新会批量更新名称、价格和板块，量化调度运行时也会把最新价格和信号回写到这里。",
+  "Watchlist refresh": "关注池刷新",
+  "Unified refresh completed: updated {updated}, failed {failed}, total {total}.": "统一刷新完成：更新 {updated}，失败 {failed}，总数 {total}。",
   "Relative activity versus historical average volume.": "当前成交活跃度，相对历史均量的强弱。",
   "Latest traded volume in current bar/session.": "当前K线/时段成交量，衡量资金参与强度。",
   "5-period average volume, baseline for volume expansion/shrinkage.": "近5期平均成交量，用作放量或缩量对比基准。",

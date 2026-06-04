@@ -633,6 +633,129 @@ def test_signal_center_marks_position_buy_as_add_and_uses_target_delta(tmp_path)
     assert add_signal["strategy_profile"]["execution_sizing_plan"]["effective_position_pct"] == add_signal["position_size_pct"]
 
 
+def test_signal_center_allows_trend_add_candidate_when_timeframe_disallows_pyramiding(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+
+    candidate_service.add_manual_candidate("300390", "天华新能", "main_force", latest_price=52.0)
+    candidate = candidate_service.list_candidates()[0]
+    first_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 82, "reasoning": "先建仓", "position_size_pct": 5},
+    )
+    portfolio_service.confirm_buy(first_signal["id"], price=50.0, quantity=100, note="已有底仓")
+    portfolio_service.db.update_position_market_price("300390", 52.0)
+
+    add_signal = signal_service.create_signal(
+        {**candidate, "latest_price": 52.0},
+        {
+            "action": "BUY",
+            "confidence": 86,
+            "reasoning": "持仓趋势增强",
+            "position_size_pct": 20,
+            "tech_score": 0.32,
+            "strategy_profile": {
+                "position_trend_add_candidate": {
+                    "status": "qualified",
+                    "reason": "持仓浮盈区间趋势延续",
+                },
+                "effective_thresholds": {
+                    "max_position_ratio": 0.3,
+                    "allow_pyramiding": False,
+                    "add_min_unrealized_pnl_pct": 2.0,
+                    "add_min_tech_score": 0.25,
+                    "portfolio_execution_guard_policy": {"enabled": False},
+                },
+                "explainability": {
+                    "fusion_breakdown": {
+                        "fusion_confidence": 0.74,
+                    }
+                },
+            },
+        },
+        notify=False,
+    )
+
+    gate = add_signal["strategy_profile"]["position_add_gate"]
+
+    assert add_signal["action"] == "BUY"
+    assert add_signal["decision_type"] == "position_add"
+    assert gate["status"] == "passed"
+    assert gate["allow_pyramiding_raw"] is False
+    assert gate["allow_pyramiding"] is True
+    assert gate["trend_add_candidate"] is True
+
+
+def test_signal_center_blocks_trend_add_after_quality_limited_recovery_probe_buy(tmp_path):
+    db_file = tmp_path / "app.quant_sim.db"
+    candidate_service = CandidatePoolService(db_file=db_file)
+    signal_service = SignalCenterService(db_file=db_file)
+    portfolio_service = PortfolioService(db_file=db_file)
+
+    candidate_service.add_manual_candidate("301081", "严牌股份", "main_force", latest_price=52.0)
+    candidate = candidate_service.list_candidates()[0]
+    first_signal = signal_service.create_signal(
+        candidate,
+        {"action": "BUY", "confidence": 82, "reasoning": "恢复探针买入", "position_size_pct": 5},
+    )
+    first_profile = first_signal.get("strategy_profile") if isinstance(first_signal.get("strategy_profile"), dict) else {}
+    portfolio_service.db.update_signal_state(
+        first_signal["id"],
+        strategy_profile={
+            **first_profile,
+            "position_sizing": {
+                "sizing": {
+                    "lifecycle_gate_mode": "recovery_probe_quality_limited",
+                    "recovery_probe_confirmed_cap_source": "quality_limited",
+                }
+            },
+        },
+    )
+    portfolio_service.confirm_buy(first_signal["id"], price=50.0, quantity=100, note="恢复探针底仓")
+    portfolio_service.db.update_position_market_price("301081", 53.0)
+
+    blocked = signal_service.create_signal(
+        {**candidate, "latest_price": 53.0},
+        {
+            "action": "BUY",
+            "confidence": 88,
+            "reasoning": "持仓趋势增强",
+            "position_size_pct": 20,
+            "tech_score": 0.45,
+            "strategy_profile": {
+                "position_trend_add_candidate": {
+                    "status": "qualified",
+                    "reason": "持仓浮盈区间趋势延续",
+                },
+                "effective_thresholds": {
+                    "max_position_ratio": 0.3,
+                    "allow_pyramiding": False,
+                    "add_min_unrealized_pnl_pct": 2.0,
+                    "add_min_tech_score": 0.25,
+                    "portfolio_execution_guard_policy": {"enabled": False},
+                },
+                "explainability": {
+                    "fusion_breakdown": {
+                        "fusion_confidence": 0.8,
+                    }
+                },
+            },
+        },
+        notify=False,
+    )
+
+    gate = blocked["strategy_profile"]["position_add_gate"]
+
+    assert blocked["action"] == "HOLD"
+    assert blocked["decision_type"] == "position_add_blocked"
+    assert gate["status"] == "blocked"
+    assert gate["trend_add_candidate"] is True
+    assert gate["recovery_probe_origin_blocked"] is True
+    assert gate["recovery_probe_origin_gate"]["lifecycle_gate_mode"] == "recovery_probe_quality_limited"
+
+
 def test_signal_center_blocks_divergence_probe_new_buy(tmp_path):
     db_file = tmp_path / "app.quant_sim.db"
     candidate_service = CandidatePoolService(db_file=db_file)

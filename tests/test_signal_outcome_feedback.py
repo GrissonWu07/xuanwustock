@@ -142,6 +142,97 @@ def test_portfolio_guard_applies_outcome_feedback_penalty_after_signal_context_p
     assert "outcome_feedback_penalty" in gate["reasons"]
 
 
+def test_portfolio_guard_caps_outcome_penalty_for_confirmed_trend_recovery() -> None:
+    signal = {
+        "action": "BUY",
+        "tech_score": 0.594522,
+        "context_score": 0.05574,
+        "strategy_profile": {
+            "market_snapshot": {
+                "latest_price": 101.0,
+                "ma5": 101.5,
+                "ma10": 100.8,
+                "ma20": 100.0,
+                "ma20_slope": 0.03,
+                "volume_ratio": 2.1,
+                "rsi": 60.8,
+                "price_vs_ma20": 0.010458,
+                "recent_5d_return": 0.035,
+                "above_ma20_checkpoints": 20,
+                "ma_stack": True,
+                "outcome_feedback": {
+                    "summary": {
+                        "actionable": True,
+                        "outcome_feedback_score": 33.0302,
+                        "reason_code": "poor_buy_outcome_feedback",
+                    }
+                },
+            },
+            "effective_thresholds": {"fusion_buy_threshold": 0.35},
+            "explainability": {
+                "fusion_breakdown": {
+                    "fusion_score": 0.419418,
+                    "buy_threshold_eff": 0.35,
+                    "fusion_confidence": 0.7,
+                }
+            },
+        },
+    }
+
+    gate = evaluate_portfolio_execution_guard(
+        signal=signal,
+        policy={"enabled": True, "full_edge": 0.10, "confirmed_trend_outcome_feedback_penalty_cap": 0.12},
+    )
+
+    assert gate["score_components"]["risk_penalties"]["outcome_feedback"] == 0.12
+    assert gate["buy_strength_score"] > 0.53
+
+
+def test_portfolio_guard_does_not_cap_outcome_penalty_for_overextended_recovery() -> None:
+    signal = {
+        "action": "BUY",
+        "tech_score": 0.594522,
+        "context_score": 0.05574,
+        "strategy_profile": {
+            "market_snapshot": {
+                "latest_price": 107.0,
+                "ma5": 106.0,
+                "ma10": 104.0,
+                "ma20": 100.0,
+                "ma20_slope": 0.03,
+                "volume_ratio": 2.1,
+                "rsi": 68.0,
+                "price_vs_ma20": 0.07,
+                "recent_5d_return": 0.07,
+                "above_ma20_checkpoints": 20,
+                "ma_stack": True,
+                "outcome_feedback": {
+                    "summary": {
+                        "actionable": True,
+                        "outcome_feedback_score": 33.0302,
+                        "reason_code": "poor_buy_outcome_feedback",
+                    }
+                },
+            },
+            "effective_thresholds": {"fusion_buy_threshold": 0.35},
+            "explainability": {
+                "fusion_breakdown": {
+                    "fusion_score": 0.419418,
+                    "buy_threshold_eff": 0.35,
+                    "fusion_confidence": 0.7,
+                }
+            },
+        },
+    }
+
+    gate = evaluate_portfolio_execution_guard(
+        signal=signal,
+        policy={"enabled": True, "full_edge": 0.10, "confirmed_trend_outcome_feedback_penalty_cap": 0.12},
+    )
+
+    assert gate["score_components"]["risk_penalties"]["outcome_feedback"] > 0.16
+
+
 def test_run_feedback_does_not_create_live_feedback(tmp_path: Path) -> None:
     live_db = QuantSimDB(tmp_path / "live.db")
     replay_db = QuantSimReplayDB(tmp_path / "replay.db")

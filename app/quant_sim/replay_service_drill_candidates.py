@@ -145,6 +145,7 @@ class LiveQuantDrillCandidateMixin:
         timeframe = str(context.get("timeframe") or "30m")
         candidates = context.get("candidates") if isinstance(context.get("candidates"), list) else []
         events: list[dict[str, Any]] = []
+        eligible_candidates: list[dict[str, Any]] = []
         for candidate in candidates:
             stock_code = str(candidate.get("stock_code") or "").strip().upper()
             if not stock_code:
@@ -153,31 +154,26 @@ class LiveQuantDrillCandidateMixin:
             quant_status = str(state.get("quant_status") or "inactive").strip()
             if quant_status in {"trial", "active", "exit_only", "manual_paused"}:
                 continue
-            snapshot = self.snapshot_provider.get_snapshot(
-                stock_code,
-                checkpoint,
-                timeframe,
-                stock_name=candidate.get("stock_name") or stock_code,
-            )
-            if not snapshot:
-                self._record_missing_run_market_artifact(
-                    run_id=run_id,
-                    run_type="live_quant_drill",
-                    stock_code=stock_code,
-                    checkpoint=checkpoint,
-                    timeframe=timeframe,
-                    market=str(context.get("market") or "CN"),
-                )
+            eligible_candidates.append(candidate)
+        artifact_payloads = self._get_or_prepare_run_market_artifacts_batch(
+            run_id=run_id,
+            run_type="live_quant_drill",
+            checkpoint=checkpoint,
+            timeframe=timeframe,
+            market=str(context.get("market") or "CN"),
+            items=[
+                {
+                    "stock_code": str(candidate.get("stock_code") or "").strip().upper(),
+                    "stock_name": candidate.get("stock_name") or candidate.get("stock_code"),
+                }
+                for candidate in eligible_candidates
+            ],
+        )
+        for candidate in eligible_candidates:
+            stock_code = str(candidate.get("stock_code") or "").strip().upper()
+            snapshot = artifact_payloads.get(stock_code) or {}
+            if self._artifact_payload_missing(snapshot):
                 continue
-            snapshot = self._attach_run_market_artifact(
-                run_id=run_id,
-                run_type="live_quant_drill",
-                stock_code=stock_code,
-                checkpoint=checkpoint,
-                timeframe=timeframe,
-                market=str(context.get("market") or "CN"),
-                snapshot=snapshot,
-            )
             source_event = self._build_live_quant_drill_low_price_event(
                 candidate=candidate,
                 checkpoint=checkpoint,

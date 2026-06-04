@@ -5,6 +5,7 @@ from app.quant_sim.portfolio_execution_guard import (
 )
 from app.quant_sim.candidate_pool_service import CandidatePoolService
 from app.quant_sim.db import QuantSimDB
+from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.replay_service import QuantSimReplayService
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_kernel.models import Decision
@@ -101,6 +102,35 @@ def test_trend_structure_has_middle_score_for_sustained_ma20_confirmation():
     assert gate["trend_confirmation"]["ma_stack"] is False
     assert gate["trend_confirmation"]["above_ma20_checkpoints"] == 3
     assert gate["score_components"]["trend_structure_score"] == 0.5
+
+
+def test_artifact_confirmation_fields_are_used_when_recent_window_is_not_embedded():
+    signal = _signal()
+    signal["market"] = "A"
+    signal["timeframe"] = "30m"
+    signal["strategy_profile"]["market_snapshot"].pop("recent_checkpoints", None)
+    signal["strategy_profile"]["market_snapshot"].update(
+        {
+            "current_price": 12.0,
+            "ma5": 12.2,
+            "ma10": 11.8,
+            "ma20": 11.3,
+            "ma20_slope": 0.02,
+            "above_ma20_checkpoints": 3,
+            "retest_confirmed": False,
+            "ma_stack": "ma5>ma10>ma20",
+        }
+    )
+
+    gate = evaluate_portfolio_execution_guard(
+        signal=signal,
+        policy=default_portfolio_execution_guard_policy("stable"),
+        portfolio_summary={},
+    )
+
+    assert gate["trend_confirmation"]["above_ma20_checkpoints"] == 3
+    assert gate["score_components"]["confirmation_score"] == 1.0
+    assert gate["t1_risk"]["active"] is False
 
 
 def test_strong_buy_requires_score_ma_stack_and_volume_confirmation():
@@ -226,7 +256,34 @@ def test_retest_confirmation_does_not_bypass_t1_checkpoint_confirmation():
     assert gate["buy_tier"] == "weak_buy"
 
 
-def test_hot_zone_extension_downgrades_normal_buy_to_weak_buy():
+def test_retest_confirmation_requires_real_pullback_near_ma20():
+    signal = _signal()
+    signal["market"] = "A"
+    signal["timeframe"] = "30m"
+    signal["strategy_profile"]["market_snapshot"].update(
+        {
+            "current_price": 13.2,
+            "ma5": 13.0,
+            "ma10": 12.6,
+            "ma20": 11.3,
+            "ma20_slope": 0.02,
+            "volume_ratio": 1.7,
+            "recent_checkpoints": [
+                {"close": 12.8, "low": 12.2, "ma20": 11.2, "ma20_slope": 0.01},
+                {"close": 13.0, "low": 12.4, "ma20": 11.25, "ma20_slope": 0.01},
+                {"close": 13.2, "low": 12.6, "ma20": 11.3, "ma20_slope": 0.02},
+            ],
+        }
+    )
+    policy = default_portfolio_execution_guard_policy("stable")
+
+    gate = evaluate_portfolio_execution_guard(signal=signal, policy=policy, portfolio_summary={})
+
+    assert gate["trend_confirmation"]["above_ma20_checkpoints"] == 3
+    assert gate["trend_confirmation"]["retest_confirmed"] is False
+
+
+def test_hot_zone_extension_without_retest_blocks_overextended_buy():
     signal = _signal()
     signal["market"] = "A"
     signal["timeframe"] = "30m"
@@ -254,9 +311,43 @@ def test_hot_zone_extension_downgrades_normal_buy_to_weak_buy():
     gate = evaluate_portfolio_execution_guard(signal=signal, policy=policy, portfolio_summary={})
 
     assert gate["buy_tier"] == "weak_buy"
-    assert gate["status"] == "downgraded"
+    assert gate["status"] == "blocked"
     assert gate["score_components"]["risk_penalties"]["hot_zone"] > 0
     assert "hot_zone_extended" in gate["reasons"]
+    assert "weak_buy_overextended_without_retest" in gate["reasons"]
+
+
+def test_overextended_weak_buy_without_retest_is_blocked():
+    signal = _signal()
+    signal["market"] = "A"
+    signal["timeframe"] = "30m"
+    signal["strategy_profile"]["market_snapshot"].update(
+        {
+            "current_price": 36.08,
+            "ma5": 35.8,
+            "ma10": 34.9,
+            "ma20": 32.1,
+            "ma20_slope": 0.02,
+            "volume_ratio": 1.4,
+            "rsi12": 72.0,
+            "recent_5d_return": 0.12,
+            "recent_checkpoints": [
+                {"close": 34.8, "low": 34.2, "ma20": 31.9, "ma20_slope": 0.01},
+                {"close": 35.5, "low": 34.8, "ma20": 32.0, "ma20_slope": 0.01},
+                {"close": 36.08, "low": 35.2, "ma20": 32.1, "ma20_slope": 0.02},
+            ],
+        }
+    )
+    signal["strategy_profile"]["explainability"]["fusion_breakdown"]["fusion_score"] = 0.39
+    policy = default_portfolio_execution_guard_policy("aggressive")
+    policy["strong_buy_min_score"] = 0.99
+
+    gate = evaluate_portfolio_execution_guard(signal=signal, policy=policy, portfolio_summary={})
+
+    assert gate["buy_tier"] == "weak_buy"
+    assert gate["status"] == "blocked"
+    assert gate["size_multiplier"] == 0.0
+    assert "weak_buy_overextended_without_retest" in gate["reasons"]
 
 
 def test_failed_volume_confirmation_blocks_non_strong_buy():
@@ -402,6 +493,41 @@ def test_signal_center_applies_portfolio_guard_for_position_add(tmp_path):
     assert gate["portfolio_guard"]["loss_budget_triggered"] is True
 
 
+def test_signal_center_blocks_weak_tier_position_add(tmp_path):
+    service = SignalCenterService(db_file=tmp_path / "quant_sim.db")
+    payload = _signal(decision_type="position_add", position_size_pct=6.0, reasoning="持仓加仓")
+    payload["strategy_profile"]["position_add_gate"] = {"status": "passed", "reasons": []}
+    payload["strategy_profile"]["portfolio_execution_guard"] = {
+        "status": "downgraded",
+        "buy_tier": "weak_buy",
+        "buy_tier_label": "弱买",
+    }
+
+    result = service._apply_position_add_execution_tier_guard({"stock_code": "603667"}, payload)
+
+    assert result["action"] == "HOLD"
+    assert result["decision_type"] == "position_add_blocked"
+    gate = result["strategy_profile"]["position_add_gate"]
+    assert gate["execution_tier_blocked"] is True
+    assert gate["blocked_buy_tier"] == "weak_buy"
+
+
+def test_signal_center_allows_normal_tier_position_add(tmp_path):
+    service = SignalCenterService(db_file=tmp_path / "quant_sim.db")
+    payload = _signal(decision_type="position_add", position_size_pct=6.0, reasoning="持仓加仓")
+    payload["strategy_profile"]["position_add_gate"] = {"status": "passed", "reasons": []}
+    payload["strategy_profile"]["portfolio_execution_guard"] = {
+        "status": "downgraded",
+        "buy_tier": "normal_buy",
+        "buy_tier_label": "普通买",
+    }
+
+    result = service._apply_position_add_execution_tier_guard({"stock_code": "603667"}, payload)
+
+    assert result["action"] == "BUY"
+    assert result["decision_type"] == "position_add"
+
+
 def test_signal_center_buy_limit_counts_pending_buys_before_execution(tmp_path):
     db_file = tmp_path / "quant_sim.db"
     candidates = CandidatePoolService(db_file=db_file)
@@ -417,6 +543,408 @@ def test_signal_center_buy_limit_counts_pending_buys_before_execution(tmp_path):
     assert first_signal["action"] == "BUY"
     assert second_signal["action"] == "HOLD"
     assert second_signal["strategy_profile"]["portfolio_execution_guard"]["portfolio_guard"]["buy_limit_triggered"] is True
+
+
+def test_recovery_probe_position_weak_sell_becomes_failure_exit(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    db = QuantSimDB(db_file)
+    db.reset_runtime_state(initial_cash=100000)
+    candidates = CandidatePoolService(db_file=db_file)
+    candidates.add_manual_candidate("002602", "世纪华通", "manual", latest_price=10.0)
+    db.upsert_quant_universe_state("002602", {"quant_status": "trial", "health_score": 60})
+    buy_signal_id = db.add_signal(
+        {
+            "stock_code": "002602",
+            "stock_name": "世纪华通",
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "recovery probe buy",
+            "position_size_pct": 6,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "portfolio_execution_guard": {"status": "passed", "buy_tier": "normal_buy"},
+                "lifecycle_gate": {"mode": "recovery_probe_confirmed"},
+                "execution_sizing_plan": {
+                    "buy_tier": "normal_buy",
+                    "final_budget": 6000.0,
+                    "effective_position_pct": 6.0,
+                    "lifecycle_gate_mode": "recovery_probe_confirmed",
+                    "one_lot_cost": 1000.0,
+                },
+            },
+            "status": "pending",
+        }
+    )
+    assert PortfolioService(db_file=db_file).auto_execute_signal(
+        db.get_signal(buy_signal_id),
+        executed_at="2026-04-02 10:00:00",
+    )
+
+    service = SignalCenterService(db_file=db_file)
+    signal = service.create_signal(
+        {
+            "stock_code": "002602",
+            "stock_name": "世纪华通",
+            "latest_price": 9.4,
+        },
+        {
+            "action": "SELL",
+            "confidence": 70,
+            "reasoning": "recovery probe turned weak",
+            "position_size_pct": 0,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "decision_type": "dual_track_weighted_sell",
+            "timestamp": "2026-04-03 10:00:00",
+            "tech_score": -0.12,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "market_snapshot": {
+                    "current_price": 9.4,
+                    "ma20": 9.7,
+                    "ma20_slope": -0.02,
+                    "above_ma20_checkpoints": 0,
+                },
+                "explainability": {
+                    "fusion_breakdown": {
+                        "final_action": "SELL",
+                        "weighted_action_raw": "SELL",
+                        "tech_score": -0.12,
+                    }
+                },
+            },
+        },
+        notify=False,
+    )
+
+    assert signal["action"] == "SELL"
+    assert signal["decision_type"] == "recovery_probe_failure_sell"
+    gate = signal["strategy_profile"]["explainability"]["recovery_probe_failure_sell_gate"]
+    assert gate["status"] == "forced_exit"
+    assert gate["entry_lifecycle_gate_mode"] == "recovery_probe_confirmed"
+
+
+def test_recovery_probe_position_consecutive_negative_hold_becomes_failure_exit(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    db = QuantSimDB(db_file)
+    db.configure_account(100000)
+    candidates = CandidatePoolService(db_file=db_file)
+    candidates.add_manual_candidate("301538", "骏鼎达", "manual", latest_price=80.5)
+    db.upsert_quant_universe_state("301538", {"quant_status": "trial", "health_score": 60})
+    buy_signal_id = db.add_signal(
+        {
+            "stock_code": "301538",
+            "stock_name": "骏鼎达",
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "recovery probe buy",
+            "position_size_pct": 6,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "portfolio_execution_guard": {"status": "passed", "buy_tier": "normal_buy"},
+                "lifecycle_gate": {"mode": "recovery_probe_confirmed"},
+                "execution_sizing_plan": {
+                    "buy_tier": "normal_buy",
+                    "final_budget": 24000.0,
+                    "effective_position_pct": 6.0,
+                    "lifecycle_gate_mode": "recovery_probe_confirmed",
+                    "one_lot_cost": 8050.0,
+                },
+            },
+            "status": "pending",
+        }
+    )
+    assert PortfolioService(db_file=db_file).auto_execute_signal(
+        db.get_signal(buy_signal_id),
+        executed_at="2026-04-09 11:00:00",
+    )
+
+    service = SignalCenterService(db_file=db_file)
+    first_hold = service.create_signal(
+        {
+            "stock_code": "301538",
+            "stock_name": "骏鼎达",
+            "latest_price": 82.0,
+        },
+        {
+            "action": "HOLD",
+            "confidence": 60,
+            "reasoning": "first weak recovery checkpoint",
+            "position_size_pct": 0,
+            "decision_type": "dual_track_weighted_hold",
+            "timestamp": "2026-04-20 10:30:00",
+            "tech_score": -0.05,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "market_snapshot": {"current_price": 82.0, "ma20": 80.5, "ma20_slope": 0.01},
+                "explainability": {"fusion_breakdown": {"final_action": "HOLD", "tech_score": -0.05}},
+            },
+        },
+        notify=False,
+    )
+    assert first_hold["action"] == "HOLD"
+
+    second_signal = service.create_signal(
+        {
+            "stock_code": "301538",
+            "stock_name": "骏鼎达",
+            "latest_price": 78.8,
+        },
+        {
+            "action": "HOLD",
+            "confidence": 60,
+            "reasoning": "second weak recovery checkpoint",
+            "position_size_pct": 0,
+            "decision_type": "dual_track_weighted_hold",
+            "timestamp": "2026-04-20 11:00:00",
+            "tech_score": -0.38,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "market_snapshot": {"current_price": 78.8, "ma20": 80.6, "ma20_slope": 0.01},
+                "explainability": {"fusion_breakdown": {"final_action": "HOLD", "tech_score": -0.38}},
+            },
+        },
+        notify=False,
+    )
+
+    assert second_signal["action"] == "SELL"
+    assert second_signal["decision_type"] == "recovery_probe_failure_sell"
+    gate = second_signal["strategy_profile"]["explainability"]["recovery_probe_failure_sell_gate"]
+    assert gate["evidence"]["consecutive_negative_tech_checkpoints"] == 2
+    assert "consecutive_tech_score_negative" in gate["evidence"]["reasons"]
+    assert "material_price_below_ma20" in gate["evidence"]["reasons"]
+
+
+def test_recovery_probe_position_minor_negative_hold_stays_observed(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    db = QuantSimDB(db_file)
+    db.configure_account(100000)
+    candidates = CandidatePoolService(db_file=db_file)
+    candidates.add_manual_candidate("603986", "兆易创新", "manual", latest_price=265.09)
+    db.upsert_quant_universe_state("603986", {"quant_status": "trial", "health_score": 60})
+    buy_signal_id = db.add_signal(
+        {
+            "stock_code": "603986",
+            "stock_name": "兆易创新",
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "quality limited recovery buy",
+            "position_size_pct": 3,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "portfolio_execution_guard": {"status": "passed", "buy_tier": "strong_buy"},
+                "lifecycle_gate": {"mode": "recovery_probe_quality_limited"},
+                "execution_sizing_plan": {
+                    "buy_tier": "strong_buy",
+                    "final_budget": 30000.0,
+                    "effective_position_pct": 3.0,
+                    "lifecycle_gate_mode": "recovery_probe_quality_limited",
+                    "one_lot_cost": 26509.0,
+                },
+            },
+            "status": "pending",
+        }
+    )
+    assert PortfolioService(db_file=db_file).auto_execute_signal(
+        db.get_signal(buy_signal_id),
+        executed_at="2026-04-10 15:00:00",
+    )
+
+    service = SignalCenterService(db_file=db_file)
+    service.create_signal(
+        {
+            "stock_code": "603986",
+            "stock_name": "兆易创新",
+            "latest_price": 264.5,
+        },
+        {
+            "action": "HOLD",
+            "confidence": 60,
+            "reasoning": "first minor weak recovery checkpoint",
+            "position_size_pct": 0,
+            "decision_type": "dual_track_weighted_hold",
+            "timestamp": "2026-04-13 10:30:00",
+            "tech_score": -0.05,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "market_snapshot": {"current_price": 264.5, "ma20": 260.5, "ma20_slope": 0.01},
+                "explainability": {"fusion_breakdown": {"final_action": "HOLD", "tech_score": -0.05}},
+            },
+        },
+        notify=False,
+    )
+
+    second_signal = service.create_signal(
+        {
+            "stock_code": "603986",
+            "stock_name": "兆易创新",
+            "latest_price": 263.23,
+        },
+        {
+            "action": "HOLD",
+            "confidence": 60,
+            "reasoning": "minor weak recovery checkpoint",
+            "position_size_pct": 0,
+            "decision_type": "dual_track_weighted_hold",
+            "timestamp": "2026-04-13 14:00:00",
+            "tech_score": -0.19,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "market_snapshot": {"current_price": 263.23, "ma20": 260.8, "ma20_slope": 0.01},
+                "explainability": {"fusion_breakdown": {"final_action": "HOLD", "tech_score": -0.19}},
+            },
+        },
+        notify=False,
+    )
+
+    assert second_signal["action"] == "HOLD"
+    assert second_signal["decision_type"] == "dual_track_weighted_hold"
+
+
+def test_feedback_downgraded_position_weak_sell_exits_instead_of_observing(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    db = QuantSimDB(db_file)
+    db.configure_account(100000)
+    candidates = CandidatePoolService(db_file=db_file)
+    candidates.add_manual_candidate("603667", "五洲新春", "manual", latest_price=70.47)
+    buy_signal_id = db.add_signal(
+        {
+            "stock_code": "603667",
+            "stock_name": "五洲新春",
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "feedback downgraded buy",
+            "position_size_pct": 4.5,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "portfolio_execution_guard": {"status": "passed", "buy_tier": "normal_buy"},
+                "execution_sizing_plan": {
+                    "buy_tier": "normal_buy",
+                    "final_budget": 18000.0,
+                    "effective_position_pct": 4.5,
+                    "lifecycle_gate_mode": "trial_confirmed",
+                    "one_lot_cost": 7047.0,
+                    "stock_execution_feedback_status": "downgraded",
+                    "stock_execution_feedback_size_multiplier": 0.5,
+                },
+            },
+            "status": "pending",
+        }
+    )
+    assert PortfolioService(db_file=db_file).auto_execute_signal(
+        db.get_signal(buy_signal_id),
+        executed_at="2026-04-10 15:00:00",
+    )
+
+    signal = SignalCenterService(db_file=db_file).create_signal(
+        {"stock_code": "603667", "stock_name": "五洲新春", "latest_price": 67.84},
+        {
+            "action": "SELL",
+            "confidence": 70,
+            "reasoning": "普通双轨卖出",
+            "position_size_pct": 0,
+            "decision_type": "dual_track_weighted_sell",
+            "timestamp": "2026-04-23 11:30:00",
+            "tech_score": -0.2,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "market_snapshot": {"current_price": 67.84, "ma20": 70.36, "ma20_slope": -0.01},
+                "explainability": {
+                    "fusion_breakdown": {
+                        "final_action": "SELL",
+                        "weighted_action_raw": "SELL",
+                        "tech_score": -0.2,
+                    }
+                },
+            },
+        },
+        notify=False,
+    )
+
+    assert signal["action"] == "SELL"
+    assert signal["decision_type"] == "feedback_weak_sell_exit"
+    gate = signal["strategy_profile"]["explainability"]["feedback_sensitive_weak_sell_gate"]
+    assert gate["stock_execution_feedback_status"] == "downgraded"
+    assert "feedback_position_loss" in gate["evidence"]["reasons"]
+
+
+def test_feedback_downgraded_small_weak_probe_uses_weak_sell_observation(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    db = QuantSimDB(db_file)
+    db.configure_account(100000)
+    candidates = CandidatePoolService(db_file=db_file)
+    candidates.add_manual_candidate("000831", "中国稀土", "manual", latest_price=47.96)
+    buy_signal_id = db.add_signal(
+        {
+            "stock_code": "000831",
+            "stock_name": "中国稀土",
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "small weak feedback buy",
+            "position_size_pct": 1.5,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "portfolio_execution_guard": {"status": "passed", "buy_tier": "weak_buy"},
+                "execution_sizing_plan": {
+                    "buy_tier": "weak_buy",
+                    "final_budget": 5000.0,
+                    "effective_position_pct": 1.5,
+                    "lifecycle_gate_mode": "trial_light",
+                    "one_lot_cost": 4796.0,
+                    "stock_execution_feedback_status": "downgraded",
+                    "stock_execution_feedback_size_multiplier": 0.5,
+                },
+            },
+            "status": "pending",
+        }
+    )
+    assert PortfolioService(db_file=db_file).auto_execute_signal(
+        db.get_signal(buy_signal_id),
+        executed_at="2026-03-30 15:00:00",
+    )
+
+    signal = SignalCenterService(db_file=db_file).create_signal(
+        {"stock_code": "000831", "stock_name": "中国稀土", "latest_price": 47.01},
+        {
+            "action": "SELL",
+            "confidence": 70,
+            "reasoning": "普通双轨卖出",
+            "position_size_pct": 0,
+            "decision_type": "dual_track_weighted_sell",
+            "timestamp": "2026-04-03 10:00:00",
+            "tech_score": -0.2,
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "market_snapshot": {"current_price": 47.01, "ma20": 47.78, "ma20_slope": -0.01},
+                "explainability": {
+                    "fusion_breakdown": {
+                        "final_action": "SELL",
+                        "weighted_action_raw": "SELL",
+                        "tech_score": -0.2,
+                    }
+                },
+            },
+        },
+        notify=False,
+    )
+
+    assert signal["action"] == "HOLD"
+    assert signal["decision_type"] == "weak_sell_observe"
 
 
 def test_replay_service_stamps_decision_time_with_checkpoint(tmp_path):

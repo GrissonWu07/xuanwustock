@@ -20,14 +20,15 @@ from app.quant_sim.corporate_action_facts import (
 from app.quant_sim.db import QuantSimDB
 from app.quant_sim.dynamic_strategy import DEFAULT_AI_DYNAMIC_LOOKBACK, DEFAULT_AI_DYNAMIC_STRENGTH, DEFAULT_AI_DYNAMIC_STRATEGY
 from app.quant_sim.engine import QuantSimEngine
-from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
-from app.quant_sim.outcome_scoring_entrypoints import OutcomeBatchRequest, OutcomeBatchScope, score_signal_batch
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.replay_artifact_adapter import (
     RunArtifactContext,
-    read_run_artifact,
-    write_missing_run_artifact,
-    write_run_artifact_from_snapshot,
+    RunArtifactItem,
+    ensure_run_artifacts_for_checkpoint,
+)
+from app.quant_sim.run_market_artifact_preloader import (
+    RunMarketArtifactPreloadRequest,
+    preload_run_market_artifacts,
 )
 from app.quant_sim.signal_center_service import SignalCenterService
 from app.quant_sim.time_utils import parse_system_datetime
@@ -139,6 +140,56 @@ class HistoricalReplayMixin:
                 run_id,
                 f"已准备 {len(stock_codes)} 只股票的历史数据，共 {len(checkpoints)} 个检查点。",
             )
+            stock_name_by_code: dict[str, str] = {}
+            for candidate in candidates:
+                if isinstance(candidate, dict):
+                    candidate_code = str(candidate.get("stock_code") or "").strip().upper()
+                    candidate_name = str(candidate.get("stock_name") or "").strip()
+                else:
+                    candidate_keys = set(candidate.keys()) if hasattr(candidate, "keys") else set()
+                    candidate_code = str(candidate["stock_code"] if "stock_code" in candidate_keys else "").strip().upper()
+                    candidate_name = str(candidate["stock_name"] if "stock_name" in candidate_keys else "").strip()
+                if candidate_code:
+                    stock_name_by_code[candidate_code] = candidate_name or candidate_code
+            artifact_preload_report = preload_run_market_artifacts(
+                RunMarketArtifactPreloadRequest(
+                    db_file=self.replay_db_file,
+                    shared_db_file=self.db_file,
+                    run_id=run_id,
+                    run_type="historical_replay",
+                    market=market,
+                    timeframe=timeframe,
+                    stock_items=[
+                        {
+                            "stock_code": str(code).strip().upper(),
+                            "stock_name": stock_name_by_code.get(str(code).strip().upper()) or str(code).strip().upper(),
+                        }
+                        for code in stock_codes
+                        if str(code).strip()
+                    ],
+                    checkpoints=checkpoints,
+                    snapshot_loader=lambda item: self.snapshot_provider.get_snapshot(
+                        item.stock_code,
+                        item.checkpoint,
+                        timeframe,
+                        stock_name=item.stock_name,
+                    ),
+                    trace_id=f"historical_replay:{run_id}:artifact_preload",
+                )
+            )
+            self.db.append_sim_run_event(
+                run_id,
+                (
+                    "行情技术 artifact 预热完成："
+                    f"股票 {artifact_preload_report['stock_count']}，"
+                    f"检查点 {artifact_preload_report['checkpoint_count']}，"
+                    f"ready {artifact_preload_report['ready']}，"
+                    f"partial {artifact_preload_report['partial']}，"
+                    f"missing {artifact_preload_report['missing']}，"
+                    f"耗时 {artifact_preload_report['elapsed_seconds']} 秒。"
+                ),
+                level="warning" if int(artifact_preload_report.get("missing") or 0) > 0 else "info",
+            )
 
             cancelled = False
 
@@ -151,6 +202,14 @@ class HistoricalReplayMixin:
 
                 checkpoint_text = self._format_datetime(checkpoint)
                 last_checkpoint_text = checkpoint_text
+                self._score_run_outcomes_for_checkpoint(
+                    run_id=run_id,
+                    run_type="historical_replay",
+                    domain="replay",
+                    checkpoint_at=checkpoint_text,
+                    temp_db=temp_db,
+                    trace_id=f"historical_replay_{run_id}_{checkpoint_index}",
+                )
                 self.db.update_sim_run_progress(
                     run_id,
                     status="running",
@@ -283,15 +342,13 @@ class HistoricalReplayMixin:
                     "handoff_to_live": False,
                 }
 
-            outcome_batch = score_signal_batch(
-                OutcomeBatchRequest(
-                    db=self.db,
-                    artifact_store=MarketTechnicalArtifactStore(self.replay_db_file),
-                    scope=OutcomeBatchScope(run_id=run_id, run_type="historical_replay", domain="replay"),
-                    as_of_checkpoint=last_checkpoint_text or None,
-                    limit=5000,
-                    trace_id=f"historical_replay_{run_id}",
-                )
+            outcome_batch = self._score_run_outcomes_for_checkpoint(
+                run_id=run_id,
+                run_type="historical_replay",
+                domain="replay",
+                checkpoint_at=last_checkpoint_text or "",
+                temp_db=temp_db,
+                trace_id=f"historical_replay_{run_id}",
             )
 
             with self.db.write_batch():
@@ -435,6 +492,26 @@ class HistoricalReplayMixin:
             if ai_dynamic_strategy is not None
             else DEFAULT_AI_DYNAMIC_STRATEGY
         )
+        artifact_payloads = self._get_or_prepare_run_market_artifacts_batch(
+            run_id=run_id,
+            run_type=run_type,
+            checkpoint=checkpoint,
+            timeframe=timeframe,
+            market=market,
+            items=[
+                *[
+                    {"stock_code": str(candidate.get("stock_code") or ""), "stock_name": candidate.get("stock_name")}
+                    for candidate in candidates
+                ],
+                *[
+                    {
+                        "stock_code": str(position.get("stock_code") or ""),
+                        "stock_name": position.get("stock_name"),
+                    }
+                    for position in positions
+                ],
+            ],
+        )
         effective_strategy_profile_binding = None
         if dynamic_mode == DEFAULT_AI_DYNAMIC_STRATEGY:
             effective_strategy_profile_binding = engine._resolve_strategy_binding(
@@ -459,31 +536,9 @@ class HistoricalReplayMixin:
                 }
 
             candidates_scanned += 1
-            snapshot = self.snapshot_provider.get_snapshot(
-                candidate["stock_code"],
-                checkpoint,
-                timeframe,
-                stock_name=candidate.get("stock_name"),
-            )
-            if not snapshot:
-                self._record_missing_run_market_artifact(
-                    run_id=run_id,
-                    run_type=run_type,
-                    stock_code=str(candidate["stock_code"]),
-                    checkpoint=checkpoint,
-                    timeframe=timeframe,
-                    market=market,
-                )
+            snapshot = artifact_payloads.get(str(candidate["stock_code"]).strip().upper()) or {}
+            if self._artifact_payload_missing(snapshot):
                 continue
-            snapshot = self._attach_run_market_artifact(
-                run_id=run_id,
-                run_type=run_type,
-                stock_code=str(candidate["stock_code"]),
-                checkpoint=checkpoint,
-                timeframe=timeframe,
-                market=market,
-                snapshot=snapshot,
-            )
             candidate_binding = effective_strategy_profile_binding
             if dynamic_mode != DEFAULT_AI_DYNAMIC_STRATEGY:
                 candidate_binding = engine._resolve_strategy_binding(
@@ -533,31 +588,7 @@ class HistoricalReplayMixin:
                 }
 
             positions_checked += 1
-            snapshot = self.snapshot_provider.get_snapshot(
-                position["stock_code"],
-                checkpoint,
-                timeframe,
-                stock_name=candidate.get("stock_name") or position.get("stock_name"),
-            )
-            if not snapshot:
-                snapshot = self._record_missing_run_market_artifact(
-                    run_id=run_id,
-                    run_type=run_type,
-                    stock_code=str(position["stock_code"]),
-                    checkpoint=checkpoint,
-                    timeframe=timeframe,
-                    market=market,
-                )
-            else:
-                snapshot = self._attach_run_market_artifact(
-                    run_id=run_id,
-                    run_type=run_type,
-                    stock_code=str(position["stock_code"]),
-                    checkpoint=checkpoint,
-                    timeframe=timeframe,
-                    market=market,
-                    snapshot=snapshot,
-                )
+            snapshot = artifact_payloads.get(str(position["stock_code"]).strip().upper()) or {}
             position_binding = effective_strategy_profile_binding
             if dynamic_mode != DEFAULT_AI_DYNAMIC_STRATEGY:
                 position_binding = engine._resolve_strategy_binding(
@@ -635,74 +666,70 @@ class HistoricalReplayMixin:
             "signals": checkpoint_signals,
         }
 
-    def _attach_run_market_artifact(
+    def _get_or_prepare_run_market_artifacts_batch(
         self,
         *,
         run_id: int | None,
         run_type: str,
-        stock_code: str,
         checkpoint: datetime,
         timeframe: str,
         market: str,
-        snapshot: dict,
-    ) -> dict:
-        """Persist the run-scoped artifact and attach its ref to the decision facts."""
-
+        items: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        normalized_items = [
+            RunArtifactItem(
+                stock_code=str(item.get("stock_code") or "").strip(),
+                stock_name=str(item.get("stock_name") or "").strip() or None,
+                checkpoint=checkpoint,
+            )
+            for item in items
+            if str(item.get("stock_code") or "").strip()
+        ]
+        if not normalized_items:
+            return {}
         if run_id is None:
-            return snapshot
-        write_run_artifact_from_snapshot(
-            RunArtifactContext(
-                db_file=self.replay_db_file,
-                run_id=run_id,
-                run_type=run_type,
-                market=market,
-                timeframe=timeframe,
-                trace_id=f"{run_type}:{run_id}",
-            ),
-            stock_code=stock_code,
-            checkpoint=checkpoint,
-            snapshot=snapshot,
-        )
-        artifact_payload = read_run_artifact(
-            RunArtifactContext(
-                db_file=self.replay_db_file,
-                run_id=run_id,
-                run_type=run_type,
-                market=market,
-                timeframe=timeframe,
-                trace_id=f"{run_type}:{run_id}",
-            ),
-            stock_code=stock_code,
-            checkpoint=checkpoint,
-        )
-        return dict(artifact_payload)
+            results: dict[str, dict[str, Any]] = {}
+            for item in normalized_items:
+                snapshot = self.snapshot_provider.get_snapshot(
+                    item.stock_code,
+                    checkpoint,
+                    timeframe,
+                    stock_name=item.stock_name,
+                )
+                if not snapshot:
+                    results[item.stock_code.upper()] = {"source_status": "missing", "reason_code": item.reason_code}
+                    continue
+                payload = dict(snapshot)
+                payload.setdefault("source_status", "ready")
+                payload.setdefault("reason_code", "ok")
+                results[item.stock_code.upper()] = payload
+            return results
 
-    def _record_missing_run_market_artifact(
-        self,
-        *,
-        run_id: int | None,
-        run_type: str,
-        stock_code: str,
-        checkpoint: datetime,
-        timeframe: str,
-        market: str,
-    ) -> dict[str, Any]:
-        """Persist a run-scoped missing artifact so skipped snapshots remain auditable."""
-
-        if run_id is None:
-            return {"source_status": "missing", "reason_code": "missing_artifact"}
-        return write_missing_run_artifact(
-            RunArtifactContext(
-                db_file=self.replay_db_file,
-                run_id=run_id,
-                run_type=run_type,
-                market=market,
-                timeframe=timeframe,
-                trace_id=f"{run_type}:{run_id}",
-            ),
-            stock_code=stock_code,
-            checkpoint=checkpoint,
+        context = RunArtifactContext(
+            db_file=self.replay_db_file,
+            shared_db_file=self.db_file,
+            run_id=run_id,
+            run_type=run_type,
+            market=market,
+            timeframe=timeframe,
+            trace_id=f"{run_type}:{run_id}",
         )
+
+        def load_snapshot(item: RunArtifactItem) -> dict[str, Any] | None:
+            return self.snapshot_provider.get_snapshot(
+                item.stock_code,
+                item.checkpoint,
+                timeframe,
+                stock_name=item.stock_name,
+            )
+
+        return ensure_run_artifacts_for_checkpoint(context, items=normalized_items, snapshot_loader=load_snapshot)
+
+    @staticmethod
+    def _artifact_payload_missing(payload: dict | None) -> bool:
+        if not payload:
+            return True
+        return str(payload.get("source_status") or "").strip() in {"", "missing", "source_failed", "invalid"}
 
     @staticmethod
     def _finalize_checkpoint_signals(

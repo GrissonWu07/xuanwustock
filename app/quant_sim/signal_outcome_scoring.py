@@ -106,7 +106,7 @@ class SignalOutcomeScoringService:
         signal_id = _signal_id(signal)
         action = str(signal.get("action") or "HOLD").upper()
         artifact_ref = _extract_artifact_ref(signal)
-        logger.info(
+        logger.debug(
             "signal_outcome_scoring_started",
             extra={
                 "trace_id": request.trace_id,
@@ -121,7 +121,7 @@ class SignalOutcomeScoringService:
             self._score_horizon(_HorizonContext(request, policy, action, artifact_ref, int(horizon)))
             for horizon in policy["outcome_horizons_checkpoints"]
         ]
-        logger.info(
+        logger.debug(
             "signal_outcome_scoring_completed",
             extra={
                 "trace_id": request.trace_id,
@@ -166,7 +166,7 @@ class SignalOutcomeScoringService:
             else:
                 self.db.upsert_signal_outcome_score(record)
         if record["status"] != "mature":
-            logger.info(
+            logger.debug(
                 "signal_outcome_scoring_skipped",
                 extra={
                     "trace_id": request.trace_id,

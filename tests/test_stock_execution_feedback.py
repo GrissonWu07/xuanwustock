@@ -535,6 +535,123 @@ def test_signal_center_records_downgrade_without_pre_scaling_position_size(tmp_p
     assert gate["size_multiplier"] == 0.5
 
 
+def test_feedback_gate_poor_outcome_after_loss_uses_normal_multiplier_when_trend_confirmed():
+    gate = evaluate_stock_execution_feedback_gate(
+        action="BUY",
+        stock_code="603667",
+        policy=_policy(
+            loss_reentry_size_multiplier=0.5,
+            poor_outcome_reentry_size_multiplier=0.5,
+            poor_outcome_size_multiplier=0.75,
+        ),
+        summary={
+            "stock_code": "603667",
+            "lookback_days": 20,
+            "loss_after_last_buy_count": 1,
+            "recent_loss_trade_count": 0,
+            "recent_realized_pnl": 0,
+            "recent_realized_pnl_pct": 0,
+        },
+        market_snapshot=_strict_trend_snapshot(
+            outcome_feedback={
+                "summary": {
+                    "actionable": True,
+                    "sample_count": 10,
+                    "outcome_feedback_score": 47.5,
+                    "recommended_size_multiplier": 0.97,
+                    "requires_stronger_confirmation": True,
+                    "reason_code": "poor_buy_outcome_feedback",
+                }
+            }
+        ),
+        current_time="2026-04-10 15:00:00",
+    )
+
+    assert gate["status"] == "downgraded"
+    assert gate["size_multiplier"] == 0.75
+    reason_text = "；".join(gate["reasons"])
+    assert "买后转亏" in reason_text
+    assert "趋势已确认" in reason_text
+
+
+def test_feedback_gate_poor_outcome_after_loss_keeps_confirmed_quality_recovery_size():
+    gate = evaluate_stock_execution_feedback_gate(
+        action="BUY",
+        stock_code="603667",
+        policy=_policy(
+            loss_reentry_size_multiplier=0.5,
+            poor_outcome_reentry_size_multiplier=0.5,
+            poor_outcome_size_multiplier=0.75,
+            poor_outcome_confirmed_quality_size_multiplier=1.0,
+        ),
+        summary={
+            "stock_code": "603667",
+            "lookback_days": 20,
+            "loss_after_last_buy_count": 1,
+            "recent_loss_trade_count": 0,
+            "recent_realized_pnl": 0,
+            "recent_realized_pnl_pct": 0,
+        },
+        market_snapshot=_strict_trend_snapshot(
+            rsi=60.0,
+            recent_5d_return=0.035,
+            price_vs_ma20=1.05,
+            outcome_feedback={
+                "summary": {
+                    "actionable": True,
+                    "sample_count": 10,
+                    "outcome_feedback_score": 47.5,
+                    "recommended_size_multiplier": 0.97,
+                    "requires_stronger_confirmation": True,
+                    "reason_code": "poor_buy_outcome_feedback",
+                }
+            },
+        ),
+        current_time="2026-04-10 15:00:00",
+    )
+
+    assert gate["status"] == "downgraded"
+    assert gate["size_multiplier"] == 1.0
+    assert "趋势质量强" in "；".join(gate["reasons"])
+
+
+def test_feedback_gate_poor_outcome_after_loss_uses_reentry_multiplier_without_trend_confirmation():
+    gate = evaluate_stock_execution_feedback_gate(
+        action="BUY",
+        stock_code="603667",
+        policy=_policy(
+            loss_reentry_size_multiplier=0.5,
+            poor_outcome_reentry_size_multiplier=0.5,
+            poor_outcome_size_multiplier=0.75,
+        ),
+        summary={
+            "stock_code": "603667",
+            "lookback_days": 20,
+            "loss_after_last_buy_count": 1,
+            "recent_loss_trade_count": 0,
+            "recent_realized_pnl": 0,
+            "recent_realized_pnl_pct": 0,
+        },
+        market_snapshot=_snapshot(
+            outcome_feedback={
+                "summary": {
+                    "actionable": True,
+                    "sample_count": 10,
+                    "outcome_feedback_score": 47.5,
+                    "recommended_size_multiplier": 0.97,
+                    "requires_stronger_confirmation": False,
+                    "reason_code": "poor_buy_outcome_feedback",
+                }
+            }
+        ),
+        current_time="2026-04-10 15:00:00",
+    )
+
+    assert gate["status"] == "downgraded"
+    assert gate["size_multiplier"] == 0.5
+    assert "按恢复试错降仓" in "；".join(gate["reasons"])
+
+
 def test_signal_center_feedback_uses_market_snapshot_time_before_runtime_decision_time(tmp_path):
     db_file = tmp_path / "quant_sim.db"
     portfolio = PortfolioService(db_file=db_file)

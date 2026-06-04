@@ -47,6 +47,8 @@ Common suffixes:
 Java code MUST follow the reference Checkstyle rules.
 
 - Use UTF-8.
+- Follow `docs/rules/encoding-standards.md` when present.
+- Java comments, string constants, resource text, properties, SQL, XML, YAML, and test data MUST NOT contain mojibake or unreadable text.
 - Use 4 spaces for indentation.
 - Use the target project's formatter indentation. Google Java Style uses 2-space block indentation; the reference project Checkstyle uses 4 spaces, so project Checkstyle wins for this template.
 - Do not use tabs.
@@ -137,8 +139,13 @@ Maven dependencies MUST be managed at the appropriate parent or module level.
 
 Java code MUST use the project's logging framework.
 
+- Follow `docs/rules/logging-standards.md` when present.
 - Use class-level loggers or Lombok `@Slf4j` when the project uses Lombok.
-- Log enough context to diagnose failures, but do not log secrets.
+- Use MDC or the project's trace context mechanism to include `trace_id` in every request, job, async, and external-call log when context exists.
+- Log enough context to trace important system behavior and diagnose failures, but do not log sensitive information.
+- Log request/job boundaries, state transitions, major decisions, external calls, retries, failures, async handoff/completion, and permission/security denials when relevant.
+- Include safe correlation context such as request IDs, job IDs, operation names, tenant-safe IDs, or resource IDs when available.
+- Do not log secrets, passwords, tokens, access keys, private keys, cookies, session identifiers, signed URLs, raw credentials, decrypted values, full personal data, or sensitive request/response bodies.
 - Do not swallow exceptions silently.
 - For external API failures, log provider, operation, status/error code, and safe request identifiers.
 - Use business exceptions for expected domain failures and technical exceptions for infrastructure failures.
@@ -159,3 +166,22 @@ Java code SHOULD follow these common Google Java practices unless the target pro
 - Do not ignore caught exceptions. Log, rethrow, map to a domain exception, or explain the intentionally ignored case in a short comment.
 - Qualify static members with the declaring class name, not an instance expression.
 - Do not override or depend on `Object.finalize`.
+
+## JAVA-012: Method Parameters and DTOs
+
+Java methods and constructors MUST keep input parameters understandable and explicit.
+
+- Do not define methods or constructors with more than 5 input parameters.
+- If more than 5 inputs are required, introduce a named request object, command object, options object, DTO, or record with explicit typed fields.
+- Do not use `Map<String, Object>`, raw `Map`, generic `Object`, or ambiguous key/value bags to avoid creating a clear data object.
+- DTO/request object fields MUST have descriptive names, concrete types, validation expectations, and ownership near the API or service boundary that uses them.
+- Do not add fallback or compatibility branches unless the approved requirement or design explicitly requires them.
+
+## JAVA-013: Comments and Javadocs
+
+Java code MUST include useful comments for non-obvious behavior.
+
+- Use Javadocs for public APIs, public service contracts, reusable helpers, DTOs with non-obvious fields, and extension points when the project convention supports it.
+- Add short comments for complex business rules, domain invariants, security-sensitive decisions, async/concurrency behavior, integration mappings, error handling, and side effects.
+- Comments SHOULD explain why the code exists or why a decision is made, not repeat obvious statements.
+- Do not leave stale, misleading, TODO-only, or commented-out code.

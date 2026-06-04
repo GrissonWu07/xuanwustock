@@ -44,6 +44,47 @@ def test_auto_execute_uses_execution_sizing_final_budget(tmp_path):
     assert trade["gross_amount"] <= 12000
 
 
+def test_auto_execute_success_persists_buy_sizing_diagnostics(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=100000)
+    CandidatePoolService(db_file=db_path).add_manual_candidate("000001", "平安银行", "manual", latest_price=10.0)
+    signal_id = db.add_signal(
+        {
+            "stock_code": "000001",
+            "stock_name": "平安银行",
+            "action": "BUY",
+            "confidence": 80,
+            "reasoning": "test",
+            "position_size_pct": 3,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "portfolio_execution_guard": {"status": "downgraded", "buy_tier": "weak_buy"},
+                "execution_sizing_plan": {
+                    "buy_tier": "weak_buy",
+                    "final_budget": 3000.0,
+                    "effective_position_pct": 3.0,
+                    "risk_budget_pct": 0.3,
+                    "expected_stop_loss_pct": 5.0,
+                },
+            },
+            "status": "pending",
+        }
+    )
+
+    service = PortfolioService(db_file=db_path)
+    executed = service.auto_execute_signal(db.get_signal(signal_id), executed_at="2026-01-05T10:00:00Z")
+    signal = db.get_signal(signal_id)
+
+    assert executed is True
+    assert signal["status"] == "executed"
+    assert signal["execution_diagnostics"]["blocked_reason"] == ""
+    assert signal["execution_diagnostics"]["sizing"]["quantity"] == 200
+    assert signal["execution_diagnostics"]["sizing"]["sizing"]["buy_tier"] == "weak_buy"
+
+
 def test_auto_execute_confirmed_recovery_allows_one_lot_within_account_cap(tmp_path):
     db_path = tmp_path / "quant.db"
     db = QuantSimDB(db_path)
@@ -98,6 +139,119 @@ def test_auto_execute_confirmed_recovery_allows_one_lot_within_account_cap(tmp_p
     assert sizing["quantity"] == 100
 
 
+def test_auto_execute_quality_limited_strong_recovery_allows_high_quality_one_lot(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    CandidatePoolService(db_file=db_path).add_manual_candidate("603986", "兆易创新", "manual", latest_price=265.09)
+    db.upsert_quant_universe_state("603986", {"stock_name": "兆易创新", "quant_status": "trial", "health_score": 70})
+    signal_id = db.add_signal(
+        {
+            "stock_code": "603986",
+            "stock_name": "兆易创新",
+            "action": "BUY",
+            "confidence": 92,
+            "reasoning": "quality limited strong recovery",
+            "position_size_pct": 3.0,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "price": 265.09,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "market_snapshot": {"rsi": 76.94},
+                "portfolio_execution_guard": {
+                    "status": "passed",
+                    "buy_tier": "strong_buy",
+                    "buy_strength_score": 0.911665,
+                    "score_components": {"edge_strength": 1.0, "confirmation_score": 1.0},
+                    "trend_confirmation": {"recent_5d_return": 0.064191},
+                },
+                "lifecycle_gate": {"mode": "recovery_probe_quality_limited"},
+                "execution_sizing_plan": {
+                    "buy_tier": "strong_buy",
+                    "final_budget": 11809.0,
+                    "effective_position_pct": 3.0,
+                    "account_equity_tier_cap_pct": 12.5,
+                    "one_lot_cost": 26509.0,
+                    "lifecycle_gate_mode": "recovery_probe_quality_limited",
+                    "skip_reason": None,
+                },
+                "quant_status": "trial",
+            },
+            "status": "pending",
+        }
+    )
+
+    executed = PortfolioService(db_file=db_path).auto_execute_signal(
+        db.get_signal(signal_id),
+        executed_at="2026-04-10 15:00:00",
+    )
+
+    assert executed is True
+    trade = db.get_trade_history(limit=1)[0]
+    assert trade["stock_code"] == "603986"
+    assert trade["quantity"] == 100
+    signal = db.get_signal(signal_id)
+    assert signal["strategy_profile"]["position_sizing"]["one_lot_floor_override"] is True
+
+
+def test_auto_execute_quality_limited_recovery_does_not_allow_overheated_one_lot(tmp_path):
+    db_path = tmp_path / "quant.db"
+    db = QuantSimDB(db_path)
+    db.reset_runtime_state(initial_cash=400000)
+    CandidatePoolService(db_file=db_path).add_manual_candidate("300508", "维宏股份", "manual", latest_price=250.0)
+    db.upsert_quant_universe_state("300508", {"stock_name": "维宏股份", "quant_status": "trial", "health_score": 70})
+    signal_id = db.add_signal(
+        {
+            "stock_code": "300508",
+            "stock_name": "维宏股份",
+            "action": "BUY",
+            "confidence": 92,
+            "reasoning": "overextended quality limited recovery",
+            "position_size_pct": 3.0,
+            "stop_loss_pct": 5,
+            "take_profit_pct": 12,
+            "price": 250.0,
+            "decision_type": "dual_track_weighted_buy",
+            "strategy_profile": {
+                "selected_strategy_profile": {"id": "aggressive"},
+                "market_snapshot": {"rsi": 74.0},
+                "portfolio_execution_guard": {
+                    "status": "passed",
+                    "buy_tier": "strong_buy",
+                    "buy_strength_score": 0.95,
+                    "score_components": {"edge_strength": 1.0, "confirmation_score": 1.0},
+                    "trend_confirmation": {"recent_5d_return": 0.1495},
+                },
+                "lifecycle_gate": {"mode": "recovery_probe_quality_limited"},
+                "execution_sizing_plan": {
+                    "buy_tier": "strong_buy",
+                    "final_budget": 11500.0,
+                    "effective_position_pct": 3.0,
+                    "account_equity_tier_cap_pct": 12.5,
+                    "one_lot_cost": 25000.0,
+                    "lifecycle_gate_mode": "recovery_probe_quality_limited",
+                    "skip_reason": None,
+                },
+                "quant_status": "trial",
+            },
+            "status": "pending",
+        }
+    )
+
+    executed = PortfolioService(db_file=db_path).auto_execute_signal(
+        db.get_signal(signal_id),
+        executed_at="2026-05-08 10:00:00",
+    )
+
+    assert executed is False
+    signal = db.get_signal(signal_id)
+    assert signal["status"] == "pending"
+    assert "不足买入一手" in str(signal["execution_note"])
+    assert signal["execution_diagnostics"]["blocked_reason"] == "sizing_skip"
+
+
 def test_auto_execute_pending_signals_applies_checkpoint_trial_risk_budget(tmp_path):
     db_path = tmp_path / "quant.db"
     db = QuantSimDB(db_path)
@@ -123,7 +277,11 @@ def test_auto_execute_pending_signals_applies_checkpoint_trial_risk_budget(tmp_p
                     "decision_type": "dual_track_weighted_buy",
                     "strategy_profile": {
                         "selected_strategy_profile": {"id": "aggressive"},
-                        "portfolio_execution_guard": {"status": "downgraded", "buy_tier": "weak_buy"},
+                        "portfolio_execution_guard": {
+                            "status": "downgraded",
+                            "buy_tier": "weak_buy",
+                            "buy_strength_score": 0.6,
+                        },
                         "execution_sizing_plan": {
                             "buy_tier": "weak_buy",
                             "final_budget": 6000.0,
@@ -149,6 +307,8 @@ def test_auto_execute_pending_signals_applies_checkpoint_trial_risk_budget(tmp_p
     skip_profile = skipped[0]["strategy_profile"]
     assert skip_profile["auto_execution_skip"]["blocked_reason"] == "batch_execution_cap"
     assert skip_profile["auto_execution_skip"]["cap_reason"] == "portfolio_trial_risk_budget_exhausted"
+    assert skipped[0]["execution_diagnostics"]["batch_cap"]["reason_code"] == "portfolio_trial_risk_budget_exhausted"
+    assert skipped[0]["execution_diagnostics"]["sizing"]["sizing"]["buy_tier"] == "weak_buy"
 
 
 def test_replay_signals_persist_structured_ignored_execution_reason(tmp_path):
@@ -170,7 +330,11 @@ def test_replay_signals_persist_structured_ignored_execution_reason(tmp_path):
             "decision_type": "dual_track_weighted_buy",
             "strategy_profile": {
                 "selected_strategy_profile": {"id": "aggressive"},
-                "portfolio_execution_guard": {"status": "downgraded", "buy_tier": "weak_buy"},
+                "portfolio_execution_guard": {
+                    "status": "downgraded",
+                    "buy_tier": "weak_buy",
+                    "buy_strength_score": 0.6,
+                },
                 "execution_sizing_plan": {
                     "buy_tier": "weak_buy",
                     "final_budget": 6000.0,
@@ -205,6 +369,7 @@ def test_replay_signals_persist_structured_ignored_execution_reason(tmp_path):
     assert replay_signal["execution_note"].startswith("自动执行跳过")
     assert replay_signal["blocked_reason"] == "batch_execution_cap"
     assert replay_signal["cap_reason"] == "portfolio_trial_risk_budget_exhausted"
+    assert replay_signal["execution_diagnostics"]["batch_cap"]["reason_code"] == "portfolio_trial_risk_budget_exhausted"
 
 
 def test_scheduler_auto_executes_buy_signal_when_enabled(tmp_path, monkeypatch):

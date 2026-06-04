@@ -12,6 +12,7 @@ from app.quant_sim.market_technical_artifact import (
     MarketTechnicalArtifactRef,
 )
 from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
+from app.quant_sim.outcome_scoring_entrypoints import OutcomeBatchRequest, OutcomeBatchScope, score_signal_batch
 from app.quant_sim.signal_outcome_scoring import (
     OutcomeRunScope,
     OutcomeScoringRequest,
@@ -419,3 +420,104 @@ def test_outcome_api_scores_run_and_filters_replay_signal_rows(tmp_path: Path) -
     assert rows_response.status_code == 200
     assert rows_response.json()["items"][0]["run_id"] == run_id
     assert rows_response.json()["items"][0]["horizon_checkpoints"] == 3
+
+
+def test_batch_scoring_filters_buy_sell_before_limit_so_hold_rows_do_not_mask_outcomes(tmp_path: Path) -> None:
+    db = QuantSimReplayDB(tmp_path / "replay.db")
+    store = MarketTechnicalArtifactStore(tmp_path / "replay.db")
+    run_id = db.create_sim_run(
+        mode="live_quant_drill",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-01-05 10:00:00",
+        end_datetime="2026-01-05 11:30:00",
+        initial_cash=100000.0,
+        status="running",
+    )
+    checkpoints = [
+        "2026-01-05 10:00:00",
+        "2026-01-05 10:30:00",
+        "2026-01-05 11:00:00",
+        "2026-01-05 11:30:00",
+    ]
+    artifact_ref = _write_series(store, [_run_ref("600000", item, run_id=run_id) for item in checkpoints], [10, 10.3, 10.6, 10.8])
+    buy_signal = _signal("BUY", artifact_ref, id=801, strategy_profile=_structured_strategy_profile(artifact_ref))
+    hold_rows = [
+        _signal(
+            "HOLD",
+            artifact_ref,
+            id=900 + index,
+            stock_code=f"600{index:03d}",
+            checkpoint_at=f"2026-01-06 10:{index % 6}0:00",
+            strategy_profile=_structured_strategy_profile(artifact_ref),
+        )
+        for index in range(20)
+    ]
+    db.upsert_sim_run_signals(run_id, [buy_signal, *hold_rows])
+
+    result = score_signal_batch(
+        OutcomeBatchRequest(
+            db=db,
+            artifact_store=store,
+            scope=OutcomeBatchScope(run_id=run_id, run_type="live_quant_drill", domain="drill"),
+            as_of_checkpoint="2026-01-05 11:30:00",
+            limit=5,
+        )
+    )
+
+    rows = db.list_sim_run_signal_outcome_scores(run_id, "live_quant_drill", OutcomeScoreFilters(action="BUY", limit=10))
+    assert result["scored_signals"] == 1
+    assert len(rows) == 3
+    assert {row["signal_id"] for row in rows} == {rows[0]["signal_id"]}
+    assert {row["action"] for row in rows} == {"BUY"}
+
+
+def test_batch_scoring_skips_signals_with_all_horizons_already_mature(tmp_path: Path) -> None:
+    db = QuantSimReplayDB(tmp_path / "replay.db")
+    store = MarketTechnicalArtifactStore(tmp_path / "replay.db")
+    run_id = db.create_sim_run(
+        mode="live_quant_drill",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-01-05 10:00:00",
+        end_datetime="2026-01-06 10:30:00",
+        initial_cash=100000.0,
+        status="running",
+    )
+    checkpoints = [
+        "2026-01-05 10:00:00",
+        "2026-01-05 10:30:00",
+        "2026-01-05 11:00:00",
+        "2026-01-05 11:30:00",
+        "2026-01-05 13:00:00",
+        "2026-01-05 13:30:00",
+        "2026-01-05 14:00:00",
+        "2026-01-05 14:30:00",
+        "2026-01-05 15:00:00",
+        "2026-01-06 10:00:00",
+        "2026-01-06 10:30:00",
+    ]
+    artifact_ref = _write_series(
+        store,
+        [_run_ref("600000", item, run_id=run_id) for item in checkpoints],
+        [10.0 + index * 0.1 for index, _ in enumerate(checkpoints)],
+    )
+    db.upsert_sim_run_signals(
+        run_id,
+        [_signal("BUY", artifact_ref, id=802, strategy_profile=_structured_strategy_profile(artifact_ref))],
+    )
+    request = OutcomeBatchRequest(
+        db=db,
+        artifact_store=store,
+        scope=OutcomeBatchScope(run_id=run_id, run_type="live_quant_drill", domain="drill"),
+        as_of_checkpoint="2026-01-06 10:30:00",
+        limit=10,
+    )
+
+    first = score_signal_batch(request)
+    second = score_signal_batch(request)
+
+    assert first["scored_signals"] == 1
+    assert first["mature_count"] == 3
+    assert second["scored_signals"] == 0
+    assert second["mature_count"] == 0

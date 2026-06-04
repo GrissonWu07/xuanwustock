@@ -12,6 +12,11 @@ export type QuantLifecycleSettings = {
 export type QuantLifecyclePayload = {
   quant_status?: QuantStatus;
   health_score?: number;
+  candidate_score?: number;
+  candidate_confidence?: number;
+  last_health_evaluated_at?: string;
+  score_semantics?: Record<string, string>;
+  preparedEvidence?: Record<string, unknown>;
   latest_reason?: string;
   quant_auto_managed?: boolean;
   quant_manual_override?: string;
@@ -27,12 +32,12 @@ export const QUANT_STATUS_OPTIONS = ["trial", "active", "exit_only", "cooling", 
 export const DEFAULT_QUANT_STATUS_FILTERS = ["trial", "active", "exit_only"];
 
 const statusLabels: Record<string, string> = {
-  trial: t("Quant"),
-  active: t("正常扫描"),
-  exit_only: t("只出场"),
-  cooling: t("冷却"),
-  retired: t("已退出"),
-  manual_paused: t("手工暂停"),
+  trial: t("Trial"),
+  active: t("Active"),
+  exit_only: t("Exit"),
+  cooling: t("Cool"),
+  retired: t("Retired"),
+  manual_paused: t("Paused"),
 };
 
 const statusTone: Record<string, string> = {

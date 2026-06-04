@@ -639,8 +639,13 @@ def _run_outcome_summary_from_metadata_or_rows(
         return summary
     if not run_id:
         return {}
+    if not hasattr(db, "list_sim_run_signal_outcome_scores"):
+        return {}
     normalized_run_type = "live_quant_drill" if run_type == "live_quant_drill" else "historical_replay"
-    rows = db.list_sim_run_signal_outcome_scores(run_id, normalized_run_type, OutcomeScoreFilters(limit=5000))
+    try:
+        rows = db.list_sim_run_signal_outcome_scores(run_id, normalized_run_type, OutcomeScoreFilters(limit=5000))
+    except sqlite3.DatabaseError:
+        return {}
     return summarize_outcome_rows(rows) if rows else {}
 
 

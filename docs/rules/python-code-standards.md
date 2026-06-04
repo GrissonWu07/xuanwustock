@@ -45,6 +45,8 @@ Python code MUST be compatible with the target package's lint settings.
 - Avoid wildcard imports in new code.
 - Remove unused imports.
 - Keep files UTF-8 encoded.
+- Follow `docs/rules/encoding-standards.md` when present.
+- Python comments, docstrings, string constants, config templates, fixtures, and test data MUST NOT contain mojibake or unreadable text.
 - Use 4 spaces for indentation.
 - Do not use tabs.
 - Do not use semicolons to put multiple statements on one line.
@@ -94,12 +96,16 @@ External service integrations SHOULD separate connection/session setup, client o
 
 Python code MUST not hide important failures.
 
+- Follow `docs/rules/logging-standards.md` when present.
 - Use module-level loggers.
-- Log integration name, operation, endpoint or safe resource identifier, and exception message.
-- Do not log secrets, decrypted passwords, tokens, access keys, or signed URLs.
+- Use `contextvars`, request context, or the project's trace context mechanism to include `trace_id` in every request, job, async, and external-call log when context exists.
+- Log enough context to trace important system behavior and diagnose failures.
+- Log request/job boundaries, state transitions, major decisions, external calls, retries, failures, async handoff/completion, and permission/security denials when relevant.
+- Log integration name, operation, endpoint or safe resource identifier, correlation ID, and exception message when available.
+- Do not log secrets, decrypted passwords, tokens, access keys, private keys, cookies, session identifiers, signed URLs, raw credentials, full personal data, or sensitive request/response bodies.
 - Return empty collections only when the calling contract treats missing external data as non-fatal.
 - Raise or map exceptions when the caller must distinguish failure from empty data.
-- Use explicit fallback values for missing metrics or labels.
+- Use explicit fallback values for missing metrics or labels only when the approved requirement or design defines that fallback behavior.
 
 ## PY-008: Security and Secrets
 
@@ -124,12 +130,10 @@ Exporter code MUST produce stable metric names and labels.
 
 ## PY-010: Script Rules
 
-Operational scripts MUST be safe and repeatable.
+Operational scripts MUST be clear and project-scoped.
 
 - Use `argparse`, `click`, or the target project's CLI pattern for parameters.
 - Do not hardcode production paths, credentials, or network endpoints.
-- Log actions before destructive operations.
-- Support dry-run behavior for destructive or bulk operations when feasible.
 - Keep build and packaging scripts separate from runtime business logic.
 
 ## PY-011: Google Python Practices
@@ -143,6 +147,25 @@ Python code SHOULD follow these common Google Python practices unless the target
 - Avoid mutable default argument values such as `[]` or `{}`; use `None` and initialize inside the function, or use an immutable default.
 - Do not use `assert` for runtime validation or business preconditions; raise an explicit exception.
 - Use built-in exception classes when they clearly fit, such as `ValueError` for invalid arguments.
+
+## PY-012: Function Parameters and Data Objects
+
+Python functions and methods MUST keep inputs explicit and readable.
+
+- Do not define functions or methods with more than 5 input parameters.
+- If more than 5 inputs are required, introduce a named dataclass, pydantic model, TypedDict with a documented schema, request object, command object, or options object.
+- Do not use plain `dict`, `**kwargs`, `object`, or ambiguous key/value bags to avoid creating a clear data object.
+- Data objects used for parameters MUST have descriptive field names, type hints or schema, validation expectations, and clear ownership.
+- Do not add fallback or compatibility branches unless the approved requirement or design explicitly requires them.
 - Use context managers for files, sockets, clients, and other stateful resources when available.
 - Keep top-level executable behavior behind `main()` and `if __name__ == '__main__':`.
 - Document side effects, raised exceptions, and non-obvious arguments in docstrings for public functions.
+
+## PY-013: Comments and Docstrings
+
+Python code MUST include useful comments and docstrings for non-obvious behavior.
+
+- Use docstrings for public modules, classes, functions, reusable helpers, data objects, complex parsers, and non-obvious integration behavior.
+- Add short comments for complex business rules, domain invariants, security-sensitive decisions, async/concurrency behavior, integration mappings, error handling, and side effects.
+- Comments SHOULD explain why the code exists or why a decision is made, not repeat obvious statements.
+- Do not leave stale, misleading, TODO-only, or commented-out code.

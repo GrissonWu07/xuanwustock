@@ -21,13 +21,17 @@ Configuration files MUST have a clear owner and runtime scope.
 
 Use the target project's existing format before introducing a new format.
 
+- Follow `docs/rules/encoding-standards.md` when present.
 - Java/Spring runtime config commonly uses `application.properties` or profile-specific `application-<profile>.properties`.
 - Java logging config commonly uses `log4j2.xml`.
+- Logging configuration MUST include `trace_id` in the output pattern or structured log encoder when request/job context exists.
+- Logging configuration SHOULD support structured JSON or stable key-value fields when the project logging stack supports it.
 - Java OpenAPI metadata can use a dedicated properties file.
 - Java database migrations use Liquibase YAML under DB changelog folders.
 - Python package config uses `setup.py`, `setup.cfg`, `pyproject.toml`, `requirements*.txt`, or `tox.ini` according to the package.
 - Cloud component and blueprint config commonly uses YAML.
 - JSON is acceptable for static seed data, test fixtures, and catalog metadata.
+- Configuration files MUST NOT contain mojibake, broken escaping, unreadable non-ASCII text, or parser-incompatible character encoding.
 
 ## CFG-003: Naming
 
@@ -69,7 +73,6 @@ Database migrations MUST be traceable and reviewable.
 - Place migrations under the target project's changelog module/version folder.
 - Name migration files with a ticket, story, or change identifier when available.
 - Migration changes MUST be idempotent or guarded where possible.
-- Destructive schema or data changes MUST include rollback or recovery notes in design and review.
 - Generated SQL files MUST be stored under a clear `sql/` folder and referenced by the migration or design.
 
 ## CFG-007: OpenAPI Config
@@ -98,7 +101,7 @@ Test configuration MUST be isolated from production config.
 - Python test config belongs under `tests/` or ignored local files.
 - Integration tests that require real services MUST be disabled by default or gated by explicit environment variables.
 - Test fixtures SHOULD use JSON or YAML files when inputs are non-trivial.
-- Test parameters required by the OpenSpec workflow MUST be saved under `openspec/changes/<change-id>/test-params/`.
+- Test parameters required by the OpenSpec workflow MUST be saved under `.agent/workdir/sp-openspec/<change-id>/test-params/`; committed tests that need reusable files MUST use the project's normal test resource or fixture directories instead of depending on ignored workdir files.
 
 ## CFG-010: Dependency and Tool Config
 

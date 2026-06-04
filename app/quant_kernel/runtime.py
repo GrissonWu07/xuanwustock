@@ -446,6 +446,28 @@ class KernelStrategyRuntime:
                 resolved.decision_type = "dual_track_weighted_sell"
             else:
                 resolved.decision_type = "dual_track_weighted_hold"
+        elif profile_kind == "position" and tech_decision.action == "BUY":
+            resolved.action = "BUY"
+            resolved.decision_type = "position_trend_add_candidate"
+        if (
+            profile_kind == "position"
+            and tech_decision.action == "BUY"
+            and str(action_resolution.get("final_action") or "").upper() != "SELL"
+        ):
+            action_resolution = {
+                **action_resolution,
+                "final_action": "BUY",
+                "matched_branch": "position_trend_add_candidate",
+                "position_core_buy_overrode_weighted_hold": True,
+            }
+            fusion_breakdown = {
+                **fusion_breakdown,
+                "final_action": "BUY",
+                "matched_branch": "position_trend_add_candidate",
+                "position_core_buy_overrode_weighted_hold": True,
+            }
+            resolved.action = "BUY"
+            resolved.decision_type = "position_trend_add_candidate"
         resolved.strategy_profile = self._attach_explainability(
             strategy_profile=strategy_profile,
             market_snapshot=market_snapshot,
@@ -460,6 +482,13 @@ class KernelStrategyRuntime:
             profile_kind=profile_kind,
             strategy_profile_binding=strategy_profile_binding,
         )
+        if profile_kind == "position" and resolved.action == "BUY":
+            resolved.strategy_profile["position_trend_add_candidate"] = {
+                "status": "qualified",
+                "reason": "持仓浮盈区间趋势延续，允许执行层按加仓门控复核",
+                "tech_score": round(float(tech_score), 4),
+                "context_score": round(float(contextual_score.score), 4),
+            }
         if resolved.action == "BUY":
             max_ratio = float(thresholds.get("max_position_ratio") or 0.0)
             resolved.position_ratio = round(
@@ -1775,24 +1804,26 @@ class KernelStrategyRuntime:
         votes: list[dict[str, Any]] = []
         if current_price < ma20 and ma20 > 0:
             votes.append(self._vote("价格相对MA20", "SELL", -cfg.below_ma20_penalty, f"现价 {current_price:.2f} 低于 MA20 {ma20:.2f}"))
+        elif ma20 > 0:
+            votes.append(self._vote("价格相对MA20", "BUY", cfg.above_ma20_bonus, f"现价 {current_price:.2f} 站上 MA20 {ma20:.2f}"))
         else:
             votes.append(self._vote("价格相对MA20", "HOLD", 0.0, f"现价 {current_price:.2f} / MA20 {ma20:.2f}"))
         if macd < 0:
             votes.append(self._vote("MACD", "SELL", -cfg.negative_macd_penalty, f"MACD {macd:.3f} 为负"))
         else:
-            votes.append(self._vote("MACD", "HOLD", 0.0, f"MACD {macd:.3f} 未触发负向卖出"))
+            votes.append(self._vote("MACD", "BUY", cfg.positive_macd_bonus, f"MACD {macd:.3f} 为正，趋势延续"))
         if pnl_pct <= cfg.deep_loss_threshold:
             votes.append(self._vote("盈亏保护", "SELL", -cfg.deep_loss_penalty, f"浮盈亏 {pnl_pct:.2f}% 触发深度亏损保护"))
         elif pnl_pct >= cfg.strong_profit_threshold:
             votes.append(self._vote("盈亏保护", "SELL", -cfg.strong_profit_penalty, f"浮盈亏 {pnl_pct:.2f}% 触发高位止盈保护"))
         elif pnl_pct >= cfg.guarded_profit_threshold and macd > 0:
-            votes.append(self._vote("盈亏保护", "HOLD", 0.0, f"浮盈亏 {pnl_pct:.2f}% 且趋势未破坏，停止加仓"))
+            votes.append(self._vote("盈亏保护", "BUY", cfg.guarded_profit_bonus, f"浮盈亏 {pnl_pct:.2f}% 且趋势延续，允许受控加仓"))
         else:
             votes.append(self._vote("盈亏保护", "HOLD", 0.0, f"浮盈亏 {pnl_pct:.2f}% 中性"))
         if rsi12 >= cfg.overbought_rsi_threshold:
             votes.append(self._vote("RSI", "SELL", -cfg.overbought_rsi_penalty, f"RSI12 {rsi12:.2f} 偏高"))
         else:
-            votes.append(self._vote("RSI", "HOLD", 0.0, f"RSI12 {rsi12:.2f} 未触发超买"))
+            votes.append(self._vote("RSI", "BUY", cfg.healthy_rsi_bonus, f"RSI12 {rsi12:.2f} 未触发超买"))
         score = sum(float(vote["score"]) for vote in votes)
         return round(max(-1.0, min(1.0, score)), 4), votes
 

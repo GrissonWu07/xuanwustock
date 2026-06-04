@@ -1453,6 +1453,98 @@ def test_discover_snapshot_aggregates_selector_results(tmp_path):
     assert watch_rows["600519"]["pbRatio"] == "9.80"
 
 
+def test_workbench_hydrates_stock_rows_from_runtime_snapshot(tmp_path):
+    from app.stock_refresh_scheduler import save_stock_runtime_entries
+
+    context = _make_context(tmp_path)
+    context.quant_db().add_watch(
+        stock_code="301118",
+        stock_name="301118",
+        source="manual",
+        latest_price=0,
+        metadata={},
+    )
+    save_stock_runtime_entries(
+        {
+            "301118": {
+                "stock_code": "301118",
+                "stock_name": "恒光股份",
+                "latest_price": 36.88,
+                "sector": "基础化工",
+                "market_cap": 5_379_000_000,
+                "pe_ratio": 32.12,
+                "pb_ratio": 2.88,
+                "updated_at": "2026-05-17T08:30:00Z",
+            }
+        },
+        base_dir=context.selector_result_dir,
+        updated_at="2026-05-17T08:30:00Z",
+    )
+    client = TestClient(create_app(context=context))
+
+    response = client.get("/api/v1/workbench")
+
+    assert response.status_code == 200
+    rows = {row["code"]: row for row in response.json()["watchlist"]["rows"]}
+    row = rows["301118"]
+    assert row["name"] == "恒光股份"
+    assert row["cells"][1:7] == ["恒光股份", "36.88", "基础化工", "53.79", "32.12", "2.88"]
+    assert row["dataStatus"] == "数据正常"
+
+
+def test_workbench_refresh_action_uses_unified_stock_refresh(tmp_path, monkeypatch):
+    from app.stock_refresh_scheduler import save_stock_runtime_entries
+    import app.gateway.workbench as workbench_gateway
+
+    context = _make_context(tmp_path)
+    context.quant_db().add_watch(
+        stock_code="301118",
+        stock_name="301118",
+        source="manual",
+        latest_price=0,
+        metadata={},
+    )
+    calls: list[dict[str, Any]] = []
+
+    class FakeUnifiedRefreshScheduler:
+        def run_once(self, *, context=None, run_reason="manual", stock_codes=None):
+            calls.append({"context": context, "run_reason": run_reason, "stock_codes": stock_codes})
+            save_stock_runtime_entries(
+                {
+                    "301118": {
+                        "stock_code": "301118",
+                        "stock_name": "恒光股份",
+                        "latest_price": 36.88,
+                        "sector": "基础化工",
+                        "market_cap": 5_379_000_000,
+                        "pe_ratio": 32.12,
+                        "pb_ratio": 2.88,
+                        "updated_at": "2026-05-17T08:30:00Z",
+                    }
+                },
+                base_dir=context.selector_result_dir,
+                updated_at="2026-05-17T08:30:00Z",
+            )
+            context.quant_db().update_watch_snapshot(
+                "301118",
+                latest_price=36.88,
+                stock_name="恒光股份",
+                metadata={"industry": "基础化工", "sector": "基础化工", "market_cap": 5_379_000_000, "pe_ratio": 32.12, "pb_ratio": 2.88},
+            )
+            return {"updated": 1, "failed": 0, "totalCodes": 1}
+
+    monkeypatch.setattr(workbench_gateway, "get_unified_stock_refresh_scheduler", lambda context: FakeUnifiedRefreshScheduler())
+    client = TestClient(create_app(context=context))
+
+    response = client.post("/api/v1/workbench/actions/refresh-watchlist", json={"codes": ["301118"]})
+
+    assert response.status_code == 200
+    assert calls == [{"context": context, "run_reason": "workbench_manual", "stock_codes": ["301118"]}]
+    rows = {row["code"]: row for row in response.json()["watchlist"]["rows"]}
+    assert rows["301118"]["name"] == "恒光股份"
+    assert rows["301118"]["cells"][1:7] == ["恒光股份", "36.88", "基础化工", "53.79", "32.12", "2.88"]
+
+
 def test_discover_snapshot_exposes_read_only_lifecycle_entry_fields(tmp_path):
     context = _make_context(tmp_path)
     selector_dir = tmp_path / "selector_results"
@@ -2099,6 +2191,58 @@ def test_his_replay_actions_enqueue_cancel_delete_and_rerun(tmp_path, monkeypatc
     assert all(int(item["id"]) != run_id for item in context.replay_db().get_sim_runs(limit=20))
 
 
+def test_his_replay_tasks_expose_checkpoint_coverage_and_context_parity(tmp_path):
+    context = _make_context(tmp_path)
+    db = context.replay_db()
+    run_id = db.create_sim_run(
+        mode="historical_range",
+        timeframe="30m",
+        market="CN",
+        start_datetime="2026-04-01 09:30:00",
+        end_datetime="2026-04-10 15:00:00",
+        initial_cash=100000,
+        status="completed",
+        selected_strategy_profile_id="aggressive_v23",
+        metadata={
+            "selected_strategy_mode": "auto",
+            "checkpoint_coverage": {
+                "stock_count": 2,
+                "checkpoint_count": 12,
+                "exact_count": 20,
+                "nearest_count": 4,
+                "missing_count": 0,
+                "skipped_count": 0,
+            },
+            "context_parity": {
+                "stock_analysis_context": {
+                    "status": "omitted",
+                    "omitted_reason": "historical_replay_asof_safety",
+                }
+            },
+        },
+    )
+    db.update_sim_run_progress(
+        run_id,
+        progress_current=12,
+        progress_total=12,
+        latest_checkpoint_at="2026-04-10 15:00:00",
+        status_message="回放任务已完成",
+    )
+
+    client = TestClient(create_app(context=context))
+    snapshot_task = client.get(f"/api/v1/quant/his-replay?runId={run_id}").json()["tasks"][0]
+    progress_task = client.get(f"/api/v1/quant/his-replay/progress?runId={run_id}").json()["tasks"][0]
+
+    for task in (snapshot_task, progress_task):
+        assert task["checkpointCoverage"]["stockCount"] == 2
+        assert task["checkpointCoverage"]["checkpointCount"] == 12
+        assert task["checkpointCoverage"]["exactCount"] == 20
+        assert task["checkpointCoverage"]["nearestCount"] == 4
+        assert task["checkpointCoverage"]["missingCount"] == 0
+        assert task["contextParity"]["stockAnalysisContext"]["status"] == "omitted"
+        assert task["contextParity"]["stockAnalysisContext"]["omittedReason"] == "historical_replay_asof_safety"
+
+
 def test_his_replay_cancel_stale_running_run_clears_active_lock(tmp_path):
     context = _make_context(tmp_path)
     db = context.replay_db()
@@ -2443,6 +2587,9 @@ def test_live_sim_snapshot_exposes_trade_cost_ledger(tmp_path):
     ]
     assert "T+1" in row["cells"][14]
     assert "slot#1 1001.00" in row["cells"][14]
+    assert row["tradeProvenance"]["signalId"] == str(signal_id)
+    assert row["tradeProvenance"]["execution"]["quantity"] == 100
+    assert row["tradeProvenance"]["missingReasons"] == []
     summary_by_label = {item["label"]: item["value"] for item in payload["tradeCostSummary"]}
     assert summary_by_label["买入毛额"] == "1000.00"
     assert summary_by_label["买入总成本"] == "1001.00"
@@ -2558,6 +2705,10 @@ def test_his_replay_snapshot_exposes_trade_cost_ledger(tmp_path):
         "消耗 1 lot/100股 · lot 1 · T+1已解锁 2026-01-02 · 释放 slot#1 1096.70",
     ]
     assert "T+1已解锁" in row["cells"][14]
+    assert row["tradeProvenance"]["signalId"] == "1"
+    assert row["tradeProvenance"]["lotPlan"]["consumedLots"][0]["lot_id"] == 1
+    assert row["tradeProvenance"]["slotPlan"]["releases"][0]["slot_index"] == 1
+    assert row["tradeProvenance"]["missingReasons"] == []
     summary_by_label = {item["label"]: item["value"] for item in payload["tradeCostSummary"]}
     assert summary_by_label["交易笔数"] == "1"
     assert summary_by_label["初始资金"] == "100000.00"
@@ -3448,6 +3599,16 @@ def test_his_replay_snapshot_counts_ignored_trade_signals(tmp_path):
     progress_summary_by_label = {item["label"]: item["value"] for item in progress_payload["tradeCostSummary"]}
     assert progress_summary_by_label["忽略BUY"] == "2"
     assert progress_summary_by_label["忽略SELL"] == "1"
+    ignored_rows = [
+        row
+        for row in payload["signals"]["rows"]
+        if row["decisionProvenance"]["executionStatus"] == "ignored"
+    ]
+    assert len(ignored_rows) == 3
+    assert {row["decisionProvenance"]["ignoredReason"] for row in ignored_rows} == {
+        "涨停不可买入",
+        "跌停不可卖出",
+    }
 
 
 def test_his_replay_snapshot_marks_completed_run_with_missing_trade_summary_failed(tmp_path):

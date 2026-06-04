@@ -40,3 +40,6 @@ TradEnv/
 ui/node_modules/
 ui/dist/
 /.streamlit/
+.agent/workdir/
+/.coverage
+/tmp/

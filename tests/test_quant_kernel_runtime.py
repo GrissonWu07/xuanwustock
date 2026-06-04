@@ -220,7 +220,7 @@ def test_candidate_sell_is_downgraded_to_non_tradable_reject_in_explainability()
     assert fusion["matched_branch"] == "candidate_sell_rejected"
 
 
-def test_position_guarded_profit_does_not_emit_buy_vote():
+def test_position_guarded_profit_emits_controlled_add_vote():
     runtime = KernelStrategyRuntime()
 
     score, votes = runtime._calculate_position_tech_votes(
@@ -232,10 +232,52 @@ def test_position_guarded_profit_does_not_emit_buy_vote():
     )
 
     profit_vote = next(vote for vote in votes if vote["factor"] == "盈亏保护")
-    assert profit_vote["signal"] == "HOLD"
-    assert profit_vote["score"] == 0.0
-    assert "停止加仓" in profit_vote["reason"]
-    assert score == 0.0
+    assert profit_vote["signal"] == "BUY"
+    assert profit_vote["score"] == 0.26
+    assert "允许受控加仓" in profit_vote["reason"]
+    assert score == 0.66
+
+
+def test_position_trend_add_candidate_is_exposed_for_profit_continuation():
+    runtime = KernelStrategyRuntime()
+
+    decision = runtime.evaluate_position(
+        candidate={
+            "stock_code": "002518",
+            "stock_name": "科士达",
+            "source": "manual",
+            "sources": ["manual"],
+        },
+        position={
+            "stock_code": "002518",
+            "stock_name": "科士达",
+            "quantity": 100,
+            "avg_price": 10.0,
+            "stop_loss": 9.5,
+        },
+        market_snapshot={
+            "current_price": 10.6,
+            "latest_price": 10.6,
+            "ma5": 10.5,
+            "ma10": 10.4,
+            "ma20": 10.0,
+            "ma60": 9.6,
+            "ma20_slope": 0.01,
+            "macd": 0.18,
+            "rsi12": 58.0,
+            "volume_ratio": 1.2,
+            "trend": "up",
+        },
+        current_time=datetime(2026, 4, 10, 14, 30),
+        analysis_timeframe="30m",
+        strategy_mode="aggressive",
+    )
+
+    marker = (decision.strategy_profile or {}).get("position_trend_add_candidate") or {}
+
+    assert decision.action == "BUY"
+    assert marker["status"] == "qualified"
+    assert marker["tech_score"] == decision.tech_score
 
 
 def test_position_stop_loss_is_audited_as_risk_veto():

@@ -33,6 +33,7 @@ _HARD_EXIT_SELL_TOKENS = (
     "quick_stoploss",
     "hard_profit_trailing_stop",
     "profit_tech_sell",
+    "recovery_probe_failure_sell",
 )
 
 _HARD_EXIT_VETO_IDS = {
@@ -157,6 +158,15 @@ class PortfolioService:
                     },
                 )
                 return False
+            self._attach_execution_diagnostics(
+                signal,
+                {
+                    "blocked_reason": "",
+                    "cap_reason": "",
+                    "sizing": sizing_evidence,
+                    "actual_buy_at": self._format_execution_time(executed_at) if executed_at else self.db._now(),
+                },
+            )
             self.confirm_buy(
                 int(signal["id"]),
                 price=price,
@@ -272,11 +282,28 @@ class PortfolioService:
             )
             for row in batch_rows:
                 if not row["allowed"]:
+                    skipped_signal = row["signal"]
+                    profile = skipped_signal.get("strategy_profile") if isinstance(skipped_signal.get("strategy_profile"), dict) else {}
+                    execution_plan = (
+                        profile.get("execution_sizing_plan")
+                        if isinstance(profile.get("execution_sizing_plan"), dict)
+                        else {}
+                    )
                     self._record_auto_execute_skip(
-                        row["signal"],
+                        skipped_signal,
                         f"自动执行跳过：{row['reason_code']}",
                         blocked_reason="batch_execution_cap",
                         cap_reason=str(row.get("reason_code") or ""),
+                        execution_diagnostics={
+                            "blocked_reason": "batch_execution_cap",
+                            "cap_reason": str(row.get("reason_code") or ""),
+                            "batch_cap": {
+                                "allowed": False,
+                                "reason_code": str(row.get("reason_code") or ""),
+                                "batch_risk_pct": row.get("batch_risk_pct"),
+                            },
+                            "sizing": {"sizing": execution_plan},
+                        },
                     )
         executable = sells + [row["signal"] for row in batch_rows if row["allowed"]] + others
         for signal in executable:
@@ -736,6 +763,14 @@ class PortfolioService:
             return False
         gate = profile.get("lifecycle_gate") if isinstance(profile.get("lifecycle_gate"), dict) else {}
         gate_mode = str(execution_plan.get("lifecycle_gate_mode") or gate.get("mode") or "").strip().lower()
+        if gate_mode == "recovery_probe_quality_limited":
+            return cls._quality_limited_one_lot_floor_allowed(
+                signal=signal,
+                execution_plan=execution_plan,
+                profile=profile,
+                total_equity=total_equity,
+                lot_cost_with_fee=lot_cost_with_fee,
+            )
         if gate_mode not in {"recovery_probe_confirmed", "trial_confirmed", "strong_recovery_confirmed"}:
             return False
         account_cap_pct = cls._execution_plan_account_cap_pct(execution_plan, profile, total_equity)
@@ -743,6 +778,70 @@ class PortfolioService:
             return False
         one_lot_pct = lot_cost_with_fee / total_equity * 100.0
         return one_lot_pct <= account_cap_pct + 1e-9
+
+    @classmethod
+    def _quality_limited_one_lot_floor_allowed(
+        cls,
+        *,
+        signal: dict,
+        execution_plan: dict,
+        profile: dict,
+        total_equity: float,
+        lot_cost_with_fee: float,
+    ) -> bool:
+        guard = profile.get("portfolio_execution_guard") if isinstance(profile.get("portfolio_execution_guard"), dict) else {}
+        tier = str(execution_plan.get("buy_tier") or guard.get("buy_tier") or "").strip().lower()
+        if tier != "strong_buy":
+            return False
+        if float(execution_plan.get("final_budget") or 0.0) / lot_cost_with_fee < 0.4:
+            return False
+        components = guard.get("score_components") if isinstance(guard.get("score_components"), dict) else {}
+        trend = guard.get("trend_confirmation") if isinstance(guard.get("trend_confirmation"), dict) else {}
+        market_snapshot = profile.get("market_snapshot") if isinstance(profile.get("market_snapshot"), dict) else {}
+        strength = cls._safe_float(guard.get("buy_strength_score"), 0.0)
+        edge = cls._safe_float(components.get("edge_strength"), 0.0)
+        confirmation = cls._safe_float(components.get("confirmation_score"), 0.0)
+        rsi = cls._safe_float(
+            market_snapshot.get("rsi")
+            or market_snapshot.get("rsi12")
+            or market_snapshot.get("rsi_12")
+            or trend.get("rsi"),
+            50.0,
+        )
+        recent_return = cls._ratio_value(
+            trend.get("recent_5d_return")
+            if trend.get("recent_5d_return") not in (None, "")
+            else market_snapshot.get("recent_5d_return")
+        )
+        if strength < 0.90 or edge < 0.90 or confirmation < 0.90:
+            return False
+        if rsi > 80.0:
+            return False
+        if recent_return is not None and recent_return > 0.08:
+            return False
+        account_cap_pct = cls._execution_plan_account_cap_pct(execution_plan, profile, total_equity)
+        if account_cap_pct <= 0:
+            return False
+        one_lot_pct = lot_cost_with_fee / total_equity * 100.0
+        return one_lot_pct <= account_cap_pct + 1e-9
+
+    @staticmethod
+    def _safe_float(value: object, default: float = 0.0) -> float:
+        try:
+            if value in (None, ""):
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _ratio_value(cls, value: object) -> float | None:
+        if value in (None, ""):
+            return None
+        numeric = cls._safe_float(value, 0.0)
+        if abs(numeric) > 2.0:
+            return numeric / 100.0
+        return numeric
 
     @staticmethod
     def _execution_plan_account_cap_pct(execution_plan: dict, profile: dict, total_equity: float) -> float:

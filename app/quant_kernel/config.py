@@ -826,7 +826,9 @@ class TechnicalScoreConfig:
 
 @dataclass(frozen=True)
 class PositionScoreConfig:
+    above_ma20_bonus: float
     below_ma20_penalty: float
+    positive_macd_bonus: float
     negative_macd_penalty: float
     deep_loss_threshold: float
     deep_loss_penalty: float
@@ -834,6 +836,7 @@ class PositionScoreConfig:
     strong_profit_penalty: float
     guarded_profit_threshold: float
     guarded_profit_bonus: float
+    healthy_rsi_bonus: float
     overbought_rsi_threshold: float
     overbought_rsi_penalty: float
 
@@ -988,14 +991,17 @@ class QuantKernelConfig:
                 context_confidence_weight=0.08,
             ),
             position_scoring=PositionScoreConfig(
+                above_ma20_bonus=0.18,
                 below_ma20_penalty=0.25,
+                positive_macd_bonus=0.16,
                 negative_macd_penalty=0.2,
                 deep_loss_threshold=-5.0,
                 deep_loss_penalty=0.35,
                 strong_profit_threshold=10.0,
                 strong_profit_penalty=0.15,
                 guarded_profit_threshold=2.0,
-                guarded_profit_bonus=0.0,
+                guarded_profit_bonus=0.26,
+                healthy_rsi_bonus=0.06,
                 overbought_rsi_threshold=75.0,
                 overbought_rsi_penalty=0.12,
             ),

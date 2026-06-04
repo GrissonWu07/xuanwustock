@@ -36,7 +36,12 @@ DEFAULT_PORTFOLIO_EXECUTION_GUARD_POLICY: dict[str, Any] = {
     "hot_zone_recent_5d_return_threshold": 0.08,
     "hot_zone_extreme_recent_5d_return_threshold": 0.15,
     "hot_zone_volume_ratio_threshold": 2.0,
+    "weak_overextended_recent_return_threshold": 0.10,
+    "weak_overextended_secondary_return_threshold": 0.08,
+    "weak_overextended_ma20_distance_pct": 4.0,
+    "weak_overextended_volume_return_threshold": 0.04,
     "failed_volume_confirmation_penalty": 0.22,
+    "confirmed_trend_outcome_feedback_penalty_cap": 0.12,
     "failed_volume_confirmation_ratio": 3.0,
     "failed_volume_confirmation_macd_max": 0.0,
     "stock_failure_penalty": 0.20,
@@ -85,6 +90,7 @@ PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "t1_risk_penalty": 0.12,
         "hot_zone_penalty": 0.28,
         "failed_volume_confirmation_penalty": 0.20,
+        "confirmed_trend_outcome_feedback_penalty_cap": 0.12,
         "stock_failure_penalty": 0.18,
         "portfolio_cooldown_penalty": 0.20,
         "portfolio_drawdown_penalty": 0.15,
@@ -127,6 +133,7 @@ PORTFOLIO_EXECUTION_GUARD_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "t1_risk_penalty": 0.18,
         "hot_zone_penalty": 0.34,
         "failed_volume_confirmation_penalty": 0.26,
+        "confirmed_trend_outcome_feedback_penalty_cap": 0.16,
         "stock_failure_penalty": 0.22,
         "portfolio_cooldown_penalty": 0.30,
         "portfolio_drawdown_penalty": 0.20,
@@ -199,6 +206,7 @@ def normalize_portfolio_execution_guard_policy(
         "t1_risk_penalty",
         "hot_zone_penalty",
         "failed_volume_confirmation_penalty",
+        "confirmed_trend_outcome_feedback_penalty_cap",
         "stock_failure_penalty",
         "portfolio_cooldown_penalty",
         "portfolio_drawdown_penalty",
@@ -220,6 +228,10 @@ def normalize_portfolio_execution_guard_policy(
         "hot_zone_recent_5d_return_threshold",
         "hot_zone_extreme_recent_5d_return_threshold",
         "hot_zone_volume_ratio_threshold",
+        "weak_overextended_recent_return_threshold",
+        "weak_overextended_secondary_return_threshold",
+        "weak_overextended_ma20_distance_pct",
+        "weak_overextended_volume_return_threshold",
         "failed_volume_confirmation_ratio",
         "candidate_below_ma20_guard_ratio",
         "position_below_ma20_guard_ratio",
@@ -313,13 +325,27 @@ def evaluate_portfolio_execution_guard(
             t1_active=False,
             score=0.0,
         )
+    outcome_feedback_penalty = _outcome_feedback_penalty(market)
+    if outcome_feedback_penalty > 0 and _confirmed_trend_outcome_penalty_cap_applies(
+        trend=trend,
+        metrics=metrics,
+        volume_score=volume_score,
+        is_late_rebound=is_late_rebound,
+        t1_active=t1_active,
+        hot_zone_active=bool(hot_zone_reasons),
+        failed_volume_active=bool(failed_volume_reasons),
+    ):
+        outcome_feedback_penalty = min(
+            outcome_feedback_penalty,
+            float(resolved["confirmed_trend_outcome_feedback_penalty_cap"]),
+        )
     penalties = {
         "late_rebound": float(resolved["late_rebound_penalty"]) if is_late_rebound else 0.0,
         "t1": float(resolved["t1_risk_penalty"]) if t1_active else 0.0,
         "hot_zone": hot_zone_penalty,
         "failed_volume_confirmation": failed_volume_penalty,
         "stock_failure": _stock_failure_penalty(profile, resolved),
-        "outcome_feedback": _outcome_feedback_penalty(market),
+        "outcome_feedback": outcome_feedback_penalty,
         "portfolio_cooldown": float(resolved["portfolio_cooldown_penalty"]) if portfolio["cooldown_active"] else 0.0,
         "portfolio_drawdown": float(resolved["portfolio_drawdown_penalty"]) if portfolio["drawdown_guard_triggered"] else 0.0,
     }
@@ -405,6 +431,12 @@ def evaluate_portfolio_execution_guard(
         multiplier = 0.0
         reasons.append("弱买亏损后再买需要强趋势确认")
 
+    if tier != "strong_buy" and _weak_buy_overextended_without_retest(metrics, trend, resolved):
+        tier = "weak_buy"
+        status = "blocked"
+        multiplier = 0.0
+        reasons.append("weak_buy_overextended_without_retest")
+
     if status == "blocked":
         reasons.extend(portfolio["reasons"])
 
@@ -484,6 +516,7 @@ def _metrics(signal: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
         "volume_ratio": _maybe_float(market.get("volume_ratio")),
         "macd": _maybe_float(market.get("macd")),
         "rsi": _first_maybe_float(market.get("rsi12"), market.get("rsi14"), market.get("rsi")),
+        "price_vs_ma20": _return_ratio(market.get("price_vs_ma20")),
         "recent_5d_return": _return_ratio(
             _first_maybe_float(
                 market.get("recent_5d_return"),
@@ -511,28 +544,106 @@ def _outcome_feedback_penalty(market: dict[str, Any]) -> float:
     return _clamp((50.0 - score) / 100.0, 0.0, 0.25)
 
 
+def _confirmed_trend_outcome_penalty_cap_applies(
+    *,
+    trend: dict[str, Any],
+    metrics: dict[str, Any],
+    volume_score: float,
+    is_late_rebound: bool,
+    t1_active: bool,
+    hot_zone_active: bool,
+    failed_volume_active: bool,
+) -> bool:
+    if is_late_rebound or t1_active or hot_zone_active or failed_volume_active:
+        return False
+    above_ma20 = int(_float(trend.get("above_ma20_checkpoints"), 0.0) or 0)
+    if above_ma20 < 8:
+        return False
+    if not bool(trend.get("ma20_rising")):
+        return False
+    if not (bool(trend.get("ma_stack")) or bool(trend.get("retest_confirmed"))):
+        return False
+    if volume_score < 0.6:
+        return False
+    rsi = _maybe_float(metrics.get("rsi"))
+    if rsi is None or rsi >= 72.0:
+        return False
+    recent_return = _maybe_float(metrics.get("recent_5d_return"))
+    if recent_return is not None and recent_return >= 0.06 and not bool(trend.get("retest_confirmed")):
+        return False
+    price_vs_ma20 = abs(_float(metrics.get("price_vs_ma20"), 0.0) or 0.0)
+    return price_vs_ma20 <= 4.0
+
+
 def _trend_confirmation(metrics: dict[str, Any], market: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
     price = metrics.get("price")
     ma5 = metrics.get("ma5")
     ma10 = metrics.get("ma10")
     ma20 = metrics.get("ma20")
     ma20_rising = metrics.get("ma20_slope", 0.0) > float(policy["min_ma20_slope"])
-    ma_stack = bool(price and ma5 and ma10 and ma20 and price > ma20 and ma5 > ma10 > ma20)
+    explicit_ma_stack = market.get("ma_stack")
+    if explicit_ma_stack not in (None, ""):
+        ma_stack = _truthy_structure_flag(explicit_ma_stack)
+    else:
+        ma_stack = bool(price and ma5 and ma10 and ma20 and price > ma20 and ma5 > ma10 > ma20)
     recent = market.get("recent_checkpoints") if isinstance(market.get("recent_checkpoints"), list) else []
-    above = 0
-    for item in reversed(recent):
-        close = _maybe_float(_dict(item).get("close"))
-        item_ma20 = _maybe_float(_dict(item).get("ma20"))
-        if close is None or item_ma20 is None or close <= item_ma20:
-            break
-        above += 1
-    retest = _retest_confirmed(recent, metrics, policy)
+    explicit_above = _maybe_float(market.get("above_ma20_checkpoints"))
+    if explicit_above is not None:
+        above = max(int(explicit_above), 0)
+    else:
+        above = 0
+        for item in reversed(recent):
+            close = _maybe_float(_dict(item).get("close"))
+            item_ma20 = _maybe_float(_dict(item).get("ma20"))
+            if close is None or item_ma20 is None or close <= item_ma20:
+                break
+            above += 1
+    explicit_retest = market.get("retest_confirmed")
+    retest = _truthy_structure_flag(explicit_retest) if explicit_retest not in (None, "") else _retest_confirmed(recent, metrics, policy)
     return {
         "ma_stack": ma_stack,
         "ma20_rising": ma20_rising,
         "above_ma20_checkpoints": above,
         "retest_confirmed": retest,
+        "rsi": metrics.get("rsi"),
+        "volume_ratio": metrics.get("volume_ratio"),
+        "recent_5d_return": metrics.get("recent_5d_return"),
+        "ma20_distance_pct": _ma20_distance_pct(metrics),
     }
+
+
+def _ma20_distance_pct(metrics: dict[str, Any]) -> float:
+    explicit = metrics.get("price_vs_ma20")
+    if explicit is not None:
+        return abs(float(explicit)) * 100.0
+    price = metrics.get("price")
+    ma20 = metrics.get("ma20")
+    if price is None or ma20 in (None, 0):
+        return 0.0
+    return abs((float(price) - float(ma20)) / float(ma20)) * 100.0
+
+
+def _weak_buy_overextended_without_retest(metrics: dict[str, Any], trend: dict[str, Any], policy: dict[str, Any]) -> bool:
+    if trend.get("retest_confirmed"):
+        return False
+    recent_return = metrics.get("recent_5d_return")
+    if recent_return is None:
+        return False
+    recent = float(recent_return)
+    distance_pct = _ma20_distance_pct(metrics)
+    volume_ratio = metrics.get("volume_ratio")
+    if recent >= float(policy["weak_overextended_recent_return_threshold"]):
+        return True
+    if (
+        recent >= float(policy["weak_overextended_secondary_return_threshold"])
+        and distance_pct >= float(policy["weak_overextended_ma20_distance_pct"])
+    ):
+        return True
+    return bool(
+        volume_ratio is not None
+        and float(volume_ratio) >= float(policy["hot_zone_volume_ratio_threshold"])
+        and recent >= float(policy["weak_overextended_volume_return_threshold"])
+    )
 
 
 def _retest_confirmed(recent: list[Any], metrics: dict[str, Any], policy: dict[str, Any]) -> bool:
@@ -543,15 +654,26 @@ def _retest_confirmed(recent: list[Any], metrics: dict[str, Any], policy: dict[s
         return False
     lookback = int(policy.get("retest_lookback_checkpoints") or 1)
     window = [_dict(item) for item in recent[-lookback:]]
-    tolerance = 1.0 - float(policy.get("retest_tolerance_pct") or 0.0) / 100.0
+    tolerance_pct = float(policy.get("retest_tolerance_pct") or 0.0) / 100.0
+    lower_bound = 1.0 - tolerance_pct
+    upper_bound = 1.0 + tolerance_pct
     broke_above = any((_maybe_float(item.get("close")) or 0.0) > (_maybe_float(item.get("ma20")) or float("inf")) for item in window)
     retested = any(
         (_maybe_float(item.get("low")) is not None)
         and (_maybe_float(item.get("ma20")) is not None)
-        and (_maybe_float(item.get("low")) or 0.0) >= (_maybe_float(item.get("ma20")) or 0.0) * tolerance
+        and (_maybe_float(item.get("ma20")) or 0.0) * lower_bound
+        <= (_maybe_float(item.get("low")) or 0.0)
+        <= (_maybe_float(item.get("ma20")) or 0.0) * upper_bound
         for item in window
     )
     return bool(broke_above and retested)
+
+
+def _truthy_structure_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "ma5>ma10>ma20", "bullish", "confirmed"}
 
 
 def _buy_edge(signal: dict[str, Any], fusion: dict[str, Any], thresholds: dict[str, Any]) -> tuple[float, str]:

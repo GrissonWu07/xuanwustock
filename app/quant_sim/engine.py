@@ -345,6 +345,7 @@ class QuantSimEngine:
                 "active_since",
                 "active_checkpoints",
                 "cooling_until",
+                "reentry_watch_until",
                 "recovery_probe_until",
                 "recovery_probe_attempt_count",
                 "last_recovery_probe_attempt_at",
@@ -361,6 +362,7 @@ class QuantSimEngine:
             policy,
             supplemental=supplemental,
             recovery_probe_active=is_recovery_probe_active(state, as_of),
+            reentry_watch_active=_is_reentry_watch_active(state, as_of),
             downtrend_streak=int(row.get("downtrend_streak") or 0),
             recovery_probe_attempt_count=_active_recovery_probe_attempt_count(state, policy, as_of),
             recent_probe_loss_count=_active_recovery_probe_loss_count(state, policy, as_of),
@@ -879,6 +881,15 @@ def _is_recovery_probe_cooldown_active(state: dict[str, Any] | None, as_of: date
     if not state:
         return False
     value = state.get("recovery_probe_cooldown_until")
+    if not value:
+        return False
+    return is_recovery_probe_active({"recovery_probe_until": value}, as_of)
+
+
+def _is_reentry_watch_active(state: dict[str, Any] | None, as_of: datetime | str | None) -> bool:
+    if not state:
+        return False
+    value = state.get("reentry_watch_until")
     if not value:
         return False
     return is_recovery_probe_active({"recovery_probe_until": value}, as_of)

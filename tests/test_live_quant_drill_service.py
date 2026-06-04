@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 from unittest.mock import Mock
 
@@ -316,7 +317,7 @@ def test_live_quant_drill_initializes_run_local_quant_state(tmp_path):
         end_datetime=datetime(2026, 1, 6, 15, 0),
         timeframe="30m",
         market="CN",
-        strategy_profile_id=None,
+        strategy_profile_id="aggressive",
         initial_cash=100000,
         ai_dynamic_strategy="off",
         ai_dynamic_strength=0,
@@ -343,6 +344,8 @@ def test_live_quant_drill_initializes_run_local_quant_state(tmp_path):
     assert candidate["stock_code"] == "600519"
     assert cooling_state["quant_status"] == "cooling"
     assert [row["stock_code"] for row in scan_candidates] == ["600519"]
+    assert context["strategy_mode"] == "aggressive"
+    assert context["strategy_mode"] != "live_quant_drill"
 
 
 def test_live_quant_drill_execution_does_not_write_live_account(tmp_path):
@@ -412,6 +415,88 @@ def test_live_quant_drill_prepares_historical_snapshots_before_scan(tmp_path):
     assert snapshot_provider.prepared == [(("600519",), datetime(2026, 1, 5, 10, 0), datetime(2026, 1, 5, 10, 30), "30m")]
     assert len(replay_signals) >= 1
     assert {signal["stock_code"] for signal in replay_signals} == {"600519"}
+
+
+def test_live_quant_drill_preloads_all_seed_stocks_for_all_checkpoints(tmp_path):
+    live_db_file = tmp_path / "live.db"
+    replay_db_file = tmp_path / "replay.db"
+    live_db = QuantSimDB(str(live_db_file))
+    live_db.configure_account(50000)
+    for code, name in [("600519", "贵州茅台"), ("000001", "平安银行")]:
+        live_db.add_watch(stock_code=code, stock_name=name, source="manual")
+        live_db.upsert_quant_universe_state(code, {"stock_name": name, "quant_status": "active", "health_score": 85.0})
+    snapshot_provider = PreparedOnlyDrillSnapshotProvider()
+    service = QuantSimReplayService(
+        db_file=str(live_db_file),
+        replay_db_file=str(replay_db_file),
+        snapshot_provider=snapshot_provider,
+        adapter=DrillHoldAdapter(),
+    )
+
+    result = service.run_live_quant_drill(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        initial_cash=50000,
+        seed_current_quant_universe=True,
+        generate_historical_candidate_events=False,
+        execute_trades=False,
+    )
+
+    assert set(snapshot_provider.prepared[0][0]) == {"600519", "000001"}
+    with sqlite3.connect(replay_db_file) as conn:
+        run_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sim_run_market_technical_artifacts
+            WHERE run_id = ? AND run_type = 'live_quant_drill'
+            """,
+            (str(result["run_id"]),),
+        ).fetchone()[0]
+    with sqlite3.connect(live_db_file) as conn:
+        shared_count = conn.execute("SELECT COUNT(*) FROM market_technical_artifacts").fetchone()[0]
+    assert run_count == 4
+    assert shared_count == 4
+
+
+def test_live_quant_drill_seed_scope_excludes_inactive_universe_rows(tmp_path):
+    live_db_file = tmp_path / "live.db"
+    replay_db_file = tmp_path / "replay.db"
+    live_db = QuantSimDB(str(live_db_file))
+    live_db.configure_account(50000)
+    live_db.add_watch(stock_code="600519", stock_name="贵州茅台", source="manual")
+    live_db.upsert_quant_universe_state("600519", {"stock_name": "贵州茅台", "quant_status": "active"})
+    live_db.add_watch(stock_code="000001", stock_name="平安银行", source="manual")
+    live_db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "inactive"})
+    service = QuantSimReplayService(
+        db_file=str(live_db_file),
+        replay_db_file=str(replay_db_file),
+        snapshot_provider=PreparedOnlyDrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
+
+    context = service._prepare_live_quant_drill_context(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        strategy_profile_id="aggressive",
+        initial_cash=50000,
+        ai_dynamic_strategy="off",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
+        auto_entry_enabled=True,
+        auto_exit_enabled=True,
+        execute_trades=False,
+        liquidate_at_end=False,
+        seed_current_quant_universe=True,
+        generate_historical_candidate_events=False,
+        candidate_generation_frequency="daily_first_checkpoint",
+        candidate_generation_checkpoint_interval=8,
+    )
+
+    assert context["stock_codes"] == ["600519"]
 
 
 def test_live_quant_drill_main_scan_creates_checkpoint_signal(tmp_path):

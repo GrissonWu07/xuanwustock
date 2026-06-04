@@ -11,11 +11,13 @@ from typing import Any
 from app.quant_sim.db import QuantSimDB
 from app.quant_sim.dynamic_strategy import DEFAULT_AI_DYNAMIC_LOOKBACK, DEFAULT_AI_DYNAMIC_STRENGTH, DEFAULT_AI_DYNAMIC_STRATEGY
 from app.quant_sim.engine import QuantSimEngine
-from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
-from app.quant_sim.outcome_scoring_entrypoints import OutcomeBatchRequest, OutcomeBatchScope, score_signal_batch
 from app.quant_sim.portfolio_service import PortfolioService
 from app.quant_sim.quant_universe_artifact_db import ArtifactBackedCandidateEventDB
 from app.quant_sim.quant_universe_lifecycle import QuantUniverseManager
+from app.quant_sim.run_market_artifact_preloader import (
+    RunMarketArtifactPreloadRequest,
+    preload_run_market_artifacts,
+)
 from app.quant_sim.time_utils import parse_system_datetime
 
 
@@ -74,12 +76,59 @@ class LiveQuantDrillMixin:
                         f"失败 {int(prepare_report.get('failed') or 0)}。"
                     ),
                 )
+            stock_name_by_code = self._live_quant_drill_stock_name_map(context, stock_codes)
+            artifact_preload_report = preload_run_market_artifacts(
+                RunMarketArtifactPreloadRequest(
+                    db_file=self.replay_db_file,
+                    shared_db_file=self.db_file,
+                    run_id=run_id,
+                    run_type="live_quant_drill",
+                    market=str(context.get("market") or "CN"),
+                    timeframe=str(context.get("timeframe") or "30m"),
+                    stock_items=[
+                        {
+                            "stock_code": code,
+                            "stock_name": stock_name_by_code.get(code.upper()) or code,
+                        }
+                        for code in stock_codes
+                    ],
+                    checkpoints=checkpoints,
+                    snapshot_loader=lambda item: self.snapshot_provider.get_snapshot(
+                        item.stock_code,
+                        item.checkpoint,
+                        str(context.get("timeframe") or "30m"),
+                        stock_name=item.stock_name,
+                    ),
+                    trace_id=f"live_quant_drill:{run_id}:artifact_preload",
+                )
+            )
+            self.db.append_sim_run_event(
+                run_id,
+                (
+                    "实时量化演练行情技术 artifact 预热完成："
+                    f"股票 {artifact_preload_report['stock_count']}，"
+                    f"检查点 {artifact_preload_report['checkpoint_count']}，"
+                    f"ready {artifact_preload_report['ready']}，"
+                    f"partial {artifact_preload_report['partial']}，"
+                    f"missing {artifact_preload_report['missing']}，"
+                    f"耗时 {artifact_preload_report['elapsed_seconds']} 秒。"
+                ),
+                level="warning" if int(artifact_preload_report.get("missing") or 0) > 0 else "info",
+            )
 
             for checkpoint_index, checkpoint in enumerate(checkpoints, start=1):
                 last_checkpoint_index = checkpoint_index
                 last_checkpoint_text = self._format_datetime(checkpoint)
                 if self.db.is_sim_run_cancel_requested(run_id):
                     raise RuntimeError("实时量化演练任务已取消")
+                self._score_run_outcomes_for_checkpoint(
+                    run_id=run_id,
+                    run_type="live_quant_drill",
+                    domain="drill",
+                    checkpoint_at=last_checkpoint_text,
+                    temp_db=temp_db,
+                    trace_id=f"live_quant_drill_{run_id}_{checkpoint_index}",
+                )
                 self.db.update_sim_run_progress(
                     run_id,
                     status="running",
@@ -135,15 +184,13 @@ class LiveQuantDrillMixin:
             )
             positions = temp_portfolio.list_positions()
             metrics = self._calculate_run_metrics(float(account_summary["initial_cash"]), trades, snapshots)
-            outcome_batch = score_signal_batch(
-                OutcomeBatchRequest(
-                    db=self.db,
-                    artifact_store=MarketTechnicalArtifactStore(self.replay_db_file),
-                    scope=OutcomeBatchScope(run_id=run_id, run_type="live_quant_drill", domain="drill"),
-                    as_of_checkpoint=last_checkpoint_text or None,
-                    limit=5000,
-                    trace_id=f"live_quant_drill_{run_id}",
-                )
+            outcome_batch = self._score_run_outcomes_for_checkpoint(
+                run_id=run_id,
+                run_type="live_quant_drill",
+                domain="drill",
+                checkpoint_at=last_checkpoint_text or "",
+                temp_db=temp_db,
+                trace_id=f"live_quant_drill_{run_id}",
             )
             with self.db.write_batch():
                 self.db.replace_sim_run_runtime_results(
@@ -207,6 +254,23 @@ class LiveQuantDrillMixin:
             raise
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _live_quant_drill_stock_name_map(context: dict, stock_codes: list[str]) -> dict[str, str]:
+        names: dict[str, str] = {str(code).strip().upper(): str(code).strip().upper() for code in stock_codes}
+        for key in ("candidates", "quant_universe_seed", "stock_items"):
+            values = context.get(key)
+            if not isinstance(values, list):
+                continue
+            for item in values:
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("stock_code") or item.get("code") or "").strip().upper()
+                if not code:
+                    continue
+                name = str(item.get("stock_name") or item.get("name") or code).strip() or code
+                names[code] = name
+        return names
 
     def _run_live_quant_drill_checkpoint(
         self,
@@ -529,6 +593,20 @@ class LiveQuantDrillMixin:
         reviewed = 0
         diagnostics: list[dict[str, Any]] = []
         timeframe = str(context.get("timeframe") or "30m")
+        artifact_payloads = self._get_or_prepare_run_market_artifacts_batch(
+            run_id=run_id,
+            run_type="live_quant_drill",
+            checkpoint=checkpoint,
+            timeframe=timeframe,
+            market=str(context.get("market") or "CN"),
+            items=[
+                {
+                    "stock_code": str(item.get("stock_code") or "").strip().upper(),
+                    "stock_name": item.get("stock_name") or item.get("stock_code"),
+                }
+                for item in selected
+            ],
+        )
         for item in selected:
             code = str(item.get("stock_code") or "").strip().upper()
             if not code:
@@ -539,31 +617,9 @@ class LiveQuantDrillMixin:
                 "source": "cooling_review",
                 "sources": ["cooling_review"],
             }
-            snapshot = self.snapshot_provider.get_snapshot(
-                code,
-                checkpoint,
-                timeframe,
-                stock_name=candidate.get("stock_name") or code,
-            )
-            if not snapshot:
-                self._record_missing_run_market_artifact(
-                    run_id=run_id,
-                    run_type="live_quant_drill",
-                    stock_code=code,
-                    checkpoint=checkpoint,
-                    timeframe=timeframe,
-                    market=str(context.get("market") or "CN"),
-                )
+            snapshot = artifact_payloads.get(code) or {}
+            if self._artifact_payload_missing(snapshot):
                 continue
-            snapshot = self._attach_run_market_artifact(
-                run_id=run_id,
-                run_type="live_quant_drill",
-                stock_code=code,
-                checkpoint=checkpoint,
-                timeframe=timeframe,
-                market=str(context.get("market") or "CN"),
-                snapshot=snapshot,
-            )
             reviewed += 1
             review_signal = engine.build_candidate_review_signal(
                 candidate,

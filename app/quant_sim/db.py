@@ -6081,9 +6081,14 @@ class QuantSimDB:
 
         cursor.execute("SELECT * FROM sim_positions WHERE stock_code = ?", (stock_code,))
         position = cursor.fetchone()
-        is_add = position is not None
+        position_is_holding = (
+            position is not None
+            and str(position["status"] or "").lower() == "holding"
+            and int(position["quantity"] or 0) > 0
+        )
+        is_add = position_is_holding
 
-        if position:
+        if position_is_holding:
             current_quantity = int(position["quantity"])
             new_quantity = current_quantity + quantity
             total_cost = float(position["avg_price"]) * current_quantity + amount
@@ -6125,6 +6130,32 @@ class QuantSimDB:
                     peak_unrealized_pnl,
                     peak_unrealized_pnl_pct,
                     peak_at,
+                    executed_at_text,
+                    stock_code,
+                ),
+            )
+            position_id = int(position["id"])
+        elif position:
+            avg_price = round(amount / quantity, 4)
+            market_value = round(quantity * price, 4)
+            cursor.execute(
+                """
+                UPDATE sim_positions
+                SET stock_name = ?, quantity = ?, avg_price = ?, latest_price = ?,
+                    market_value = ?, unrealized_pnl = 0, unrealized_pnl_pct = 0,
+                    peak_price = ?, peak_unrealized_pnl = 0, peak_unrealized_pnl_pct = 0, peak_at = ?,
+                    status = 'holding', opened_at = ?, updated_at = ?
+                WHERE stock_code = ?
+                """,
+                (
+                    stock_name or position["stock_name"],
+                    quantity,
+                    avg_price,
+                    price,
+                    market_value,
+                    price,
+                    executed_at_text,
+                    executed_at_text,
                     executed_at_text,
                     stock_code,
                 ),

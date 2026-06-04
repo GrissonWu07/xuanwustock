@@ -116,6 +116,8 @@
   "Quant simulation": "Real-time quant",
   "Quotes support manual refresh. Quant scheduler also writes latest prices and signals here.": "Quotes support manual refresh. Quant scheduler also writes latest prices and signals here.",
   "Watchlist refresh updates name, price, and sector in batch. Quant scheduler also writes latest prices and signals here.": "Watchlist refresh updates name, price, and sector in batch. Quant scheduler also writes latest prices and signals here.",
+  "Watchlist refresh": "Watchlist refresh",
+  "Unified refresh completed: updated {updated}, failed {failed}, total {total}.": "Unified refresh completed: updated {updated}, failed {failed}, total {total}.",
   "Relative activity versus historical average volume.": "Relative activity versus historical average volume.",
   "Latest traded volume in current bar/session.": "Latest traded volume in current bar/session.",
   "5-period average volume, baseline for volume expansion/shrinkage.": "5-period average volume, baseline for volume expansion/shrinkage.",

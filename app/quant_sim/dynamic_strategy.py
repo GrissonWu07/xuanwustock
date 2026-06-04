@@ -83,6 +83,7 @@ class DynamicStrategyController:
         self.logger = logging.getLogger(__name__)
         self._smart_monitor_db: SmartMonitorDB | None = None
         self._sector_db: SectorStrategyDatabase | None = None
+        self._component_cache: dict[tuple[str, str, int, str], dict[str, Any] | None] = {}
         if db_runtime is not None:
             news_flow_db.db_runtime = db_runtime
             try:
@@ -240,13 +241,19 @@ class DynamicStrategyController:
         component_rows: list[dict[str, Any]] = []
         omitted_components: list[dict[str, Any]] = []
 
-        for key, factory in (
-            ("market", lambda: self._market_component(lookback_hours=lookback_hours, as_of=as_of)),
-            ("sector", lambda: self._sector_component(stock_name=stock_name, lookback_hours=lookback_hours, as_of=as_of)),
-            ("news", lambda: self._news_component(lookback_hours=lookback_hours, as_of=as_of)),
-            ("ai", lambda: self._ai_component(stock_code=stock_code, lookback_hours=lookback_hours, as_of=as_of)),
+        for key, cache_scope, factory in (
+            ("market", "", lambda: self._market_component(lookback_hours=lookback_hours, as_of=as_of)),
+            ("sector", "", lambda: self._sector_component(stock_name=stock_name, lookback_hours=lookback_hours, as_of=as_of)),
+            ("news", "", lambda: self._news_component(lookback_hours=lookback_hours, as_of=as_of)),
+            ("ai", str(stock_code or "").strip(), lambda: self._ai_component(stock_code=stock_code, lookback_hours=lookback_hours, as_of=as_of)),
         ):
-            component = factory()
+            component = self._cached_component(
+                key=key,
+                cache_scope=cache_scope,
+                lookback_hours=lookback_hours,
+                as_of=as_of,
+                factory=factory,
+            )
             if component:
                 component_rows.append(component)
             elif as_of is not None:
@@ -274,6 +281,23 @@ class DynamicStrategyController:
             "components": component_rows,
             "omitted_components": omitted_components,
         }
+
+    def _cached_component(
+        self,
+        *,
+        key: str,
+        cache_scope: str,
+        lookback_hours: int,
+        as_of: datetime | None,
+        factory,
+    ) -> dict[str, Any] | None:
+        cache_key = (key, cache_scope, int(lookback_hours), self._format_as_of(as_of))
+        if cache_key in self._component_cache:
+            cached = self._component_cache[cache_key]
+            return self._deep_copy_json(cached) if isinstance(cached, dict) else None
+        component = factory()
+        self._component_cache[cache_key] = self._deep_copy_json(component) if isinstance(component, dict) else None
+        return component
 
     def _market_component(self, *, lookback_hours: int, as_of: datetime | None = None) -> dict[str, Any] | None:
         try:

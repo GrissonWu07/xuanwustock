@@ -182,7 +182,8 @@ def build_market_technical_data_from_entry(entry: dict[str, Any], *, computed_at
     missing_list = missing_fields if isinstance(missing_fields, list) else []
     latest_price = _number(entry.get("latest_price")) or _number(entry.get("price"))
     rsi = _first_number(entry, "rsi", "rsi12", "rsi_12")
-    field_values = _artifact_field_values(entry, latest_price=latest_price, rsi=rsi)
+    structure_values = _structure_values_from_entry(entry, latest_price=latest_price)
+    field_values = _artifact_field_values(entry, latest_price=latest_price, rsi=rsi, structure_values=structure_values)
     all_missing = _missing_fields_from_values(field_values, EXPECTED_ARTIFACT_FIELDS)
     critical_missing = [field for field in CRITICAL_ARTIFACT_FIELDS if field in all_missing]
     if all_missing:
@@ -210,12 +211,12 @@ def build_market_technical_data_from_entry(entry: dict[str, Any], *, computed_at
         macd=_number(entry.get("macd")),
         macd_signal=_number(entry.get("macd_signal")),
         macd_histogram=_number(entry.get("macd_histogram")),
-        trend=_text(entry.get("trend")),
-        price_vs_ma20=_number(entry.get("price_vs_ma20")),
-        price_vs_ma60=_number(entry.get("price_vs_ma60")),
-        ma_stack=_text(entry.get("ma_stack")),
-        above_ma20_checkpoints=_integer(entry.get("above_ma20_checkpoints")),
-        retest_confirmed=_boolean(entry.get("retest_confirmed")),
+        trend=structure_values["trend"],
+        price_vs_ma20=structure_values["price_vs_ma20"],
+        price_vs_ma60=structure_values["price_vs_ma60"],
+        ma_stack=structure_values["ma_stack"],
+        above_ma20_checkpoints=structure_values["above_ma20_checkpoints"],
+        retest_confirmed=structure_values["retest_confirmed"],
         is_suspended=_boolean(entry.get("is_suspended")),
         is_limit_up=_boolean(entry.get("is_limit_up")),
         is_limit_down=_boolean(entry.get("is_limit_down")),
@@ -226,6 +227,10 @@ def build_market_technical_data_from_entry(entry: dict[str, Any], *, computed_at
         reason_code=reason_code,
         missing_fields=missing_list,
         computed_at=computed_at,
+        structure_json={
+            "recent_checkpoints": structure_values["recent_checkpoints"],
+            "recent_5d_return": structure_values["recent_5d_return"],
+        },
         provider_diagnostics={"technical_snapshot_error": _safe_error_marker(entry.get("technical_snapshot_error"))},
     )
 
@@ -257,7 +262,13 @@ def _status_and_reason(entry: dict[str, Any]) -> tuple[str, str]:
     return "partial", "incomplete_artifact"
 
 
-def _artifact_field_values(entry: dict[str, Any], *, latest_price: float | None, rsi: float | None) -> dict[str, Any]:
+def _artifact_field_values(
+    entry: dict[str, Any],
+    *,
+    latest_price: float | None,
+    rsi: float | None,
+    structure_values: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "open": _number(entry.get("open")),
         "high": _number(entry.get("high")),
@@ -278,12 +289,12 @@ def _artifact_field_values(entry: dict[str, Any], *, latest_price: float | None,
         "macd": _number(entry.get("macd")),
         "macd_signal": _number(entry.get("macd_signal")),
         "macd_histogram": _number(entry.get("macd_histogram")),
-        "trend": _text(entry.get("trend")),
-        "price_vs_ma20": _number(entry.get("price_vs_ma20")),
-        "price_vs_ma60": _number(entry.get("price_vs_ma60")),
-        "ma_stack": _text(entry.get("ma_stack")),
-        "above_ma20_checkpoints": _integer(entry.get("above_ma20_checkpoints")),
-        "retest_confirmed": _boolean(entry.get("retest_confirmed")),
+        "trend": structure_values["trend"],
+        "price_vs_ma20": structure_values["price_vs_ma20"],
+        "price_vs_ma60": structure_values["price_vs_ma60"],
+        "ma_stack": structure_values["ma_stack"],
+        "above_ma20_checkpoints": structure_values["above_ma20_checkpoints"],
+        "retest_confirmed": structure_values["retest_confirmed"],
         "is_suspended": _boolean(entry.get("is_suspended")),
         "is_limit_up": _boolean(entry.get("is_limit_up")),
         "is_limit_down": _boolean(entry.get("is_limit_down")),
@@ -291,6 +302,115 @@ def _artifact_field_values(entry: dict[str, Any], *, latest_price: float | None,
         "provider": _text(entry.get("technical_snapshot_provider") or entry.get("provider") or entry.get("data_source")),
         "indicator_version": _text(entry.get("technical_snapshot_indicator_version") or entry.get("indicator_version")),
     }
+
+
+def _structure_values_from_entry(entry: dict[str, Any], *, latest_price: float | None) -> dict[str, Any]:
+    ma5 = _number(entry.get("ma5"))
+    ma10 = _number(entry.get("ma10"))
+    ma20 = _number(entry.get("ma20"))
+    ma60 = _number(entry.get("ma60"))
+    price = latest_price or _number(entry.get("close")) or _number(entry.get("current_price"))
+    recent = _recent_checkpoints(entry.get("recent_checkpoints"))
+    above_ma20 = _integer(entry.get("above_ma20_checkpoints"))
+    if above_ma20 is None:
+        above_ma20 = _above_ma20_checkpoints(recent)
+    if above_ma20 is None and price is not None and ma20 is not None:
+        above_ma20 = 1 if price > ma20 else 0
+    ma_stack = _text(entry.get("ma_stack"))
+    if not ma_stack and all(value is not None for value in (price, ma5, ma10, ma20)):
+        ma_stack = "ma5>ma10>ma20" if price > ma20 and ma5 > ma10 > ma20 else "none"
+    retest = _boolean(entry.get("retest_confirmed"))
+    if retest is None:
+        retest = _retest_confirmed(recent, price=price, ma10=ma10, ma20=ma20)
+    trend = _text(entry.get("trend"))
+    if not trend and price is not None and ma20 is not None and ma60 is not None:
+        trend = "up" if price > ma20 > ma60 else "down" if price < ma20 < ma60 else "sideways"
+    return {
+        "trend": trend,
+        "price_vs_ma20": _ratio_or_existing(entry, "price_vs_ma20", price, ma20),
+        "price_vs_ma60": _ratio_or_existing(entry, "price_vs_ma60", price, ma60),
+        "ma_stack": ma_stack,
+        "above_ma20_checkpoints": above_ma20,
+        "retest_confirmed": retest,
+        "recent_checkpoints": recent,
+        "recent_5d_return": _number(entry.get("recent_5d_return")),
+    }
+
+
+def _recent_checkpoints(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value[-20:]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                key: parsed
+                for key, parsed in {
+                    "datetime": _text(item.get("datetime")),
+                    "open": _number(item.get("open")),
+                    "high": _number(item.get("high")),
+                    "low": _number(item.get("low")),
+                    "close": _number(item.get("close")),
+                    "volume": _number(item.get("volume")),
+                    "amount": _number(item.get("amount")),
+                    "ma5": _number(item.get("ma5")),
+                    "ma10": _number(item.get("ma10")),
+                    "ma20": _number(item.get("ma20")),
+                    "ma60": _number(item.get("ma60")),
+                    "ma20_slope": _number(item.get("ma20_slope")),
+                }.items()
+                if parsed not in (None, "")
+            }
+        )
+    return rows
+
+
+def _above_ma20_checkpoints(recent: list[dict[str, Any]]) -> int | None:
+    if not recent:
+        return None
+    count = 0
+    for item in reversed(recent):
+        close = _number(item.get("close"))
+        ma20 = _number(item.get("ma20"))
+        if close is None or ma20 is None or close <= ma20:
+            break
+        count += 1
+    return count
+
+
+def _retest_confirmed(
+    recent: list[dict[str, Any]],
+    *,
+    price: float | None,
+    ma10: float | None,
+    ma20: float | None,
+) -> bool:
+    if not recent or price is None or ma10 is None or ma20 is None or price <= ma20 or price <= ma10:
+        return False
+    window = recent[-5:]
+    lower_bound = 0.985
+    upper_bound = 1.015
+    broke_above = any((_number(item.get("close")) or 0.0) > (_number(item.get("ma20")) or float("inf")) for item in window)
+    retested = any(
+        (_number(item.get("low")) is not None)
+        and (_number(item.get("ma20")) is not None)
+        and (_number(item.get("ma20")) or 0.0) * lower_bound
+        <= (_number(item.get("low")) or 0.0)
+        <= (_number(item.get("ma20")) or 0.0) * upper_bound
+        for item in window
+    )
+    return bool(broke_above and retested)
+
+
+def _ratio_or_existing(entry: dict[str, Any], key: str, price: float | None, baseline: float | None) -> float | None:
+    explicit = _number(entry.get(key))
+    if explicit is not None:
+        return explicit
+    if price is None or baseline in (None, 0):
+        return None
+    return round(price / baseline - 1.0, 6)
 
 
 def _missing_fields_from_values(values: dict[str, Any], fields: tuple[str, ...]) -> list[str]:

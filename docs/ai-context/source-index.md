@@ -9,7 +9,7 @@ This file tells Codex which project documents must be used during OpenSpec conte
 When sources conflict, use this priority:
 
 1. `AGENTS.md`
-2. Current OpenSpec change files
+2. Current OpenSpec change files and `.agent/workdir/sp-openspec/<change-id>/` evidence
 3. `openspec/project.md`
 4. `docs/rules/*.md`
 5. `docs/standards/*.md`
@@ -26,6 +26,9 @@ If there is a conflict, report it in `context.md`, `design.md`, or `review.md`. 
 Read:
 
 - `docs/rules/project-implementation-standards.md`, when present
+- `docs/rules/ai-workflow-quality-standards.md`, when present
+- `docs/rules/logging-standards.md`, when comments, logs, traceability, `trace_id`, observability, or sensitive-data logging risk is involved
+- `docs/rules/encoding-standards.md`, when generated or modified comments, code, configuration, test data, non-ASCII text, file import/export, serialization, logs, API payloads, database text, or UI text are involved
 - `docs/rules/java-code-standards.md`, when Java code is involved
 - `docs/rules/python-code-standards.md`, when Python code is involved
 - `docs/rules/configuration-standards.md`, when configuration, packaging, database, OpenAPI, async, queue, or migration files are involved
@@ -58,6 +61,7 @@ Read:
 Read:
 
 - `docs/standards/workflow.md`
+- `docs/ai-context/project-learnings.md`, when present
 - `docs/wiki/approval-workflow.md`
 - `docs/wiki/notification.md`
 
@@ -82,10 +86,10 @@ Read:
 
 ## Design Requirement
 
-Before writing `design.md`, create or update:
+Before writing durable `design.md` and workdir `design-review.md`, create or update:
 
 ```text
-openspec/changes/<change-id>/context.md
+.agent/workdir/sp-openspec/<change-id>/context.md
 ```
 
-The design must reference `context.md`.
+The design must reference the workdir `context.md`. Task creation must wait until the workdir `design-review.md` has no unresolved blocking gaps.

@@ -17,6 +17,8 @@ _HARD_EXIT_SELL_TOKENS = (
     "quick_stoploss",
     "hard_profit_trailing_stop",
     "profit_tech_sell",
+    "recovery_probe_failure_sell",
+    "feedback_weak_sell_exit",
 )
 
 _HARD_EXIT_VETO_IDS = {
@@ -89,17 +91,37 @@ class SignalCenterTailMixin:
             )
             buy_tier = str(guard.get("buy_tier") or "").strip().lower()
             relaxed = dict(normalized_gate)
+            if buy_tier == "strong_buy" and cls._strong_recovery_probe_is_overextended_without_retest(guard):
+                reduced_cap = cls._reduced_recovery_probe_cap(normalized_gate)
+                relaxed["mode"] = "recovery_probe_quality_limited"
+                relaxed["size_multiplier"] = 1.0
+                relaxed["max_position_pct"] = reduced_cap
+                relaxed["reason_code"] = "strong_recovery_overextended_without_retest"
+                relaxed["reason_text"] = "recovery probe 强买未经过回踩且短线涨幅偏高，先降为轻量恢复试探"
+                return relaxed
+            if buy_tier == "strong_buy" and not cls._lifecycle_gate_has_high_quality_strong_recovery(
+                strategy_profile,
+                normalized_gate,
+            ):
+                reduced_cap = cls._reduced_recovery_probe_cap(normalized_gate)
+                relaxed["mode"] = "recovery_probe_quality_limited"
+                relaxed["size_multiplier"] = 1.0
+                relaxed["max_position_pct"] = reduced_cap
+                relaxed["reason_code"] = "strong_recovery_quality_not_confirmed"
+                relaxed["reason_text"] = "recovery probe 强买缺少高质量恢复确认，先按轻量恢复试探执行"
+                return relaxed
             relaxed["mode"] = "strong_recovery_confirmed" if buy_tier == "strong_buy" else "recovery_probe_confirmed"
             relaxed["size_multiplier"] = 1.0
+            confirmed_cap = cls._safe_float(
+                normalized_gate.get("confirmed_max_position_pct"),
+                normalized_gate.get("max_position_pct"),
+            )
             if buy_tier == "strong_buy":
-                relaxed["max_position_pct"] = None
-                relaxed["reason_code"] = "strong_recovery_confirmed_active_like_sizing"
-                relaxed["reason_text"] = "recovery probe 出现 strong BUY 且趋势确认，按 active-like 仓位执行"
+                relaxed["max_position_pct"] = cls._reduced_recovery_probe_cap(normalized_gate)
+                relaxed["reason_code"] = "strong_recovery_confirmed_probe_capped"
+                relaxed["reason_text"] = "recovery probe 首次恢复即使出现 strong BUY，也先按 probe cap 执行"
             else:
-                relaxed["max_position_pct"] = cls._safe_float(
-                    normalized_gate.get("confirmed_max_position_pct"),
-                    normalized_gate.get("max_position_pct"),
-                )
+                relaxed["max_position_pct"] = cls._safe_float(normalized_gate.get("max_position_pct"), confirmed_cap)
                 relaxed["reason_code"] = "recovery_probe_normal_confirmed"
                 relaxed["reason_text"] = "recovery probe 出现 normal BUY 且趋势确认，放宽 probe 仓位上限"
             return relaxed
@@ -148,6 +170,51 @@ class SignalCenterTailMixin:
         return cls._lifecycle_gate_has_confirmed_trial_sizing(strategy_profile, gate)
 
     @classmethod
+    def _lifecycle_gate_has_high_quality_strong_recovery(
+        cls,
+        strategy_profile: dict[str, Any],
+        gate: dict[str, Any],
+    ) -> bool:
+        guard = strategy_profile.get("portfolio_execution_guard") if isinstance(strategy_profile.get("portfolio_execution_guard"), dict) else {}
+        buy_strength = cls._safe_float(guard.get("buy_strength_score"), 0.0) or 0.0
+        if buy_strength < 0.68:
+            return False
+        if int(cls._safe_float(gate.get("recent_probe_loss_count"), 0.0) or 0) > 0:
+            return False
+        if int(cls._safe_float(gate.get("recovery_probe_attempt_count"), 0.0) or 0) >= 3:
+            return False
+        trend = guard.get("trend_confirmation") if isinstance(guard.get("trend_confirmation"), dict) else {}
+        components = guard.get("score_components") if isinstance(guard.get("score_components"), dict) else {}
+        confirmation_score = cls._safe_float(components.get("confirmation_score"), 0.0) or 0.0
+        edge_strength = cls._safe_float(components.get("edge_strength"), 0.0) or 0.0
+        volume_score = cls._safe_float(components.get("volume_score"), 0.0) or 0.0
+        risk_penalty = cls._safe_float(components.get("risk_penalty"), 0.0) or 0.0
+        above_ma20 = int(cls._safe_float(trend.get("above_ma20_checkpoints"), 0.0) or 0)
+        ma20_rising = cls._truthy(trend.get("ma20_rising"))
+        ma_stack = cls._truthy(trend.get("ma_stack"))
+        retest_confirmed = cls._truthy(trend.get("retest_confirmed"))
+        rsi = cls._safe_float(trend.get("rsi"), 0.0) or 0.0
+        recent_return = cls._ratio_value(trend.get("recent_5d_return")) or 0.0
+        volume_confirmed = str(trend.get("volume_confirmed") or "").strip().lower()
+        if edge_strength < 0.72:
+            return False
+        if risk_penalty > 0.0:
+            return False
+        if rsi >= 72.0:
+            return False
+        if recent_return >= 0.04 and not retest_confirmed:
+            return False
+        if volume_score < 0.8 and not retest_confirmed:
+            return False
+        if confirmation_score < 0.65 and not (retest_confirmed or ma_stack):
+            return False
+        return bool(
+            (retest_confirmed and (volume_confirmed == "strong" or confirmation_score >= 0.9))
+            or (ma_stack and ma20_rising and above_ma20 >= 5 and confirmation_score >= 0.9 and volume_score >= 0.8)
+            or (ma20_rising and above_ma20 >= 8 and confirmation_score >= 0.95 and volume_confirmed == "strong")
+        )
+
+    @classmethod
     def _lifecycle_gate_has_strong_confirmation(cls, strategy_profile: dict[str, Any], gate: dict[str, Any]) -> bool:
         guard = strategy_profile.get("portfolio_execution_guard") if isinstance(strategy_profile.get("portfolio_execution_guard"), dict) else {}
         buy_tier = str(guard.get("buy_tier") or "").strip().lower()
@@ -166,6 +233,33 @@ class SignalCenterTailMixin:
         if str(gate.get("mode") or "").strip().lower() == "cooling_supplemental":
             return buy_tier in {"normal_buy", "strong_buy"} and buy_strength >= threshold and trend_confirmed
         return buy_strength >= threshold and (buy_tier == "strong_buy" or trend_confirmed)
+
+    @classmethod
+    def _strong_recovery_probe_is_overextended_without_retest(cls, guard: dict[str, Any]) -> bool:
+        trend = guard.get("trend_confirmation") if isinstance(guard.get("trend_confirmation"), dict) else {}
+        if cls._truthy(trend.get("retest_confirmed")):
+            return False
+        recent_return = cls._ratio_value(trend.get("recent_5d_return"))
+        if recent_return is None:
+            return False
+        volume_ratio = cls._safe_float(trend.get("volume_ratio"), 0.0) or 0.0
+        return bool(recent_return >= 0.04 or volume_ratio >= 3.0)
+
+    @classmethod
+    def _reduced_recovery_probe_cap(cls, gate: dict[str, Any]) -> float:
+        max_cap = cls._safe_float(gate.get("max_position_pct"), None)
+        if max_cap is None:
+            max_cap = cls._safe_float(gate.get("confirmed_max_position_pct"), 6.0) or 6.0
+        return round(max(float(max_cap) * 0.5, 0.0), 6)
+
+    @staticmethod
+    def _ratio_value(value: Any) -> float | None:
+        numeric = SignalCenterTailMixin._safe_float(value, None)
+        if numeric is None:
+            return None
+        if abs(numeric) > 2.0:
+            return numeric / 100.0
+        return numeric
 
     def _apply_execution_sizing_plan(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)

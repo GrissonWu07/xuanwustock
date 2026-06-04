@@ -704,6 +704,78 @@ def test_add_position_recomputes_historical_peak_without_lowering_it(tmp_path):
     assert position["peak_unrealized_pnl"] == 1800.0
 
 
+def test_reopened_position_resets_peak_after_full_close(tmp_path):
+    db = QuantSimDB(tmp_path / "app.quant_sim.db")
+
+    first_signal_id = db.add_signal(
+        {
+            "stock_code": "601689",
+            "stock_name": "拓普集团",
+            "action": "BUY",
+            "confidence": 78,
+            "reasoning": "建仓",
+            "status": "pending",
+        }
+    )
+    db.confirm_signal(
+        first_signal_id,
+        executed_action="buy",
+        price=60.0,
+        quantity=100,
+        note="建仓",
+        executed_at="2026-01-05 10:00:00",
+    )
+    db.update_position_market_price("601689", 80.0)
+
+    sell_signal_id = db.add_signal(
+        {
+            "stock_code": "601689",
+            "stock_name": "拓普集团",
+            "action": "SELL",
+            "confidence": 80,
+            "reasoning": "止盈",
+            "status": "pending",
+        }
+    )
+    db.confirm_signal(
+        sell_signal_id,
+        executed_action="sell",
+        price=80.0,
+        quantity=100,
+        note="止盈",
+        executed_at="2026-01-07 10:00:00",
+    )
+
+    reopened_signal_id = db.add_signal(
+        {
+            "stock_code": "601689",
+            "stock_name": "拓普集团",
+            "action": "BUY",
+            "confidence": 82,
+            "reasoning": "重新入场",
+            "status": "pending",
+        }
+    )
+    db.confirm_signal(
+        reopened_signal_id,
+        executed_action="buy",
+        price=60.4,
+        quantity=100,
+        note="重新入场",
+        executed_at="2026-04-10 15:00:00",
+    )
+
+    position = db.get_positions()[0]
+    trade = db.get_trade_history(limit=1)[0]
+
+    assert position["quantity"] == 100
+    assert position["latest_price"] == 60.4
+    assert position["peak_price"] == 60.4
+    assert position["peak_unrealized_pnl_pct"] == 0
+    assert position["opened_at"] == "2026-04-10 15:00:00"
+    assert json.loads(trade["trade_metadata_json"])["is_add"] is False
+
+
 def test_account_summary_and_trade_history_track_cash_and_realized_pnl(tmp_path):
     db = QuantSimDB(tmp_path / "app.quant_sim.db")
 

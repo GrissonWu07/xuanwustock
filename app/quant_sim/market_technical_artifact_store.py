@@ -35,8 +35,9 @@ RUN_TABLE = "sim_run_market_technical_artifacts"
 class MarketTechnicalArtifactStore:
     """Repository for live and run-scoped artifact tables."""
 
-    def __init__(self, db_file: str | Path):
+    def __init__(self, db_file: str | Path, *, store_name: str | None = None):
         self.db_file = Path(db_file)
+        self.store_name = store_name or self._infer_store_name(self.db_file)
 
     def ensure_schema(self, *, domain: str | None = LIVE_DOMAIN) -> None:
         target_domain = domain or LIVE_DOMAIN
@@ -49,49 +50,70 @@ class MarketTechnicalArtifactStore:
             conn.commit()
 
     def upsert(self, request: ArtifactWriteRequest) -> MarketTechnicalArtifact:
-        reason_code = request.ref.validate()
-        if reason_code != "ok":
-            raise ValueError(reason_code)
-        self.ensure_schema(domain=request.ref.domain)
-        artifact_ref = request.ref.to_ref()
-        table = self._table_for_ref(request.ref)
-        payload = self._row_payload(request, artifact_ref)
-        columns = ", ".join(payload.keys())
-        placeholders = ", ".join("?" for _ in payload)
-        updates = ", ".join(f"{key}=excluded.{key}" for key in payload if key != "artifact_ref")
-        with closing(self._connect()) as conn:
-            conn.execute(
-                f"""
-                INSERT INTO {table} ({columns})
-                VALUES ({placeholders})
-                ON CONFLICT(artifact_ref) DO UPDATE SET {updates}
-                """,
-                tuple(payload.values()),
-            )
-            conn.commit()
-        logger.info(
-            "market_technical_artifact_upserted",
-            extra={
-                "trace_id": request.trace_id,
-                "artifact_domain": request.ref.domain,
-                "run_id": request.ref.run_id,
-                "run_type": request.ref.run_type,
-                "stock_code": request.ref.stock_code,
-                "market": request.ref.market,
-                "checkpoint_at": request.ref.checkpoint_at,
-                "timeframe": request.ref.timeframe,
-                "data_version": request.ref.data_version,
-                "source_status": request.data.source_status,
-                "missing_fields": request.data.missing_fields,
-            },
-        )
-        return MarketTechnicalArtifact(ref=request.ref, artifact_ref=artifact_ref, data=request.data)
+        artifacts = self.upsert_many([request])
+        if not artifacts:
+            raise ValueError("empty_artifact_batch")
+        return artifacts[0]
 
-    def get_by_ref(self, artifact_ref: str | None) -> ArtifactReadResult:
+    def upsert_many(self, requests: list[ArtifactWriteRequest]) -> list[MarketTechnicalArtifact]:
+        if not requests:
+            return []
+        normalized: list[tuple[ArtifactWriteRequest, str, str, dict[str, Any]]] = []
+        domains: set[str] = set()
+        for request in requests:
+            reason_code = request.ref.validate()
+            if reason_code != "ok":
+                raise ValueError(reason_code)
+            artifact_ref = request.ref.to_ref()
+            table = self._table_for_ref(request.ref)
+            payload = self._row_payload(request, artifact_ref)
+            normalized.append((request, artifact_ref, table, payload))
+            domains.add(request.ref.domain)
+        self.db_file.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self._connect()) as conn:
+            if LIVE_DOMAIN in domains:
+                self._create_live_schema(conn)
+            if domains.intersection({REPLAY_DOMAIN, DRILL_DOMAIN}):
+                self._create_run_schema(conn)
+            for _, _, table, payload in normalized:
+                columns = ", ".join(payload.keys())
+                placeholders = ", ".join("?" for _ in payload)
+                updates = ", ".join(f"{key}=excluded.{key}" for key in payload if key != "artifact_ref")
+                conn.execute(
+                    f"""
+                    INSERT INTO {table} ({columns})
+                    VALUES ({placeholders})
+                    ON CONFLICT(artifact_ref) DO UPDATE SET {updates}
+                    """,
+                    tuple(payload.values()),
+                )
+            conn.commit()
+        artifacts: list[MarketTechnicalArtifact] = []
+        for request, artifact_ref, _, _ in normalized:
+            logger.debug(
+                "market_technical_artifact_upserted",
+                extra={
+                    "trace_id": request.trace_id,
+                    "artifact_domain": request.ref.domain,
+                    "run_id": request.ref.run_id,
+                    "run_type": request.ref.run_type,
+                    "stock_code": request.ref.stock_code,
+                    "market": request.ref.market,
+                    "checkpoint_at": request.ref.checkpoint_at,
+                    "timeframe": request.ref.timeframe,
+                    "data_version": request.ref.data_version,
+                    "source_status": request.data.source_status,
+                    "missing_fields": request.data.missing_fields,
+                },
+            )
+            artifacts.append(MarketTechnicalArtifact(ref=request.ref, artifact_ref=artifact_ref, data=request.data))
+        return artifacts
+
+    def get_by_ref(self, artifact_ref: str | None, *, log_missing: bool = True) -> ArtifactReadResult:
         parsed = parse_artifact_ref(artifact_ref)
         if isinstance(parsed, InvalidArtifactRef):
             return ArtifactReadResult(artifact=None, reason_code=parsed.reason_code)
-        return self._get_by_ref(parsed, artifact_ref or "")
+        return self._get_by_ref(parsed, artifact_ref or "", log_missing=log_missing)
 
     def get_by_query(self, query: ArtifactQuery) -> ArtifactReadResult:
         ref_or_reason = query.to_ref_or_reason()
@@ -138,11 +160,15 @@ class MarketTechnicalArtifactStore:
     def _connect(self) -> sqlite3.Connection:
         conn = legacy_dbapi_connection(
             db_path=self.db_file,
-            store="primary",
+            store=self.store_name,
             row_factory=True,
         )
         conn.row_factory = sqlite3.Row
         return conn
+
+    @staticmethod
+    def _infer_store_name(db_file: Path) -> str:
+        return "replay" if "replay" in db_file.name.lower() else "primary"
 
     def _create_table(self, conn: sqlite3.Connection, table: str) -> None:
         conn.execute(
@@ -247,7 +273,13 @@ class MarketTechnicalArtifactStore:
             "updated_at": computed_at,
         }
 
-    def _get_by_ref(self, ref: MarketTechnicalArtifactRef, artifact_ref: str) -> ArtifactReadResult:
+    def _get_by_ref(
+        self,
+        ref: MarketTechnicalArtifactRef,
+        artifact_ref: str,
+        *,
+        log_missing: bool = True,
+    ) -> ArtifactReadResult:
         table = self._table_for_ref(ref)
         with closing(self._connect()) as conn:
             if not self._table_exists(conn, table):
@@ -258,6 +290,8 @@ class MarketTechnicalArtifactStore:
                     (artifact_ref,),
                 ).fetchone()
         if row is None:
+            if not log_missing:
+                return ArtifactReadResult(artifact=None, reason_code="missing_artifact")
             logger.warning(
                 "market_technical_artifact_missing",
                 extra={

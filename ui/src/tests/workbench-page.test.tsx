@@ -150,12 +150,12 @@ describe("WorkbenchPage", () => {
 
     expect(await screen.findByRole("button", { name: /待纳入量化/ })).toBeInTheDocument();
     expect(screen.getByText(/量化状态|Quant status/)).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /量化/ }).length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /量化运行/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /只出场管理/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /冷却中/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /手工暂停/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /已退出待重评估/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /试跑|Trial/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /扫描|Active/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /出场|Exit/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /冷却|Cool/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /暂停|Paused/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /退出|Retired/ })).toBeInTheDocument();
     expect(screen.getByText("2 只候选待确认")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/quant/universe/overview", expect.objectContaining({ method: "GET" }));
     expect(getPageSnapshot).toHaveBeenCalledWith("workbench", { search: "", page: 1, pageSize: 20 });
@@ -185,7 +185,7 @@ describe("WorkbenchPage", () => {
 
     renderWorkbenchPage(client);
 
-    fireEvent.click(await screen.findByRole("button", { name: /只出场管理/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /出场|Exit/ }));
     expect(screen.getByTestId("live-sim-route")).toHaveTextContent("/live-sim?quant_status=exit_only");
   });
 

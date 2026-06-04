@@ -23,6 +23,9 @@ DEFAULT_STOCK_EXECUTION_FEEDBACK_POLICY: dict[str, Any] = {
     "allow_ma20_retest_confirmation": True,
     "strict_reentry_trend_confirmation": True,
     "execution_feedback_score_cap": 0.25,
+    "poor_outcome_reentry_size_multiplier": 0.5,
+    "poor_outcome_size_multiplier": 0.75,
+    "poor_outcome_confirmed_quality_size_multiplier": 1.0,
 }
 
 
@@ -114,6 +117,21 @@ def normalize_stock_execution_feedback_policy(
     policy["allow_ma20_retest_confirmation"] = _bool(policy.get("allow_ma20_retest_confirmation"), True)
     policy["strict_reentry_trend_confirmation"] = _bool(policy.get("strict_reentry_trend_confirmation"), True)
     policy["execution_feedback_score_cap"] = max(0.0, _float(policy.get("execution_feedback_score_cap"), 0.25))
+    policy["poor_outcome_reentry_size_multiplier"] = _clamp(
+        _float(policy.get("poor_outcome_reentry_size_multiplier"), policy["loss_reentry_size_multiplier"]),
+        0.0,
+        1.0,
+    )
+    policy["poor_outcome_size_multiplier"] = _clamp(
+        _float(policy.get("poor_outcome_size_multiplier"), 0.75),
+        0.0,
+        1.0,
+    )
+    policy["poor_outcome_confirmed_quality_size_multiplier"] = _clamp(
+        _float(policy.get("poor_outcome_confirmed_quality_size_multiplier"), 1.0),
+        0.0,
+        1.0,
+    )
     return policy
 
 
@@ -209,8 +227,28 @@ def evaluate_stock_execution_feedback_gate(
             reasons.append("成熟outcome反馈偏弱，普通BUY需要更强趋势确认")
         elif outcome_feedback["reason_code"] == "poor_buy_outcome_feedback":
             status = "downgraded"
-            multiplier = min(multiplier, recommended_multiplier)
-            reasons.append("成熟BUY outcome偏弱，降低后续试错仓位")
+            poor_multiplier = float(resolved_policy.get("poor_outcome_size_multiplier", 0.75))
+            if summary_obj.loss_after_last_buy_count > 0 or summary_obj.recent_loss_trade_count > 0:
+                if trend.get("confirmed"):
+                    if _confirmed_quality_recovery(metrics, trend):
+                        poor_multiplier = float(
+                            resolved_policy.get("poor_outcome_confirmed_quality_size_multiplier", 1.0)
+                        )
+                        recommended_multiplier = max(recommended_multiplier, poor_multiplier)
+                        reasons.append("成熟BUY outcome偏弱且近期买后转亏，但当前趋势质量强，保留确认恢复仓位")
+                    else:
+                        reasons.append("成熟BUY outcome偏弱且近期买后转亏，但当前趋势已确认，按普通outcome降仓")
+                else:
+                    poor_multiplier = float(
+                        resolved_policy.get(
+                            "poor_outcome_reentry_size_multiplier",
+                            resolved_policy["loss_reentry_size_multiplier"],
+                        )
+                    )
+                    reasons.append("成熟BUY outcome偏弱且近期买后转亏，按恢复试错降仓")
+            else:
+                reasons.append("成熟BUY outcome偏弱，降低后续试错仓位")
+            multiplier = min(multiplier, recommended_multiplier, poor_multiplier)
 
     if status == "passed":
         feedback_score = 0.0
@@ -375,6 +413,22 @@ def _trend_confirmation(
     return {"confirmed": False, "mode": "weak_or_unconfirmed", "reason": "仅站上MA20不足以通过亏损反馈例外"}
 
 
+def _confirmed_quality_recovery(metrics: dict[str, float | None], trend: dict[str, Any]) -> bool:
+    if not trend.get("confirmed"):
+        return False
+    rsi = metrics.get("rsi")
+    volume_ratio = metrics.get("volume_ratio")
+    recent_return = _ratio_value(metrics.get("recent_5d_return"))
+    ma20_distance = _percent_field_ratio(metrics.get("price_vs_ma20"))
+    return bool(
+        trend.get("ma_stack")
+        and (volume_ratio is not None and volume_ratio >= 1.8)
+        and (rsi is not None and rsi <= 65.0)
+        and (recent_return is None or recent_return <= 0.04)
+        and (ma20_distance is None or ma20_distance <= 0.02)
+    )
+
+
 def _summary_from_any(
     stock_code: str,
     value: StockExecutionFeedbackSummary | dict[str, Any] | None,
@@ -414,6 +468,10 @@ def _extract_metrics(snapshot: dict[str, Any] | None) -> dict[str, float | None]
         "ma10": _optional_float(payload.get("ma10")),
         "ma20": _optional_float(payload.get("ma20")),
         "ma20_slope": _optional_float(payload.get("ma20_slope")),
+        "rsi": _optional_float(payload.get("rsi") or payload.get("rsi12") or payload.get("rsi_12")),
+        "volume_ratio": _optional_float(payload.get("volume_ratio")),
+        "recent_5d_return": _optional_float(payload.get("recent_5d_return")),
+        "price_vs_ma20": _optional_float(payload.get("price_vs_ma20") or payload.get("ma20_distance_pct")),
     }
 
 
@@ -462,6 +520,24 @@ def _optional_float(value: Any) -> float | None:
 def _float(value: Any, default: float) -> float:
     parsed = _optional_float(value)
     return default if parsed is None else parsed
+
+
+def _ratio_value(value: Any) -> float | None:
+    numeric = _optional_float(value)
+    if numeric is None:
+        return None
+    if abs(numeric) > 2.0:
+        return numeric / 100.0
+    return numeric
+
+
+def _percent_field_ratio(value: Any) -> float | None:
+    numeric = _optional_float(value)
+    if numeric is None:
+        return None
+    if abs(numeric) > 1.0:
+        return numeric / 100.0
+    return numeric
 
 
 def _bool(value: Any, default: bool) -> bool:

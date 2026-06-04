@@ -18,6 +18,8 @@ from app.quant_sim.corporate_actions import AkshareCorporateActionProvider
 from app.quant_sim.db import DEFAULT_COMMISSION_RATE, DEFAULT_DB_FILE, DEFAULT_REPLAY_DB_FILE, DEFAULT_SELL_TAX_RATE, QuantSimDB, QuantSimReplayDB
 from app.quant_sim.dynamic_strategy import DEFAULT_AI_DYNAMIC_LOOKBACK, DEFAULT_AI_DYNAMIC_STRENGTH, DEFAULT_AI_DYNAMIC_STRATEGY
 from app.quant_sim.live_quant_drill_candidates import CandidateGenerationConfig, estimate_candidate_generation
+from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
+from app.quant_sim.outcome_scoring_entrypoints import OutcomeBatchRequest, OutcomeBatchScope, score_signal_batch
 from app.quant_sim.stockpolicy_adapter import StockPolicyAdapter
 from app.quant_sim.time_utils import market_timezone_name
 from app.smart_monitor_tdx_data import SmartMonitorTDXDataFetcher
@@ -290,6 +292,72 @@ class QuantSimReplayServiceBase:
         self.adapter = adapter or StockPolicyAdapter()
         self.timepoint_generator = timepoint_generator or TradingTimeUtils()
         self.corporate_action_provider = corporate_action_provider or AkshareCorporateActionProvider()
+
+    def _score_run_outcomes_for_checkpoint(
+        self,
+        *,
+        run_id: int,
+        run_type: str,
+        domain: str,
+        checkpoint_at: str,
+        temp_db: QuantSimDB | None,
+        limit: int = 10000,
+        trace_id: str,
+    ) -> dict[str, Any]:
+        """Score matured run signals and expose feedback to run-local execution state."""
+        outcome_batch = score_signal_batch(
+            OutcomeBatchRequest(
+                db=self.db,
+                artifact_store=MarketTechnicalArtifactStore(self.replay_db_file),
+                scope=OutcomeBatchScope(run_id=run_id, run_type=run_type, domain=domain),
+                as_of_checkpoint=checkpoint_at,
+                limit=limit,
+                trace_id=trace_id,
+            )
+        )
+        if temp_db is not None:
+            self._sync_run_outcome_feedback_to_temp_db(
+                run_id=run_id,
+                run_type=run_type,
+                checkpoint_at=checkpoint_at,
+                temp_db=temp_db,
+                stock_codes=outcome_batch.get("feedback_stocks") or [],
+            )
+        return outcome_batch
+
+    def _sync_run_outcome_feedback_to_temp_db(
+        self,
+        *,
+        run_id: int,
+        run_type: str,
+        checkpoint_at: str,
+        temp_db: QuantSimDB,
+        stock_codes: list[str],
+    ) -> None:
+        from app.quant_sim.db import OutcomeFeedbackFilters
+
+        run_scope = {"run_id": int(run_id), "run_type": str(run_type)}
+        for code in sorted({str(item).strip() for item in stock_codes if str(item).strip()}):
+            row = self.db.get_latest_outcome_feedback(
+                OutcomeFeedbackFilters(stock_code=code, as_of_checkpoint_lte=checkpoint_at, limit=1),
+                run_scope=run_scope,
+            )
+            if not row:
+                continue
+            temp_db.upsert_outcome_feedback_score(
+                {
+                    "stock_code": row.get("stock_code"),
+                    "profile_id": row.get("profile_id"),
+                    "as_of_checkpoint": row.get("as_of_checkpoint"),
+                    "feedback_score": row.get("feedback_score"),
+                    "sample_count": row.get("sample_count"),
+                    "buy_avg_score": row.get("buy_avg_score"),
+                    "sell_avg_score": row.get("sell_avg_score"),
+                    "latest_matured_at": row.get("latest_matured_at"),
+                    "summary": row.get("summary") or {},
+                    "created_at": row.get("created_at"),
+                }
+            )
     def _prepare_live_quant_drill_context(
         self,
         *,
@@ -373,7 +441,12 @@ class QuantSimReplayServiceBase:
             dynamic_lookback = DEFAULT_AI_DYNAMIC_LOOKBACK
         dynamic_lookback = max(6, min(336, dynamic_lookback))
 
-        quant_state_response = self.shared_db.list_quant_universe_state(limit=100000) if seed_current_quant_universe else {"items": []}
+        seed_statuses = [*self.LIVE_QUANT_DRILL_SCAN_STATUSES, "cooling"]
+        quant_state_response = (
+            self.shared_db.list_quant_universe_state(statuses=seed_statuses, limit=100000)
+            if seed_current_quant_universe
+            else {"items": []}
+        )
         initial_quant_universe_snapshot = list(quant_state_response.get("items") or [])
         candidates = [
             {
@@ -414,12 +487,14 @@ class QuantSimReplayServiceBase:
         )
         lifecycle_settings_snapshot = self.shared_db.get_quant_universe_settings()
 
+        resolved_strategy_mode = str(strategy_profile_binding.get("profile_id") or selected_profile_id or "auto").strip() or "auto"
+
         return {
             "start_dt": start_dt,
             "end_dt": end_dt,
             "timeframe": timeframe,
             "market": market,
-            "strategy_mode": "live_quant_drill",
+            "strategy_mode": resolved_strategy_mode,
             "strategy_profile_binding": strategy_profile_binding,
             "ai_dynamic_strategy": dynamic_strategy_mode,
             "ai_dynamic_strength": dynamic_strength,

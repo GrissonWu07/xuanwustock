@@ -29,7 +29,13 @@ from app.quant_sim.market_technical_artifact import (
 )
 from app.quant_sim.market_technical_artifact_store import MarketTechnicalArtifactStore
 from app.quant_sim.engine import QuantSimEngine
-from app.quant_sim.replay_artifact_adapter import RunArtifactContext, read_run_artifact, write_run_artifact_from_snapshot
+from app.quant_sim.replay_service import QuantSimReplayService
+from app.quant_sim.replay_artifact_adapter import (
+    RunArtifactContext,
+    read_run_artifact,
+    write_missing_run_artifact,
+    write_run_artifact_from_snapshot,
+)
 from app.quant_sim.technical_entry_score import calculate_technical_entry_score
 from app.selector_result_store import save_latest_result
 from app.stock_refresh_artifact_writer import StockRefreshArtifactRequest, write_live_artifacts
@@ -896,6 +902,142 @@ def test_replay_and_drill_artifacts_are_run_scoped_and_isolated_from_live(tmp_pa
     assert replay_read["latest_price"] != 99.0
 
 
+def test_run_artifact_reuses_shared_checkpoint_artifact_when_available(tmp_path):
+    shared_db = tmp_path / "quant_sim.db"
+    replay_db = tmp_path / "replay.db"
+    MarketTechnicalArtifactStore(shared_db).upsert(
+        ArtifactWriteRequest(
+            ref=MarketTechnicalArtifactRef.live(
+                stock_code="600000",
+                market="CN",
+                checkpoint_at="2026-01-05 10:00:00",
+                timeframe="30m",
+            ),
+            data=_sample_data(latest_price=99.0, close=99.0, ma20=98.0),
+        )
+    )
+    context = RunArtifactContext(
+        db_file=replay_db,
+        shared_db_file=shared_db,
+        run_id=17,
+        run_type="live_quant_drill",
+        market="CN",
+        timeframe="30m",
+    )
+
+    written = write_run_artifact_from_snapshot(
+        context,
+        stock_code="600000",
+        checkpoint="2026-01-05 10:00:00",
+        snapshot={"current_price": 12.0, "close": 12.0, "ma20": 11.5, "amount": 80_000_000},
+    )
+    read = read_run_artifact(context, stock_code="600000", checkpoint="2026-01-05 10:00:00")
+
+    assert written["source_status"] == "ready"
+    assert read["latest_price"] == 99.0
+    assert read["ma20"] == 98.0
+    with closing(sqlite3.connect(shared_db)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM market_technical_artifacts").fetchone()[0] == 1
+    with closing(sqlite3.connect(replay_db)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sim_run_market_technical_artifacts").fetchone()[0] == 1
+
+
+def test_missing_run_artifact_copies_shared_checkpoint_artifact(tmp_path):
+    shared_db = tmp_path / "quant_sim.db"
+    replay_db = tmp_path / "replay.db"
+    MarketTechnicalArtifactStore(shared_db).upsert(
+        ArtifactWriteRequest(
+            ref=MarketTechnicalArtifactRef.live(
+                stock_code="600000",
+                market="CN",
+                checkpoint_at="2026-01-05 10:00:00",
+                timeframe="30m",
+            ),
+            data=_sample_data(latest_price=88.0, close=88.0),
+        )
+    )
+    context = RunArtifactContext(
+        db_file=replay_db,
+        shared_db_file=shared_db,
+        run_id=18,
+        run_type="historical_replay",
+        market="CN",
+        timeframe="30m",
+    )
+
+    written = write_missing_run_artifact(context, stock_code="600000", checkpoint="2026-01-05 10:00:00")
+    read = read_run_artifact(context, stock_code="600000", checkpoint="2026-01-05 10:00:00")
+
+    assert written["source_status"] == "ready"
+    assert read["latest_price"] == 88.0
+    assert read["reason_code"] == "ok"
+
+
+def test_market_technical_artifact_store_upsert_many_writes_checkpoint_batch(tmp_path):
+    db_file = tmp_path / "quant_sim.db"
+    store = MarketTechnicalArtifactStore(db_file)
+    requests = [
+        ArtifactWriteRequest(
+            ref=MarketTechnicalArtifactRef.live(
+                stock_code=f"60000{index}",
+                market="CN",
+                checkpoint_at="2026-01-05 10:00:00",
+                timeframe="30m",
+            ),
+            data=_sample_data(latest_price=10.0 + index),
+        )
+        for index in range(3)
+    ]
+
+    written = store.upsert_many(requests)
+
+    assert [item.data.latest_price for item in written] == [10.0, 11.0, 12.0]
+    with closing(sqlite3.connect(db_file)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM market_technical_artifacts").fetchone()[0] == 3
+
+
+def test_replay_service_reads_shared_artifact_before_snapshot_provider(tmp_path):
+    class FailingSnapshotProvider:
+        def get_snapshot(self, *args, **kwargs):
+            del args, kwargs
+            raise AssertionError("provider should not run when stable shared artifact exists")
+
+    shared_db = tmp_path / "quant_sim.db"
+    replay_db = tmp_path / "quant_sim_replay.db"
+    MarketTechnicalArtifactStore(shared_db).upsert(
+        ArtifactWriteRequest(
+            ref=MarketTechnicalArtifactRef.live(
+                stock_code="600000",
+                market="CN",
+                checkpoint_at="2026-01-05 10:00:00",
+                timeframe="30m",
+            ),
+            data=_sample_data(latest_price=77.0, close=77.0, ma20=76.0),
+        )
+    )
+    service = QuantSimReplayService(
+        db_file=shared_db,
+        replay_db_file=replay_db,
+        snapshot_provider=FailingSnapshotProvider(),
+    )
+
+    artifacts = service._get_or_prepare_run_market_artifacts_batch(
+        run_id=23,
+        run_type="live_quant_drill",
+        checkpoint=datetime(2026, 1, 5, 10, 0),
+        timeframe="30m",
+        market="CN",
+        items=[{"stock_code": "600000", "stock_name": "浦发银行"}],
+    )
+    artifact = artifacts["600000"]
+
+    assert artifact["latest_price"] == 77.0
+    assert artifact["ma20"] == 76.0
+    assert artifact["source_status"] == "ready"
+    with closing(sqlite3.connect(replay_db)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sim_run_market_technical_artifacts").fetchone()[0] == 1
+
+
 def test_no_live_fallback_when_run_artifact_missing(tmp_path):
     db_file = tmp_path / "quant_sim.db"
     MarketTechnicalArtifactStore(db_file).upsert(
@@ -959,6 +1101,89 @@ def test_run_artifact_marks_missing_required_indicator_incomplete(tmp_path):
     assert read["source_status"] == "partial"
     assert read["reason_code"] == "incomplete_artifact"
     assert set(read["technical_snapshot_missing_fields"]) >= {"rsi", "macd", "volume_ratio"}
+
+
+def test_run_artifact_derives_trend_confirmation_fields_from_recent_checkpoints(tmp_path):
+    context = RunArtifactContext(
+        db_file=tmp_path / "quant_sim.db",
+        run_id=12,
+        run_type="live_quant_drill",
+        market="CN",
+        timeframe="30m",
+    )
+
+    write_run_artifact_from_snapshot(
+        context,
+        stock_code="600000",
+        checkpoint="2026-01-05 10:00:00",
+        snapshot={
+            "current_price": 12.0,
+            "close": 12.0,
+            "ma5": 12.2,
+            "ma10": 11.8,
+            "ma20": 11.3,
+            "ma60": 10.9,
+            "ma20_slope": 0.02,
+            "rsi": 55.0,
+            "macd": 0.08,
+            "volume_ratio": 1.6,
+            "amount": 80_000_000,
+            "technical_snapshot_ready": True,
+            "technical_snapshot_status": "ready",
+            "recent_checkpoints": [
+                {"close": 11.5, "low": 11.25, "ma20": 11.2, "ma20_slope": 0.01},
+                {"close": 11.8, "low": 11.35, "ma20": 11.25, "ma20_slope": 0.01},
+                {"close": 12.0, "low": 11.5, "ma20": 11.3, "ma20_slope": 0.02},
+            ],
+        },
+    )
+
+    read = read_run_artifact(context, stock_code="600000", checkpoint="2026-01-05 10:00:00")
+
+    assert read["source_status"] == "ready"
+    assert read["ma_stack"] == "ma5>ma10>ma20"
+    assert read["above_ma20_checkpoints"] == 3
+    assert read["retest_confirmed"] is True
+    assert read["recent_checkpoints"][-1]["close"] == 12.0
+    assert "above_ma20_checkpoints" not in read["technical_snapshot_missing_fields"]
+    assert "retest_confirmed" not in read["technical_snapshot_missing_fields"]
+
+
+def test_run_artifact_does_not_mark_retest_when_pullback_stays_far_above_ma20(tmp_path):
+    context = RunArtifactContext(
+        db_file=tmp_path / "quant_sim.db",
+        run_id=12,
+        run_type="live_quant_drill",
+        market="CN",
+        timeframe="30m",
+    )
+
+    write_run_artifact_from_snapshot(
+        context,
+        stock_code="600000",
+        checkpoint="2026-01-05 10:00:00",
+        snapshot={
+            "current_price": 13.2,
+            "close": 13.2,
+            "ma5": 13.0,
+            "ma10": 12.6,
+            "ma20": 11.3,
+            "ma60": 10.9,
+            "ma20_slope": 0.02,
+            "technical_snapshot_ready": True,
+            "technical_snapshot_status": "ready",
+            "recent_checkpoints": [
+                {"close": 12.8, "low": 12.2, "ma20": 11.2, "ma20_slope": 0.01},
+                {"close": 13.0, "low": 12.4, "ma20": 11.25, "ma20_slope": 0.01},
+                {"close": 13.2, "low": 12.6, "ma20": 11.3, "ma20_slope": 0.02},
+            ],
+        },
+    )
+
+    read = read_run_artifact(context, stock_code="600000", checkpoint="2026-01-05 10:00:00")
+
+    assert read["above_ma20_checkpoints"] == 3
+    assert read["retest_confirmed"] is False
 
 
 def test_engine_blocks_candidate_decision_when_artifact_is_missing(tmp_path):

@@ -142,6 +142,16 @@ const technicalSnapshotSummary = (job: DiscoverSnapshot["taskJob"]) => {
 const discoverTaskCompletionSummary = (job: DiscoverSnapshot["taskJob"]) =>
   [technicalSnapshotSummary(job), quantAutoEntrySummary(job)].filter(Boolean).join(" · ");
 
+const preparedEvidenceSummary = (row: DiscoverSnapshot["candidateTable"]["rows"][number]) => {
+  const evidence = row.preparedEvidence;
+  const technical = evidence?.quantTechnical;
+  if (!evidence || !technical) return "";
+  const score = Number(technical.candidateScore ?? row.candidate_score ?? 0).toFixed(4);
+  const confidence = Number(technical.candidateConfidence ?? row.candidate_confidence ?? 0).toFixed(4);
+  const status = evidence.technicalSnapshot?.status ?? evidence.status ?? row.technical_snapshot_status ?? "--";
+  return t("量化技术入池分 {score} · 技术置信度 {confidence} · 快照 {status}", { score, confidence, status });
+};
+
 export function DiscoverPage({ client }: DiscoverPageProps) {
   const taskClient = client ?? apiClient;
   const resource = usePageData("discover", client);
@@ -626,44 +636,48 @@ export function DiscoverPage({ client }: DiscoverPageProps) {
                     </td>
                   </tr>
                 ) : (
-                  visibleRows.map((row) => (
-                    <tr
-                      key={row.id}
-                      className={selection.isSelected(row.id) ? "table__row--selected" : undefined}
-                      onClick={() => selection.toggle(row.id)}
-                    >
-                      <td className="table__checkbox-cell" onClick={(event) => event.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          aria-label={t("Select {name}", { name: String(row.cells[1] ?? row.id) })}
-                          checked={selection.isSelected(row.id)}
-                          onChange={() => selection.toggle(row.id)}
-                        />
-                      </td>
-                      {row.cells.map((cell, index) => {
-                        const code = String(row.code || row.id || row.cells[0] || "").trim();
-                        const content = typeof cell === "string" ? t(cell) : cell;
-                        const shouldLink = code && (index === 0 || index === 1);
-                        return (
-                          <td key={`${row.id}-${index}`} className={index === 0 ? "table__cell-strong" : undefined}>
-                            {shouldLink ? (
-                              <Link className="stock-link" to={stockDetailPath(code)} onClick={(event) => event.stopPropagation()}>
-                                {content}
-                              </Link>
-                            ) : content}
-                          </td>
-                        );
-                      })}
-                          {showSelectedAtColumn ? (
-                        <td key={`${row.id}-selected-at`}>
-                          {getRowSelectedAt(row) || "-"}
+                  visibleRows.map((row) => {
+                    const evidenceSummary = preparedEvidenceSummary(row);
+                    return (
+                      <tr
+                        key={row.id}
+                        className={selection.isSelected(row.id) ? "table__row--selected" : undefined}
+                        onClick={() => selection.toggle(row.id)}
+                      >
+                        <td className="table__checkbox-cell" onClick={(event) => event.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            aria-label={t("Select {name}", { name: String(row.cells[1] ?? row.id) })}
+                            checked={selection.isSelected(row.id)}
+                            onChange={() => selection.toggle(row.id)}
+                          />
                         </td>
-                      ) : null}
-                      <td>
-                        <EligibleBadge row={row} override={entryOverrides[row.id]} />
-                      </td>
-                    </tr>
-                  ))
+                        {row.cells.map((cell, index) => {
+                          const code = String(row.code || row.id || row.cells[0] || "").trim();
+                          const content = typeof cell === "string" ? t(cell) : cell;
+                          const shouldLink = code && (index === 0 || index === 1);
+                          return (
+                            <td key={`${row.id}-${index}`} className={index === 0 ? "table__cell-strong" : undefined}>
+                              {shouldLink ? (
+                                <Link className="stock-link" to={stockDetailPath(code)} onClick={(event) => event.stopPropagation()}>
+                                  {content}
+                                </Link>
+                              ) : content}
+                            </td>
+                          );
+                        })}
+                        {showSelectedAtColumn ? (
+                          <td key={`${row.id}-selected-at`}>
+                            {getRowSelectedAt(row) || "-"}
+                          </td>
+                        ) : null}
+                        <td>
+                          <EligibleBadge row={row} override={entryOverrides[row.id]} />
+                          {evidenceSummary ? <div className="table__cell-note">{evidenceSummary}</div> : null}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

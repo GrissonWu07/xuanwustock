@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -145,6 +146,7 @@ class SignalCenterService(SignalCenterTailMixin):
         payload = self._attach_outcome_feedback(candidate, payload)
         payload = self._apply_stock_execution_feedback(candidate, payload)
         payload = self._apply_portfolio_execution_guard(candidate, payload)
+        payload = self._apply_position_add_execution_tier_guard(candidate, payload)
         payload = self._apply_false_strong_filter(payload)
         payload = self._apply_lifecycle_gate_profile(candidate, payload)
         payload = self._apply_execution_sizing_plan(candidate, payload)
@@ -327,7 +329,12 @@ class SignalCenterService(SignalCenterTailMixin):
         if not isinstance(fusion_breakdown, dict):
             fusion_breakdown = {}
 
-        allow_pyramiding = self._truthy(thresholds.get("allow_pyramiding"))
+        trend_add_profile = strategy_profile.get("position_trend_add_candidate")
+        if not isinstance(trend_add_profile, dict):
+            trend_add_profile = {}
+        trend_add_candidate = str(trend_add_profile.get("status") or "").strip().lower() == "qualified"
+        allow_pyramiding_raw = self._truthy(thresholds.get("allow_pyramiding"))
+        allow_pyramiding = allow_pyramiding_raw or trend_add_candidate
         target_position_pct = self._safe_float(normalized.get("position_size_pct"), 0.0) or 0.0
         max_position_ratio = self._safe_float(thresholds.get("max_position_ratio"), None)
         max_position_pct = (max_position_ratio * 100.0) if max_position_ratio and max_position_ratio > 0 else 100.0
@@ -375,6 +382,16 @@ class SignalCenterService(SignalCenterTailMixin):
         profit_gate_passed = unrealized_pnl_pct >= min_unrealized_pnl_pct
         trend_gate_passed = tech_score >= min_tech_score and fusion_confidence >= min_fusion_confidence
         capacity_gate_passed = add_position_delta_pct > 0
+        recovery_probe_origin = self._latest_recovery_probe_buy_entry(stock_code)
+        recovery_probe_origin_gate = self._position_add_recovery_probe_origin_gate(
+            recovery_probe_origin=recovery_probe_origin,
+            unrealized_pnl_pct=unrealized_pnl_pct,
+            tech_score=tech_score,
+            min_tech_score=min_tech_score,
+            profit_gate_passed=profit_gate_passed,
+            trend_gate_passed=trend_gate_passed,
+        )
+        recovery_probe_origin_blocked = recovery_probe_origin_gate["status"] == "blocked"
         divergence_probe_blocked = self._is_divergence_probe_signal(normalized, strategy_profile)
         add_hot_rsi = self._safe_float(thresholds.get("add_hot_rsi"), 78.0) or 78.0
         add_extreme_ma20_distance_pct = (
@@ -396,6 +413,10 @@ class SignalCenterService(SignalCenterTailMixin):
         reasons: list[str] = []
         if not allow_pyramiding:
             reasons.append("策略阈值不允许加仓")
+        elif trend_add_candidate and not allow_pyramiding_raw:
+            reasons.append("盈利趋势受控加仓候选，允许进入加仓门控复核")
+        if recovery_probe_origin_blocked:
+            reasons.append(str(recovery_probe_origin_gate.get("reason") or "恢复试探底仓未允许放大"))
         if not capacity_gate_passed:
             reasons.append("当前持仓已达到目标或上限")
         if divergence_probe_blocked:
@@ -421,6 +442,7 @@ class SignalCenterService(SignalCenterTailMixin):
         passed = (
             allow_pyramiding
             and capacity_gate_passed
+            and not recovery_probe_origin_blocked
             and not divergence_probe_blocked
             and not hot_zone_blocked
             and (profit_gate_passed or trend_gate_passed)
@@ -429,6 +451,8 @@ class SignalCenterService(SignalCenterTailMixin):
             "intent": "position_add",
             "status": "passed" if passed else "blocked",
             "allow_pyramiding": allow_pyramiding,
+            "allow_pyramiding_raw": allow_pyramiding_raw,
+            "trend_add_candidate": trend_add_candidate,
             "current_position_pct": current_position_pct,
             "target_position_pct": target_position_pct,
             "max_position_pct": round(max_position_pct, 2),
@@ -443,6 +467,8 @@ class SignalCenterService(SignalCenterTailMixin):
             "profit_gate_passed": profit_gate_passed,
             "trend_gate_passed": trend_gate_passed,
             "capacity_gate_passed": capacity_gate_passed,
+            "recovery_probe_origin_blocked": recovery_probe_origin_blocked,
+            "recovery_probe_origin_gate": recovery_probe_origin_gate,
             "divergence_probe_blocked": divergence_probe_blocked,
             "hot_zone_blocked": hot_zone_blocked,
             "rsi12": round(rsi12, 4) if rsi12 is not None else None,
@@ -582,17 +608,58 @@ class SignalCenterService(SignalCenterTailMixin):
     def _apply_weak_sell_observation_guard(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
         action = str(normalized.get("action") or "HOLD").upper()
-        if action != "SELL":
+        if action not in {"SELL", "HOLD"}:
             return normalized
-        if self._is_hard_exit_sell(normalized):
+        if action == "SELL" and self._is_hard_exit_sell(normalized):
             return normalized
-        if not self._is_dual_track_sell(normalized):
+        if action == "SELL" and not self._is_dual_track_sell(normalized):
             return normalized
 
         strategy_profile = normalized.get("strategy_profile")
         if not isinstance(strategy_profile, dict):
             strategy_profile = {}
         strategy_profile = dict(strategy_profile)
+        recovery_failure_gate = self._recovery_probe_failure_sell_gate(candidate, normalized, strategy_profile)
+        if recovery_failure_gate:
+            explainability = strategy_profile.get("explainability")
+            if not isinstance(explainability, dict):
+                explainability = {}
+            explainability = dict(explainability)
+            explainability["recovery_probe_failure_sell_gate"] = recovery_failure_gate
+            strategy_profile["explainability"] = explainability
+            normalized["strategy_profile"] = strategy_profile
+            normalized["action"] = "SELL"
+            normalized["decision_type"] = "recovery_probe_failure_sell"
+            base_reasoning = str(normalized.get("reasoning") or "").strip()
+            normalized["reasoning"] = (
+                f"{base_reasoning} 恢复探针失败退出：{recovery_failure_gate.get('reason')}，执行SELL。"
+            ).strip()
+            return normalized
+
+        feedback_failure_gate = self._feedback_sensitive_weak_sell_gate(
+            candidate,
+            normalized,
+            strategy_profile,
+        )
+        if feedback_failure_gate:
+            explainability = strategy_profile.get("explainability")
+            if not isinstance(explainability, dict):
+                explainability = {}
+            explainability = dict(explainability)
+            explainability["feedback_sensitive_weak_sell_gate"] = feedback_failure_gate
+            strategy_profile["explainability"] = explainability
+            normalized["strategy_profile"] = strategy_profile
+            normalized["action"] = "SELL"
+            normalized["decision_type"] = "feedback_weak_sell_exit"
+            base_reasoning = str(normalized.get("reasoning") or "").strip()
+            normalized["reasoning"] = (
+                f"{base_reasoning} 反馈降仓持仓转弱退出：{feedback_failure_gate.get('reason')}，执行SELL。"
+            ).strip()
+            return normalized
+
+        if action == "HOLD":
+            return normalized
+
         explainability = strategy_profile.get("explainability")
         if not isinstance(explainability, dict):
             explainability = {}
@@ -679,6 +746,10 @@ class SignalCenterService(SignalCenterTailMixin):
                 if str(position.get("stock_code") or "").strip() == stock_code:
                     current_position = position
                     break
+        if self._is_hard_exit_sell(normalized):
+            normalized["confidence"] = round(self._clamp(confidence - min(6.0, sell_side_cost_pct * 8.0), 0.0, 100.0))
+            normalized["reasoning"] = f"{reasoning} 已计入卖出成本：预计单次退出成本约 {sell_side_cost_pct:.3f}% 。".strip()
+            return normalized
         unrealized_pnl_pct = self._safe_float((current_position or {}).get("unrealized_pnl_pct"), None)
         if unrealized_pnl_pct is not None and unrealized_pnl_pct >= 0 and unrealized_pnl_pct < sell_side_cost_pct and confidence < 80:
             normalized["action"] = "HOLD"
@@ -964,6 +1035,130 @@ class SignalCenterService(SignalCenterTailMixin):
             ).strip()
         return normalized
 
+    def _feedback_sensitive_weak_sell_gate(
+        self,
+        candidate: dict[str, Any],
+        payload: dict[str, Any],
+        strategy_profile: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        stock_code = str(candidate.get("stock_code") or payload.get("stock_code") or "").strip()
+        if not stock_code:
+            return None
+        entry = self._latest_buy_sizing_entry(stock_code)
+        if not entry:
+            return None
+        feedback_status = str(entry.get("stock_execution_feedback_status") or "").strip().lower()
+        feedback_multiplier = self._safe_float(entry.get("stock_execution_feedback_size_multiplier"), 1.0) or 1.0
+        if feedback_status != "downgraded" or feedback_multiplier > 0.55:
+            return None
+        if str(entry.get("buy_tier") or "").strip().lower() == "weak_buy" and (
+            self._safe_float(entry.get("effective_position_pct"), 0.0) or 0.0
+        ) <= 3.0:
+            return None
+
+        position = self._current_position(stock_code)
+        if not position:
+            return None
+        snapshot = strategy_profile.get("market_snapshot") if isinstance(strategy_profile.get("market_snapshot"), dict) else {}
+        fusion = self._fusion_breakdown(payload)
+        price = (
+            self._safe_float(snapshot.get("current_price"), None)
+            or self._safe_float(snapshot.get("latest_price"), None)
+            or self._safe_float(candidate.get("latest_price"), None)
+            or self._safe_float(position.get("latest_price"), None)
+        )
+        avg_price = self._safe_float(position.get("avg_price"), None)
+        ma20 = self._safe_float(snapshot.get("ma20"), None)
+        tech_score = self._safe_float(fusion.get("tech_score"), self._safe_float(payload.get("tech_score"), 0.0))
+        pnl_pct = None
+        if price is not None and avg_price is not None and avg_price > 0:
+            pnl_pct = (price - avg_price) / avg_price * 100.0
+        price_vs_ma20_pct = None
+        if price is not None and ma20 is not None and ma20 > 0:
+            price_vs_ma20_pct = (price - ma20) / ma20 * 100.0
+
+        thresholds = strategy_profile.get("effective_thresholds")
+        if not isinstance(thresholds, dict):
+            thresholds = {}
+        loss_pct = -abs(self._safe_float(thresholds.get("feedback_weak_sell_loss_pct"), 2.0) or 2.0)
+        ma20_break_pct = -abs(self._safe_float(thresholds.get("feedback_weak_sell_ma20_break_pct"), 1.0) or 1.0)
+        reasons: list[str] = []
+        if pnl_pct is not None and pnl_pct <= loss_pct:
+            reasons.append("feedback_position_loss")
+        if price_vs_ma20_pct is not None and price_vs_ma20_pct <= ma20_break_pct:
+            reasons.append("feedback_position_below_ma20")
+        if tech_score is not None and tech_score < 0:
+            reasons.append("tech_score_negative")
+        triggered = bool(
+            "feedback_position_loss" in reasons
+            and (
+                "feedback_position_below_ma20" in reasons
+                or "tech_score_negative" in reasons
+            )
+        )
+        if not triggered:
+            return None
+        return {
+            "status": "forced_exit",
+            "reason": "执行反馈降仓买入后出现亏损并跌破技术结构",
+            "entry_executed_at": entry.get("executed_at"),
+            "entry_lifecycle_gate_mode": entry.get("lifecycle_gate_mode"),
+            "stock_execution_feedback_status": feedback_status,
+            "stock_execution_feedback_size_multiplier": round(feedback_multiplier, 6),
+            "evidence": {
+                "reasons": reasons,
+                "loss_pct_threshold": loss_pct,
+                "ma20_break_pct_threshold": ma20_break_pct,
+                "price": round(price, 4) if price is not None else None,
+                "avg_price": round(avg_price, 4) if avg_price is not None else None,
+                "unrealized_pnl_pct": round(pnl_pct, 4) if pnl_pct is not None else None,
+                "ma20": round(ma20, 4) if ma20 is not None else None,
+                "price_vs_ma20_pct": round(price_vs_ma20_pct, 4) if price_vs_ma20_pct is not None else None,
+                "tech_score": round(tech_score, 6) if tech_score is not None else None,
+            },
+        }
+
+    def _apply_position_add_execution_tier_guard(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        del candidate
+        normalized = dict(payload)
+        if str(normalized.get("action") or "").upper() != "BUY":
+            return normalized
+        if str(normalized.get("decision_type") or "") != "position_add":
+            return normalized
+        strategy_profile = normalized.get("strategy_profile")
+        if not isinstance(strategy_profile, dict):
+            return normalized
+        guard = strategy_profile.get("portfolio_execution_guard")
+        if not isinstance(guard, dict):
+            return normalized
+        buy_tier = str(guard.get("buy_tier") or "").strip()
+        if buy_tier != "weak_buy":
+            return normalized
+
+        gate = strategy_profile.get("position_add_gate")
+        if isinstance(gate, dict):
+            gate = dict(gate)
+        else:
+            gate = {}
+        gate["execution_tier_blocked"] = True
+        gate["blocked_buy_tier"] = buy_tier
+        reasons = list(gate.get("reasons") or [])
+        reasons.append("持仓加仓只接受 normal_buy / strong_buy，weak_buy 继续观察")
+        gate["reasons"] = reasons
+        strategy_profile["position_add_gate"] = gate
+        normalized["strategy_profile"] = strategy_profile
+        normalized["action"] = "HOLD"
+        normalized["position_size_pct"] = 0.0
+        normalized["decision_type"] = "position_add_blocked"
+        normalized["confidence"] = round(
+            self._clamp((self._safe_float(normalized.get("confidence"), 0.0) or 0.0) * 0.7, 0.0, 100.0)
+        )
+        base_reasoning = str(normalized.get("reasoning") or "").strip()
+        normalized["reasoning"] = (
+            f"{base_reasoning} 持仓加仓分层阻断：{reasons[-1]}，转为HOLD。"
+        ).strip()
+        return normalized
+
     def _apply_lifecycle_gate_profile(self, candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
         gate = candidate.get("lifecycle_gate")
@@ -1001,3 +1196,345 @@ class SignalCenterService(SignalCenterTailMixin):
                 "需要更强趋势确认，转为HOLD。"
             ).strip()
         return normalized
+
+    def _recovery_probe_failure_sell_gate(
+        self,
+        candidate: dict[str, Any],
+        payload: dict[str, Any],
+        strategy_profile: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        stock_code = str(candidate.get("stock_code") or payload.get("stock_code") or "").strip()
+        if not stock_code:
+            return None
+        position = self._current_position(stock_code)
+        if not position:
+            return None
+        entry = self._latest_recovery_probe_buy_entry(stock_code)
+        if not entry:
+            return None
+
+        thresholds = strategy_profile.get("effective_thresholds")
+        if not isinstance(thresholds, dict):
+            thresholds = {}
+        window_days = int(self._safe_float(thresholds.get("recovery_probe_failure_sell_window_days"), 30) or 30)
+        signal_time = self._recovery_probe_signal_time(candidate, payload, strategy_profile)
+        entry_time = self._parse_datetime(entry.get("executed_at"))
+        if signal_time is not None and entry_time is not None:
+            elapsed_days = max((signal_time.date() - entry_time.date()).days, 0)
+            if elapsed_days > window_days:
+                return None
+        else:
+            elapsed_days = None
+
+        evidence = self._recovery_probe_failure_evidence(candidate, payload, strategy_profile, position, entry)
+        if not evidence["triggered"]:
+            return None
+        return {
+            "status": "forced_exit",
+            "reason": "恢复探针买入后短期技术面转弱",
+            "entry_lifecycle_gate_mode": entry.get("lifecycle_gate_mode"),
+            "entry_executed_at": entry.get("executed_at"),
+            "window_days": window_days,
+            "elapsed_days": elapsed_days,
+            "evidence": evidence,
+        }
+
+    def _latest_recovery_probe_buy_entry(self, stock_code: str) -> dict[str, Any] | None:
+        recovery_modes = {
+            "recovery_probe_confirmed",
+            "strong_recovery_confirmed",
+            "recovery_probe_retry",
+            "recovery_probe_quality_limited",
+        }
+        for trade in self.db.get_trade_history(limit=500):
+            if str(trade.get("stock_code") or "").strip() != stock_code:
+                continue
+            if str(trade.get("action") or "").upper() != "BUY":
+                continue
+            metadata = self._trade_metadata(trade)
+            position_sizing = metadata.get("position_sizing") if isinstance(metadata.get("position_sizing"), dict) else {}
+            sizing = position_sizing.get("sizing") if isinstance(position_sizing.get("sizing"), dict) else {}
+            plan = metadata.get("execution_sizing_plan") if isinstance(metadata.get("execution_sizing_plan"), dict) else {}
+            mode = str(
+                sizing.get("lifecycle_gate_mode")
+                or plan.get("lifecycle_gate_mode")
+                or metadata.get("lifecycle_gate_mode")
+                or ""
+            ).strip()
+            if mode in recovery_modes:
+                return {
+                    "executed_at": trade.get("executed_at"),
+                    "lifecycle_gate_mode": mode,
+                    "cap_source": str(
+                        sizing.get("recovery_probe_confirmed_cap_source")
+                        or plan.get("recovery_probe_confirmed_cap_source")
+                        or metadata.get("recovery_probe_confirmed_cap_source")
+                        or ""
+                    ).strip(),
+                    "positive_outcome": bool(
+                        sizing.get("recovery_probe_confirmed_positive_outcome")
+                        or plan.get("recovery_probe_confirmed_positive_outcome")
+                        or metadata.get("recovery_probe_confirmed_positive_outcome")
+                    ),
+                    "trade_id": trade.get("id"),
+                }
+            return None
+        return None
+
+    def _latest_buy_sizing_entry(self, stock_code: str) -> dict[str, Any] | None:
+        for trade in self.db.get_trade_history(limit=500):
+            if str(trade.get("stock_code") or "").strip() != stock_code:
+                continue
+            if str(trade.get("action") or "").upper() != "BUY":
+                continue
+            metadata = self._trade_metadata(trade)
+            position_sizing = metadata.get("position_sizing") if isinstance(metadata.get("position_sizing"), dict) else {}
+            sizing = position_sizing.get("sizing") if isinstance(position_sizing.get("sizing"), dict) else {}
+            plan = metadata.get("execution_sizing_plan") if isinstance(metadata.get("execution_sizing_plan"), dict) else {}
+            return {
+                "executed_at": trade.get("executed_at"),
+                "trade_id": trade.get("id"),
+                "lifecycle_gate_mode": str(
+                    sizing.get("lifecycle_gate_mode")
+                    or plan.get("lifecycle_gate_mode")
+                    or metadata.get("lifecycle_gate_mode")
+                    or ""
+                ).strip(),
+                "stock_execution_feedback_status": str(
+                    sizing.get("stock_execution_feedback_status")
+                    or plan.get("stock_execution_feedback_status")
+                    or metadata.get("stock_execution_feedback_status")
+                    or ""
+                ).strip(),
+                "stock_execution_feedback_size_multiplier": self._safe_float(
+                    sizing.get("stock_execution_feedback_size_multiplier")
+                    or plan.get("stock_execution_feedback_size_multiplier")
+                    or metadata.get("stock_execution_feedback_size_multiplier"),
+                    1.0,
+                )
+                or 1.0,
+                "buy_tier": str(sizing.get("buy_tier") or plan.get("buy_tier") or "").strip(),
+                "effective_position_pct": self._safe_float(
+                    sizing.get("effective_position_pct") or plan.get("effective_position_pct"),
+                    0.0,
+                )
+                or 0.0,
+            }
+        return None
+
+    def _position_add_recovery_probe_origin_gate(
+        self,
+        *,
+        recovery_probe_origin: dict[str, Any] | None,
+        unrealized_pnl_pct: float,
+        tech_score: float,
+        min_tech_score: float,
+        profit_gate_passed: bool,
+        trend_gate_passed: bool,
+    ) -> dict[str, Any]:
+        if not recovery_probe_origin:
+            return {"status": "not_applicable"}
+
+        mode = str(recovery_probe_origin.get("lifecycle_gate_mode") or "").strip()
+        cap_source = str(recovery_probe_origin.get("cap_source") or "").strip()
+        positive_outcome = bool(recovery_probe_origin.get("positive_outcome"))
+        strong_current_confirmation = bool(
+            profit_gate_passed
+            and trend_gate_passed
+            and unrealized_pnl_pct >= 5.0
+            and tech_score >= min_tech_score + 0.12
+        )
+
+        blocked_modes = {"recovery_probe_quality_limited", "strong_recovery_confirmed", "recovery_probe_retry"}
+        if mode in blocked_modes:
+            return {
+                "status": "blocked",
+                "reason": f"最近底仓来自 {mode}，恢复探针尚未证明成功，不允许继续加仓",
+                "lifecycle_gate_mode": mode,
+                "cap_source": cap_source,
+                "positive_outcome": positive_outcome,
+                "strong_current_confirmation": strong_current_confirmation,
+            }
+
+        if mode == "recovery_probe_confirmed" and not (positive_outcome or cap_source == "positive_outcome" or strong_current_confirmation):
+            return {
+                "status": "blocked",
+                "reason": "最近底仓来自普通恢复探针，未达到强确认或正向 outcome，不允许放大",
+                "lifecycle_gate_mode": mode,
+                "cap_source": cap_source,
+                "positive_outcome": positive_outcome,
+                "strong_current_confirmation": strong_current_confirmation,
+            }
+
+        return {
+            "status": "passed",
+            "reason": "恢复探针底仓已满足放大条件",
+            "lifecycle_gate_mode": mode,
+            "cap_source": cap_source,
+            "positive_outcome": positive_outcome,
+            "strong_current_confirmation": strong_current_confirmation,
+        }
+
+    @staticmethod
+    def _trade_metadata(trade: dict[str, Any]) -> dict[str, Any]:
+        metadata = trade.get("trade_metadata")
+        if isinstance(metadata, dict):
+            return metadata
+        raw = trade.get("trade_metadata_json")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(str(raw))
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _recovery_probe_signal_time(
+        self,
+        candidate: dict[str, Any],
+        payload: dict[str, Any],
+        strategy_profile: dict[str, Any],
+    ) -> datetime | None:
+        snapshot = strategy_profile.get("market_snapshot") if isinstance(strategy_profile.get("market_snapshot"), dict) else {}
+        for value in (
+            payload.get("decision_time"),
+            payload.get("timestamp"),
+            candidate.get("checkpoint_at"),
+            snapshot.get("checkpoint_at"),
+            snapshot.get("update_time"),
+        ):
+            parsed = self._parse_datetime(value)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _recovery_probe_failure_evidence(
+        self,
+        candidate: dict[str, Any],
+        payload: dict[str, Any],
+        strategy_profile: dict[str, Any],
+        position: dict[str, Any],
+        entry: dict[str, Any],
+    ) -> dict[str, Any]:
+        snapshot = strategy_profile.get("market_snapshot") if isinstance(strategy_profile.get("market_snapshot"), dict) else {}
+        fusion = self._fusion_breakdown(payload)
+        price = (
+            self._safe_float(snapshot.get("current_price"), None)
+            or self._safe_float(snapshot.get("latest_price"), None)
+            or self._safe_float(candidate.get("latest_price"), None)
+            or self._safe_float(position.get("latest_price"), None)
+        )
+        avg_price = self._safe_float(position.get("avg_price"), None)
+        ma20 = self._safe_float(snapshot.get("ma20"), None)
+        ma20_slope = self._safe_float(snapshot.get("ma20_slope"), None)
+        tech_score = self._safe_float(
+            fusion.get("tech_score"),
+            self._safe_float(payload.get("tech_score"), 0.0),
+        )
+        pnl_pct = None
+        if price is not None and avg_price is not None and avg_price > 0:
+            pnl_pct = (price - avg_price) / avg_price * 100.0
+
+        reasons: list[str] = []
+        if tech_score is not None and tech_score < 0:
+            reasons.append("tech_score_negative")
+        if price is not None and ma20 is not None and ma20 > 0 and price < ma20:
+            reasons.append("price_below_ma20")
+        if ma20_slope is not None and ma20_slope < 0:
+            reasons.append("ma20_slope_negative")
+        if pnl_pct is not None and pnl_pct < 0:
+            reasons.append("recovery_position_loss")
+        price_vs_ma20_pct = None
+        if price is not None and ma20 is not None and ma20 > 0:
+            price_vs_ma20_pct = (price - ma20) / ma20 * 100.0
+        consecutive_negative = self._recovery_probe_negative_tech_count(
+            stock_code=str(candidate.get("stock_code") or payload.get("stock_code") or "").strip(),
+            current_tech_score=tech_score,
+            entry_time=self._parse_datetime(entry.get("executed_at")),
+        )
+        thresholds = strategy_profile.get("effective_thresholds")
+        if not isinstance(thresholds, dict):
+            thresholds = {}
+        negative_threshold = int(
+            self._safe_float(thresholds.get("recovery_probe_failure_negative_tech_checkpoints"), 2) or 2
+        )
+        hard_negative_threshold = int(
+            self._safe_float(thresholds.get("recovery_probe_failure_hard_negative_tech_checkpoints"), 4) or 4
+        )
+        material_loss_pct = -abs(
+            self._safe_float(thresholds.get("recovery_probe_failure_material_loss_pct"), 1.0) or 1.0
+        )
+        ma20_break_pct = -abs(
+            self._safe_float(thresholds.get("recovery_probe_failure_ma20_break_pct"), 1.0) or 1.0
+        )
+        if consecutive_negative >= negative_threshold:
+            reasons.append("consecutive_tech_score_negative")
+        if consecutive_negative >= hard_negative_threshold:
+            reasons.append("hard_consecutive_tech_score_negative")
+        if pnl_pct is not None and pnl_pct <= material_loss_pct:
+            reasons.append("material_recovery_position_loss")
+        if price_vs_ma20_pct is not None and price_vs_ma20_pct <= ma20_break_pct:
+            reasons.append("material_price_below_ma20")
+
+        material_break = "material_price_below_ma20" in reasons
+        material_loss = "material_recovery_position_loss" in reasons
+        soft_break = "price_below_ma20" in reasons
+        hard_negative = "hard_consecutive_tech_score_negative" in reasons
+        negative_and_broken = "tech_score_negative" in reasons and soft_break
+        slope_break_loss = "ma20_slope_negative" in reasons and soft_break and "recovery_position_loss" in reasons
+
+        return {
+            "triggered": bool(
+                (material_break and ("tech_score_negative" in reasons or "consecutive_tech_score_negative" in reasons))
+                or (material_loss and ("tech_score_negative" in reasons or soft_break))
+                or slope_break_loss
+                or (hard_negative and (soft_break or "recovery_position_loss" in reasons))
+                or negative_and_broken and material_break
+            ),
+            "reasons": reasons,
+            "consecutive_negative_tech_checkpoints": consecutive_negative,
+            "negative_tech_threshold": negative_threshold,
+            "hard_negative_tech_threshold": hard_negative_threshold,
+            "material_loss_pct": material_loss_pct,
+            "ma20_break_pct": ma20_break_pct,
+            "price": round(price, 4) if price is not None else None,
+            "avg_price": round(avg_price, 4) if avg_price is not None else None,
+            "unrealized_pnl_pct": round(pnl_pct, 4) if pnl_pct is not None else None,
+            "ma20": round(ma20, 4) if ma20 is not None else None,
+            "price_vs_ma20_pct": round(price_vs_ma20_pct, 4) if price_vs_ma20_pct is not None else None,
+            "ma20_slope": round(ma20_slope, 6) if ma20_slope is not None else None,
+            "tech_score": round(tech_score, 6) if tech_score is not None else None,
+        }
+
+    def _recovery_probe_negative_tech_count(
+        self,
+        *,
+        stock_code: str,
+        current_tech_score: float | None,
+        entry_time: datetime | None,
+    ) -> int:
+        count = 1 if current_tech_score is not None and current_tech_score < 0 else 0
+        if count <= 0 or not stock_code:
+            return count
+        for signal in self.list_signals(stock_code=stock_code, limit=8):
+            action = str(signal.get("action") or "").upper()
+            if action == "BUY":
+                break
+            signal_time = self._parse_datetime(
+                signal.get("decision_time")
+                or signal.get("checkpoint_at")
+                or signal.get("created_at")
+            )
+            if entry_time is not None and signal_time is not None and signal_time <= entry_time:
+                break
+            tech_score = self._safe_float(signal.get("tech_score"), None)
+            if tech_score is None:
+                profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
+                explainability = profile.get("explainability") if isinstance(profile.get("explainability"), dict) else {}
+                fusion = explainability.get("fusion_breakdown") if isinstance(explainability.get("fusion_breakdown"), dict) else {}
+                tech_score = self._safe_float(fusion.get("tech_score"), None)
+            if tech_score is not None and tech_score < 0:
+                count += 1
+                continue
+            break
+        return count

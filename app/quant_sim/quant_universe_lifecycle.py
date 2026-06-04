@@ -540,6 +540,7 @@ def build_lifecycle_gate(
     *,
     supplemental: bool = False,
     recovery_probe_active: bool = False,
+    reentry_watch_active: bool = False,
     downtrend_streak: int = 0,
     recovery_probe_attempt_count: int = 0,
     recent_probe_loss_count: int = 0,
@@ -634,6 +635,17 @@ def build_lifecycle_gate(
                 "recent_probe_loss_count": losses,
                 "probe_failure_reason": failure_reason,
             }
+        if reentry_watch_active:
+            return {
+                "mode": "trial_guarded",
+                "buy_threshold_delta": float(policy.guarded_buy_threshold_delta),
+                "size_multiplier": float(policy.guarded_size_multiplier),
+                "max_position_pct": float(policy.guarded_max_position_pct),
+                "requires_strong_confirmation": False,
+                "buy_blocked": False,
+                "reason_code": "trial_reentry_watch_soft_gate",
+                "reason_text": "trial 标的短期转弱后进入观察期，保留扫描但按 guarded 仓位执行",
+            }
         return {
             "mode": "trial_light",
             "buy_threshold_delta": float(policy.trial_buy_threshold_delta),
@@ -643,6 +655,17 @@ def build_lifecycle_gate(
             "buy_blocked": False,
             "reason_code": "trial_light_soft_gate",
             "reason_text": "量化初期按轻仓规则试错",
+        }
+    if status == QuantStatus.ACTIVE and reentry_watch_active:
+        return {
+            "mode": "active_guarded",
+            "buy_threshold_delta": float(policy.guarded_buy_threshold_delta),
+            "size_multiplier": float(policy.guarded_size_multiplier),
+            "max_position_pct": float(policy.guarded_max_position_pct),
+            "requires_strong_confirmation": False,
+            "buy_blocked": False,
+            "reason_code": "active_reentry_watch_soft_gate",
+            "reason_text": "active 标的短期转弱观察期内，提高买入门槛并降低仓位",
         }
     if status == QuantStatus.ACTIVE and int(downtrend_streak or 0) >= int(policy.active_guarded_downtrend_streak or 0):
         return {
@@ -683,6 +706,7 @@ def resolve_next_status(
     recovery_probe_active: bool = False,
     recovery_probe_strong_confirmed: bool = False,
     recovery_probe_exit_grace_active: bool = False,
+    recent_recovery_probe_failure: bool = False,
     post_buy_grace_active: bool = False,
     active_dwell_checkpoints: int = 0,
     immediate_exit_signal: bool = False,
@@ -726,14 +750,7 @@ def resolve_next_status(
         if not has_position and downtrend_streak >= int(policy.active_cooling_downtrend_streak or 0):
             if active_min_dwell_active:
                 return _blocked(current, "active_min_dwell_guarded", "active 最短停留期内仅进入 guarded gate")
-            if health_score > policy.cooling_threshold:
-                return _blocked(current, "active_downtrend_guarded", "active 空仓短期弱化但健康分未跌破 cooling 阈值，保留 active 并使用 guarded gate")
-            return _transition(
-                current,
-                QuantStatus.COOLING,
-                "active_flat_downtrend_cooling",
-                "active 空仓持续下行确认，进入冷却",
-            )
+            return _blocked(current, "active_downtrend_guarded", "active 空仓短期弱化，保留 active 并使用 guarded gate")
         if active_guarded:
             reason_code = "active_min_dwell_guarded" if active_min_dwell_active else "active_downtrend_guarded"
             reason_text = "active 最短停留期内仅进入 guarded gate" if active_min_dwell_active else "active 短期弱化，保留 active 并使用 guarded gate"
@@ -763,7 +780,7 @@ def resolve_next_status(
         if has_position and downtrend_streak >= policy.exit_only_downtrend_streak:
             return _transition(current, QuantStatus.EXIT_ONLY, "holding_downtrend_exit_only", "持仓下行，进入只出场管理")
         if not has_position and downtrend_streak >= max(policy.downtrend_cooling_streak, policy.trial_min_dwell_checkpoints):
-            return _transition(current, QuantStatus.COOLING, "flat_downtrend_cooling", "空仓且持续下行，进入冷却")
+            return _blocked(current, "trial_flat_downtrend_guarded", "trial 空仓持续转弱，保留扫描但不进入冷却")
         if (
             recovery_probe_active
             and health_score >= policy.active_upgrade_threshold
@@ -774,6 +791,13 @@ def resolve_next_status(
     if current == QuantStatus.EXIT_ONLY:
         if has_position:
             return _blocked(current, "exit_only_position_not_flat", "exit_only 持仓未清空，不能恢复")
+        if recent_recovery_probe_failure:
+            return _transition(
+                current,
+                QuantStatus.COOLING,
+                "exit_only_probe_failure_to_cooling",
+                "recovery probe 失败后清仓，进入冷却",
+            )
         if (
             health_score >= policy.active_upgrade_threshold
             and trend_confirmed
@@ -782,7 +806,7 @@ def resolve_next_status(
             return _transition(current, QuantStatus.ACTIVE, "exit_only_recovered_to_active", "清仓后趋势强确认，恢复 active")
         if health_score >= policy.cooling_threshold and candidate_support:
             return _transition(current, QuantStatus.TRIAL, "exit_only_recovered_to_trial", "清仓后有新候选支持，恢复 trial")
-        return _transition(current, QuantStatus.COOLING, "exit_only_flat_to_cooling", "清仓但恢复条件不足，进入冷却")
+        return _transition(current, QuantStatus.TRIAL, "exit_only_flat_to_trial", "清仓后恢复 trial，等待下一次可执行信号")
     if current == QuantStatus.COOLING:
         if cooling_min_dwell_active:
             return _blocked(current, "cooling_min_dwell_active", "冷却最短停留期未结束")
@@ -1203,7 +1227,13 @@ class QuantUniverseManager:
         stock = self._load_stock(code)
         current = _status((stock or {}).get("quant_status"))
         previous_state = self.db.get_quant_universe_state(code) or {}
-        health = calculate_health_score(self._health_inputs_from_signals(recent_signals), self.policy)
+        evaluation_time = _signal_datetime(latest_signal)
+        health_inputs = replace(
+            self._health_inputs_from_signals(recent_signals),
+            reentry_watch_until=previous_state.get("reentry_watch_until"),
+            now=evaluation_time,
+        )
+        health = calculate_health_score(health_inputs, self.policy)
         settings = self.db.get_quant_universe_settings()
         has_position = int((position or {}).get("quantity") or 0) > 0
         downtrend_hit = detect_downtrend_hit(
@@ -1219,7 +1249,6 @@ class QuantUniverseManager:
             warning_hit = False
         next_downtrend_streak = int(previous_state.get("downtrend_streak") or 0) + 1 if downtrend_hit else 0
         next_warning_streak = int(previous_state.get("weakening_warning_streak") or 0) + 1 if warning_hit else 0
-        evaluation_time = _signal_datetime(latest_signal)
         cooling_min_dwell_active = (
             current == QuantStatus.COOLING
             and not bool(ignore_cooling_min_dwell)
@@ -1243,6 +1272,7 @@ class QuantUniverseManager:
         last_recovery_probe_failure_at = previous_state.get("last_recovery_probe_failure_at")
         recovery_probe_cooldown_until = previous_state.get("recovery_probe_cooldown_until")
         probe_failure_reason = previous_state.get("probe_failure_reason")
+        reentry_watch_until = previous_state.get("reentry_watch_until")
         retired_at = previous_state.get("retired_at")
         retire_reason = previous_state.get("retire_reason")
         last_status_changed_at = previous_state.get("last_status_changed_at")
@@ -1317,6 +1347,7 @@ class QuantUniverseManager:
                 recovery_probe_strong_confirmed=recovery_probe_strong_confirmed,
                 recovery_probe_exit_grace_active=has_position
                 and _recovery_probe_exit_grace_active(previous_state, self.policy, evaluation_time),
+                recent_recovery_probe_failure=current == QuantStatus.EXIT_ONLY and recent_probe_loss_count > 0,
                 post_buy_grace_active=has_position and _has_same_day_buy_signal(recent_signals, evaluation_time),
                 active_dwell_checkpoints=previous_active_checkpoints,
                 immediate_exit_signal=_signal_requires_immediate_exit(latest_signal),
@@ -1324,6 +1355,16 @@ class QuantUniverseManager:
             )
             transition_reason_code = transition.reason_code
             transition_reason_text = transition.reason
+            if transition.reason_code in {
+                "active_downtrend_guarded",
+                "active_min_dwell_guarded",
+                "trial_flat_downtrend_guarded",
+            }:
+                watch_hours = max(int(self.policy.reentry_watch_hours or 0), 0)
+                if watch_hours > 0:
+                    next_watch_until = evaluation_time + timedelta(hours=watch_hours)
+                    if not _is_future(reentry_watch_until, evaluation_time) or _to_datetime(reentry_watch_until) < next_watch_until:
+                        reentry_watch_until = _format_local_time_text(next_watch_until)
             if transition.allowed and transition.to_status != current:
                 next_status = transition.to_status
                 status_changed = True
@@ -1355,6 +1396,7 @@ class QuantUniverseManager:
                     if current != QuantStatus.ACTIVE:
                         active_since = _format_local_time_text(evaluation_time)
                         next_active_checkpoints = 0
+                        reentry_watch_until = None
                     if current == QuantStatus.TRIAL:
                         next_downtrend_streak = 0
                         next_warning_streak = 0
@@ -1419,6 +1461,7 @@ class QuantUniverseManager:
                 "last_recovery_probe_failure_at": last_recovery_probe_failure_at,
                 "recovery_probe_cooldown_until": recovery_probe_cooldown_until,
                 "probe_failure_reason": probe_failure_reason,
+                "reentry_watch_until": reentry_watch_until,
                 "active_since": active_since,
                 "active_checkpoints": next_active_checkpoints,
                 "retired_at": retired_at,
@@ -1433,6 +1476,7 @@ class QuantUniverseManager:
                     "recent_probe_loss_count": recent_probe_loss_count,
                     "probe_failure_reason": probe_failure_reason,
                     "recovery_probe_cooldown_until": recovery_probe_cooldown_until,
+                    "reentry_watch_until": reentry_watch_until,
                 },
             },
         )
@@ -2107,17 +2151,48 @@ def _apply_active_upgrade_health_floor(
         return health
     if not trend_confirmed or trend_confirmed_streak < policy.active_upgrade_confirm_checkpoints:
         return health
-    strength_threshold = min(0.80, float(policy.trial_threshold) + 0.15)
-    if _signal_buy_strength_score(latest_signal, 0.0) < strength_threshold:
+    if not _signal_high_quality_active_upgrade(latest_signal, policy):
         return health
     floor = float(policy.active_upgrade_threshold)
     if health.health_score >= floor:
         return health
     breakdown = dict(health.breakdown)
     breakdown["active_upgrade_floor"] = round(floor, 4)
-    breakdown["active_upgrade_strength_threshold"] = round(strength_threshold, 4)
+    breakdown["active_upgrade_strength_threshold"] = round(_active_upgrade_strength_threshold(policy), 4)
     breakdown["active_upgrade_confirmed_streak"] = int(trend_confirmed_streak)
     return HealthResult(health_score=round(floor, 4), breakdown=breakdown)
+
+
+def _active_upgrade_strength_threshold(policy: QuantUniverseLifecyclePolicy) -> float:
+    return max(0.68, min(0.72, float(policy.strong_candidate_threshold or 0.0)))
+
+
+def _signal_high_quality_active_upgrade(signal: dict[str, Any], policy: QuantUniverseLifecyclePolicy) -> bool:
+    if not _signal_strong_buy(signal):
+        return False
+    guard = _signal_portfolio_guard(signal)
+    if str(guard.get("strong_filter_result") or "").strip().lower() == "downgraded":
+        return False
+    buy_strength = _signal_buy_strength_score(signal, 0.0)
+    if buy_strength < _active_upgrade_strength_threshold(policy):
+        return False
+    trend = guard.get("trend_confirmation") if isinstance(guard.get("trend_confirmation"), dict) else {}
+    components = guard.get("score_components") if isinstance(guard.get("score_components"), dict) else {}
+    confirmation_score = _clamp(_float(components.get("confirmation_score"), 1.0), 0.0, 1.0)
+    edge_strength = _clamp(_float(components.get("edge_strength"), 1.0), 0.0, 1.0)
+    volume_score = _clamp(_float(components.get("volume_score"), 1.0), 0.0, 1.0)
+    above_ma20 = int(_float(trend.get("above_ma20_checkpoints"), 0.0))
+    structure_confirmed = bool(
+        trend.get("retest_confirmed")
+        or (
+            trend.get("ma_stack")
+            and trend.get("ma20_rising")
+            and above_ma20 >= int(policy.active_upgrade_confirm_checkpoints or 0)
+        )
+    )
+    if not structure_confirmed:
+        return False
+    return confirmation_score >= 0.75 and edge_strength >= 0.45 and volume_score >= 0.35
 
 
 def _apply_active_holding_health_floor(

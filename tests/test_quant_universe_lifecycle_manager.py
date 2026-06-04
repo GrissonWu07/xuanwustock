@@ -297,6 +297,31 @@ def test_build_lifecycle_gate_uses_recovery_probe_caps_before_trial_confirmation
     assert gate["buy_blocked"] is False
 
 
+def test_build_lifecycle_gate_uses_trial_guarded_during_reentry_watch():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    gate = build_lifecycle_gate("trial", policy, reentry_watch_active=True)
+
+    assert gate["mode"] == "trial_guarded"
+    assert gate["buy_threshold_delta"] == policy.guarded_buy_threshold_delta
+    assert gate["size_multiplier"] == policy.guarded_size_multiplier
+    assert gate["max_position_pct"] == policy.guarded_max_position_pct
+    assert gate["requires_strong_confirmation"] is False
+    assert gate["buy_blocked"] is False
+
+
+def test_build_lifecycle_gate_uses_active_guarded_during_reentry_watch():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    gate = build_lifecycle_gate("active", policy, reentry_watch_active=True)
+
+    assert gate["mode"] == "active_guarded"
+    assert gate["buy_threshold_delta"] == policy.guarded_buy_threshold_delta
+    assert gate["size_multiplier"] == policy.guarded_size_multiplier
+    assert gate["max_position_pct"] == policy.guarded_max_position_pct
+    assert gate["reason_code"] == "active_reentry_watch_soft_gate"
+
+
 def test_build_lifecycle_gate_tightens_recovery_probe_after_recent_failure():
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
 
@@ -522,7 +547,7 @@ def test_low_health_without_downtrend_does_not_force_cooling_or_exit_only():
     assert holding.reason_code == "no_transition"
 
 
-def test_resolve_active_to_cooling_when_flat_and_downtrend_persists():
+def test_resolve_active_flat_downtrend_stays_guarded_instead_of_cooling():
     policy = QuantUniverseLifecyclePolicy.stable_defaults()
 
     result = resolve_next_status(
@@ -534,9 +559,25 @@ def test_resolve_active_to_cooling_when_flat_and_downtrend_persists():
         policy=policy,
     )
 
-    assert result.allowed is True
-    assert result.to_status == QuantStatus.COOLING
-    assert result.reason_code == "active_flat_downtrend_cooling"
+    assert result.allowed is False
+    assert result.to_status == QuantStatus.ACTIVE
+    assert result.reason_code == "active_downtrend_guarded"
+
+
+def test_resolve_trial_flat_downtrend_stays_trial_instead_of_cooling():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    result = resolve_next_status(
+        current_status=QuantStatus.TRIAL,
+        health_score=policy.cooling_threshold - 10,
+        downtrend_streak=max(policy.downtrend_cooling_streak, policy.trial_min_dwell_checkpoints),
+        has_position=False,
+        policy=policy,
+    )
+
+    assert result.allowed is False
+    assert result.to_status == QuantStatus.TRIAL
+    assert result.reason_code == "trial_flat_downtrend_guarded"
 
 
 def test_resolve_trial_to_active_when_trend_confirmed_and_health_strong():
@@ -598,6 +639,39 @@ def test_resolve_exit_only_to_active_requires_flat_health_and_trend_confirmation
     assert result.allowed is True
     assert result.to_status == QuantStatus.ACTIVE
     assert result.reason_code == "exit_only_recovered_to_active"
+
+
+def test_resolve_exit_only_flat_without_probe_failure_returns_trial_not_cooling():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    result = resolve_next_status(
+        current_status=QuantStatus.EXIT_ONLY,
+        health_score=0,
+        has_position=False,
+        candidate_support=False,
+        policy=policy,
+    )
+
+    assert result.allowed is True
+    assert result.to_status == QuantStatus.TRIAL
+    assert result.reason_code == "exit_only_flat_to_trial"
+
+
+def test_resolve_exit_only_flat_after_probe_failure_enters_cooling():
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+
+    result = resolve_next_status(
+        current_status=QuantStatus.EXIT_ONLY,
+        health_score=0,
+        has_position=False,
+        candidate_support=False,
+        recent_recovery_probe_failure=True,
+        policy=policy,
+    )
+
+    assert result.allowed is True
+    assert result.to_status == QuantStatus.COOLING
+    assert result.reason_code == "exit_only_probe_failure_to_cooling"
 
 
 def test_resolve_cooling_to_trial_requires_checkpoint_health_and_trend_confirmation():
@@ -839,7 +913,7 @@ def test_manager_active_hard_stop_sell_still_immediately_exits(tmp_path):
     assert result["reason_code"] == "active_immediate_exit_signal"
 
 
-def test_active_flat_downtrend_uses_active_specific_cooling_threshold():
+def test_active_flat_downtrend_uses_active_specific_guarded_threshold():
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
 
     held = resolve_next_status(
@@ -850,7 +924,7 @@ def test_active_flat_downtrend_uses_active_specific_cooling_threshold():
         active_dwell_checkpoints=policy.active_min_dwell_checkpoints,
         policy=policy,
     )
-    cooled = resolve_next_status(
+    guarded = resolve_next_status(
         current_status=QuantStatus.ACTIVE,
         health_score=30,
         has_position=False,
@@ -861,9 +935,9 @@ def test_active_flat_downtrend_uses_active_specific_cooling_threshold():
 
     assert held.allowed is False
     assert held.reason_code == "active_downtrend_guarded"
-    assert cooled.allowed is True
-    assert cooled.to_status == QuantStatus.COOLING
-    assert cooled.reason_code == "active_flat_downtrend_cooling"
+    assert guarded.allowed is False
+    assert guarded.to_status == QuantStatus.ACTIVE
+    assert guarded.reason_code == "active_downtrend_guarded"
 
 
 def test_active_downtrend_keeps_high_health_position_in_guarded_instead_of_exiting():
@@ -2206,6 +2280,85 @@ def test_manager_trial_upgrades_to_active_after_confirmed_trend_window(tmp_path)
     assert manager.db.get_quant_universe_state("600000")["quant_status"] == "active"
 
 
+def test_manager_trial_confirmed_trend_does_not_floor_low_quality_health(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "trial", "health_score": 20.0})
+    signal = {
+        "stock_code": "600000",
+        "stock_name": "浦发银行",
+        "action": "BUY",
+        "decision_time": "2026-01-05 10:00:00",
+        "tech_score": 0.1,
+        "context_score": -0.5,
+        "price": 12.0,
+        "ma20": 11.0,
+        "ma20_slope": 0.03,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.5, "fusion_score_delta": 0.08}},
+            "portfolio_execution_guard": {
+                "status": "weak_buy",
+                "buy_strength_score": 0.52,
+                "score_components": {"confirmation_score": 0.0},
+                "trend_confirmation": {
+                    "ma_stack": True,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": policy.active_upgrade_confirm_checkpoints,
+                    "retest_confirmed": False,
+                },
+            },
+        },
+    }
+
+    result = manager.update_after_signal("600000", signal, [signal] * policy.active_upgrade_confirm_checkpoints, None)
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["new_status"] == "trial"
+    assert state["health_score"] < policy.active_upgrade_threshold
+    assert "active_upgrade_floor" not in state["snapshot_json"]["health"]
+
+
+def test_manager_high_quality_trial_trend_applies_profile_threshold_health_floor(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state("600000", {"quant_status": "trial", "health_score": 20.0})
+    signal = {
+        "stock_code": "600000",
+        "stock_name": "浦发银行",
+        "action": "BUY",
+        "decision_time": "2026-01-05 10:00:00",
+        "tech_score": 0.2,
+        "context_score": -0.5,
+        "price": 12.0,
+        "ma20": 11.0,
+        "ma20_slope": 0.06,
+        "strategy_profile": {
+            "explainability": {"fusion_breakdown": {"fusion_score": 0.62, "fusion_score_delta": 0.18}},
+            "portfolio_execution_guard": {
+                "status": "strong_buy",
+                "buy_tier": "strong_buy",
+                "buy_strength_score": 0.72,
+                "score_components": {"confirmation_score": 0.9, "edge_strength": 0.65, "volume_score": 0.7},
+                "trend_confirmation": {
+                    "ma_stack": True,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": policy.active_upgrade_confirm_checkpoints,
+                    "retest_confirmed": True,
+                },
+            },
+        },
+    }
+
+    result = manager.update_after_signal("600000", signal, [signal] * policy.active_upgrade_confirm_checkpoints, None)
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["new_status"] == "active"
+    assert state["health_score"] >= policy.active_upgrade_threshold
+    assert state["snapshot_json"]["health"]["active_upgrade_floor"] == policy.active_upgrade_threshold
+
+
 def test_manager_trial_active_upgrade_clears_stale_downtrend_memory(tmp_path):
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
     manager = _manager(tmp_path, policy)
@@ -2611,7 +2764,7 @@ def test_manager_update_after_signal_blocks_cooling_restore_until_min_dwell_expi
     assert manager.db.get_quant_universe_state("600000")["quant_status"] == "cooling"
 
 
-def test_manager_update_after_signal_sets_cooling_until_when_entering_cooling(tmp_path):
+def test_manager_update_after_signal_keeps_flat_trial_downtrend_out_of_cooling(tmp_path):
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
     manager = _manager(tmp_path, policy)
     manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
@@ -2646,9 +2799,11 @@ def test_manager_update_after_signal_sets_cooling_until_when_entering_cooling(tm
     )
 
     state = manager.db.get_quant_universe_state("600000")
-    assert result["status_changed"] is True
-    assert result["new_status"] == "cooling"
-    assert state["cooling_until"] == "2026-01-08 10:00:00"
+    assert result["status_changed"] is False
+    assert result["new_status"] == "trial"
+    assert result["reason_code"] == "trial_flat_downtrend_guarded"
+    assert state["quant_status"] == "trial"
+    assert state["cooling_until"] is None
 
 
 def test_manager_update_after_signal_keeps_cooling_soft_gated_on_persistent_downtrend(tmp_path):

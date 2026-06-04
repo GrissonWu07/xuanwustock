@@ -23,20 +23,21 @@ const OVERVIEW_ENDPOINT = "/api/v1/quant/universe/overview";
 
 const CARD_ORDER = [
   { key: "pending_eligible", labelKey: "Pending quant entry", target: "/discover?eligible=1" },
-  { key: "trial", labelKey: "Quant", target: "/live-sim?quant_status=trial" },
-  { key: "active", labelKey: "Quant running", target: "/live-sim?quant_status=active" },
-  { key: "exit_only", labelKey: "Exit-only management", target: "/live-sim?quant_status=exit_only" },
-  { key: "cooling", labelKey: "Cooling", target: "/live-sim?quant_status=cooling" },
-  { key: "manual_paused", labelKey: "Manual paused", target: "/live-sim?quant_status=manual_paused" },
-  { key: "retired", labelKey: "Retired pending review", target: "/live-sim?quant_status=retired" },
+  { key: "trial", labelKey: "Trial", target: "/live-sim?quant_status=trial" },
+  { key: "active", labelKey: "Active", target: "/live-sim?quant_status=active" },
+  { key: "exit_only", labelKey: "Exit", target: "/live-sim?quant_status=exit_only" },
+  { key: "cooling", labelKey: "Cool", target: "/live-sim?quant_status=cooling" },
+  { key: "manual_paused", labelKey: "Paused", target: "/live-sim?quant_status=manual_paused" },
+  { key: "retired", labelKey: "Retired", target: "/live-sim?quant_status=retired" },
 ] as const;
 
 const normalizeCards = (payload: QuantOverviewPayload | null) =>
   CARD_ORDER.map((definition) => {
     const card = payload?.cards?.[definition.key] ?? {};
+    const label = definition.key === "pending_eligible" ? card.label || t(definition.labelKey) : t(definition.labelKey);
     return {
       ...definition,
-      label: card.label || t(definition.labelKey),
+      label,
       count: Number(card.count ?? 0),
       topItems: (card.top_items ?? []).slice(0, 3),
       latestReason: card.latest_reason || "",

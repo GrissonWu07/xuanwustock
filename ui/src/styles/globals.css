@@ -2619,11 +2619,12 @@ a {
 
 .live-quant-stock-card {
   display: grid;
-  grid-template-columns: minmax(116px, 1.15fr) 72px minmax(56px, 0.45fr);
+  grid-template-columns: minmax(82px, 104px) max-content minmax(58px, 1fr) max-content;
   grid-template-areas:
-    "identity price state";
+    "identity status price metrics";
   align-items: center;
-  gap: 10px;
+  column-gap: 8px;
+  row-gap: 6px;
   min-height: 74px;
   padding: 12px;
   border: 1px solid rgba(202, 216, 243, 0.88);
@@ -2632,8 +2633,9 @@ a {
 }
 
 .live-quant-stock-card__identity,
+.live-quant-stock-card__status,
 .live-quant-stock-card__price,
-.live-quant-stock-card__state {
+.live-quant-stock-card__metrics {
   min-width: 0;
 }
 
@@ -2661,6 +2663,9 @@ a {
 
 .live-quant-stock-card__price {
   grid-area: price;
+  min-width: 58px;
+  text-align: right;
+  justify-self: end;
 }
 
 .live-quant-stock-card__price strong {
@@ -2669,13 +2674,33 @@ a {
   font-weight: 900;
 }
 
-.live-quant-stock-card__state {
-  grid-area: state;
+.live-quant-stock-card__status {
+  grid-area: status;
+  justify-self: start;
+}
+
+.live-quant-stock-card__metrics {
+  grid-area: metrics;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: nowrap;
+}
+
+.live-quant-stock-card__status .badge,
+.live-quant-stock-card__metrics .badge {
+  white-space: nowrap;
+}
+
+.live-quant-stock-card__score {
+  min-width: 38px;
+  justify-content: center;
+}
+
+.live-quant-stock-card__confidence {
+  min-width: 68px;
+  justify-content: center;
 }
 
 .table-shell--trade-details .table th:last-child,
@@ -4842,24 +4867,28 @@ a {
   }
 
   .live-quant-stock-card {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(82px, 104px) max-content minmax(58px, 1fr) max-content;
     grid-template-areas:
-      "identity state"
-      "price price";
-    align-items: start;
-    gap: 10px;
+      "identity status price metrics";
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 6px;
   }
 
   .live-quant-stock-card__identity {
     grid-area: identity;
   }
 
+  .live-quant-stock-card__status {
+    grid-area: status;
+  }
+
   .live-quant-stock-card__price {
     grid-area: price;
   }
 
-  .live-quant-stock-card__state {
-    grid-area: state;
+  .live-quant-stock-card__metrics {
+    grid-area: metrics;
     justify-content: flex-end;
   }
 }
