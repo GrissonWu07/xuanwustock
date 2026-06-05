@@ -2051,6 +2051,58 @@ def test_manager_recovery_probe_strong_confirmation_upgrades_to_active(tmp_path)
     assert result["reason_code"] == "trial_recovery_probe_strong_upgraded_to_active"
 
 
+def test_manager_recovery_probe_consecutive_normal_confirmation_upgrades_to_active(tmp_path):
+    policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
+    manager = _manager(tmp_path, policy)
+    manager.db.add_watch(stock_code="600000", stock_name="浦发银行", source="manual")
+    manager.db.upsert_quant_universe_state(
+        "600000",
+        {
+            "quant_status": "trial",
+            "health_score": policy.active_upgrade_threshold,
+            "recovery_probe_until": "2026-01-06 10:00:00",
+            "recent_probe_loss_count": 0,
+        },
+    )
+    signal = {
+        "action": "BUY",
+        "decision_time": "2026-01-05 10:00:00",
+        "tech_score": 0.55,
+        "context_score": 0.2,
+        "fusion_score": 0.76,
+        "buy_strength_score": 0.72,
+        "price": 12.8,
+        "ma20": 12.0,
+        "ma20_slope": 0.02,
+        "strategy_profile": {
+            "portfolio_execution_guard": {
+                "status": "normal_buy",
+                "buy_tier": "normal_buy",
+                "buy_strength_score": 0.72,
+                "trend_confirmation": {
+                    "ma_stack": False,
+                    "ma20_rising": True,
+                    "above_ma20_checkpoints": policy.active_upgrade_confirm_checkpoints,
+                    "retest_confirmed": False,
+                },
+            }
+        },
+    }
+
+    result = manager.update_after_signal(
+        "600000",
+        latest_signal=signal,
+        recent_signals=[signal] * policy.active_upgrade_confirm_checkpoints,
+        position={"quantity": 100},
+    )
+    state = manager.db.get_quant_universe_state("600000")
+
+    assert result["status_changed"] is True
+    assert result["new_status"] == "active"
+    assert result["reason_code"] == "trial_recovery_probe_normal_confirmed_upgraded_to_active"
+    assert state["recovery_probe_until"] is None
+
+
 def test_resolve_trial_recovery_probe_grace_blocks_fast_exit_only():
     policy = QuantUniverseLifecyclePolicy.aggressive_defaults()
 

@@ -1721,6 +1721,7 @@ def _buy_signal(
 
 def test_batch_caps_skip_trial_buys_after_checkpoint_risk_budget():
     policy = default_execution_position_cap_policy("aggressive")
+    policy["max_new_buys_per_checkpoint"] = 99
     signals = [
         _buy_signal(1, "weak_buy", 6000, 0.30, effective_position_pct=6.0),
         _buy_signal(2, "weak_buy", 6000, 0.30, effective_position_pct=6.0),
@@ -1760,6 +1761,168 @@ def test_batch_caps_use_actual_execution_risk_not_nominal_tier_budget():
 
     assert [item["allowed"] for item in result] == [True, True]
     assert [item["batch_risk_pct"] for item in result] == [0.15, 0.15]
+
+
+def test_batch_caps_use_stock_code_not_signal_id_as_final_tiebreaker():
+    policy = default_execution_position_cap_policy("aggressive")
+    lower_code_later_signal = _buy_signal(20, "normal_buy", 36000, 0.45, effective_position_pct=9.0)
+    lower_code_later_signal["stock_code"] = "000001"
+    higher_code_earlier_signal = _buy_signal(1, "normal_buy", 36000, 0.45, effective_position_pct=9.0)
+    higher_code_earlier_signal["stock_code"] = "000002"
+    for signal in (lower_code_later_signal, higher_code_earlier_signal):
+        signal["confidence"] = 80
+        signal["strategy_profile"]["portfolio_execution_guard"]["buy_strength_score"] = 0.60
+
+    result = apply_batch_execution_caps(
+        signals=[higher_code_earlier_signal, lower_code_later_signal],
+        total_equity=400000,
+        existing_trial_market_value=0,
+        existing_weak_buy_market_value=0,
+        day_trial_risk_used_pct=0,
+        policy=policy,
+    )
+
+    allowed_codes = [item["signal"]["stock_code"] for item in result if item["allowed"]]
+    skipped_codes = [item["signal"]["stock_code"] for item in result if not item["allowed"]]
+
+    assert allowed_codes == ["000001"]
+    assert skipped_codes == ["000002"]
+
+
+def test_batch_caps_apply_checkpoint_buy_count_after_quality_sorting():
+    policy = default_execution_position_cap_policy("aggressive")
+    strongest = _buy_signal(10, "normal_buy", 3000, 0.0375, effective_position_pct=0.75)
+    strongest["stock_code"] = "000003"
+    strongest["strategy_profile"]["portfolio_execution_guard"]["buy_strength_score"] = 0.90
+    middle = _buy_signal(20, "normal_buy", 3000, 0.0375, effective_position_pct=0.75)
+    middle["stock_code"] = "000002"
+    middle["strategy_profile"]["portfolio_execution_guard"]["buy_strength_score"] = 0.80
+    weakest = _buy_signal(30, "normal_buy", 3000, 0.0375, effective_position_pct=0.75)
+    weakest["stock_code"] = "000001"
+    weakest["strategy_profile"]["portfolio_execution_guard"]["buy_strength_score"] = 0.70
+
+    result = apply_batch_execution_caps(
+        signals=[weakest, middle, strongest],
+        total_equity=400000,
+        existing_trial_market_value=0,
+        existing_weak_buy_market_value=0,
+        day_trial_risk_used_pct=0,
+        policy=policy,
+    )
+
+    allowed_codes = [item["signal"]["stock_code"] for item in result if item["allowed"]]
+    skipped = [item for item in result if not item["allowed"]]
+
+    assert allowed_codes == ["000003", "000002"]
+    assert [item["signal"]["stock_code"] for item in skipped] == ["000001"]
+    assert skipped[0]["reason_code"] == "checkpoint_buy_count_limit_hit"
+
+
+def test_batch_caps_prioritize_stock_feedback_outcome_score_before_stock_code_tiebreaker():
+    policy = default_execution_position_cap_policy("aggressive")
+    policy["max_new_buys_per_checkpoint"] = 1
+    low_feedback_low_code = _buy_signal(1, "normal_buy", 3000, 0.0375, effective_position_pct=0.75)
+    low_feedback_low_code["stock_code"] = "000001"
+    low_feedback_low_code["strategy_profile"]["portfolio_execution_guard"]["buy_strength_score"] = 0.70
+    low_feedback_low_code["strategy_profile"]["stock_execution_feedback_gate"] = {
+        "outcome_feedback": {"outcome_feedback_score": 40}
+    }
+    high_feedback_high_code = _buy_signal(2, "normal_buy", 3000, 0.0375, effective_position_pct=0.75)
+    high_feedback_high_code["stock_code"] = "000002"
+    high_feedback_high_code["strategy_profile"]["portfolio_execution_guard"]["buy_strength_score"] = 0.70
+    high_feedback_high_code["strategy_profile"]["stock_execution_feedback_gate"] = {
+        "outcome_feedback": {"outcome_feedback_score": 80}
+    }
+
+    result = apply_batch_execution_caps(
+        signals=[low_feedback_low_code, high_feedback_high_code],
+        total_equity=400000,
+        existing_trial_market_value=0,
+        existing_weak_buy_market_value=0,
+        day_trial_risk_used_pct=0,
+        policy=policy,
+    )
+
+    assert [item["signal"]["stock_code"] for item in result if item["allowed"]] == ["000002"]
+    assert [item["signal"]["stock_code"] for item in result if not item["allowed"]] == ["000001"]
+
+
+def test_batch_caps_use_buy_outcome_score_for_buy_priority():
+    policy = default_execution_position_cap_policy("aggressive")
+    policy["max_new_buys_per_checkpoint"] = 1
+    sell_dragged_good_buy = _buy_signal(1, "normal_buy", 3000, 0.0375, effective_position_pct=0.75)
+    sell_dragged_good_buy["stock_code"] = "000002"
+    sell_dragged_good_buy["strategy_profile"]["portfolio_execution_guard"]["buy_strength_score"] = 0.70
+    sell_dragged_good_buy["strategy_profile"]["outcome_feedback"] = {
+        "summary": {
+            "outcome_feedback_score": 15,
+            "buy_avg_score": 70,
+            "buy_sample_count": 4,
+            "sell_avg_score": 10,
+            "sell_sample_count": 4,
+        }
+    }
+    neutral_buy = _buy_signal(2, "normal_buy", 3000, 0.0375, effective_position_pct=0.75)
+    neutral_buy["stock_code"] = "000001"
+    neutral_buy["strategy_profile"]["portfolio_execution_guard"]["buy_strength_score"] = 0.70
+    neutral_buy["strategy_profile"]["outcome_feedback"] = {
+        "summary": {
+            "outcome_feedback_score": 50,
+            "buy_avg_score": 50,
+            "buy_sample_count": 4,
+        }
+    }
+
+    result = apply_batch_execution_caps(
+        signals=[neutral_buy, sell_dragged_good_buy],
+        total_equity=400000,
+        existing_trial_market_value=0,
+        existing_weak_buy_market_value=0,
+        day_trial_risk_used_pct=0,
+        policy=policy,
+    )
+
+    assert [item["signal"]["stock_code"] for item in result if item["allowed"]] == ["000002"]
+    assert [item["signal"]["stock_code"] for item in result if not item["allowed"]] == ["000001"]
+
+
+def test_batch_caps_keep_buy_priority_neutral_when_only_sell_outcomes_exist():
+    policy = default_execution_position_cap_policy("aggressive")
+    policy["max_new_buys_per_checkpoint"] = 1
+    sell_only_outcome = _buy_signal(1, "normal_buy", 3000, 0.0375, effective_position_pct=0.75)
+    sell_only_outcome["stock_code"] = "000002"
+    sell_only_outcome["strategy_profile"]["portfolio_execution_guard"]["buy_strength_score"] = 0.70
+    sell_only_outcome["strategy_profile"]["outcome_feedback"] = {
+        "summary": {
+            "outcome_feedback_score": 15,
+            "buy_avg_score": 50,
+            "buy_sample_count": 0,
+            "sell_avg_score": 10,
+            "sell_sample_count": 4,
+        }
+    }
+    poor_buy_outcome = _buy_signal(2, "normal_buy", 3000, 0.0375, effective_position_pct=0.75)
+    poor_buy_outcome["stock_code"] = "000001"
+    poor_buy_outcome["strategy_profile"]["portfolio_execution_guard"]["buy_strength_score"] = 0.70
+    poor_buy_outcome["strategy_profile"]["outcome_feedback"] = {
+        "summary": {
+            "outcome_feedback_score": 43,
+            "buy_avg_score": 43,
+            "buy_sample_count": 4,
+        }
+    }
+
+    result = apply_batch_execution_caps(
+        signals=[poor_buy_outcome, sell_only_outcome],
+        total_equity=400000,
+        existing_trial_market_value=0,
+        existing_weak_buy_market_value=0,
+        day_trial_risk_used_pct=0,
+        policy=policy,
+    )
+
+    assert [item["signal"]["stock_code"] for item in result if item["allowed"]] == ["000002"]
+    assert [item["signal"]["stock_code"] for item in result if not item["allowed"]] == ["000001"]
 
 
 def test_batch_caps_skip_when_weak_buy_exposure_already_full():
@@ -1835,6 +1998,7 @@ def test_batch_caps_prioritize_normal_scan_before_recovery_probe_when_risk_is_ti
 
 def test_batch_caps_prioritize_confirmed_normal_recovery_before_strong_recovery_probe():
     policy = default_execution_position_cap_policy("aggressive")
+    policy["max_new_buys_per_checkpoint"] = 99
     signals = [
         _buy_signal(1, "strong_buy", 24000, 0.30, effective_position_pct=6.0, lifecycle_gate_mode="strong_recovery_confirmed"),
         _buy_signal(2, "normal_buy", 36000, 0.45, effective_position_pct=9.0, lifecycle_gate_mode="recovery_probe_confirmed"),

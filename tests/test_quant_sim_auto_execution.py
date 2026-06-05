@@ -302,12 +302,12 @@ def test_auto_execute_pending_signals_applies_checkpoint_trial_risk_budget(tmp_p
 
     assert executed == 2
     signals = {item["stock_code"]: item for item in db.get_signals(limit=10)}
-    skipped = [item for item in signals.values() if "portfolio_trial_risk_budget_exhausted" in str(item.get("execution_note") or "")]
+    skipped = [item for item in signals.values() if "checkpoint_buy_count_limit_hit" in str(item.get("execution_note") or "")]
     assert len(skipped) == 1
     skip_profile = skipped[0]["strategy_profile"]
     assert skip_profile["auto_execution_skip"]["blocked_reason"] == "batch_execution_cap"
-    assert skip_profile["auto_execution_skip"]["cap_reason"] == "portfolio_trial_risk_budget_exhausted"
-    assert skipped[0]["execution_diagnostics"]["batch_cap"]["reason_code"] == "portfolio_trial_risk_budget_exhausted"
+    assert skip_profile["auto_execution_skip"]["cap_reason"] == "checkpoint_buy_count_limit_hit"
+    assert skipped[0]["execution_diagnostics"]["batch_cap"]["reason_code"] == "checkpoint_buy_count_limit_hit"
     assert skipped[0]["execution_diagnostics"]["sizing"]["sizing"]["buy_tier"] == "weak_buy"
 
 

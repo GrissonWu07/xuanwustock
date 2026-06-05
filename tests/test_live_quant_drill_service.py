@@ -499,6 +499,46 @@ def test_live_quant_drill_seed_scope_excludes_inactive_universe_rows(tmp_path):
     assert context["stock_codes"] == ["600519"]
 
 
+def test_live_quant_drill_seed_snapshot_is_sorted_by_stock_code(tmp_path):
+    live_db_file = tmp_path / "live.db"
+    replay_db_file = tmp_path / "replay.db"
+    live_db = QuantSimDB(str(live_db_file))
+    live_db.configure_account(50000)
+    live_db.add_watch(stock_code="000001", stock_name="平安银行", source="manual")
+    live_db.upsert_quant_universe_state("000001", {"stock_name": "平安银行", "quant_status": "active"})
+    live_db.add_watch(stock_code="600519", stock_name="贵州茅台", source="manual")
+    live_db.upsert_quant_universe_state("600519", {"stock_name": "贵州茅台", "quant_status": "active"})
+    service = QuantSimReplayService(
+        db_file=str(live_db_file),
+        replay_db_file=str(replay_db_file),
+        snapshot_provider=PreparedOnlyDrillSnapshotProvider(),
+        adapter=DrillHoldAdapter(),
+    )
+
+    context = service._prepare_live_quant_drill_context(
+        start_datetime=datetime(2026, 1, 5, 10, 0),
+        end_datetime=datetime(2026, 1, 5, 10, 30),
+        timeframe="30m",
+        market="CN",
+        strategy_profile_id="aggressive",
+        initial_cash=50000,
+        ai_dynamic_strategy="off",
+        ai_dynamic_strength=0.5,
+        ai_dynamic_lookback=48,
+        auto_entry_enabled=True,
+        auto_exit_enabled=True,
+        execute_trades=False,
+        liquidate_at_end=False,
+        seed_current_quant_universe=True,
+        generate_historical_candidate_events=False,
+        candidate_generation_frequency="daily_first_checkpoint",
+        candidate_generation_checkpoint_interval=8,
+    )
+
+    assert context["stock_codes"] == ["000001", "600519"]
+    assert [row["stock_code"] for row in context["initial_quant_universe_snapshot"]] == ["000001", "600519"]
+
+
 def test_live_quant_drill_main_scan_creates_checkpoint_signal(tmp_path):
     temp_db_file = tmp_path / "temp.db"
     temp_db = QuantSimDB(str(temp_db_file))

@@ -39,6 +39,8 @@ def default_execution_position_cap_policy(profile_id: str | None = None) -> dict
             "single_trade_risk_budget_pct": {"weak_buy": 0.30, "normal_buy": 0.45, "strong_buy": 0.65},
             "checkpoint_trial_risk_budget_pct": 0.80,
             "daily_trial_risk_budget_pct": 1.50,
+            "max_new_buys_per_checkpoint": 2,
+            "max_new_buys_per_day": 4,
             "trial_total_exposure_cap_pct": 20.0,
             "weak_buy_total_exposure_cap_pct": 12.0,
             "weak_buy_quality_reserve_cap_pct": 3.0,
@@ -88,6 +90,8 @@ def default_execution_position_cap_policy(profile_id: str | None = None) -> dict
             "single_trade_risk_budget_pct": {"weak_buy": 0.20, "normal_buy": 0.35, "strong_buy": 0.50},
             "checkpoint_trial_risk_budget_pct": 0.50,
             "daily_trial_risk_budget_pct": 1.00,
+            "max_new_buys_per_checkpoint": 1,
+            "max_new_buys_per_day": 3,
             "trial_total_exposure_cap_pct": 12.0,
             "weak_buy_total_exposure_cap_pct": 8.0,
             "weak_buy_quality_reserve_cap_pct": 2.0,
@@ -137,6 +141,8 @@ def default_execution_position_cap_policy(profile_id: str | None = None) -> dict
             "single_trade_risk_budget_pct": {"weak_buy": 0.10, "normal_buy": 0.25, "strong_buy": 0.40},
             "checkpoint_trial_risk_budget_pct": 0.30,
             "daily_trial_risk_budget_pct": 0.60,
+            "max_new_buys_per_checkpoint": 1,
+            "max_new_buys_per_day": 2,
             "trial_total_exposure_cap_pct": 8.0,
             "weak_buy_total_exposure_cap_pct": 5.0,
             "weak_buy_quality_reserve_cap_pct": 1.0,
@@ -212,12 +218,34 @@ def _signal_quant_status(signal: dict[str, Any]) -> str:
 def _outcome_feedback_score(signal: dict[str, Any]) -> float:
     feedback = _outcome_feedback_payload(signal)
     summary = feedback.get("summary") if isinstance(feedback.get("summary"), dict) else feedback
+    action = str(signal.get("action") or "").strip().upper()
+    if action == "BUY":
+        buy_sample_count = int(_float(summary.get("buy_sample_count"), 0.0))
+        sell_sample_count = int(_float(summary.get("sell_sample_count"), 0.0))
+        if buy_sample_count > 0:
+            return _float(summary.get("buy_avg_score"), 50.0)
+        if sell_sample_count > 0:
+            return 50.0
+    if action == "SELL":
+        sell_sample_count = int(_float(summary.get("sell_sample_count"), 0.0))
+        buy_sample_count = int(_float(summary.get("buy_sample_count"), 0.0))
+        if sell_sample_count > 0:
+            return _float(summary.get("sell_avg_score"), 50.0)
+        if buy_sample_count > 0:
+            return 50.0
     return _float(summary.get("outcome_feedback_score") or feedback.get("feedback_score"), 50.0)
 
 
 def _outcome_feedback_payload(signal: dict[str, Any]) -> dict[str, Any]:
     profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
     feedback = profile.get("outcome_feedback") if isinstance(profile.get("outcome_feedback"), dict) else {}
+    stock_gate = (
+        profile.get("stock_execution_feedback_gate")
+        if isinstance(profile.get("stock_execution_feedback_gate"), dict)
+        else {}
+    )
+    if not feedback and isinstance(stock_gate.get("outcome_feedback"), dict):
+        feedback = stock_gate["outcome_feedback"]
     market = profile.get("market_snapshot") if isinstance(profile.get("market_snapshot"), dict) else {}
     if not feedback and isinstance(market.get("outcome_feedback"), dict):
         feedback = market["outcome_feedback"]
@@ -428,7 +456,7 @@ def _clip_signal_budget(
     return adjusted_signal, adjusted_plan, allowed_budget, batch_risk
 
 
-def _priority(signal: dict[str, Any]) -> tuple[int, int, float, float, float, int]:
+def _priority(signal: dict[str, Any]) -> tuple[int, int, float, float, float, str, int]:
     plan = _signal_plan(signal)
     tier = str(plan.get("buy_tier") or _buy_tier(signal)).strip().lower()
     profile = signal.get("strategy_profile") if isinstance(signal.get("strategy_profile"), dict) else {}
@@ -436,9 +464,18 @@ def _priority(signal: dict[str, Any]) -> tuple[int, int, float, float, float, in
     strength = _float(gate.get("buy_strength_score"), 0.0)
     feedback_score = _outcome_feedback_score(signal)
     confidence = _float(signal.get("confidence"), 0.0)
+    stock_code = str(signal.get("stock_code") or "").strip()
     signal_id = int(_float(signal.get("id"), 0.0))
     lifecycle_priority = 0 if _quality_limited_one_lot_priority(signal, plan) else _lifecycle_priority(plan)
-    return (lifecycle_priority, BUY_TIER_ORDER.get(tier, 9), -feedback_score, -strength, -confidence, signal_id)
+    return (
+        lifecycle_priority,
+        BUY_TIER_ORDER.get(tier, 9),
+        -feedback_score,
+        -strength,
+        -confidence,
+        stock_code,
+        signal_id,
+    )
 
 
 def _lifecycle_priority(plan: dict[str, Any]) -> int:
@@ -575,7 +612,10 @@ def apply_batch_execution_caps(
     existing_weak_buy_market_value: float,
     day_trial_risk_used_pct: float,
     policy: dict[str, Any],
+    day_buy_count_used: int = 0,
 ) -> list[dict[str, Any]]:
+    checkpoint_buy_count = 0
+    day_buy_count = max(int(day_buy_count_used or 0), 0)
     checkpoint_trial_risk = 0.0
     day_trial_risk = float(day_trial_risk_used_pct or 0.0)
     trial_exposure = float(existing_trial_market_value or 0.0)
@@ -611,6 +651,12 @@ def apply_batch_execution_caps(
             min_strength = _float(policy.get("weak_buy_min_execution_strength"), 0.0)
             if _float(guard.get("buy_strength_score"), 0.0) < min_strength:
                 reason_code = "weak_buy_strength_floor_not_met"
+        max_checkpoint_buys = int(_float(policy.get("max_new_buys_per_checkpoint"), 0.0))
+        max_day_buys = int(_float(policy.get("max_new_buys_per_day"), 0.0))
+        if not reason_code and max_checkpoint_buys > 0 and checkpoint_buy_count >= max_checkpoint_buys:
+            reason_code = "checkpoint_buy_count_limit_hit"
+        if not reason_code and max_day_buys > 0 and day_buy_count >= max_day_buys:
+            reason_code = "daily_buy_count_limit_hit"
         if not reason_code and status == "trial":
             remaining_checkpoint_risk = float(policy["checkpoint_trial_risk_budget_pct"]) - checkpoint_trial_risk
             remaining_daily_risk = float(policy["daily_trial_risk_budget_pct"]) - day_trial_risk
@@ -709,6 +755,8 @@ def apply_batch_execution_caps(
             reason_code = "weak_buy_one_lot_exceeds_risk_budget"
         allowed = not reason_code
         if allowed:
+            checkpoint_buy_count += 1
+            day_buy_count += 1
             if status == "trial":
                 checkpoint_trial_risk += batch_risk_pct
                 day_trial_risk += batch_risk_pct

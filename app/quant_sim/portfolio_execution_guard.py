@@ -909,7 +909,7 @@ def _portfolio_state(summary: dict[str, Any], policy: dict[str, Any]) -> dict[st
         "loss_budget_triggered": loss_budget,
         "drawdown_guard_triggered": drawdown,
         "buy_limit_triggered": buy_limit,
-        "blocked": bool(loss_budget or consecutive or buy_limit),
+        "blocked": bool(loss_budget or consecutive),
         "reasons": reasons,
     }
 

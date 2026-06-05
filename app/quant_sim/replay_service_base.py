@@ -447,7 +447,10 @@ class QuantSimReplayServiceBase:
             if seed_current_quant_universe
             else {"items": []}
         )
-        initial_quant_universe_snapshot = list(quant_state_response.get("items") or [])
+        initial_quant_universe_snapshot = sorted(
+            list(quant_state_response.get("items") or []),
+            key=lambda item: str(item.get("stock_code") or "").strip(),
+        )
         candidates = [
             {
                 "stock_code": str(item.get("stock_code") or "").strip(),

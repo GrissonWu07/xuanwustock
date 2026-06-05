@@ -279,6 +279,7 @@ class PortfolioService:
                 existing_weak_buy_market_value=existing_weak_buy_market_value,
                 day_trial_risk_used_pct=self._day_trial_risk_used_pct(executed_at),
                 policy=default_execution_position_cap_policy(profile_id),
+                day_buy_count_used=self._day_buy_count_used(executed_at),
             )
             for row in batch_rows:
                 if not row["allowed"]:
@@ -372,6 +373,16 @@ class PortfolioService:
             else:
                 total += float(plan.get("risk_budget_pct") or 0.0)
         return total
+
+    def _day_buy_count_used(self, executed_at: str | datetime | None) -> int:
+        day = executed_at.date().isoformat() if isinstance(executed_at, datetime) else str(executed_at or datetime.now().isoformat())[:10]
+        count = 0
+        for trade in self.db.get_trade_history(limit=1000):
+            if str(trade.get("action") or "").upper() != "BUY":
+                continue
+            if str(trade.get("executed_at") or "")[:10] == day:
+                count += 1
+        return count
 
     def preview_signal_sizing(
         self,
@@ -593,14 +604,15 @@ class PortfolioService:
         except (TypeError, ValueError):
             return 0.0
 
-    def _execution_sort_key(self, signal: dict) -> tuple[int, float, int]:
+    def _execution_sort_key(self, signal: dict) -> tuple[int, float, str, int]:
         action = str(signal.get("action") or "").upper()
         signal_id = int(signal.get("id") or 0)
+        stock_code = str(signal.get("stock_code") or "").strip()
         if action == "SELL":
-            return (0, 0.0, signal_id)
+            return (0, 0.0, stock_code, signal_id)
         if action == "BUY":
-            return (1, -calculate_buy_priority(signal, self.db.get_scheduler_config()), signal_id)
-        return (2, 0.0, signal_id)
+            return (1, -calculate_buy_priority(signal, self.db.get_scheduler_config()), stock_code, signal_id)
+        return (2, 0.0, stock_code, signal_id)
 
     def _attach_sizing_evidence(self, signal: dict, sizing_evidence: dict) -> None:
         signal_id = signal.get("id")

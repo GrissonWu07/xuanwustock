@@ -705,6 +705,7 @@ def resolve_next_status(
     recovery_probe_recent_loss_requires_strong_confirmation: bool = False,
     recovery_probe_active: bool = False,
     recovery_probe_strong_confirmed: bool = False,
+    recovery_probe_normal_confirmed: bool = False,
     recovery_probe_exit_grace_active: bool = False,
     recent_recovery_probe_failure: bool = False,
     post_buy_grace_active: bool = False,
@@ -758,12 +759,19 @@ def resolve_next_status(
     if current == QuantStatus.TRIAL:
         if (
             current == QuantStatus.TRIAL
-            and (not recovery_probe_active or recovery_probe_strong_confirmed)
+            and (not recovery_probe_active or recovery_probe_strong_confirmed or recovery_probe_normal_confirmed)
             and health_score >= policy.active_upgrade_threshold
             and trend_confirmed
             and active_trend_confirm_checkpoints >= policy.active_upgrade_confirm_checkpoints
         ):
             if recovery_probe_active:
+                if recovery_probe_normal_confirmed and not recovery_probe_strong_confirmed:
+                    return _transition(
+                        current,
+                        QuantStatus.ACTIVE,
+                        "trial_recovery_probe_normal_confirmed_upgraded_to_active",
+                        "recovery probe 连续 normal BUY 且趋势确认，提前升级 active",
+                    )
                 return _transition(
                     current,
                     QuantStatus.ACTIVE,
@@ -1310,6 +1318,14 @@ class QuantUniverseManager:
                 and trend_confirmed
                 and trend_confirmed_streak >= int(self.policy.active_upgrade_confirm_checkpoints or 0)
             )
+            recovery_probe_normal_confirmed = bool(
+                recovery_probe_active
+                and recent_probe_loss_count <= 0
+                and _signal_normal_buy(latest_signal)
+                and _trailing_normal_buy_count(recent_signals) >= int(self.policy.active_upgrade_confirm_checkpoints or 0)
+                and trend_confirmed
+                and trend_confirmed_streak >= int(self.policy.active_upgrade_confirm_checkpoints or 0)
+            )
             health = _apply_cold_start_health_floor(
                 health,
                 policy=self.policy,
@@ -1345,6 +1361,7 @@ class QuantUniverseManager:
                 recovery_probe_recent_loss_requires_strong_confirmation=recovery_probe_recent_loss_requires_strong_confirmation,
                 recovery_probe_active=recovery_probe_active,
                 recovery_probe_strong_confirmed=recovery_probe_strong_confirmed,
+                recovery_probe_normal_confirmed=recovery_probe_normal_confirmed,
                 recovery_probe_exit_grace_active=has_position
                 and _recovery_probe_exit_grace_active(previous_state, self.policy, evaluation_time),
                 recent_recovery_probe_failure=current == QuantStatus.EXIT_ONLY and recent_probe_loss_count > 0,
@@ -1907,6 +1924,14 @@ def _signal_strong_buy(signal: dict[str, Any]) -> bool:
     return buy_tier == "strong_buy"
 
 
+def _signal_normal_buy(signal: dict[str, Any]) -> bool:
+    if _action(signal) != "BUY":
+        return False
+    guard = _signal_portfolio_guard(signal)
+    buy_tier = str(guard.get("buy_tier") or guard.get("status") or "").strip().lower()
+    return buy_tier == "normal_buy"
+
+
 def _signal_requires_immediate_exit(signal: dict[str, Any]) -> bool:
     if bool(signal.get("quick_stoploss_failure")):
         return True
@@ -2111,6 +2136,15 @@ def _trailing_trend_confirmed_count(
     count = 0
     for signal in signals:
         if not _signal_trend_confirmed(signal, policy, allow_hold=allow_hold):
+            break
+        count += 1
+    return count
+
+
+def _trailing_normal_buy_count(signals: list[dict[str, Any]]) -> int:
+    count = 0
+    for signal in signals:
+        if not _signal_normal_buy(signal):
             break
         count += 1
     return count

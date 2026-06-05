@@ -408,7 +408,7 @@ def test_portfolio_loss_budget_blocks_new_buy_and_exposes_portfolio_reasons():
     assert gate["portfolio_guard"]["reasons"]
 
 
-def test_portfolio_buy_limit_blocks_after_checkpoint_limit():
+def test_portfolio_buy_limit_is_diagnostic_not_signal_layer_blocker():
     gate = evaluate_portfolio_execution_guard(
         signal=_signal(),
         policy=default_portfolio_execution_guard_policy("stable"),
@@ -421,8 +421,8 @@ def test_portfolio_buy_limit_blocks_after_checkpoint_limit():
         },
     )
 
-    assert gate["status"] == "blocked"
-    assert gate["size_multiplier"] == 0.0
+    assert gate["status"] != "blocked"
+    assert gate["size_multiplier"] > 0.0
     assert gate["portfolio_guard"]["buy_limit_triggered"] is True
     assert "组合防守：超过本 checkpoint BUY 上限" in gate["portfolio_guard"]["reasons"]
 
@@ -541,8 +541,10 @@ def test_signal_center_buy_limit_counts_pending_buys_before_execution(tmp_path):
     second_signal = service.create_signal(second, decision, notify=False)
 
     assert first_signal["action"] == "BUY"
-    assert second_signal["action"] == "HOLD"
-    assert second_signal["strategy_profile"]["portfolio_execution_guard"]["portfolio_guard"]["buy_limit_triggered"] is True
+    assert second_signal["action"] == "BUY"
+    second_guard = second_signal["strategy_profile"]["portfolio_execution_guard"]["portfolio_guard"]
+    assert second_guard["buy_limit_triggered"] is True
+    assert second_guard["blocked"] is False
 
 
 def test_recovery_probe_position_weak_sell_becomes_failure_exit(tmp_path):
